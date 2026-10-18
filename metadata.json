@@ -1,0 +1,7 @@
+{
+  "name": "CineTrack",
+  "description": "TMDB destekli kişisel film ve dizi izleme kataloğu",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

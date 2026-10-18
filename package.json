@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "description": "TMDB destekli kişisel film ve dizi izleme kataloğu",
   "scripts": {
+    "dev": "node server.mjs",
     "start": "node server.mjs",
+    "build": "node --check server.mjs cinetrack-core.js",
     "test": "node --test"
   }
 }
