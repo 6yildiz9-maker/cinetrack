@@ -1,0 +1,10 @@
+{
+  "name": "cinetrack",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TMDB destekli kişisel film ve dizi izleme kataloğu",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  }
+}
