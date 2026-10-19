@@ -7,7 +7,9 @@ import {
   normalizePreferences, normalizeProfile, normalizeDataDocument,
   resolveAirDate, reminderDaysUntil, createRequestGate,
   RECOMMENDATION_WEIGHTS, bayesianRating, billingWeight, buildTasteProfile,
-  scoreCandidates, diversifyList, createCandidatePool
+  scoreCandidates, diversifyList, createCandidatePool,
+  RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
+  buildTasteProfileV3, scoreCandidatesV3
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -869,3 +871,143 @@ describe("createCandidatePool", () => {
     assert.equal(pool.list()[0].poolSources, 2);
   });
 });
+
+describe("Sana Özel v3 — RECOMMENDATION_WEIGHTS_V3", () => {
+  it("platform tamamen kaldırılmıştır ve ağırlıklar tam %100 (1.00) eder", () => {
+    assert.equal("platform" in RECOMMENDATION_WEIGHTS_V3, false);
+    const sum = Object.values(RECOMMENDATION_WEIGHTS_V3).reduce((acc, w) => acc + w, 0);
+    assertClose(sum, 1.0);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.genre, 0.17);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.mediaType, 0.03);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.keywords, 0.13);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.story, 0.12);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.lovedSim, 0.10);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.actor, 0.10);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.genreActor, 0.08);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.director, 0.04);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.quality, 0.08);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.exploration, 0.04);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.popularity, 0.03);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.context, 0.03);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.franchise, 0.03);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.sourceSignal, 0.02);
+  });
+});
+
+describe("Sana Özel v3 — normalizeUserRating ve signalDecay", () => {
+  it("puanı 1..10 aralığında -1 ile +1 arasına normalize eder", () => {
+    assertClose(normalizeUserRating(1), -1.0);
+    assertClose(normalizeUserRating(3), -0.5);
+    assertClose(normalizeUserRating(5), 0.0);
+    assertClose(normalizeUserRating(7), 0.4);
+    assertClose(normalizeUserRating(8), 0.6);
+    assertClose(normalizeUserRating(10), 1.0);
+  });
+
+  it("zaman sönümü d(t) = 2^(-t/H) formülünü doğru hesaplar", () => {
+    const now = new Date("2026-10-19T00:00:00Z").getTime();
+    const halfYearAgo = new Date(now - 365 * 86400000).toISOString();
+    assertClose(signalDecay(halfYearAgo, 365, now), 0.5);
+
+    const twoYearsAgo = new Date(now - 730 * 86400000).toISOString();
+    assertClose(signalDecay(twoYearsAgo, 730, now), 0.5);
+    assertClose(signalDecay(twoYearsAgo, 365, now), 0.25);
+  });
+});
+
+describe("Sana Özel v3 — getUserSignalV3", () => {
+  it("durum ve puan sinyal değerlerini ve önem ağırlıklarını doğru belirler", () => {
+    const completedUnrated = getUserSignalV3({ status: "completed" });
+    assert.equal(completedUnrated.signal, 0.4);
+    assert.equal(completedUnrated.weight, 2.5);
+
+    const watchingUnrated = getUserSignalV3({ status: "watching" });
+    assert.equal(watchingUnrated.signal, 0.2);
+    assert.equal(watchingUnrated.weight, 1.6);
+
+    const watchlistUnrated = getUserSignalV3({ status: "watchlist" });
+    assert.equal(watchlistUnrated.signal, 0.2);
+    assert.equal(watchlistUnrated.weight, 0.35);
+
+    const ratedItem = getUserSignalV3({ status: "completed", personal_rating: 9 });
+    assertClose(ratedItem.signal, 0.8);
+    assert.equal(ratedItem.weight, 2.5);
+
+    const disliked = getUserSignalV3({ status: "disliked" });
+    assert.equal(disliked.signal, -0.8);
+    assert.equal(disliked.weight, 1.0);
+  });
+});
+
+describe("Sana Özel v3 — buildTasteProfileV3 ve scoreCandidatesV3", () => {
+  it("yumuşatılmış tat profilini ve aday puanını 0..100 aralığında üretir", () => {
+    const history = [
+      {
+        id: 1,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 9,
+        genre_ids: [878, 28],
+        overview: "Gelecekte geçen distopik yapay zeka savaşı ve uzay gemisi",
+        cast: [{ id: 100, name: "Aktör A" }, { id: 200, name: "Aktör B" }],
+        crew: [{ id: 300, name: "Yönetmen Y", job: "Director" }],
+      },
+      {
+        id: 2,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 2,
+        genre_ids: [10749],
+        cast: [{ id: 100, name: "Aktör A" }],
+      },
+    ];
+
+    const profile = buildTasteProfileV3(history, { lambda: 1 });
+    assert.ok(profile.genres[878] > 0);
+    assert.ok(profile.genres[10749] < 0);
+    assert.ok(profile.actors[100].genreScores[878] > profile.actors[100].genreScores[10749]);
+    assert.ok(profile.lovedSeedIds.has("movie:1"));
+
+    const candidateLiked = {
+      id: 50,
+      media_type: "movie",
+      title: "Uzay Macerası",
+      genre_ids: [878],
+      overview: "Yapay zeka ve uzay gemisi ile karanlık geleceğe yolculuk",
+      vote_average: 8.5,
+      vote_count: 2000,
+      popularity: 150,
+      cast: [{ id: 100, name: "Aktör A" }],
+      crew: [{ id: 300, name: "Yönetmen Y", job: "Director" }],
+      seedSourceType: "completed",
+      poolSources: 2,
+    };
+
+    const candidateUnrelated = {
+      id: 51,
+      media_type: "movie",
+      title: "Romantik Düğün",
+      genre_ids: [10749],
+      overview: "Eski bir köyde geçen aşk hikayesi",
+      vote_average: 5.5,
+      vote_count: 50,
+      popularity: 10,
+      cast: [{ id: 999, name: "Bilinmeyen" }],
+      crew: [],
+      seedSourceType: "",
+      poolSources: 1,
+    };
+
+    const [scoredLiked, scoredUnrelated] = scoreCandidatesV3(
+      [candidateLiked, candidateUnrelated],
+      profile,
+      { genreNames: { 878: "Bilim Kurgu", 10749: "Romantik" } }
+    );
+
+    assert.ok(scoredLiked.score > scoredUnrelated.score);
+    assert.ok(scoredLiked.score >= 0 && scoredLiked.score <= 100);
+    assert.ok(scoredUnrelated.score >= 0 && scoredUnrelated.score <= 100);
+    assert.ok(scoredLiked.tags.some((t) => t.includes("Aktör A") || t.includes("Bilim Kurgu")));
+  });
+});
+

@@ -847,3 +847,501 @@ export function createCandidatePool({ maxItems = 2000 } = {}) {
     },
   };
 }
+
+// ---------------------------------------------------------
+// Sana Özel v3 — Personalized Recommendation Engine
+// ---------------------------------------------------------
+
+export const RECOMMENDATION_WEIGHTS_V3 = Object.freeze({
+  genre: 0.17,
+  mediaType: 0.03,
+  keywords: 0.13,
+  story: 0.12,
+  lovedSim: 0.10,
+  actor: 0.10,
+  genreActor: 0.08,
+  director: 0.04,
+  quality: 0.08,
+  exploration: 0.04,
+  popularity: 0.03,
+  context: 0.03,
+  franchise: 0.03,
+  sourceSignal: 0.02,
+});
+
+const COMMON_STOP_WORDS = new Set([
+  'bir', 've', 'ile', 'için', 'olan', 'olarak', 'gibi', 'kadar', 'sonra', 'önce', 'daha', 'çok', 'en', 'bu', 'şu', 'o',
+  'de', 'da', 'ki', 'ama', 'fakat', 'ancak', 'veya', 'ise', 'her', 'tüm', 'biri', 'the', 'and', 'with', 'from', 'this',
+  'that', 'for', 'about', 'after', 'before', 'into', 'over', 'their', 'when', 'which', 'while', 'where'
+]);
+
+export function extractOverviewTokens(text: unknown): string[] {
+  if (typeof text !== 'string' || !text.trim()) return [];
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !COMMON_STOP_WORDS.has(w));
+}
+
+export function normalizeUserRating(rating: unknown): number {
+  const r = Number(rating);
+  if (!Number.isFinite(r)) return 0;
+  if (r < 1) return -1;
+  if (r > 10) return 1;
+  if (r < 5) return (r - 5) / 4;
+  return (r - 5) / 5;
+}
+
+export function signalDecay(dateStr?: string, halfLifeDays = 365, now = Date.now()): number {
+  if (!dateStr || typeof dateStr !== 'string') return 1;
+  const time = new Date(dateStr).getTime();
+  if (Number.isNaN(time) || time > now) return 1;
+  const days = Math.max(0, (now - time) / 86_400_000);
+  return Math.pow(2, -days / halfLifeDays);
+}
+
+export function getUserSignalV3(item: any, now = Date.now()): { signal: number; weight: number; decay: number } | null {
+  if (!item || typeof item !== 'object') return null;
+
+  if (item.status === 'disliked' || item.isDisliked) {
+    const decay = signalDecay(item.updatedAt || item.addedAt, 730, now);
+    return { signal: -0.8, weight: 1.0, decay };
+  }
+
+  const ratingNum = Number(item.personal_rating);
+  const hasRating = item.personal_rating !== '' && Number.isFinite(ratingNum) && ratingNum >= 1;
+
+  if (hasRating) {
+    const signal = normalizeUserRating(ratingNum);
+    const decay = signalDecay(item.updatedAt || item.addedAt, 730, now);
+    let weight = 1.0;
+    if (item.status === 'completed') weight = 2.5;
+    else if (item.status === 'watching') weight = 1.6;
+    else if (item.status === 'watchlist') weight = 0.35;
+    return { signal, weight, decay };
+  }
+
+  if (item.status === 'completed') {
+    const decay = signalDecay(item.updatedAt || item.addedAt, 365, now);
+    return { signal: 0.4, weight: 2.5, decay };
+  }
+  if (item.status === 'watching') {
+    const decay = signalDecay(item.updatedAt || item.addedAt, 365, now);
+    return { signal: 0.2, weight: 1.6, decay };
+  }
+  if (item.status === 'watchlist') {
+    const decay = signalDecay(item.updatedAt || item.addedAt, 365, now);
+    return { signal: 0.2, weight: 0.35, decay };
+  }
+
+  return null;
+}
+
+export interface TasteProfileV3 {
+  genres: Record<string, number>;
+  actors: Record<string, { name: string; personal: number; genreScores: Record<string, number> }>;
+  directors: Record<string, { name: string; personal: number }>;
+  keywords: Record<string, number>;
+  mediaPreference: { movie: number; tv: number };
+  lovedSeedIds: Set<string>;
+  lovedFranchiseIds: Set<number>;
+  lovedProductionCompanyIds: Set<number>;
+  lovedOverviewTokens: Set<string>;
+  positiveGenres: string[];
+}
+
+export function buildTasteProfileV3(
+  items: any[],
+  {
+    lambda = 1,
+    now = Date.now(),
+    dislikedKeys = [] as string[],
+  }: {
+    lambda?: number;
+    now?: number;
+    dislikedKeys?: string[];
+  } = {}
+): TasteProfileV3 {
+  const genresAcc: Record<string, { num: number; den: number }> = {};
+  const actorsAcc: Record<string, { name: string; num: number; den: number; genreAcc: Record<string, { num: number; den: number }> }> = {};
+  const directorsAcc: Record<string, { name: string; num: number; den: number }> = {};
+  const keywordsAcc: Record<string, { num: number; den: number }> = {};
+  const typeCounts: Record<string, number> = { movie: 0, tv: 0 };
+
+  const lovedSeedIds = new Set<string>();
+  const lovedFranchiseIds = new Set<number>();
+  const lovedProductionCompanyIds = new Set<number>();
+  const lovedOverviewTokens = new Set<string>();
+
+  const allItems: any[] = [...(Array.isArray(items) ? items : [])];
+
+  // Incorporate explicit disliked signals if provided as keys
+  for (const key of dislikedKeys) {
+    if (!key || typeof key !== 'string') continue;
+    const [mediaType, idStr] = key.split(':');
+    const id = Number(idStr);
+    if (!id || allItems.some((it) => it.id === id && it.media_type === mediaType)) continue;
+    allItems.push({ id, media_type: mediaType, status: 'disliked', isDisliked: true });
+  }
+
+  for (const item of allItems) {
+    const sig = getUserSignalV3(item, now);
+    if (!sig) continue;
+    const { signal: u, weight: w, decay: d } = sig;
+    const effContribution = u * w * d;
+    const effWeight = w * d;
+
+    if (item.media_type === 'movie' || item.media_type === 'tv') {
+      typeCounts[item.media_type] = (typeCounts[item.media_type] || 0) + (u >= 0 ? effWeight : 0);
+    }
+
+    const isLoved = u >= 0.4;
+    if (isLoved && item.id != null) {
+      lovedSeedIds.add(`${item.media_type}:${item.id}`);
+      if (item.belongs_to_collection?.id) {
+        lovedFranchiseIds.add(Number(item.belongs_to_collection.id));
+      }
+      if (Array.isArray(item.production_companies)) {
+        for (const company of item.production_companies) {
+          if (company?.id) lovedProductionCompanyIds.add(Number(company.id));
+        }
+      }
+      for (const token of extractOverviewTokens(item.overview)) {
+        lovedOverviewTokens.add(token);
+      }
+    }
+
+    // Genres
+    const genreIds = Array.isArray(item.genre_ids)
+      ? item.genre_ids
+      : Array.isArray(item.genres)
+      ? item.genres.map((g: any) => (typeof g === 'object' ? g.id : g)).filter(Boolean)
+      : [];
+    for (const gid of genreIds) {
+      const key = String(gid);
+      const acc = genresAcc[key] || (genresAcc[key] = { num: 0, den: 0 });
+      acc.num += effContribution;
+      acc.den += effWeight;
+    }
+
+    // Cast
+    const cast = Array.isArray(item.cast) ? item.cast : [];
+    cast.forEach((person: any, order: number) => {
+      const pid = person?.id;
+      if (pid == null || !person.name) return;
+      const bWeight = billingWeight(order) * effWeight;
+      const bContribution = billingWeight(order) * effContribution;
+      const pKey = String(pid);
+      const acc = actorsAcc[pKey] || (actorsAcc[pKey] = { name: person.name, num: 0, den: 0, genreAcc: {} });
+      acc.num += bContribution;
+      acc.den += bWeight;
+
+      for (const gid of genreIds) {
+        const gKey = String(gid);
+        const gAcc = acc.genreAcc[gKey] || (acc.genreAcc[gKey] = { num: 0, den: 0 });
+        gAcc.num += bContribution;
+        gAcc.den += bWeight;
+      }
+    });
+
+    // Directors & Creators
+    const crew = Array.isArray(item.crew) ? item.crew : [];
+    for (const member of crew) {
+      if (member?.id == null || !member.name) continue;
+      if (member.job !== 'Director' && member.job !== 'Creator') continue;
+      const dKey = String(member.id);
+      const acc = directorsAcc[dKey] || (directorsAcc[dKey] = { name: member.name, num: 0, den: 0 });
+      acc.num += effContribution;
+      acc.den += effWeight;
+    }
+
+    // Keywords / Overview tokens
+    const tokens = extractOverviewTokens(item.overview);
+    for (const token of tokens) {
+      const acc = keywordsAcc[token] || (keywordsAcc[token] = { num: 0, den: 0 });
+      acc.num += effContribution * 0.5;
+      acc.den += effWeight * 0.5;
+    }
+  }
+
+  // Smooth score formula: P_f = num / (lambda + den)
+  const genres: Record<string, number> = {};
+  for (const [key, acc] of Object.entries(genresAcc)) {
+    genres[key] = Math.min(1, Math.max(-1, acc.num / (lambda + acc.den)));
+  }
+
+  const actors: Record<string, { name: string; personal: number; genreScores: Record<string, number> }> = {};
+  for (const [key, acc] of Object.entries(actorsAcc)) {
+    const genreScores: Record<string, number> = {};
+    for (const [gKey, gAcc] of Object.entries(acc.genreAcc)) {
+      genreScores[gKey] = Math.min(1, Math.max(-1, gAcc.num / (lambda + gAcc.den)));
+    }
+    actors[key] = {
+      name: acc.name,
+      personal: Math.min(1, Math.max(-1, acc.num / (lambda + acc.den))),
+      genreScores,
+    };
+  }
+
+  const directors: Record<string, { name: string; personal: number }> = {};
+  for (const [key, acc] of Object.entries(directorsAcc)) {
+    directors[key] = {
+      name: acc.name,
+      personal: Math.min(1, Math.max(-1, acc.num / (lambda + acc.den))),
+    };
+  }
+
+  const keywords: Record<string, number> = {};
+  for (const [key, acc] of Object.entries(keywordsAcc)) {
+    if (acc.den >= 0.5) {
+      keywords[key] = Math.min(1, Math.max(-1, acc.num / (lambda + acc.den)));
+    }
+  }
+
+  const totalTypes = typeCounts.movie + typeCounts.tv;
+  const positiveGenres = Object.entries(genres)
+    .filter(([, score]) => score > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([id]) => id);
+
+  return {
+    genres,
+    actors,
+    directors,
+    keywords,
+    mediaPreference: totalTypes
+      ? { movie: typeCounts.movie / totalTypes, tv: typeCounts.tv / totalTypes }
+      : { movie: 0.5, tv: 0.5 },
+    lovedSeedIds,
+    lovedFranchiseIds,
+    lovedProductionCompanyIds,
+    lovedOverviewTokens,
+    positiveGenres,
+  };
+}
+
+export function scoreCandidatesV3(
+  candidates: any[],
+  profile: TasteProfileV3,
+  {
+    weights = RECOMMENDATION_WEIGHTS_V3,
+    genreNames = null as Record<number | string, string> | null,
+    mood = '',
+  }: {
+    weights?: typeof RECOMMENDATION_WEIGHTS_V3;
+    genreNames?: Record<number | string, string> | null;
+    mood?: string;
+  } = {}
+) {
+  const actorOf = (id: any) => profile.actors?.[String(id)] || null;
+  const directorOf = (id: any) => profile.directors?.[String(id)] || null;
+  const topGenreSet = new Set(profile.positiveGenres.slice(0, 4));
+
+  return (Array.isArray(candidates) ? candidates : []).map((candidate) => {
+    const genreIds = (Array.isArray(candidate.genre_ids) ? candidate.genre_ids : []).map(String);
+    const cast = (Array.isArray(candidate.cast) ? candidate.cast : []).slice(0, 8);
+    const crew = Array.isArray(candidate.crew) ? candidate.crew : [];
+    const tokens = extractOverviewTokens(candidate.overview);
+
+    // 1. Tür Profili (0.17)
+    const knownGenreScores = genreIds
+      .map((gid: string) => profile.genres?.[gid])
+      .filter((s: unknown): s is number => typeof s === 'number');
+    const genreScore = knownGenreScores.length
+      ? clamp01(knownGenreScores.reduce((sum: number, s: number) => sum + (s + 1) / 2, 0) / knownGenreScores.length)
+      : 0.5;
+
+    // 2. Film/Dizi Tercihi (0.03)
+    const mediaPart = candidate.media_type === 'movie'
+      ? profile.mediaPreference.movie
+      : candidate.media_type === 'tv'
+      ? profile.mediaPreference.tv
+      : 0.5;
+    const mediaScore = clamp01(mediaPart);
+
+    // 3. Anahtar Kelime Benzerliği (0.13)
+    let keywordScore = 0.5;
+    if (tokens.length > 0) {
+      const tokenScores = tokens
+        .map((tok) => profile.keywords?.[tok])
+        .filter((s): s is number => typeof s === 'number');
+      if (tokenScores.length > 0) {
+        keywordScore = clamp01(
+          tokenScores.reduce((sum, s) => sum + (s + 1) / 2, 0) / tokenScores.length
+        );
+      }
+    }
+
+    // 4. Hikaye Benzerliği (0.12)
+    let storyScore = 0.5;
+    if (tokens.length > 0 && profile.lovedOverviewTokens.size > 0) {
+      const matchCount = tokens.filter((tok) => profile.lovedOverviewTokens.has(tok)).length;
+      const ratio = matchCount / Math.max(1, Math.min(tokens.length, 12));
+      storyScore = clamp01(0.3 + 0.7 * Math.min(1, ratio * 2));
+    }
+
+    // 5. Sevilen Yapımlara Benzerlik (0.10)
+    let lovedSimScore = 0.5;
+    if (candidate.seedSourceType === 'completed') {
+      lovedSimScore = 0.95;
+    } else if (candidate.seedSourceType === 'watching') {
+      lovedSimScore = 0.85;
+    } else if (candidate.seedSourceType === 'watchlist') {
+      lovedSimScore = 0.65;
+    } else if (candidate.poolSources && candidate.poolSources >= 2) {
+      lovedSimScore = 0.75;
+    }
+
+    // 6. Genel Oyuncu Tercihi (0.10) & 7. Tür x Oyuncu Tercihi (0.08)
+    let actorScore = 0.5;
+    let genreActorScore = 0.5;
+    let unknownCount = 0;
+    if (cast.length > 0) {
+      let aNum = 0;
+      let aDen = 0;
+      let gaNum = 0;
+      let gaDen = 0;
+
+      for (const [index, person] of cast.entries()) {
+        if (!person || person.id == null) continue;
+        const w = billingWeight(index);
+        const known = actorOf(person.id);
+        if (!known) {
+          unknownCount += 1;
+        }
+        const personal = known ? (known.personal + 1) / 2 : 0.5;
+        aNum += personal * w;
+        aDen += w;
+
+        let genreBlend = personal;
+        if (known) {
+          const matchingGenre = genreIds.find((gid: string) => typeof known.genreScores?.[gid] === 'number');
+          if (matchingGenre) {
+            const gScore = (known.genreScores[matchingGenre] + 1) / 2;
+            genreBlend = 0.6 * gScore + 0.4 * personal;
+          }
+        }
+        gaNum += genreBlend * w;
+        gaDen += w;
+      }
+
+      if (aDen > 0) actorScore = clamp01(aNum / aDen);
+      if (gaDen > 0) genreActorScore = clamp01(gaNum / gaDen);
+    }
+
+    // 8. Yönetmen / Yaratıcı Tercihi (0.04)
+    const directorEntry = crew.find(
+      (m: any) => m?.id != null && (m.job === 'Director' || m.job === 'Creator')
+    );
+    const knownDirector = directorEntry ? directorOf(directorEntry.id) : null;
+    const directorScore = knownDirector ? clamp01((knownDirector.personal + 1) / 2) : 0.5;
+
+    // 9. Kalite (0.08) - Bayesian Rating R_B / 10
+    const bayes = bayesianRating(candidate.vote_average, candidate.vote_count, { prior: 6.5, minVotes: 300 });
+    const qualityScore = clamp01(bayes / 10);
+
+    // 10. Kontrollü Keşif (0.04)
+    const isUnknownCast = cast.length > 0 && unknownCount === cast.length;
+    const genreOverlap = genreIds.length
+      ? genreIds.filter((gid: string) => topGenreSet.has(gid)).length / genreIds.length
+      : 0;
+    const explorationScore = isUnknownCast
+      ? clamp01(0.7 + 0.3 * (1 - genreOverlap))
+      : clamp01(0.5 + 0.5 * (1 - genreOverlap));
+
+    // 11. Popülerlik (0.03)
+    const pop = Number(candidate.popularity) || 0;
+    const popularityScore = clamp01(Math.log10(pop + 1) / 3.5);
+
+    // 12. Bağlam ve Yayın Zamanı (0.03)
+    let contextScore = 0.5;
+    if (mood) {
+      contextScore = 0.75;
+    }
+    const releaseDate = candidate.release_date || candidate.first_air_date;
+    if (releaseDate && typeof releaseDate === 'string') {
+      const year = parseInt(releaseDate.slice(0, 4), 10);
+      const currentYear = new Date().getFullYear();
+      if (year >= currentYear - 2) {
+        contextScore = clamp01(contextScore + 0.2);
+      }
+    }
+
+    // 13. Franchise / Yapım Şirketi (0.03)
+    let franchiseScore = 0.5;
+    if (
+      (candidate.belongs_to_collection?.id && profile.lovedFranchiseIds.has(Number(candidate.belongs_to_collection.id))) ||
+      (Array.isArray(candidate.production_companies) &&
+        candidate.production_companies.some((comp: any) => comp?.id && profile.lovedProductionCompanyIds.has(Number(comp.id))))
+    ) {
+      franchiseScore = 1.0;
+    }
+
+    // 14. Kaynak Sinyal Gücü (0.02)
+    const sourcesCount = Number(candidate.poolSources) || 1;
+    const sourceSignalScore = clamp01(Math.min(1, sourcesCount / 2));
+
+    const parts: Record<string, number> = {
+      genre: genreScore,
+      mediaType: mediaScore,
+      keywords: keywordScore,
+      story: storyScore,
+      lovedSim: lovedSimScore,
+      actor: actorScore,
+      genreActor: genreActorScore,
+      director: directorScore,
+      quality: qualityScore,
+      exploration: explorationScore,
+      popularity: popularityScore,
+      context: contextScore,
+      franchise: franchiseScore,
+      sourceSignal: sourceSignalScore,
+    };
+
+    // Raw score formula: S_ham = 100 * (sum(w_j * s_j) / sum(w_j))
+    const totalWeight = Object.values(weights).reduce((sum, w) => sum + (Number(w) || 0), 0);
+    const weightedSum = Object.entries(weights).reduce(
+      (sum, [key, w]) => sum + (parts[key] ?? 0.5) * (Number(w) || 0),
+      0
+    );
+    const rawScore = totalWeight > 0 ? (100 * weightedSum) / totalWeight : 50;
+
+    // Generate explanations and tags
+    const tags: string[] = [];
+    if (candidate.poolReason) tags.push(candidate.poolReason);
+
+    const bestActor = cast
+      .map((person: any) => ({ person, known: actorOf(person?.id) }))
+      .filter((entry: any) => entry.known && entry.known.personal >= 0.25)
+      .sort((a: any, b: any) => b.known.personal - a.known.personal)[0];
+    if (bestActor) tags.push(`Sevdiğin ${bestActor.known.name} oynuyor`);
+
+    const topCandidateGenre = genreIds.find((gid: string) => topGenreSet.has(gid));
+    const genreLabel = topCandidateGenre && genreNames ? genreNames[topCandidateGenre] : '';
+    if (genreLabel && genreLabel !== candidate.poolReason && !tags.some((t) => t.includes(genreLabel))) {
+      tags.push(`${genreLabel} türünü sevdiğin için`);
+    }
+
+    if (knownDirector && knownDirector.personal >= 0.25) {
+      tags.push(`Sevdiğin yönetmen ${knownDirector.name}`);
+    }
+    if (franchiseScore >= 0.8) {
+      tags.push('Sevdiğin seri veya yapım şirketinden');
+    }
+    if (qualityScore >= 0.72) {
+      tags.push(`TMDB'de ${bayes.toFixed(1)} puan`);
+    }
+    if (explorationScore >= 0.75 && tags.length < 3) {
+      tags.push('Yeni keşif için');
+    }
+
+    return {
+      candidate,
+      score: rawScore,
+      parts,
+      tags: tags.slice(0, 4),
+    };
+  });
+}
+

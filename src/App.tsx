@@ -30,6 +30,9 @@ import {
   createCandidatePool,
   parseBackupText,
   buildSeasonCounts,
+  buildTasteProfileV3,
+  scoreCandidatesV3,
+  RECOMMENDATION_WEIGHTS_V3,
 } from './core/cinetrack-core';
 import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
@@ -169,8 +172,9 @@ export function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
   const [recommendationReasons, setRecommendationReasons] = useState<Map<string, string>>(new Map());
+  const [forYouItems, setForYouItems] = useState<any[]>([]);
+  const [forYouReasons, setForYouReasons] = useState<Map<string, string>>(new Map());
 
-  // Active Modals & Drawer State
   const [detailItem, setDetailItem] = useState<any | null>(null);
   const [quickSaveItem, setQuickSaveItem] = useState<any | null>(null);
   const [personId, setPersonId] = useState<number | null>(null);
@@ -325,7 +329,14 @@ export function App() {
 
   // Load Catalog Data (Trending, For-You, Gems, Upcoming, etc.)
   const loadCategoryResults = useCallback(
-    async (cat: string, p = 1, append = false, currentQuery = query, provider = selectedProvider) => {
+    async (
+      cat: string,
+      p = 1,
+      append = false,
+      currentQuery = query,
+      provider = selectedProvider,
+      forceRefresh = false
+    ) => {
       const ticket = requestGateRef.current.begin();
       if (!append) {
         setIsLoading(true);
@@ -376,13 +387,19 @@ export function App() {
         }
 
         if (cat === 'for-you') {
+          // If already loaded and not explicitly force-refreshed, reuse cached recommendations
+          if (forYouItems.length > 0 && !forceRefresh) {
+            setIsLoading(false);
+            return;
+          }
+
           const currentSaved = savedItemsRef.current;
           const currentPrefs = preferencesRef.current;
           const currentGenres = genresMapRef.current;
 
-          // Multistage Personalized Recommendation Engine:
-          // Watched/Completed items have the strongest influence on recommendations
-          // Watchlist items have a lighter, auxiliary influence
+          // Sana Özel v3:
+          // Watched & Completed items have highest importance (2.5x / 1.6x)
+          // Watchlist items have auxiliary influence (0.35x)
           const watchedSeeds = currentSaved
             .filter((item) => item.status === 'completed' || item.status === 'watching' || Number(item.personal_rating) >= 7)
             .sort(
@@ -392,14 +409,13 @@ export function App() {
             )
             .slice(0, 10);
 
-          // Watchlist items have gentle secondary influence
           const watchlistSeeds = currentSaved
             .filter((item) => item.status === 'watchlist' && (item.personal_rating === '' || Number(item.personal_rating) < 7))
-            .slice(0, 3);
+            .slice(0, 4);
 
           const seeds = [...watchedSeeds, ...watchlistSeeds];
-
           const moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
+
           const historyCredits = await mapLimit(seeds, 4, async (seed) => {
             try {
               const details = await fetchTmdbCached(
@@ -409,6 +425,9 @@ export function App() {
               );
               return {
                 ...seed,
+                overview: seed.overview || details?.overview || '',
+                belongs_to_collection: details?.belongs_to_collection || null,
+                production_companies: details?.production_companies || [],
                 cast: (details?.credits?.cast || []).slice(0, 8),
                 crew: (details?.credits?.crew || []).filter(
                   (m: any) => m.job === 'Director' || m.job === 'Creator'
@@ -423,17 +442,17 @@ export function App() {
           const creditsByKey = new Map(
             historyCredits.map((entry) => [`${entry.media_type}:${entry.id}`, entry])
           );
-          const tasteProfile = buildTasteProfile(
+
+          // Build Taste Profile V3 with smoothing lambda = 1 and time decay
+          const tasteProfile = buildTasteProfileV3(
             currentSaved.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
             {
-              includeWatchlist: true,
-              completedMultiplier: 2.5, // Watched items have 2.5x higher contribution
-              watchingMultiplier: 1.6,  // Watching items have 1.6x contribution
-              watchlistMultiplier: 0.35, // Watchlist items have gentle 0.35x contribution
+              lambda: 1,
+              dislikedKeys: currentPrefs.disliked,
             }
           );
 
-          const pool = createCandidatePool();
+          const pool = createCandidatePool({ maxItems: 500 });
           const isSaved = (item: any, type: string) =>
             currentSaved.some((s) => s.id === item.id && s.media_type === type);
 
@@ -457,17 +476,13 @@ export function App() {
             candidateRequests.push({
               path: `/${seed.media_type}/${seed.id}/recommendations`,
               mediaType: seed.media_type,
-              reason: `İzleme listendeki “${displayTitle(seed)}” benzeri (Hafif etki)`,
+              reason: `İzleme listendeki “${displayTitle(seed)}” benzeri`,
               seedSourceType: 'watchlist',
             });
           }
 
-          const likedGenreIds = Object.entries(tasteProfile.genres)
-            .filter(([, score]) => score > 0)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 3)
-            .map(([id]) => id);
-
+          // Discover by liked genres and mood
+          const likedGenreIds = tasteProfile.positiveGenres.slice(0, 4);
           const allGenreIds = [...new Set([...likedGenreIds, ...moodGenres.map(String)])];
           for (const gid of allGenreIds) {
             const label = currentGenres[Number(gid)] || '';
@@ -479,21 +494,21 @@ export function App() {
                 : 'Sevdiğin türlerden seçmeler';
             candidateRequests.push({
               path: '/discover/movie',
-              params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '100', 'vote_average.gte': '6' },
+              params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6' },
               mediaType: 'movie',
               reason,
               seedSourceType: 'completed',
             });
             candidateRequests.push({
               path: '/discover/tv',
-              params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '100', 'vote_average.gte': '6' },
+              params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6' },
               mediaType: 'tv',
               reason,
               seedSourceType: 'completed',
             });
           }
 
-          await mapLimit(candidateRequests.slice(0, 18), 5, async (req) => {
+          await mapLimit(candidateRequests.slice(0, 20), 5, async (req) => {
             try {
               const res = await fetchTmdbCached(req.path, req.params || {}, ticket.signal);
               const acceptable = (res?.results || []).filter(
@@ -505,13 +520,15 @@ export function App() {
             } catch {}
           });
 
-          if (pool.size < 40) {
+          // Ensure at least 60 candidates; supplement with trending/popular if needed
+          if (pool.size < 60) {
             const fallbacks = [
               { path: '/movie/popular', mediaType: 'movie', reason: 'Popüler filmler arasından' },
               { path: '/tv/popular', mediaType: 'tv', reason: 'Popüler diziler arasından' },
               { path: '/trending/all/day', mediaType: '', reason: 'Bugün trend olan yapımlar' },
+              { path: '/movie/top_rated', mediaType: 'movie', reason: 'Yüksek puanlı seçkiler' },
             ];
-            await mapLimit(fallbacks, 3, async (req) => {
+            await mapLimit(fallbacks, 4, async (req) => {
               try {
                 const res = await fetchTmdbCached(req.path, {}, ticket.signal);
                 const acceptable = (res?.results || []).filter(
@@ -525,12 +542,15 @@ export function App() {
           }
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          let scored = scoreCandidates(pool.list(), tasteProfile, {
-            preferredProviders: currentPrefs.providers,
+          // Quick initial scoring with v3
+          let scored = scoreCandidatesV3(pool.list(), tasteProfile, {
+            weights: RECOMMENDATION_WEIGHTS_V3,
             genreNames: currentGenres,
+            mood: currentPrefs.mood,
           });
           scored.sort((a, b) => b.score - a.score);
 
+          // Hydrate top candidates with credits
           const shortlist = scored.slice(0, 40);
           await mapLimit(shortlist, 5, async (entry) => {
             try {
@@ -540,6 +560,9 @@ export function App() {
                 ticket.signal
               );
               Object.assign(entry.candidate, {
+                overview: entry.candidate.overview || details?.overview || '',
+                belongs_to_collection: details?.belongs_to_collection || null,
+                production_companies: details?.production_companies || [],
                 cast: (details?.credits?.cast || []).slice(0, 8),
                 crew: (details?.credits?.crew || []).filter(
                   (m: any) => m.job === 'Director' || m.job === 'Creator'
@@ -549,10 +572,15 @@ export function App() {
           });
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          scored = scoreCandidates(
+          // Final deep scoring with full credits, keywords, and franchise data
+          scored = scoreCandidatesV3(
             shortlist.map((e) => e.candidate),
             tasteProfile,
-            { preferredProviders: currentPrefs.providers, genreNames: currentGenres }
+            {
+              weights: RECOMMENDATION_WEIGHTS_V3,
+              genreNames: currentGenres,
+              mood: currentPrefs.mood,
+            }
           );
           scored.sort((a, b) => b.score - a.score);
           const picked = diversifyList(scored, { limit: 24, maxPerGenre: 6 });
@@ -561,8 +589,9 @@ export function App() {
           picked.forEach((entry) => {
             reasonsMap.set(`${entry.candidate.media_type}:${entry.candidate.id}`, entry.tags.join(' · '));
           });
-          setRecommendationReasons(reasonsMap);
-          setCatalogItems(picked.map((e) => e.candidate));
+
+          setForYouReasons(reasonsMap);
+          setForYouItems(picked.map((e) => e.candidate));
           setCatalogTotalPages(1);
           setCatalogPage(1);
           return;
@@ -649,15 +678,18 @@ export function App() {
   );
 
   const handleRefreshForYou = useCallback(() => {
-    loadCategoryResults('for-you', 1, false, '', selectedProvider);
+    loadCategoryResults('for-you', 1, false, '', selectedProvider, true);
     showToast('✓ Sana özel öneriler güncellendi! ✨');
   }, [loadCategoryResults, selectedProvider, showToast]);
 
   useEffect(() => {
     if (tab === 'discover') {
+      if (category === 'for-you' && forYouItems.length > 0) {
+        return;
+      }
       loadCategoryResults(category, 1, false, query, selectedProvider);
     }
-  }, [tab, category, query, selectedProvider, loadCategoryResults]);
+  }, [tab, category, query, selectedProvider, loadCategoryResults, forYouItems.length]);
 
   // Load more pagination
   const handleLoadMore = () => {
@@ -921,7 +953,8 @@ export function App() {
 
   const getDisplayedItems = () => {
     if (tab === 'discover') {
-      const filtered = catalogItems.filter(
+      const source = category === 'for-you' ? forYouItems : catalogItems;
+      const filtered = source.filter(
         (item) => !preferences.disliked.includes(`${item.media_type}:${item.id}`)
       );
       return filterAndSortItems(filtered);
@@ -1012,6 +1045,8 @@ export function App() {
     setSavedItems(loadProfileItems(newId));
     setPreferences(loadProfilePreferences(newId));
     setFavoriteActors(loadFavoriteActors(newId));
+    setForYouItems([]);
+    setForYouReasons(new Map());
     setQuery('');
     setProfileOpen(false);
   };
@@ -1031,6 +1066,8 @@ export function App() {
     setSavedItems([]);
     setPreferences(newProf.preferences);
     setFavoriteActors([]);
+    setForYouItems([]);
+    setForYouReasons(new Map());
     setProfileOpen(false);
     showToast(`"${name}" profili oluşturuldu.`);
   };
@@ -1195,7 +1232,7 @@ export function App() {
           items={displayedItems}
           savedItems={savedItems}
           genres={genresMap}
-          recommendationReasons={recommendationReasons}
+          recommendationReasons={category === 'for-you' ? forYouReasons : recommendationReasons}
           dislikedKeys={preferences.disliked}
           tab={tab}
           query={query}

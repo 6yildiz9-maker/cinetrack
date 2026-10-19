@@ -199,6 +199,16 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 <strong>Öneri oluşturmak için yeterli veri yok</strong>
                 Listene birkaç film veya dizi ekleyip puan verirsen zevkine özel öneriler burada görünecektir.
                 <div className="message-actions">
+                  {onRefreshForYou && (
+                    <button
+                      className="btn"
+                      type="button"
+                      style={{ background: 'linear-gradient(135deg, #f43f5e, #e11d48)', color: '#fff', border: '1px solid #fb718588' }}
+                      onClick={onRefreshForYou}
+                    >
+                      🔄 Önerileri Hesapla
+                    </button>
+                  )}
                   <button
                     className="btn"
                     type="button"
