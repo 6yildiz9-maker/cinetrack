@@ -1,14 +1,6 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import vm from "node:vm";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-
-const corePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cinetrack-core.js");
-const context = vm.createContext({ URL, AbortController });
-vm.runInContext(readFileSync(corePath, "utf8"), context, { filename: "cinetrack-core.js" });
-const {
+import {
   REMINDER_WINDOW_DAYS, validItemId, escapeHTML, sanitizeNextEpisode,
   sanitizeSeasonProgress, buildSeasonCounts, defaultCurrentSeason,
   normalizeSavedItem, dedupeItems, parseBackupText,
@@ -16,7 +8,7 @@ const {
   resolveAirDate, reminderDaysUntil, createRequestGate,
   RECOMMENDATION_WEIGHTS, bayesianRating, billingWeight, buildTasteProfile,
   scoreCandidates, diversifyList, createCandidatePool
-} = context.CineTrackCore;
+} from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
   id: 123,
