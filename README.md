@@ -17,13 +17,14 @@ TMDB destekli modern ve kişisel film ve dizi takip uygulaması. React 19, TypeS
 
 ## Geliştirme ve Çalıştırma
 
-1. Ortam değişkenlerini ayarlayın (isteğe bağlı, TMDB_API_KEY olmadan demo modunda çalışır):
+1. Node.js kurulu olduğundan emin olun. Windows'ta uygulamayı başlatmak için proje klasöründeki `start.bat` dosyasına çift tıklayın; eksik npm paketleri otomatik yüklenir. Sonra tarayıcıda `http://127.0.0.1:3000` adresini açın. Mac/Linux için:
+   ```bash
+   npm install
+   npm run dev
+   ```
+2. İsteğe bağlı: TMDB_API_KEY olmadan uygulama demo modunda çalışır. Canlı TMDB verileri için ortam değişkenlerini ayarlayın:
    ```bash
    cp .env.example .env
-   ```
-2. Geliştirme sunucusunu başlatın:
-   ```bash
-   npm run dev
    ```
    Uygulama varsayılan olarak yalnızca bu bilgisayardan `http://127.0.0.1:3000` adresinde erişilebilir.
    Yerel ağ üzerinden erişimi özellikle etkinleştirmek için `CINETRACK_HOST=0.0.0.0` ayarlayın; bu durumda profil verilerinize ağdaki cihazlar erişebilir.
