@@ -425,7 +425,16 @@
     .genre-bar-count { color: var(--muted); text-align: right; font-weight: 700; font-size: 10px; }
     .taste-highlights { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .taste-pill { font-size: 11px; padding: 5px 9px; background: #172235; border: 1px solid #2d3e58; border-radius: 8px; color: #e2e8f0; }
-    .taste-pill strong { color: #fb7185; }
+    .for-you-refresh-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; margin-top: 32px; padding: 24px 18px; border: 1px dashed rgba(244, 63, 94, 0.35); border-radius: 16px; background: linear-gradient(180deg, rgba(244, 63, 94, 0.06), rgba(15, 23, 42, 0.75)); text-align: center; }
+    .for-you-refresh-hint { color: #cbd5e1; font-size: 13px; font-weight: 550; }
+    .for-you-refresh-btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 24px; font-size: 13px; font-weight: 750; border-radius: 10px; background: linear-gradient(135deg, #f43f5e, #e11d48); color: #fff; border: 1px solid #fb718588; box-shadow: 0 4px 16px rgba(244, 63, 94, 0.35); cursor: pointer; transition: all .2s ease; }
+    .for-you-refresh-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 22px rgba(244, 63, 94, 0.55); background: linear-gradient(135deg, #fb7185, #f43f5e); }
+    .for-you-refresh-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+    .for-you-head-refresh-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 11px; font-weight: 750; border-radius: 8px; background: #1e293b; color: #fecdd3; border: 1px solid #fb718555; cursor: pointer; transition: all .16s ease; }
+    .for-you-head-refresh-btn:hover:not(:disabled) { background: #e11d4825; border-color: #fb7185; color: #fff; }
+    .for-you-head-refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .refresh-icon { display: inline-block; font-size: 13px; }
+    .refresh-icon.spinning { animation: spin .7s linear infinite; }
     .modal-wrap.open { display: flex; }
     .modal[aria-hidden="true"] { display: none; }
     @media (max-width: 950px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }

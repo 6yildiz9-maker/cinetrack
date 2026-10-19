@@ -182,6 +182,12 @@ export function App() {
 
   const requestGateRef = useRef(createRequestGate());
   const toastTimerRef = useRef<any>(null);
+  const savedItemsRef = useRef(savedItems);
+  savedItemsRef.current = savedItems;
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+  const genresMapRef = useRef(genresMap);
+  genresMapRef.current = genresMap;
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -370,10 +376,14 @@ export function App() {
         }
 
         if (cat === 'for-you') {
+          const currentSaved = savedItemsRef.current;
+          const currentPrefs = preferencesRef.current;
+          const currentGenres = genresMapRef.current;
+
           // Multistage Personalized Recommendation Engine:
           // Watched/Completed items have the strongest influence on recommendations
           // Watchlist items have a lighter, auxiliary influence
-          const watchedSeeds = savedItems
+          const watchedSeeds = currentSaved
             .filter((item) => item.status === 'completed' || item.status === 'watching' || Number(item.personal_rating) >= 7)
             .sort(
               (a, b) =>
@@ -383,13 +393,13 @@ export function App() {
             .slice(0, 10);
 
           // Watchlist items have gentle secondary influence
-          const watchlistSeeds = savedItems
+          const watchlistSeeds = currentSaved
             .filter((item) => item.status === 'watchlist' && (item.personal_rating === '' || Number(item.personal_rating) < 7))
             .slice(0, 3);
 
           const seeds = [...watchedSeeds, ...watchlistSeeds];
 
-          const moodGenres = MOOD_GENRES[preferences.mood] || [];
+          const moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
           const historyCredits = await mapLimit(seeds, 4, async (seed) => {
             try {
               const details = await fetchTmdbCached(
@@ -414,7 +424,7 @@ export function App() {
             historyCredits.map((entry) => [`${entry.media_type}:${entry.id}`, entry])
           );
           const tasteProfile = buildTasteProfile(
-            savedItems.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
+            currentSaved.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
             {
               includeWatchlist: true,
               completedMultiplier: 2.5, // Watched items have 2.5x higher contribution
@@ -425,7 +435,7 @@ export function App() {
 
           const pool = createCandidatePool();
           const isSaved = (item: any, type: string) =>
-            savedItems.some((s) => s.id === item.id && s.media_type === type);
+            currentSaved.some((s) => s.id === item.id && s.media_type === type);
 
           const candidateRequests: any[] = [];
           for (const seed of watchedSeeds) {
@@ -460,10 +470,10 @@ export function App() {
 
           const allGenreIds = [...new Set([...likedGenreIds, ...moodGenres.map(String)])];
           for (const gid of allGenreIds) {
-            const label = genresMap[Number(gid)] || '';
+            const label = currentGenres[Number(gid)] || '';
             const reason =
               moodGenres.includes(Number(gid)) && !likedGenreIds.includes(gid)
-                ? `${MOOD_LABELS[preferences.mood] || ''} ruh hâline uygun seçkiler`.trim()
+                ? `${MOOD_LABELS[currentPrefs.mood] || ''} ruh hâline uygun seçkiler`.trim()
                 : label
                 ? `${label} türünü sevdiğin için`
                 : 'Sevdiğin türlerden seçmeler';
@@ -488,7 +498,7 @@ export function App() {
               const res = await fetchTmdbCached(req.path, req.params || {}, ticket.signal);
               const acceptable = (res?.results || []).filter(
                 (item: any) =>
-                  !preferences.disliked.includes(`${req.mediaType}:${item.id}`) &&
+                  !currentPrefs.disliked.includes(`${req.mediaType}:${item.id}`) &&
                   !isSaved(item, req.mediaType)
               );
               pool.add(req.path, req.reason, req.mediaType, acceptable, req.seedSourceType || '');
@@ -506,7 +516,7 @@ export function App() {
                 const res = await fetchTmdbCached(req.path, {}, ticket.signal);
                 const acceptable = (res?.results || []).filter(
                   (item: any) =>
-                    !preferences.disliked.includes(`${item.media_type || req.mediaType}:${item.id}`) &&
+                    !currentPrefs.disliked.includes(`${item.media_type || req.mediaType}:${item.id}`) &&
                     !isSaved(item, item.media_type || req.mediaType)
                 );
                 pool.add(req.path, req.reason, req.mediaType, acceptable);
@@ -516,8 +526,8 @@ export function App() {
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
           let scored = scoreCandidates(pool.list(), tasteProfile, {
-            preferredProviders: preferences.providers,
-            genreNames: genresMap,
+            preferredProviders: currentPrefs.providers,
+            genreNames: currentGenres,
           });
           scored.sort((a, b) => b.score - a.score);
 
@@ -542,7 +552,7 @@ export function App() {
           scored = scoreCandidates(
             shortlist.map((e) => e.candidate),
             tasteProfile,
-            { preferredProviders: preferences.providers, genreNames: genresMap }
+            { preferredProviders: currentPrefs.providers, genreNames: currentGenres }
           );
           scored.sort((a, b) => b.score - a.score);
           const picked = diversifyList(scored, { limit: 24, maxPerGenre: 6 });
@@ -635,8 +645,13 @@ export function App() {
         }
       }
     },
-    [savedItems, preferences, genresMap, query, selectedProvider]
+    [query, selectedProvider]
   );
+
+  const handleRefreshForYou = useCallback(() => {
+    loadCategoryResults('for-you', 1, false, '', selectedProvider);
+    showToast('✓ Sana özel öneriler güncellendi! ✨');
+  }, [loadCategoryResults, selectedProvider, showToast]);
 
   useEffect(() => {
     if (tab === 'discover') {
@@ -1202,6 +1217,7 @@ export function App() {
             setPersonName(name);
           }}
           onToggleFavoriteActor={handleToggleFavoriteActor}
+          onRefreshForYou={handleRefreshForYou}
         />
       </main>
 

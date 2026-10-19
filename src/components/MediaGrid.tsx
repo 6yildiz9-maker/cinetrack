@@ -30,6 +30,7 @@ interface MediaGridProps {
   onEmptyAction: (action: string) => void;
   onOpenPerson?: (id: number, name: string) => void;
   onToggleFavoriteActor?: (actor: any) => void;
+  onRefreshForYou?: () => void;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -59,6 +60,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onEmptyAction,
   onOpenPerson,
   onToggleFavoriteActor,
+  onRefreshForYou,
 }) => {
   const getSaved = (item: any) =>
     savedItems.find((entry) => entry.id === item.id && entry.media_type === item.media_type);
@@ -72,9 +74,23 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           </h2>
           <p id="catalogDescription">{description}</p>
         </div>
-        <div className={`loading ${isLoading || loadingMore ? 'visible' : ''}`} aria-live="polite">
-          <span className="spinner"></span>
-          <span>Canlı veri yükleniyor...</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {tab === 'discover' && category === 'for-you' && onRefreshForYou && (
+            <button
+              type="button"
+              className="for-you-head-refresh-btn"
+              disabled={isLoading}
+              onClick={onRefreshForYou}
+              title="Önerileri manuel olarak güncelle"
+            >
+              <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`}>🔄</span>
+              <span>{isLoading ? 'Hesaplanıyor...' : 'Önerileri Güncelle'}</span>
+            </button>
+          )}
+          <div className={`loading ${isLoading || loadingMore ? 'visible' : ''}`} aria-live="polite">
+            <span className="spinner"></span>
+            <span>Canlı veri yükleniyor...</span>
+          </div>
         </div>
       </div>
 
@@ -290,6 +306,24 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           })
         )}
       </div>
+
+      {tab === 'discover' && category === 'for-you' && items.length > 0 && onRefreshForYou && (
+        <div className="for-you-refresh-wrap">
+          <div className="for-you-refresh-hint">
+            <span>💡 Listenize eklediğiniz veya izlediğiniz yeni yapımlara göre önerileri tazelemek için:</span>
+          </div>
+          <button
+            type="button"
+            className="for-you-refresh-btn"
+            disabled={isLoading}
+            onClick={onRefreshForYou}
+            title="Önerileri manuel olarak güncelle"
+          >
+            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`}>🔄</span>
+            <span>{isLoading ? 'Öneriler Hesaplanıyor...' : 'Listeyi Güncelle'}</span>
+          </button>
+        </div>
+      )}
 
       {tab === 'discover' && category !== 'for-you' && totalPages > 1 && (
         <div id="loadMoreWrap">
