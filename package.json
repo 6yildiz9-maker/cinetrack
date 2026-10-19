@@ -2,6 +2,7 @@
   "name": "cinetrack",
   "private": true,
   "version": "1.0.0",
+  "type": "module",
   "description": "TMDB destekli kişisel film ve dizi izleme kataloğu",
   "scripts": {
     "dev": "tsx server.ts",

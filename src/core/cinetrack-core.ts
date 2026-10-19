@@ -486,6 +486,7 @@ export const RECOMMENDATION_WEIGHTS = Object.freeze({
 });
 
 export const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+export const clamp11 = (value: number) => Math.min(1, Math.max(-1, value));
 
 export function bayesianRating(
   voteAverage: number | unknown,
@@ -853,21 +854,41 @@ export function createCandidatePool({ maxItems = 2000 } = {}) {
 // ---------------------------------------------------------
 
 export const RECOMMENDATION_WEIGHTS_V3 = Object.freeze({
-  genre: 0.17,
+  genre: 0.16,
   mediaType: 0.03,
-  keywords: 0.13,
-  story: 0.12,
-  lovedSim: 0.10,
-  actor: 0.10,
+  keywords: 0.12,
+  story: 0.11,
+  lovedSim: 0.09,
+  actor: 0.12,
   genreActor: 0.08,
+  castHarmony: 0.04,
   director: 0.04,
   quality: 0.08,
   exploration: 0.04,
   popularity: 0.03,
   context: 0.03,
-  franchise: 0.03,
+  franchise: 0.01,
   sourceSignal: 0.02,
 });
+
+export function actorFrequency(na: number): number {
+  const n = Number(na);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // F(a) = min(1, ln(1 + N_a) / ln(1 + 6))
+  return Math.min(1, Math.log(1 + n) / Math.log(7));
+}
+
+export function pairMatchScore(aScore: number, bScore: number): number {
+  const a = Math.max(0, Number(aScore) || 0);
+  const b = Math.max(0, Number(bScore) || 0);
+  return Math.sqrt(a * b);
+}
+
+export function castHarmonyScore(pairScoresSum: number): number {
+  const sum = Math.max(0, Number(pairScoresSum) || 0);
+  // S_kadro = 0.5 + 0.5 * (1 - e^(-sum))
+  return clamp01(0.5 + 0.5 * (1 - Math.exp(-sum)));
+}
 
 const COMMON_STOP_WORDS = new Set([
   'bir', 've', 'ile', 'için', 'olan', 'olarak', 'gibi', 'kadar', 'sonra', 'önce', 'daha', 'çok', 'en', 'bu', 'şu', 'o',
@@ -940,7 +961,14 @@ export function getUserSignalV3(item: any, now = Date.now()): { signal: number; 
 
 export interface TasteProfileV3 {
   genres: Record<string, number>;
-  actors: Record<string, { name: string; personal: number; genreScores: Record<string, number> }>;
+  actors: Record<string, {
+    name: string;
+    personal: number;
+    rawP: number;
+    freq: number;
+    nAppearances: number;
+    genreScores: Record<string, number>;
+  }>;
   directors: Record<string, { name: string; personal: number }>;
   keywords: Record<string, number>;
   mediaPreference: { movie: number; tv: number };
@@ -949,6 +977,7 @@ export interface TasteProfileV3 {
   lovedProductionCompanyIds: Set<number>;
   lovedOverviewTokens: Set<string>;
   positiveGenres: string[];
+  coOccurredPairs: Set<string>;
 }
 
 export function buildTasteProfileV3(
@@ -964,7 +993,25 @@ export function buildTasteProfileV3(
   } = {}
 ): TasteProfileV3 {
   const genresAcc: Record<string, { num: number; den: number }> = {};
-  const actorsAcc: Record<string, { name: string; num: number; den: number; genreAcc: Record<string, { num: number; den: number }> }> = {};
+  const actorsAcc: Record<
+    string,
+    {
+      name: string;
+      num: number;
+      den: number;
+      posAppearances: number;
+      negAppearances: number;
+      genreAcc: Record<
+        string,
+        {
+          num: number;
+          den: number;
+          posAppearances: number;
+          negAppearances: number;
+        }
+      >;
+    }
+  > = {};
   const directorsAcc: Record<string, { name: string; num: number; den: number }> = {};
   const keywordsAcc: Record<string, { num: number; den: number }> = {};
   const typeCounts: Record<string, number> = { movie: 0, tv: 0 };
@@ -973,16 +1020,32 @@ export function buildTasteProfileV3(
   const lovedFranchiseIds = new Set<number>();
   const lovedProductionCompanyIds = new Set<number>();
   const lovedOverviewTokens = new Set<string>();
+  const coOccurredPairs = new Set<string>();
 
-  const allItems: any[] = [...(Array.isArray(items) ? items : [])];
+  const rawItems: any[] = [...(Array.isArray(items) ? items : [])];
 
   // Incorporate explicit disliked signals if provided as keys
   for (const key of dislikedKeys) {
     if (!key || typeof key !== 'string') continue;
     const [mediaType, idStr] = key.split(':');
     const id = Number(idStr);
-    if (!id || allItems.some((it) => it.id === id && it.media_type === mediaType)) continue;
-    allItems.push({ id, media_type: mediaType, status: 'disliked', isDisliked: true });
+    if (!id || rawItems.some((it) => it.id === id && it.media_type === mediaType)) continue;
+    rawItems.push({ id, media_type: mediaType, status: 'disliked', isDisliked: true });
+  }
+
+  // Deduplicate items so the same production is not counted multiple times
+  const seenItemKeys = new Set<string>();
+  const allItems: any[] = [];
+  for (const item of rawItems) {
+    if (!item || typeof item !== 'object') continue;
+    const mediaType = item.media_type;
+    const id = item.id;
+    if (mediaType && id != null) {
+      const uKey = `${mediaType}:${id}`;
+      if (seenItemKeys.has(uKey)) continue;
+      seenItemKeys.add(uKey);
+    }
+    allItems.push(item);
   }
 
   for (const item of allItems) {
@@ -1027,21 +1090,66 @@ export function buildTasteProfileV3(
 
     // Cast
     const cast = Array.isArray(item.cast) ? item.cast : [];
+
+    // Track co-occurred actor pairs in loved/positive items (u >= 0.3)
+    if (u >= 0.3 && cast.length >= 2) {
+      const topCast = cast.slice(0, 8);
+      for (let i = 0; i < topCast.length; i++) {
+        const idA = topCast[i]?.id;
+        if (idA == null) continue;
+        for (let j = i + 1; j < topCast.length; j++) {
+          const idB = topCast[j]?.id;
+          if (idB == null || idA === idB) continue;
+          const minId = Math.min(Number(idA), Number(idB));
+          const maxId = Math.max(Number(idA), Number(idB));
+          coOccurredPairs.add(`${minId}:${maxId}`);
+        }
+      }
+    }
+
     cast.forEach((person: any, order: number) => {
       const pid = person?.id;
       if (pid == null || !person.name) return;
-      const bWeight = billingWeight(order) * effWeight;
-      const bContribution = billingWeight(order) * effContribution;
+      const r = billingWeight(order);
+      const bWeight = r * effWeight;
+      const bContribution = r * effContribution;
+      const appearanceWeight = Math.min(1.5, w / 2.0) * d * r;
       const pKey = String(pid);
-      const acc = actorsAcc[pKey] || (actorsAcc[pKey] = { name: person.name, num: 0, den: 0, genreAcc: {} });
+      const acc =
+        actorsAcc[pKey] ||
+        (actorsAcc[pKey] = {
+          name: person.name,
+          num: 0,
+          den: 0,
+          posAppearances: 0,
+          negAppearances: 0,
+          genreAcc: {},
+        });
       acc.num += bContribution;
       acc.den += bWeight;
+      if (u >= 0) {
+        acc.posAppearances += appearanceWeight;
+      } else {
+        acc.negAppearances += appearanceWeight;
+      }
 
       for (const gid of genreIds) {
         const gKey = String(gid);
-        const gAcc = acc.genreAcc[gKey] || (acc.genreAcc[gKey] = { num: 0, den: 0 });
+        const gAcc =
+          acc.genreAcc[gKey] ||
+          (acc.genreAcc[gKey] = {
+            num: 0,
+            den: 0,
+            posAppearances: 0,
+            negAppearances: 0,
+          });
         gAcc.num += bContribution;
         gAcc.den += bWeight;
+        if (u >= 0) {
+          gAcc.posAppearances += appearanceWeight;
+        } else {
+          gAcc.negAppearances += appearanceWeight;
+        }
       }
     });
 
@@ -1071,15 +1179,38 @@ export function buildTasteProfileV3(
     genres[key] = Math.min(1, Math.max(-1, acc.num / (lambda + acc.den)));
   }
 
-  const actors: Record<string, { name: string; personal: number; genreScores: Record<string, number> }> = {};
+  // Actor profiles: P_a = sum(w*d*u*r) / sum(w*d*r), F(a) = min(1, ln(1+N_a)/ln(7)), A(a) = P_a * F(a)
+  const actors: Record<
+    string,
+    {
+      name: string;
+      personal: number;
+      rawP: number;
+      freq: number;
+      nAppearances: number;
+      genreScores: Record<string, number>;
+    }
+  > = {};
   for (const [key, acc] of Object.entries(actorsAcc)) {
+    const rawP = acc.den > 0 ? clamp11(acc.num / acc.den) : 0;
+    const nAppearances = rawP >= 0 ? acc.posAppearances : acc.negAppearances;
+    const freq = actorFrequency(nAppearances);
+    const personal = clamp11(rawP * freq);
+
     const genreScores: Record<string, number> = {};
     for (const [gKey, gAcc] of Object.entries(acc.genreAcc)) {
-      genreScores[gKey] = Math.min(1, Math.max(-1, gAcc.num / (lambda + gAcc.den)));
+      const gRawP = gAcc.den > 0 ? clamp11(gAcc.num / gAcc.den) : 0;
+      const gN = gRawP >= 0 ? gAcc.posAppearances : gAcc.negAppearances;
+      const gFreq = actorFrequency(gN);
+      genreScores[gKey] = clamp11(gRawP * gFreq);
     }
+
     actors[key] = {
       name: acc.name,
-      personal: Math.min(1, Math.max(-1, acc.num / (lambda + acc.den))),
+      personal,
+      rawP,
+      freq,
+      nAppearances,
       genreScores,
     };
   }
@@ -1118,6 +1249,7 @@ export function buildTasteProfileV3(
     lovedProductionCompanyIds,
     lovedOverviewTokens,
     positiveGenres,
+    coOccurredPairs,
   };
 }
 
@@ -1144,7 +1276,7 @@ export function scoreCandidatesV3(
     const crew = Array.isArray(candidate.crew) ? candidate.crew : [];
     const tokens = extractOverviewTokens(candidate.overview);
 
-    // 1. Tür Profili (0.17)
+    // 1. Tür Profili (0.16)
     const knownGenreScores = genreIds
       .map((gid: string) => profile.genres?.[gid])
       .filter((s: unknown): s is number => typeof s === 'number');
@@ -1153,14 +1285,15 @@ export function scoreCandidatesV3(
       : 0.5;
 
     // 2. Film/Dizi Tercihi (0.03)
-    const mediaPart = candidate.media_type === 'movie'
-      ? profile.mediaPreference.movie
-      : candidate.media_type === 'tv'
-      ? profile.mediaPreference.tv
-      : 0.5;
+    const mediaPart =
+      candidate.media_type === 'movie'
+        ? profile.mediaPreference.movie
+        : candidate.media_type === 'tv'
+        ? profile.mediaPreference.tv
+        : 0.5;
     const mediaScore = clamp01(mediaPart);
 
-    // 3. Anahtar Kelime Benzerliği (0.13)
+    // 3. Anahtar Kelime Benzerliği (0.12)
     let keywordScore = 0.5;
     if (tokens.length > 0) {
       const tokenScores = tokens
@@ -1173,7 +1306,7 @@ export function scoreCandidatesV3(
       }
     }
 
-    // 4. Hikaye Benzerliği (0.12)
+    // 4. Hikaye Benzerliği (0.11)
     let storyScore = 0.5;
     if (tokens.length > 0 && profile.lovedOverviewTokens.size > 0) {
       const matchCount = tokens.filter((tok) => profile.lovedOverviewTokens.has(tok)).length;
@@ -1181,7 +1314,7 @@ export function scoreCandidatesV3(
       storyScore = clamp01(0.3 + 0.7 * Math.min(1, ratio * 2));
     }
 
-    // 5. Sevilen Yapımlara Benzerlik (0.10)
+    // 5. Sevilen Yapımlara Benzerlik (0.09)
     let lovedSimScore = 0.5;
     if (candidate.seedSourceType === 'completed') {
       lovedSimScore = 0.95;
@@ -1193,7 +1326,7 @@ export function scoreCandidatesV3(
       lovedSimScore = 0.75;
     }
 
-    // 6. Genel Oyuncu Tercihi (0.10) & 7. Tür x Oyuncu Tercihi (0.08)
+    // 6. Genel Oyuncu Tercihi (0.12) & 7. Tür x Oyuncu Tercihi (0.08)
     let actorScore = 0.5;
     let genreActorScore = 0.5;
     let unknownCount = 0;
@@ -1210,7 +1343,8 @@ export function scoreCandidatesV3(
         if (!known) {
           unknownCount += 1;
         }
-        const personal = known ? (known.personal + 1) / 2 : 0.5;
+        // known.personal in [-1, 1] mapped to [0, 1]
+        const personal = known ? clamp01((known.personal + 1) / 2) : 0.5;
         aNum += personal * w;
         aDen += w;
 
@@ -1218,7 +1352,7 @@ export function scoreCandidatesV3(
         if (known) {
           const matchingGenre = genreIds.find((gid: string) => typeof known.genreScores?.[gid] === 'number');
           if (matchingGenre) {
-            const gScore = (known.genreScores[matchingGenre] + 1) / 2;
+            const gScore = clamp01((known.genreScores[matchingGenre] + 1) / 2);
             genreBlend = 0.6 * gScore + 0.4 * personal;
           }
         }
@@ -1230,18 +1364,48 @@ export function scoreCandidatesV3(
       if (gaDen > 0) genreActorScore = clamp01(gaNum / gaDen);
     }
 
-    // 8. Yönetmen / Yaratıcı Tercihi (0.04)
+    // 8. Oyuncu Kadrosu Uyumu (0.04) — S_kadro = 0.5 + 0.5 * (1 - e^(-sum(E(a,b))))
+    let castHarmonyVal = 0.5;
+    if (cast.length >= 2) {
+      let pairSum = 0;
+      for (let i = 0; i < cast.length; i++) {
+        const pA = cast[i];
+        if (!pA || pA.id == null) continue;
+        const knownA = actorOf(pA.id);
+        const Aa = knownA ? knownA.personal : 0;
+        if (Aa <= 0) continue;
+
+        for (let j = i + 1; j < cast.length; j++) {
+          const pB = cast[j];
+          if (!pB || pB.id == null) continue;
+          const knownB = actorOf(pB.id);
+          const Ab = knownB ? knownB.personal : 0;
+          if (Ab <= 0) continue;
+
+          let E = pairMatchScore(Aa, Ab);
+          const minId = Math.min(Number(pA.id), Number(pB.id));
+          const maxId = Math.max(Number(pA.id), Number(pB.id));
+          if (profile.coOccurredPairs?.has(`${minId}:${maxId}`)) {
+            E *= 1.25;
+          }
+          pairSum += E;
+        }
+      }
+      castHarmonyVal = castHarmonyScore(pairSum);
+    }
+
+    // 9. Yönetmen / Yaratıcı Tercihi (0.04)
     const directorEntry = crew.find(
       (m: any) => m?.id != null && (m.job === 'Director' || m.job === 'Creator')
     );
     const knownDirector = directorEntry ? directorOf(directorEntry.id) : null;
     const directorScore = knownDirector ? clamp01((knownDirector.personal + 1) / 2) : 0.5;
 
-    // 9. Kalite (0.08) - Bayesian Rating R_B / 10
+    // 10. Kalite (0.08) - Bayesian Rating R_B / 10
     const bayes = bayesianRating(candidate.vote_average, candidate.vote_count, { prior: 6.5, minVotes: 300 });
     const qualityScore = clamp01(bayes / 10);
 
-    // 10. Kontrollü Keşif (0.04)
+    // 11. Kontrollü Keşif (0.04)
     const isUnknownCast = cast.length > 0 && unknownCount === cast.length;
     const genreOverlap = genreIds.length
       ? genreIds.filter((gid: string) => topGenreSet.has(gid)).length / genreIds.length
@@ -1250,11 +1414,11 @@ export function scoreCandidatesV3(
       ? clamp01(0.7 + 0.3 * (1 - genreOverlap))
       : clamp01(0.5 + 0.5 * (1 - genreOverlap));
 
-    // 11. Popülerlik (0.03)
+    // 12. Popülerlik (0.03)
     const pop = Number(candidate.popularity) || 0;
     const popularityScore = clamp01(Math.log10(pop + 1) / 3.5);
 
-    // 12. Bağlam ve Yayın Zamanı (0.03)
+    // 13. Bağlam ve Yayın Zamanı (0.03)
     let contextScore = 0.5;
     if (mood) {
       contextScore = 0.75;
@@ -1268,17 +1432,16 @@ export function scoreCandidatesV3(
       }
     }
 
-    // 13. Franchise / Yapım Şirketi (0.03)
+    // 14. Franchise / Koleksiyon (0.01) — Yapım şirketi kaldırıldı
     let franchiseScore = 0.5;
     if (
-      (candidate.belongs_to_collection?.id && profile.lovedFranchiseIds.has(Number(candidate.belongs_to_collection.id))) ||
-      (Array.isArray(candidate.production_companies) &&
-        candidate.production_companies.some((comp: any) => comp?.id && profile.lovedProductionCompanyIds.has(Number(comp.id))))
+      candidate.belongs_to_collection?.id &&
+      profile.lovedFranchiseIds.has(Number(candidate.belongs_to_collection.id))
     ) {
       franchiseScore = 1.0;
     }
 
-    // 14. Kaynak Sinyal Gücü (0.02)
+    // 15. Kaynak Sinyal Gücü (0.02)
     const sourcesCount = Number(candidate.poolSources) || 1;
     const sourceSignalScore = clamp01(Math.min(1, sourcesCount / 2));
 
@@ -1290,6 +1453,7 @@ export function scoreCandidatesV3(
       lovedSim: lovedSimScore,
       actor: actorScore,
       genreActor: genreActorScore,
+      castHarmony: castHarmonyVal,
       director: directorScore,
       quality: qualityScore,
       exploration: explorationScore,
@@ -1317,6 +1481,10 @@ export function scoreCandidatesV3(
       .sort((a: any, b: any) => b.known.personal - a.known.personal)[0];
     if (bestActor) tags.push(`Sevdiğin ${bestActor.known.name} oynuyor`);
 
+    if (castHarmonyVal >= 0.7) {
+      tags.push('Sevdiğin oyuncular bu kadroda buluşuyor');
+    }
+
     const topCandidateGenre = genreIds.find((gid: string) => topGenreSet.has(gid));
     const genreLabel = topCandidateGenre && genreNames ? genreNames[topCandidateGenre] : '';
     if (genreLabel && genreLabel !== candidate.poolReason && !tags.some((t) => t.includes(genreLabel))) {
@@ -1327,7 +1495,7 @@ export function scoreCandidatesV3(
       tags.push(`Sevdiğin yönetmen ${knownDirector.name}`);
     }
     if (franchiseScore >= 0.8) {
-      tags.push('Sevdiğin seri veya yapım şirketinden');
+      tags.push('Sevdiğin film serisinden');
     }
     if (qualityScore >= 0.72) {
       tags.push(`TMDB'de ${bayes.toFixed(1)} puan`);

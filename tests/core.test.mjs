@@ -9,7 +9,7 @@ import {
   RECOMMENDATION_WEIGHTS, bayesianRating, billingWeight, buildTasteProfile,
   scoreCandidates, diversifyList, createCandidatePool,
   RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
-  buildTasteProfileV3, scoreCandidatesV3
+  buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -873,24 +873,63 @@ describe("createCandidatePool", () => {
 });
 
 describe("Sana Özel v3 — RECOMMENDATION_WEIGHTS_V3", () => {
-  it("platform tamamen kaldırılmıştır ve ağırlıklar tam %100 (1.00) eder", () => {
+  it("yapım şirketi ve platform kaldırılmıştır, oyuncu bileşenleri %24'tür ve ağırlıklar tam %100 (1.00) eder", () => {
     assert.equal("platform" in RECOMMENDATION_WEIGHTS_V3, false);
+    assert.equal("productionCompany" in RECOMMENDATION_WEIGHTS_V3, false);
     const sum = Object.values(RECOMMENDATION_WEIGHTS_V3).reduce((acc, w) => acc + w, 0);
     assertClose(sum, 1.0);
-    assert.equal(RECOMMENDATION_WEIGHTS_V3.genre, 0.17);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.genre, 0.16);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.mediaType, 0.03);
-    assert.equal(RECOMMENDATION_WEIGHTS_V3.keywords, 0.13);
-    assert.equal(RECOMMENDATION_WEIGHTS_V3.story, 0.12);
-    assert.equal(RECOMMENDATION_WEIGHTS_V3.lovedSim, 0.10);
-    assert.equal(RECOMMENDATION_WEIGHTS_V3.actor, 0.10);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.keywords, 0.12);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.story, 0.11);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.lovedSim, 0.09);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.actor, 0.12);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.genreActor, 0.08);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.castHarmony, 0.04);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.director, 0.04);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.quality, 0.08);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.exploration, 0.04);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.popularity, 0.03);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.context, 0.03);
-    assert.equal(RECOMMENDATION_WEIGHTS_V3.franchise, 0.03);
+    assert.equal(RECOMMENDATION_WEIGHTS_V3.franchise, 0.01);
     assert.equal(RECOMMENDATION_WEIGHTS_V3.sourceSignal, 0.02);
+
+    // Üç oyuncu bileşeni toplam %24 olmalı
+    const actorTotal =
+      RECOMMENDATION_WEIGHTS_V3.actor +
+      RECOMMENDATION_WEIGHTS_V3.genreActor +
+      RECOMMENDATION_WEIGHTS_V3.castHarmony;
+    assertClose(actorTotal, 0.24);
+  });
+});
+
+describe("Sana Özel v3 — Oyuncu Sıklığı ve Kadro Uyumu Formülleri", () => {
+  it("F(a) logaritmik sıklık formülünü hesaplar ve yaklaşık 6 görünmede doygunluğa ulaşır", () => {
+    assert.equal(actorFrequency(0), 0);
+    assert.equal(actorFrequency(-2), 0);
+    // N_a = 2 -> ln(3)/ln(7) ~ 0.5645
+    assertClose(actorFrequency(2), Math.log(3) / Math.log(7));
+    // N_a = 5 -> ln(6)/ln(7) ~ 0.9207
+    assertClose(actorFrequency(5), Math.log(6) / Math.log(7));
+    // N_a = 6 -> ln(7)/ln(7) = 1.0
+    assertClose(actorFrequency(6), 1.0);
+    // N_a = 15 -> min(1, ...) = 1.0
+    assert.equal(actorFrequency(15), 1.0);
+  });
+
+  it("E(a,b) iki oyuncu arasındaki eşleşme puanını pozitif skorlarla hesaplar", () => {
+    assertClose(pairMatchScore(0.8, 0.5), Math.sqrt(0.4));
+    assert.equal(pairMatchScore(-0.5, 0.8), 0);
+    assert.equal(pairMatchScore(0.8, -0.2), 0);
+    assert.equal(pairMatchScore(0, 0.8), 0);
+  });
+
+  it("S_kadro sinerji puanı eşleşme yoksa nötr 0.5, pozitif eşleşmelerde 1.0'a kadar artar", () => {
+    assert.equal(castHarmonyScore(0), 0.5);
+    const withOnePair = castHarmonyScore(0.6);
+    assert.ok(withOnePair > 0.5 && withOnePair < 1.0);
+    const withManyPairs = castHarmonyScore(3.0);
+    assert.ok(withManyPairs > withOnePair && withManyPairs <= 1.0);
   });
 });
 
@@ -1008,6 +1047,145 @@ describe("Sana Özel v3 — buildTasteProfileV3 ve scoreCandidatesV3", () => {
     assert.ok(scoredLiked.score >= 0 && scoredLiked.score <= 100);
     assert.ok(scoredUnrelated.score >= 0 && scoredUnrelated.score <= 100);
     assert.ok(scoredLiked.tags.some((t) => t.includes("Aktör A") || t.includes("Bilim Kurgu")));
+  });
+
+  it("birden fazla sevilen oyuncunun aynı yapımda buluşması kadro uyumunu artırır", () => {
+    const history = [
+      {
+        id: 1,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 10,
+        genre_ids: [28],
+        cast: [{ id: 101, name: "Oyuncu Bir" }, { id: 102, name: "Oyuncu İki" }],
+      },
+      {
+        id: 2,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 9,
+        genre_ids: [28],
+        cast: [{ id: 101, name: "Oyuncu Bir" }],
+      },
+      {
+        id: 3,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 9,
+        genre_ids: [28],
+        cast: [{ id: 102, name: "Oyuncu İki" }],
+      },
+    ];
+
+    const profile = buildTasteProfileV3(history);
+    assert.ok(profile.actors[101].personal > 0);
+    assert.ok(profile.actors[102].personal > 0);
+    assert.ok(profile.coOccurredPairs.has("101:102"));
+
+    const candidateSingleActor = {
+      id: 201,
+      media_type: "movie",
+      title: "Tek Oyunculu Film",
+      genre_ids: [28],
+      cast: [{ id: 101, name: "Oyuncu Bir" }, { id: 999, name: "Bilinmeyen" }],
+    };
+
+    const candidateDuoActors = {
+      id: 202,
+      media_type: "movie",
+      title: "İkili Kadrolu Film",
+      genre_ids: [28],
+      cast: [{ id: 101, name: "Oyuncu Bir" }, { id: 102, name: "Oyuncu İki" }],
+    };
+
+    const [singleScored, duoScored] = scoreCandidatesV3(
+      [candidateSingleActor, candidateDuoActors],
+      profile
+    );
+
+    assert.equal(singleScored.parts.castHarmony, 0.5); // tek bilinen oyuncuda sinerji 0, nötr 0.5
+    assert.ok(duoScored.parts.castHarmony > 0.5); // iki sevilen oyuncuda sinerji yükselir
+    assert.ok(duoScored.score > singleScored.score);
+    assert.ok(duoScored.tags.includes("Sevdiğin oyuncular bu kadroda buluşuyor"));
+  });
+
+  it("düşük puanlanan oyuncu negatif tercih yansıtır ve sinerji katkısı sağlamaz", () => {
+    const history = [
+      {
+        id: 10,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 1,
+        cast: [{ id: 301, name: "Sevilmeyen Oyuncu" }],
+      },
+      {
+        id: 11,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 2,
+        cast: [{ id: 301, name: "Sevilmeyen Oyuncu" }],
+      },
+      {
+        id: 12,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 10,
+        cast: [{ id: 302, name: "Sevilen Oyuncu" }],
+      },
+    ];
+
+    const profile = buildTasteProfileV3(history);
+    assert.ok(profile.actors[301].personal < 0);
+    assert.ok(profile.actors[302].personal > 0);
+
+    const candidate = {
+      id: 501,
+      media_type: "movie",
+      title: "Karışık Kadro",
+      cast: [{ id: 301, name: "Sevilmeyen Oyuncu" }, { id: 302, name: "Sevilen Oyuncu" }],
+    };
+
+    const [scored] = scoreCandidatesV3([candidate], profile);
+    // Negatif oyuncu max(0, A(a)) nedeniyle eşleşme sinerjisi üretmez
+    assert.equal(scored.parts.castHarmony, 0.5);
+  });
+
+  it("yapım şirketi franchise puanından çıkarılmıştır ve yalnızca koleksiyon %1 etki eder", () => {
+    const history = [
+      {
+        id: 1,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 10,
+        belongs_to_collection: { id: 9999, name: "Efsane Seri" },
+        production_companies: [{ id: 777, name: "Eski Şirket" }],
+      },
+    ];
+
+    const profile = buildTasteProfileV3(history);
+
+    const candidateOnlyCompany = {
+      id: 2,
+      media_type: "movie",
+      title: "Aynı Şirket Başka Film",
+      production_companies: [{ id: 777, name: "Eski Şirket" }],
+    };
+
+    const candidateWithFranchise = {
+      id: 3,
+      media_type: "movie",
+      title: "Serinin Devam Filmi",
+      belongs_to_collection: { id: 9999, name: "Efsane Seri" },
+    };
+
+    const [scoredCompany, scoredFranchise] = scoreCandidatesV3(
+      [candidateOnlyCompany, candidateWithFranchise],
+      profile
+    );
+
+    assert.equal(scoredCompany.parts.franchise, 0.5); // yapım şirketi artık franchise'ı tetiklemez
+    assert.equal(scoredFranchise.parts.franchise, 1.0); // yalnızca seri/koleksiyon tetikler
+    assert.ok(scoredFranchise.tags.includes("Sevdiğin film serisinden"));
   });
 });
 
