@@ -30,7 +30,12 @@
   <header>
     <div class="shell topbar">
       <div class="brand"><span class="brand-icon" aria-hidden="true"><svg class="icon"><use href="#icon-film"></use></svg></span><span>CineTrack</span></div>
-      <label class="search"><svg class="icon search-icon" aria-hidden="true"><use href="#icon-search"></use></svg><input id="searchInput" type="search" placeholder="TMDB'de film veya dizi ara..." autocomplete="off" aria-label="Film veya dizi ara"><button id="searchClear" class="search-clear" type="button" aria-label="Aramayı temizle ve trendlere dön" hidden><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button></label>
+      <div class="search">
+        <svg class="icon search-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+        <input id="searchInput" type="search" placeholder="TMDB'de film veya dizi ara..." autocomplete="off" aria-label="Film veya dizi ara">
+        <button id="searchClear" class="search-clear" type="button" aria-label="Aramayı temizle ve trendlere dön" hidden><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button>
+        <div id="searchDropdown" class="search-dropdown" hidden></div>
+      </div>
       <div class="actions">
         <button id="profileButton" class="btn profile-btn" type="button" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#icon-user"></use></svg><span id="profileButtonLabel">Profil</span></button>
         <button id="addButton" class="btn btn-primary" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg> Ekle</button>
@@ -55,6 +60,7 @@
       <div class="stat"><div class="stat-icon"><svg class="icon" aria-hidden="true"><use href="#icon-play"></use></svg></div><div><div class="stat-label">İzliyorum</div><div id="statWatching" class="stat-value">0</div></div></div>
       <div class="stat"><div class="stat-icon"><svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg></div><div><div class="stat-label">Tamamlandı</div><div id="statDone" class="stat-value">0</div></div></div>
       <div class="stat"><div class="stat-icon"><svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg></div><div><div class="stat-label">Kişisel ortalama</div><div id="statAverage" class="stat-value">Yok</div></div></div>
+      <div class="stat"><div class="stat-icon"><svg class="icon" aria-hidden="true"><use href="#icon-clock"></use></svg></div><div><div class="stat-label">İzleme süresi</div><div id="statWatchTime" class="stat-value">0 sa</div></div></div>
     </section>
 
     <section aria-labelledby="catalogTitle">
@@ -81,11 +87,20 @@
           </select>
         </div>
       </div>
+      <div id="providerChips" class="provider-chips" role="group" aria-label="Yayın platformu filtresi">
+        <span class="provider-chips-label">Platform:</span>
+        <button class="provider-chip active" data-provider="" type="button" aria-pressed="true">Tümü</button>
+        <button class="provider-chip provider-netflix" data-provider="8" type="button" aria-pressed="false">Netflix</button>
+        <button class="provider-chip provider-prime" data-provider="119" type="button" aria-pressed="false">Prime Video</button>
+        <button class="provider-chip provider-disney" data-provider="337" type="button" aria-pressed="false">Disney+</button>
+        <button class="provider-chip provider-blutv" data-provider="410" type="button" aria-pressed="false">BluTV</button>
+      </div>
       <div id="listChips" class="list-chips" role="group" aria-label="İzleme durumu filtresi">
         <button class="chip active" data-status="all" type="button" aria-pressed="true">Tümü</button>
         <button class="chip" data-status="watching" type="button" aria-pressed="false">İzliyorum</button>
         <button class="chip" data-status="watchlist" type="button" aria-pressed="false">İzlenecek</button>
         <button class="chip" data-status="completed" type="button" aria-pressed="false">Tamamlandı</button>
+        <button class="chip" data-status="upcoming" type="button" aria-pressed="false">📅 Yaklaşanlar <span id="upcomingBadge" class="upcoming-badge" hidden>0</span></button>
       </div>
       <div id="mediaGrid" class="grid" aria-live="polite"></div>
       <div id="loadMoreWrap" hidden>
@@ -127,6 +142,61 @@
           <button id="saveDetail" class="btn btn-primary" type="button">Listeme kaydet</button>
           <button id="removeDetail" class="btn btn-danger" type="button" hidden>Listemden kaldır</button>
           <button id="dislikeDetail" class="btn" type="button" hidden>İlgilenmiyorum</button>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <div id="quickSaveModal" class="modal-wrap" aria-hidden="true">
+    <article class="modal quick-save-modal" role="dialog" aria-modal="true" aria-labelledby="quickSaveTitle" tabindex="-1">
+      <button class="modal-close" type="button" data-close aria-label="Kapat"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button>
+      <div class="quick-save-content">
+        <div class="quick-save-header">
+          <img id="quickSavePoster" class="quick-save-thumb" src="" alt="" onerror="this.style.display='none'">
+          <div class="quick-save-info">
+            <span id="quickSaveBadge" class="badge-mini">Film</span>
+            <h2 id="quickSaveTitle" class="quick-save-title">Başlık</h2>
+            <div id="quickSaveMeta" class="quick-save-meta">2023</div>
+          </div>
+        </div>
+        <div class="quick-save-body">
+          <label class="quick-save-label">İzleme Durumu</label>
+          <div class="quick-status-grid" id="quickStatusGrid">
+            <button type="button" class="quick-status-opt" data-status="watchlist">
+              <span class="status-opt-icon">📌</span>
+              <div class="status-opt-text">
+                <strong>İzlenecek</strong>
+                <small>Daha sonra izlemek için listene ekle</small>
+              </div>
+            </button>
+            <button type="button" class="quick-status-opt" data-status="watching">
+              <span class="status-opt-icon">▶️</span>
+              <div class="status-opt-text">
+                <strong>İzliyorum</strong>
+                <small>Şu anda takip ettiğin yapım</small>
+              </div>
+            </button>
+            <button type="button" class="quick-status-opt" data-status="completed">
+              <span class="status-opt-icon">✅</span>
+              <div class="status-opt-text">
+                <strong>Tamamlandı</strong>
+                <small>İzlemeyi bitirdin</small>
+              </div>
+            </button>
+          </div>
+
+          <div id="quickSaveRatingWrap" style="margin-top:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:11px;color:#cbd5e1;font-weight:700;">Kişisel Puanınız (İsteğe bağlı)</span>
+              <span id="quickRatingScoreText" style="font-size:11px;color:#fbbf24;font-weight:800;">Puan verilmedi</span>
+            </div>
+            <div id="quickStarRating" class="stars" role="radiogroup" aria-label="Hızlı puanlama"></div>
+          </div>
+        </div>
+        <div class="quick-save-footer">
+          <button id="quickSaveRemove" class="btn btn-danger" type="button" hidden>Listeden Kaldır</button>
+          <button class="btn" type="button" data-close>İptal</button>
+          <button id="quickSaveSubmit" class="btn btn-primary" type="button">Kaydet</button>
         </div>
       </div>
     </article>
@@ -326,6 +396,7 @@
         category: "trending",
         listStatus: "all",
         query: "",
+        selectedProvider: "",
         results: [],
         discoverResults: [],
         catalogGate: createRequestGate(),
@@ -443,6 +514,33 @@
       function releaseYear(item) {
         const date = item.release_date || item.first_air_date || item.releaseDate || "";
         return date ? date.slice(0, 4) : "Yıl bilgisi yok";
+      }
+
+      function formatMediaDates(item) {
+        if (!item) return "";
+        if (item.media_type === "movie" || (!item.media_type && item.title)) {
+          const rawDate = item.release_date || item.releaseDate || "";
+          return rawDate ? rawDate.slice(0, 4) : "Yıl bilgisi yok";
+        }
+        if (item.media_type === "tv" || (!item.media_type && item.name)) {
+          const firstDate = item.first_air_date || item.releaseDate || item.release_date || "";
+          const firstYear = firstDate ? firstDate.slice(0, 4) : "";
+          const saved = getSaved(item);
+          const lastDate = item.last_air_date || saved?.last_air_date || "";
+          const lastYear = lastDate ? lastDate.slice(0, 4) : "";
+          const isEnded = item.status === "Ended" || item.status === "Canceled" || (!item.in_production && lastYear && lastYear !== firstYear);
+
+          if (!firstYear && !lastYear) return "Tarih bilgisi yok";
+          if (firstYear && lastYear) {
+            if (firstYear === lastYear) return firstYear;
+            return `${firstYear} – ${lastYear}`;
+          }
+          if (firstYear) {
+            return isEnded ? firstYear : `${firstYear} – Günümüz`;
+          }
+          return lastYear || "Tarih bilgisi yok";
+        }
+        return releaseYear(item);
       }
 
       function seasonProgressInfo(item) {
@@ -587,6 +685,41 @@
         $("#statAverage").textContent = rated.length
           ? `${(rated.reduce((sum, item) => sum + Number(item.personal_rating), 0) / rated.length).toFixed(1)} / 10`
           : "Yok";
+
+        let totalMinutes = 0;
+        for (const item of state.items) {
+          if (item.media_type === "movie") {
+            if (item.status === "completed") {
+              totalMinutes += Number(item.runtime) || 110;
+            } else if (item.status === "watching") {
+              totalMinutes += Math.round((Number(item.runtime) || 110) * 0.5);
+            }
+          } else if (item.media_type === "tv") {
+            const watchedEpisodes = Number(item.episodes_watched) || 0;
+            const epMinutes = Number(item.episode_run_time?.[0]) || 45;
+            totalMinutes += watchedEpisodes * epMinutes;
+          }
+        }
+        if ($("#statWatchTime")) {
+          if (totalMinutes === 0) {
+            $("#statWatchTime").textContent = "0 sa";
+          } else {
+            const days = Math.floor(totalMinutes / (24 * 60));
+            const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+            $("#statWatchTime").textContent = days > 0 ? `${days}g ${hours}sa` : `${hours} sa`;
+          }
+        }
+
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const upcomingCount = state.items.filter((item) => {
+          const airDate = resolveAirDate(item);
+          return airDate && airDate >= todayStr;
+        }).length;
+        const upcomingBadge = $("#upcomingBadge");
+        if (upcomingBadge) {
+          upcomingBadge.textContent = upcomingCount;
+          upcomingBadge.hidden = upcomingCount === 0;
+        }
       }
 
       function showMessage(message, title = "Bilgi") {
@@ -634,7 +767,7 @@
           $("#heroOverview").textContent = `${item.overview || "İzleme listen üzerinden kaldığın yerden devam et."} Sezon ${season} · ${watchedInSeason} bölüm tamamlandı (toplam ${totalWatched}) · sıradaki bölüm ${next}.`;
         }
         const score = Number(item.vote_average || 0);
-        $("#heroMeta").innerHTML = `<span>${item.media_type === "tv" ? "Dizi" : "Film"} | ${escapeHTML(releaseYear(item))}</span>${score ? `<span><svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg> ${score.toFixed(1)} TMDB</span>` : ""}${watching ? `<span class="state">İzliyorum</span>` : ""}`;
+        $("#heroMeta").innerHTML = `<span>${item.media_type === "tv" ? "Dizi" : "Film"} | ${escapeHTML(formatMediaDates(item))}</span>${score ? `<span><svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg> ${score.toFixed(1)} TMDB</span>` : ""}${watching ? `<span class="state">İzliyorum</span>` : ""}`;
         const poster = getPoster(item) || imageUrl(item.backdrop_path, "w780");
         if (poster) {
           image.src = poster;
@@ -736,24 +869,42 @@
           const itemKey = `${item.media_type}:${item.id}`;
           const disliked = state.preferences.disliked.includes(itemKey);
           const safeKey = escapeHTML(itemKey);
+          const airDate = resolveAirDate(item);
+          let countdownBadge = "";
+          if (airDate) {
+            const today = new Date();
+            const days = reminderDaysUntil(airDate, today);
+            if (days != null && days >= 0 && days <= 30) {
+              const text = days === 0 ? "Bugün yayında!" : days === 1 ? "Yarın!" : `${days} gün sonra`;
+              countdownBadge = `<span class="release-countdown" title="Yayın tarihi: ${escapeHTML(airDate)}">📅 ${text}</span>`;
+            }
+          const formattedDates = formatMediaDates(item);
           return `<article class="card">
-            <div class="poster">
-              <div class="poster-fallback" aria-hidden="true"><svg class="icon"><use href="#icon-film"></use></svg></div>
-              ${poster ? `<img src="${escapeHTML(poster)}" alt="" loading="lazy" onerror="this.hidden=true">` : ""}
+            <div class="poster" data-details="${safeKey}" role="button" tabindex="0" aria-label="${escapeHTML(title)} detaylarını gör">
+              <div class="poster-fallback" aria-hidden="true">
+                <svg class="icon"><use href="#icon-film"></use></svg>
+                <span class="poster-fallback-title">${escapeHTML(title)}</span>
+              </div>
+              ${poster ? `<img src="${escapeHTML(poster)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ""}
               <span class="badge">${kind}</span>
+              ${countdownBadge}
+              ${saved
+                ? `<button class="poster-quick-btn is-saved status-${status}" type="button" data-quick-save="${safeKey}" aria-label="${escapeHTML(title)} izleme durumunu düzenle" title="Durumu düzenle: ${statusText}"><svg class="icon" aria-hidden="true"><use href="#${statusIcon}"></use></svg></button>`
+                : `<button class="poster-quick-btn" type="button" data-quick-add="${safeKey}" aria-label="${escapeHTML(title)} izlenecekler listesine ekle" title="İzlenecekler listesine ekle (+)"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg></button>`}
               ${tmdbRating > 0 ? `<span class="rating ${ratingClass}" aria-label="TMDB puanı ${tmdbRating.toFixed(1)}"><svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg>${tmdbRating.toFixed(1)}</span>` : ""}
               ${saved ? `<span class="saved-badge status-${status}"><svg class="icon" aria-hidden="true"><use href="#${statusIcon}"></use></svg>${statusText}</span>` : ""}
               ${personalRating ? `<span class="personal-rating ${personalRatingClass}" aria-label="Kişisel puan ${personalRating} üzerinden 10"><svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg> ${personalRating}/10</span>` : ""}
               <div class="poster-overlay">
-                <button class="overlay-btn" type="button" data-details="${safeKey}" aria-label="${escapeHTML(title)} detaylarını aç"><svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg> İncele</button>
-                <button class="overlay-btn" type="button" data-save="${safeKey}" aria-label="${saved ? `${escapeHTML(title)} izleme durumunu düzenle` : `${escapeHTML(title)} listeme ekle`}"><svg class="icon" aria-hidden="true"><use href="#${saved ? "icon-check" : "icon-plus"}"></use></svg>${saved ? "Durumu düzenle" : "Listeme ekle"}</button>
-                <button class="overlay-btn quick-watch" type="button" data-watch="${safeKey}" aria-label="${escapeHTML(title)} ${saved?.status === "watching" ? "zaten izleniyor" : "İzliyorum olarak işaretle"}"${saved?.status === "watching" ? " disabled" : ""}><svg class="icon" aria-hidden="true"><use href="#${saved?.status === "watching" ? "icon-check" : "icon-play"}"></use></svg>İzliyorum</button>
-                <button class="overlay-btn" type="button" data-dislike="${safeKey}" aria-label="${disliked ? `${escapeHTML(title)} ilgilenmiyorum tercihini kaldır` : `${escapeHTML(title)} önerilerini gizle`}"><svg class="icon" aria-hidden="true"><use href="#icon-thumbs-down"></use></svg>${disliked ? "Geri al" : "İlgilenmiyorum"}</button>
+                <button class="overlay-btn" type="button" data-quick-save="${safeKey}" aria-label="${saved ? `${escapeHTML(title)} izleme durumunu düzenle` : `${escapeHTML(title)} listeme ekle`}"><svg class="icon" aria-hidden="true"><use href="#${saved ? "icon-check" : "icon-plus"}"></use></svg>${saved ? "Durumu Düzenle" : "Listeye Ekle"}</button>
+                ${state.tab === "discover" && !saved ? `<button class="overlay-subtle-btn" type="button" data-dislike="${safeKey}" aria-label="${disliked ? `${escapeHTML(title)} ilgilenmiyorum tercihini kaldır` : `${escapeHTML(title)} önerilerini gizle`}"><svg class="icon" aria-hidden="true"><use href="#icon-thumbs-down"></use></svg>${disliked ? "Geri Al" : "İlgilenmiyorum"}</button>` : ""}
               </div>
             </div>
             <div class="card-info">
               <button class="card-title" type="button" data-details="${safeKey}" title="${escapeHTML(title)}">${escapeHTML(title)}</button>
-              <div class="card-meta">${escapeHTML(genreNames || releaseYear(item))}</div>
+              <div class="card-meta">
+                <span class="card-date" title="${item.media_type === "tv" ? "İlk ve son yayınlanma yılları" : "Yapım yılı"}">${escapeHTML(formattedDates)}</span>
+                ${genreNames ? `<span class="card-genres">• ${escapeHTML(genreNames)}</span>` : ""}
+              </div>
               ${saved ? seasonProgressBar(seasonProgressInfo(saved)) : ""}
               ${recommendationReason ? `<div class="recommendation-reason">${escapeHTML(recommendationReason)}</div>` : ""}
             </div>
@@ -1303,15 +1454,37 @@
       }
 
       function renderList() {
-        const items = state.listStatus === "all" ? state.items : state.items.filter((item) => item.status === state.listStatus);
+        let items = [];
+        if (state.listStatus === "upcoming") {
+          const todayStr = new Date().toISOString().slice(0, 10);
+          items = state.items.filter((item) => {
+            const airDate = resolveAirDate(item);
+            return airDate && airDate >= todayStr;
+          }).sort((a, b) => resolveAirDate(a).localeCompare(resolveAirDate(b)));
+        } else {
+          items = state.listStatus === "all" ? state.items : state.items.filter((item) => item.status === state.listStatus);
+        }
         state.results = [...items];
         render(items);
       }
 
+      const RATING_DESCRIPTIONS = {
+        1: "1/10 Çok Kötü",
+        2: "2/10 Kötü",
+        3: "3/10 Zayıf",
+        4: "4/10 Fena Değil",
+        5: "5/10 Ortalama",
+        6: "6/10 İyi",
+        7: "7/10 Başarılı",
+        8: "8/10 Çok İyi",
+        9: "9/10 Harika",
+        10: "10/10 Başyapıt"
+      };
+
       function setStars(value) {
         const numeric = Number(value);
-        const normalized = Number.isFinite(numeric) && numeric > 0
-          ? Math.min(10, Math.max(2, Math.round(numeric / 2) * 2))
+        const normalized = Number.isFinite(numeric) && numeric >= 1 && numeric <= 10
+          ? Math.round(numeric)
           : "";
         state.personalRating = normalized ? String(normalized) : "";
         let hasTabStop = false;
@@ -1324,12 +1497,12 @@
           button.tabIndex = tabStop ? 0 : -1;
           if (!normalized && !hasTabStop) hasTabStop = true;
         });
-        $("#ratingLabel").textContent = normalized ? `Kişisel puan: ${normalized}/10` : "Kişisel puan seçilmedi";
+        $("#ratingLabel").textContent = normalized ? (RATING_DESCRIPTIONS[normalized] || `Kişisel puan: ${normalized}/10`) : "Kişisel puan seçilmedi";
       }
 
       function renderStars() {
-        $("#starRating").innerHTML = [2, 4, 6, 8, 10].map((rating) =>
-          `<button class="star-button" type="button" role="radio" aria-label="10 üzerinden ${rating}" aria-checked="false" data-rating="${rating}" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#icon-star"></use></svg></button>`
+        $("#starRating").innerHTML = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((rating) =>
+          `<button class="star-button" type="button" role="radio" aria-label="10 üzerinden ${rating}" aria-checked="false" data-rating="${rating}" tabindex="-1">${rating}</button>`
         ).join("") + `<button id="clearRating" class="star-clear" type="button" aria-label="Kişisel puanı temizle">Temizle</button>`;
       }
 
@@ -1525,26 +1698,46 @@
           container.innerHTML = `<p class="person-bio">${errorMessage ? `Yapımlar yüklenemedi: ${escapeHTML(errorMessage)}` : "Bu kategoride yapım bulunamadı."}</p>`;
           return;
         }
+        if (!state.personCreditsCache) state.personCreditsCache = new Map();
+        for (const item of entries) {
+          state.personCreditsCache.set(`${mediaType}:${item.id}`, { ...item, media_type: mediaType });
+        }
         container.innerHTML = entries.map((item) => {
-          const saved = getSaved({ id: item.id, media_type: mediaType });
+          const itemFull = { ...item, media_type: mediaType };
+          const saved = getSaved(itemFull);
           const stateLabel = saved?.status === "completed" ? "Tamamlandı"
             : saved?.status === "watching" ? "İzliyorum"
               : saved?.status === "watchlist" ? "Listemde" : "";
           const stateIcon = saved?.status === "completed" ? "icon-check"
             : saved?.status === "watching" ? "icon-play" : "icon-plus";
-          const date = item.release_date || item.first_air_date || "";
+          const dateStr = formatMediaDates(itemFull);
           const poster = imageUrl(item.poster_path, "w185");
-          return `<article class="person-credit">
+          const key = `${mediaType}:${item.id}`;
+          const safeKey = escapeHTML(key);
+          const title = displayTitle(itemFull);
+          const rating = Number(item.vote_average || 0);
+
+          return `<article class="person-credit" data-credit-details="${safeKey}" role="button" tabindex="0" title="${escapeHTML(title)} detaylarını gör">
             ${poster
               ? `<img src="${escapeHTML(poster)}" alt="" loading="lazy" onerror="this.hidden=true">`
               : `<span class="person-credit-fallback" aria-hidden="true"><svg class="icon"><use href="#icon-film"></use></svg></span>`}
             <div class="person-credit-copy">
-              <strong>${escapeHTML(item.title || item.name)}</strong>
-              <span>${escapeHTML(date ? date.slice(0, 4) : "Yıl bilgisi yok")}${item.character ? ` · ${escapeHTML(item.character)}` : ""}</span>
+              <strong>${escapeHTML(title)}</strong>
+              <span>${escapeHTML(dateStr)}${item.character ? ` · ${escapeHTML(item.character)}` : ""}</span>
+              ${rating > 0 ? `<span class="credit-rating"><svg class="icon"><use href="#icon-star"></use></svg>${rating.toFixed(1)}</span>` : ""}
               ${stateLabel ? `<small class="credit-state status-${saved.status}"><svg class="icon" aria-hidden="true"><use href="#${stateIcon}"></use></svg>${stateLabel}</small>` : ""}
             </div>
+            <button type="button" class="credit-quick-btn ${saved ? "is-saved status-" + saved.status : ""}" data-credit-save="${safeKey}" aria-label="${saved ? `${escapeHTML(title)} durumunu düzenle` : `${escapeHTML(title)} listeye ekle`}" title="${saved ? "Durumu düzenle" : "İzlenecekler listesine ekle (+)"}">
+              <svg class="icon" aria-hidden="true"><use href="#${saved ? stateIcon : "icon-plus"}"></use></svg>
+            </button>
           </article>`;
         }).join("");
+      }
+
+      function refreshPersonCreditsUI() {
+        if (!$("#personPanel").classList.contains("open") || !state.currentPersonCredits) return;
+        renderPersonCredits($("#personMovies"), state.currentPersonCredits.filter((item) => item.media_type === "movie"), "movie");
+        renderPersonCredits($("#personShows"), state.currentPersonCredits.filter((item) => item.media_type === "tv"), "tv");
       }
 
       async function openPersonPanel(personId, personName) {
@@ -1606,6 +1799,7 @@
           ? `Biyografi yüklenemedi: ${profileError}`
           : "Bu oyuncu için biyografi bulunmuyor.");
         const credits = combinedCredits?.cast || [];
+        state.currentPersonCredits = credits;
         renderPersonCredits($("#personMovies"), credits.filter((item) => item.media_type === "movie"), "movie", creditsError);
         renderPersonCredits($("#personShows"), credits.filter((item) => item.media_type === "tv"), "tv", creditsError);
         panel.removeAttribute("aria-busy");
@@ -1910,68 +2104,205 @@
       }
 
       function resolveItem(key) {
+        if (!key) return null;
         const [mediaType, id] = key.split(":");
-        return [...state.results, ...state.items].find((item) => item.media_type === mediaType && String(item.id) === id);
+        return [...state.results, ...state.items].find((item) => item.media_type === mediaType && String(item.id) === id)
+          || dropdownItemMap.get(key)
+          || state.personCreditsCache?.get(key)
+          || (state.selected && `${state.selected.media_type}:${state.selected.id}` === key ? state.selected : null);
+      }
+
+      let quickSaveSelectedStatus = "watchlist";
+      let quickSavePersonalRating = "";
+
+      function setQuickStars(value) {
+        const numeric = Number(value);
+        const normalized = Number.isFinite(numeric) && numeric >= 1 && numeric <= 10
+          ? Math.round(numeric)
+          : "";
+        quickSavePersonalRating = normalized ? String(normalized) : "";
+        document.querySelectorAll(".quick-star-btn").forEach((button) => {
+          const rating = Number(button.dataset.rating);
+          const selected = normalized && rating <= normalized;
+          button.classList.toggle("is-selected", Boolean(selected));
+        });
+        const ratingText = normalized ? `${normalized}/10` : "Puan verilmedi";
+        const scoreLabel = $("#quickRatingScoreText");
+        if (scoreLabel) scoreLabel.textContent = ratingText;
+      }
+
+      function renderQuickStars(initialRating = "") {
+        const wrap = $("#quickStarRating");
+        if (!wrap) return;
+        wrap.innerHTML = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((rating) =>
+          `<button class="star-button quick-star-btn" type="button" data-rating="${rating}">${rating}</button>`
+        ).join("") + `<button id="clearQuickRating" class="star-clear" type="button">Temizle</button>`;
+        setQuickStars(initialRating);
+      }
+
+      function openQuickSave(item) {
+        if (!item) return;
+        state.quickSaveItem = item;
+        const saved = getSaved(item);
+        const modal = $("#quickSaveModal");
+        if (!modal) return;
+
+        const title = displayTitle(item);
+        const poster = getPoster(item);
+        const dates = formatMediaDates(item);
+        const kind = item.media_type === "tv" ? "Dizi" : "Film";
+
+        $("#quickSaveTitle").textContent = title;
+        $("#quickSaveMeta").textContent = `${dates}${item.vote_average ? ` · ⭐ ${Number(item.vote_average).toFixed(1)}` : ""}`;
+        $("#quickSaveBadge").textContent = kind;
+
+        const thumb = $("#quickSavePoster");
+        if (poster) {
+          thumb.src = poster;
+          thumb.style.display = "block";
+        } else {
+          thumb.style.display = "none";
+        }
+
+        quickSaveSelectedStatus = saved?.status || "watchlist";
+        quickSavePersonalRating = saved?.personal_rating || "";
+
+        modal.querySelectorAll(".quick-status-opt").forEach((button) => {
+          const active = button.dataset.status === quickSaveSelectedStatus;
+          button.classList.toggle("active", active);
+        });
+
+        renderQuickStars(quickSavePersonalRating);
+
+        $("#quickSaveRemove").hidden = !saved;
+        $("#quickSaveSubmit").textContent = saved ? "Değişiklikleri Kaydet" : "Listeme Kaydet";
+
+        openModal(modal);
       }
 
       function openForSave(item) {
-        if (item) openDetails(item);
+        if (item) openQuickSave(item);
       }
 
       let searchTimer = null;
+      let dropdownTimer = null;
+      let lastDropdownQuery = "";
+      const searchDropdown = $("#searchDropdown");
+      const dropdownItemMap = new Map();
+
+      function hideSearchDropdown() {
+        if (searchDropdown) searchDropdown.hidden = true;
+      }
+
+      async function triggerTypeahead(query) {
+        const q = query.trim();
+        if (!q || q.length < 2) {
+          hideSearchDropdown();
+          return;
+        }
+        lastDropdownQuery = q;
+        try {
+          const res = await api(`/search/multi`, { query: q, page: "1" });
+          if (lastDropdownQuery !== q) return;
+          const items = (res.results || [])
+            .filter((item) => item.media_type === "movie" || item.media_type === "tv")
+            .slice(0, 6);
+          if (!items.length) {
+            searchDropdown.innerHTML = `<div class="search-dropdown-footer">"${escapeHTML(q)}" için anlık eşleşme bulunamadı</div>`;
+            searchDropdown.hidden = false;
+            return;
+          }
+          searchDropdown.innerHTML = items.map((item) => {
+            const title = displayTitle(item);
+            const saved = getSaved(item);
+            const kind = item.media_type === "tv" ? "Dizi" : "Film";
+            const poster = getPoster(item);
+            const year = releaseYear(item);
+            const rating = Number(item.vote_average || 0);
+            const statusBadge = saved ? `<span class="search-dropdown-badge" style="background:#0284c7; color:#fff;">${({ watching: "İzliyorum", completed: "Tamamlandı", watchlist: "Listemde" })[saved.status] || "Listede"}</span>` : "";
+            const key = `${item.media_type}:${item.id}`;
+            dropdownItemMap.set(key, item);
+            return `<button class="search-dropdown-item" type="button" data-dropdown-key="${escapeHTML(key)}">
+              ${poster ? `<img class="search-dropdown-thumb" src="${escapeHTML(poster)}" alt="" onerror="this.style.display='none'">` : `<div class="search-dropdown-thumb" style="display:grid;place-items:center;color:#64748b;"><svg class="icon"><use href="#icon-film"></use></svg></div>`}
+              <div class="search-dropdown-info">
+                <span class="search-dropdown-title">${escapeHTML(title)}</span>
+                <div class="search-dropdown-meta">
+                  <span class="search-dropdown-badge">${kind}</span>
+                  <span>${year || ""}</span>
+                  ${rating > 0 ? `<span>⭐ ${rating.toFixed(1)}</span>` : ""}
+                  ${statusBadge}
+                </div>
+              </div>
+            </button>`;
+          }).join("") + `<button class="search-dropdown-footer" type="button" data-search-all="true">"${escapeHTML(q)}" için tüm sonuçları gridde gör (Enter)</button>`;
+          searchDropdown.hidden = false;
+        } catch (error) {
+          console.warn("Typeahead error:", error);
+        }
+      }
+
+      if (searchDropdown) {
+        searchDropdown.addEventListener("click", (event) => {
+          const allBtn = event.target.closest("[data-search-all]");
+          if (allBtn) {
+            hideSearchDropdown();
+            search($("#searchInput").value);
+            return;
+          }
+          const itemBtn = event.target.closest("[data-dropdown-key]");
+          if (itemBtn) {
+            const key = itemBtn.dataset.dropdownKey;
+            const item = dropdownItemMap.get(key) || resolveItem(key);
+            hideSearchDropdown();
+            if (item) openDetails(item);
+          }
+        });
+      }
+
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest(".search")) {
+          hideSearchDropdown();
+        }
+      });
+
       $("#searchInput").addEventListener("input", (event) => {
-        clearTimeout(searchTimer);
+        clearTimeout(dropdownTimer);
         const query = event.target.value;
         const normalizedQuery = query.trim();
-        state.query = normalizedQuery;
         $("#searchClear").hidden = !query;
-        updateSearchCategoryFilter(Boolean(normalizedQuery));
-        if (normalizedQuery && state.tab !== "discover") {
-          state.tab = "discover";
-          updateTabButtons("discover");
-          $("#listChips").classList.remove("visible");
-          $("#genreFilter").hidden = false;
-          $("#typeFilter").hidden = false;
-          $("#catalogFilter").hidden = false;
-          $("#upcomingChip").hidden = false;
-        }
-        state.catalogGate.invalidate();
-        state.catalogRequests = [];
-        state.catalogPage = 1;
-        state.catalogTotalPages = 1;
-        state.loadingMore = false;
-        grid.classList.remove("busy");
-        $("#loadingIndicator").classList.remove("visible");
-        if (!normalizedQuery && state.tab !== "discover") {
-          renderList();
-          return;
-        }
         if (!normalizedQuery) {
-          state.category = "trending";
-          $("#catalogFilter").value = "trending";
-          $("#catalogTitle").textContent = categories.trending.title;
-          $("#catalogDescription").textContent = categories.trending.description;
-          updateSearchCategoryFilter(false);
-          loadCategory("trending");
+          hideSearchDropdown();
+          if (state.query) {
+            state.query = "";
+            updateSearchCategoryFilter(false);
+            if (state.tab === "discover") loadCategory("trending");
+            else renderList();
+          }
           return;
         }
-        state.category = "trending";
-        $("#catalogFilter").value = "search";
-        $("#catalogTitle").textContent = `"${normalizedQuery}" için arama sonuçları`;
-        $("#catalogDescription").textContent = "Arama sonuçları getiriliyor...";
-        const loadingLabel = $("#loadingIndicator").querySelector("span:last-child");
-        loadingLabel.textContent = "Aranıyor...";
-        $("#loadingIndicator").classList.add("visible");
-        grid.innerHTML = `<div class="message" role="status"><strong>Aranıyor...</strong>Sonuçlar getiriliyor.</div>`;
-        updateLoadMore();
-        searchTimer = setTimeout(() => {
-          searchTimer = null;
-          search(query);
-        }, 350);
+        dropdownTimer = setTimeout(() => {
+          triggerTypeahead(normalizedQuery);
+        }, 200);
       });
+
+      $("#searchInput").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          hideSearchDropdown();
+          const query = event.target.value.trim();
+          if (query) {
+            state.query = query;
+            search(query);
+          }
+        } else if (event.key === "Escape") {
+          hideSearchDropdown();
+        }
+      });
+
       $("#searchClear").addEventListener("click", () => {
         clearTimeout(searchTimer);
-        searchTimer = null;
+        clearTimeout(dropdownTimer);
+        hideSearchDropdown();
         $("#searchInput").value = "";
         state.query = "";
         $("#searchClear").hidden = true;
@@ -1985,9 +2316,34 @@
         $("#loadingIndicator").classList.remove("visible");
         $("#searchInput").focus();
         if (state.tab === "discover") loadCategory("trending");
+        else renderList();
       });
 
       document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
+
+      document.querySelectorAll("#providerChips .provider-chip").forEach((button) => {
+        button.addEventListener("click", () => {
+          const providerId = button.dataset.provider;
+          state.selectedProvider = providerId;
+          document.querySelectorAll("#providerChips .provider-chip").forEach((chip) => {
+            const active = chip === button;
+            chip.classList.toggle("active", active);
+            chip.setAttribute("aria-pressed", String(active));
+          });
+          if (state.tab === "discover") {
+            if (providerId) {
+              loadResults([
+                { path: "/discover/movie", params: { with_watch_providers: providerId, watch_region: "TR", sort_by: "popularity.desc" }, mediaType: "movie" },
+                { path: "/discover/tv", params: { with_watch_providers: providerId, watch_region: "TR", sort_by: "popularity.desc" }, mediaType: "tv" }
+              ]);
+            } else {
+              loadCategory(state.category);
+            }
+          } else {
+            renderList();
+          }
+        });
+      });
       document.querySelectorAll("#listChips .chip").forEach((button) => button.addEventListener("click", () => {
         state.listStatus = button.dataset.status;
         document.querySelectorAll("#listChips .chip").forEach((chip) => {
@@ -2059,19 +2415,36 @@
           }
           return;
         }
+        const quickAdd = event.target.closest("[data-quick-add]");
+        if (quickAdd) {
+          event.stopPropagation();
+          const key = quickAdd.dataset.quickAdd;
+          const item = resolveItem(key);
+          if (item) {
+            saveItem(item, "watchlist", "");
+            showToast(`✓ "${displayTitle(item)}" izlenecekler listesine eklendi! ✨`);
+            if (state.tab === "list") renderList();
+            else render(state.results);
+          }
+          return;
+        }
+        const quickSave = event.target.closest("[data-quick-save], [data-save]");
+        if (quickSave) {
+          event.stopPropagation();
+          const key = quickSave.dataset.quickSave || quickSave.dataset.save;
+          const item = resolveItem(key);
+          if (item) openQuickSave(item);
+          return;
+        }
         const dislike = event.target.closest("[data-dislike]");
         if (dislike) {
+          event.stopPropagation();
           const key = dislike.dataset.dislike;
           state.preferences.disliked = state.preferences.disliked.includes(key)
             ? state.preferences.disliked.filter((entry) => entry !== key)
             : [...state.preferences.disliked, key].slice(-500);
           persistPreferences();
           refreshDiscoverAfterDislike();
-          return;
-        }
-        const save = event.target.closest("[data-save]");
-        if (save) {
-          openForSave(resolveItem(save.dataset.save));
           return;
         }
         const details = event.target.closest("[data-details]");
@@ -2132,7 +2505,86 @@
         if (button) openPersonPanel(button.dataset.person, button.querySelector("strong")?.textContent || "Oyuncu");
       });
       $("#personPanel").addEventListener("click", (event) => {
-        if (event.target.closest("[data-person-close]")) closePersonPanel();
+        if (event.target.closest("[data-person-close]")) {
+          closePersonPanel();
+          return;
+        }
+        const creditSave = event.target.closest("[data-credit-save]");
+        if (creditSave) {
+          event.stopPropagation();
+          const key = creditSave.dataset.creditSave;
+          const item = resolveItem(key);
+          if (item) {
+            const saved = getSaved(item);
+            if (!saved) {
+              saveItem(item, "watchlist", "");
+              showToast(`✓ "${displayTitle(item)}" izlenecekler listesine eklendi! ✨`);
+              if (state.tab === "list") renderList();
+              else render(state.results);
+              refreshPersonCreditsUI();
+            } else {
+              openQuickSave(item);
+            }
+          }
+          return;
+        }
+        const creditDetails = event.target.closest("[data-credit-details]");
+        if (creditDetails) {
+          const key = creditDetails.dataset.creditDetails;
+          const item = resolveItem(key);
+          if (item) {
+            closePersonPanel();
+            openDetails(item);
+          }
+          return;
+        }
+      });
+      $("#quickStatusGrid").addEventListener("click", (event) => {
+        const opt = event.target.closest(".quick-status-opt");
+        if (!opt) return;
+        quickSaveSelectedStatus = opt.dataset.status;
+        document.querySelectorAll("#quickStatusGrid .quick-status-opt").forEach((button) => {
+          button.classList.toggle("active", button === opt);
+        });
+      });
+      $("#quickStarRating").addEventListener("click", (event) => {
+        const starBtn = event.target.closest(".quick-star-btn");
+        if (starBtn) {
+          setQuickStars(starBtn.dataset.rating);
+          return;
+        }
+        if (event.target.closest("#clearQuickRating")) {
+          setQuickStars("");
+        }
+      });
+      $("#quickSaveSubmit").addEventListener("click", () => {
+        if (!state.quickSaveItem) return;
+        const item = state.quickSaveItem;
+        saveItem(item, quickSaveSelectedStatus, quickSavePersonalRating);
+        showToast(`✓ "${displayTitle(item)}" listenize kaydedildi!`);
+        closeModal($("#quickSaveModal"));
+        if (state.tab === "list") renderList();
+        else render(state.results);
+        if ($("#personPanel").classList.contains("open")) {
+          refreshPersonCreditsUI();
+        }
+      });
+      $("#quickSaveRemove").addEventListener("click", () => {
+        if (!state.quickSaveItem) return;
+        const item = state.quickSaveItem;
+        removeItem(item);
+        showToast(`"${displayTitle(item)}" listeden kaldırıldı.`);
+        closeModal($("#quickSaveModal"));
+        if (state.tab === "list") renderList();
+        else render(state.results);
+        if ($("#personPanel").classList.contains("open")) {
+          refreshPersonCreditsUI();
+        }
+      });
+      $("#quickSaveModal").addEventListener("click", (event) => {
+        if (event.target === $("#quickSaveModal") || event.target.closest("[data-close]")) {
+          closeModal($("#quickSaveModal"));
+        }
       });
       $("#addButton").addEventListener("click", () => {
         openModal($("#addModal"));
@@ -2415,6 +2867,7 @@
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
           if ($("#personPanel").classList.contains("open")) closePersonPanel();
+          else if ($("#quickSaveModal") && $("#quickSaveModal").classList.contains("open")) closeModal($("#quickSaveModal"));
           else if ($("#importChoiceModal").classList.contains("open")) {
             state.pendingBackup = null;
             closeModal($("#importChoiceModal"));

@@ -286,6 +286,8 @@ const mockItems = [
     vote_count: 14000,
     popularity: 110.4,
     first_air_date: "2008-01-20",
+    last_air_date: "2013-09-29",
+    status: "Ended",
     genre_ids: [18, 80],
     number_of_seasons: 5,
     number_of_episodes: 62,
@@ -304,6 +306,8 @@ const mockItems = [
     vote_count: 2200,
     popularity: 75.1,
     first_air_date: "2022-02-17",
+    last_air_date: "2025-03-21",
+    status: "Returning Series",
     genre_ids: [18, 878, 9648],
     number_of_seasons: 2,
     number_of_episodes: 19,
@@ -322,6 +326,8 @@ const mockItems = [
     vote_count: 4100,
     popularity: 84.6,
     first_air_date: "2021-11-06",
+    last_air_date: "2024-11-23",
+    status: "Ended",
     genre_ids: [16, 10765, 10759, 18],
     number_of_seasons: 2,
     number_of_episodes: 18,
@@ -340,6 +346,8 @@ const mockItems = [
     vote_count: 5100,
     popularity: 89.3,
     first_air_date: "2023-01-15",
+    last_air_date: "2025-05-18",
+    status: "Returning Series",
     genre_ids: [18, 10759, 10765],
     number_of_seasons: 2,
     number_of_episodes: 16,
@@ -476,6 +484,11 @@ function getMockTmdbResponse(endpoint, searchParams) {
   if (withGenres) {
     const genreIdList = withGenres.split("|").map(Number);
     results = results.filter((item) => (item.genre_ids || []).some((gid) => genreIdList.includes(gid)));
+  }
+  const withProviders = searchParams.get("with_watch_providers");
+  if (withProviders) {
+    const pids = withProviders.split("|").map(Number);
+    results = results.filter((item) => (item.provider_ids || [8]).some((pid) => pids.includes(pid)));
   }
 
   if (endpoint.includes("/tv")) {
@@ -667,6 +680,36 @@ const server = createServer(async (request, response) => {
       response.end("CineTrack.html could not be read.");
     }
     return;
+  }
+
+  const mimeTypes = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+  };
+
+  const safePath = path.normalize(path.join(root, url.pathname));
+  if (safePath.startsWith(root) && existsSync(safePath) && !safePath.includes("node_modules")) {
+    try {
+      const ext = path.extname(safePath).toLowerCase();
+      const contentType = mimeTypes[ext] || "application/octet-stream";
+      const source = readFileSync(safePath);
+      response.writeHead(200, {
+        "Content-Type": contentType,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+      response.end(source);
+      return;
+    } catch {}
   }
 
   response.writeHead(404);

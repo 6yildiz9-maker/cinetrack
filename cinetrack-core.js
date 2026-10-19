@@ -121,6 +121,7 @@
       title: String(item.title || item.name || "Başlıksız içerik").slice(0, 160),
       release_date: typeof (item.release_date || item.releaseDate) === "string" ? (item.release_date || item.releaseDate).slice(0, 10) : "",
       first_air_date: typeof item.first_air_date === "string" ? item.first_air_date.slice(0, 10) : "",
+      last_air_date: typeof item.last_air_date === "string" ? item.last_air_date.slice(0, 10) : "",
       vote_average: Number(item.vote_average ?? (Number.parseFloat(item.rating) || 0)) || 0,
       vote_count: Number(item.vote_count) || 0,
       popularity: Number(item.popularity) || 0,
