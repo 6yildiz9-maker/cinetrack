@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Profile, Preferences, SavedItem } from '../core/cinetrack-core';
 import { PROVIDER_OPTIONS, calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -60,6 +61,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [mood, setMood] = useState<string>(preferences.mood);
   const [importStatus, setImportStatus] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useDialogAccessibility(isOpen, onClose);
 
   useEffect(() => {
     if (isOpen) {
@@ -182,6 +184,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       }}
     >
       <article
+        ref={dialogRef}
         className="modal"
         role="dialog"
         aria-modal="true"

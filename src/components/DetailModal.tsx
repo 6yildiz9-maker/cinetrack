@@ -7,6 +7,7 @@ import {
   sanitizeSeasonProgress,
 } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface DetailModalProps {
   item: any | null;
@@ -50,6 +51,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const [currentSeason, setCurrentSeason] = useState<number>(1);
   const [seasonProgress, setSeasonProgress] = useState<Record<number, number>>({});
   const [seasonCounts, setSeasonCounts] = useState<Record<number, number>>({});
+  const dialogRef = useDialogAccessibility(isOpen, onClose);
 
   useEffect(() => {
     if (!item || !isOpen) {
@@ -195,6 +197,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
       }}
     >
       <article
+        ref={dialogRef}
         className="modal"
         role="dialog"
         aria-modal="true"

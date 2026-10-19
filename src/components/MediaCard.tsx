@@ -105,6 +105,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         aria-label={`${title} detaylarını gör`}
         onClick={() => onOpenDetails(item)}
         onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             onOpenDetails(item);

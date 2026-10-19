@@ -979,6 +979,24 @@ describe("Sana Özel v3 — getUserSignalV3", () => {
 });
 
 describe("Sana Özel v3 — buildTasteProfileV3 ve scoreCandidatesV3", () => {
+  it("explicit dislike overrides positive saved-item signals for the same title", () => {
+    const profile = buildTasteProfileV3(
+      [{
+        id: 77,
+        media_type: "movie",
+        status: "completed",
+        personal_rating: 10,
+        genre_ids: [28],
+        cast: [{ id: 701, name: "Actor" }]
+      }],
+      { dislikedKeys: ["movie:77"] }
+    );
+
+    assert.ok(profile.genres[28] < 0);
+    assert.ok(profile.actors[701].personal < 0);
+    assert.equal(profile.lovedSeedIds.has("movie:77"), false);
+  });
+
   it("yumuşatılmış tat profilini ve aday puanını 0..100 aralığında üretir", () => {
     const history = [
       {
@@ -1188,4 +1206,3 @@ describe("Sana Özel v3 — buildTasteProfileV3 ve scoreCandidatesV3", () => {
     assert.ok(scoredFranchise.tags.includes("Sevdiğin film serisinden"));
   });
 });
-

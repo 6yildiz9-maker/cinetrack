@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface AddCustomModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ export const AddCustomModal: React.FC<AddCustomModalProps> = ({ isOpen, onClose,
   const [poster, setPoster] = useState('');
   const [status, setStatus] = useState<'watching' | 'watchlist' | 'completed'>('watchlist');
   const [errorMsg, setErrorMsg] = useState('');
+  const dialogRef = useDialogAccessibility(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -69,6 +71,7 @@ export const AddCustomModal: React.FC<AddCustomModalProps> = ({ isOpen, onClose,
       }}
     >
       <article
+        ref={dialogRef}
         className="modal"
         role="dialog"
         aria-modal="true"

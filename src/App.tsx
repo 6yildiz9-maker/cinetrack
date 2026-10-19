@@ -174,6 +174,7 @@ export function App() {
   const [recommendationReasons, setRecommendationReasons] = useState<Map<string, string>>(new Map());
   const [forYouItems, setForYouItems] = useState<any[]>([]);
   const [forYouReasons, setForYouReasons] = useState<Map<string, string>>(new Map());
+  const [serverSyncReady, setServerSyncReady] = useState(false);
 
   const [detailItem, setDetailItem] = useState<any | null>(null);
   const [quickSaveItem, setQuickSaveItem] = useState<any | null>(null);
@@ -186,12 +187,31 @@ export function App() {
 
   const requestGateRef = useRef(createRequestGate());
   const toastTimerRef = useRef<any>(null);
+  const initialLocalSnapshotRef = useRef<string | null>(null);
+  const localEditedDuringStartupRef = useRef(false);
+  const localWasDirtyRef = useRef<boolean | null>(null);
+  if (localWasDirtyRef.current === null) {
+    localWasDirtyRef.current = localStorage.getItem(DIRTY_KEY) === '1';
+  }
   const savedItemsRef = useRef(savedItems);
   savedItemsRef.current = savedItems;
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
   const genresMapRef = useRef(genresMap);
   genresMapRef.current = genresMap;
+  const dislikedItemsRef = useRef(dislikedItems);
+  dislikedItemsRef.current = dislikedItems;
+  const currentLocalSnapshot = JSON.stringify({
+    profiles,
+    activeProfileId,
+    profileName,
+    preferences,
+    savedItems,
+    favoriteActors,
+  });
+  if (initialLocalSnapshotRef.current === null) {
+    initialLocalSnapshotRef.current = currentLocalSnapshot;
+  }
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -208,11 +228,24 @@ export function App() {
       localStorage.setItem(listStorageKey(activeProfileId), JSON.stringify(savedItems));
       localStorage.setItem(preferencesStorageKey(activeProfileId), JSON.stringify(preferences));
       localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(favoriteActors));
-      localStorage.setItem(DIRTY_KEY, '1');
+      if (serverSyncReady) {
+        localStorage.setItem(DIRTY_KEY, '1');
+      } else if (currentLocalSnapshot !== initialLocalSnapshotRef.current) {
+        localEditedDuringStartupRef.current = true;
+      }
     } catch (err) {
       console.warn('LocalStorage save error:', err);
     }
-  }, [profiles, activeProfileId, profileName, savedItems, preferences, favoriteActors]);
+  }, [
+    profiles,
+    activeProfileId,
+    profileName,
+    savedItems,
+    preferences,
+    favoriteActors,
+    serverSyncReady,
+    currentLocalSnapshot,
+  ]);
 
   // Push server data on changes
   const pushToServer = useCallback(async () => {
@@ -237,31 +270,35 @@ export function App() {
   }, [profiles, activeProfileId, profileName, preferences, savedItems]);
 
   useEffect(() => {
+    if (!serverSyncReady) return;
     const timer = setTimeout(() => {
       pushToServer();
     }, 500);
     return () => clearTimeout(timer);
-  }, [pushToServer]);
+  }, [pushToServer, serverSyncReady]);
 
   // Initial startup sync with server & load genres
   useEffect(() => {
-    fetchServerData().then((remote) => {
-      if (remote) {
-        const doc = normalizeDataDocument(remote);
-        if (doc) {
-          const remoteHasData = doc.profiles.some((p) => p.items.length > 0) || doc.profiles.length > 1;
-          const isDirty = localStorage.getItem(DIRTY_KEY) === '1';
-          if (remoteHasData && !isDirty) {
-            setProfiles(doc.profiles);
-            setActiveProfileId(doc.activeProfileId);
-            const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
-            setProfileName(active.name);
-            setPreferences(active.preferences);
-            setSavedItems(active.items);
+    fetchServerData()
+      .then((remote) => {
+        if (remote) {
+          const doc = normalizeDataDocument(remote);
+          if (doc) {
+            const remoteHasData = doc.profiles.some((p) => p.items.length > 0) || doc.profiles.length > 1;
+            const isDirty = localWasDirtyRef.current || localEditedDuringStartupRef.current;
+            if (remoteHasData && !isDirty) {
+              setProfiles(doc.profiles);
+              setActiveProfileId(doc.activeProfileId);
+              const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
+              setProfileName(active.name);
+              setPreferences(active.preferences);
+              setSavedItems(active.items);
+            }
           }
         }
-      }
-    });
+      })
+      .catch((error) => console.error('CineTrack: başlangıç verisi eşitlenemedi.', error))
+      .finally(() => setServerSyncReady(true));
 
     // Load genres
     Promise.all([fetchTmdb('/genre/movie/list'), fetchTmdb('/genre/tv/list')])
@@ -362,7 +399,7 @@ export function App() {
           return;
         }
 
-        if (provider) {
+        if (provider && cat !== 'for-you') {
           const [movies, tvs] = await Promise.all([
             fetchTmdb(
               '/discover/movie',
@@ -415,8 +452,19 @@ export function App() {
 
           const seeds = [...watchedSeeds, ...watchlistSeeds];
           const moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
+          const dislikedSeeds = currentPrefs.disliked
+            .map((key) => {
+              const [mediaType, id] = key.split(':');
+              if (!/^\d+$/.test(id) || !['movie', 'tv'].includes(mediaType)) return undefined;
+              return dislikedItemsRef.current.find(
+                (item) => String(item.id) === id && item.media_type === mediaType
+              );
+            })
+            .filter(Boolean)
+            .slice(0, 10)
+            .map((item) => ({ ...item, status: 'disliked', isDisliked: true }));
 
-          const historyCredits = await mapLimit(seeds, 4, async (seed) => {
+          const historyCredits = await mapLimit([...seeds, ...dislikedSeeds], 4, async (seed) => {
             try {
               const details = await fetchTmdbCached(
                 `/${seed.media_type}/${seed.id}`,
@@ -434,7 +482,7 @@ export function App() {
                 ),
               };
             } catch {
-              return { ...seed, cast: [], crew: [] };
+              return { ...seed, cast: seed.cast || [], crew: seed.crew || [] };
             }
           });
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
@@ -445,7 +493,10 @@ export function App() {
 
           // Build Taste Profile V3 with smoothing lambda = 1 and time decay
           const tasteProfile = buildTasteProfileV3(
-            currentSaved.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
+            [
+              ...currentSaved.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
+              ...dislikedSeeds.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
+            ],
             {
               lambda: 1,
               dislikedKeys: currentPrefs.disliked,
@@ -456,15 +507,18 @@ export function App() {
           const isSaved = (item: any, type: string) =>
             currentSaved.some((s) => s.id === item.id && s.media_type === type);
 
-          const candidateRequests: any[] = [];
+          const watchedRequests: any[] = [];
+          const secondaryWatchedRequests: any[] = [];
+          const watchlistRequests: any[] = [];
+          const genreRequests: any[] = [];
           for (const seed of watchedSeeds) {
-            candidateRequests.push({
+            watchedRequests.push({
               path: `/${seed.media_type}/${seed.id}/recommendations`,
               mediaType: seed.media_type,
               reason: `İzlediğin “${displayTitle(seed)}” yapımına benzer`,
               seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
             });
-            candidateRequests.push({
+            secondaryWatchedRequests.push({
               path: `/${seed.media_type}/${seed.id}/similar`,
               mediaType: seed.media_type,
               reason: `İzlediğin “${displayTitle(seed)}” yapımına benzer`,
@@ -473,7 +527,7 @@ export function App() {
           }
 
           for (const seed of watchlistSeeds) {
-            candidateRequests.push({
+            watchlistRequests.push({
               path: `/${seed.media_type}/${seed.id}/recommendations`,
               mediaType: seed.media_type,
               reason: `İzleme listendeki “${displayTitle(seed)}” benzeri`,
@@ -492,23 +546,37 @@ export function App() {
                 : label
                 ? `${label} türünü sevdiğin için`
                 : 'Sevdiğin türlerden seçmeler';
-            candidateRequests.push({
+            genreRequests.push({
               path: '/discover/movie',
               params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6' },
               mediaType: 'movie',
               reason,
-              seedSourceType: 'completed',
             });
-            candidateRequests.push({
+            genreRequests.push({
               path: '/discover/tv',
               params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6' },
               mediaType: 'tv',
               reason,
-              seedSourceType: 'completed',
             });
           }
 
-          await mapLimit(candidateRequests.slice(0, 20), 5, async (req) => {
+          const requestLimit = 20;
+          const genreBudget = Math.min(8, genreRequests.length);
+          const watchlistBudget = Math.min(4, watchlistRequests.length);
+          const watchedBudget = Math.max(0, requestLimit - genreBudget - watchlistBudget);
+          const watchedSelected = watchedRequests.slice(0, watchedBudget);
+          const watchedExtra = secondaryWatchedRequests.slice(
+            0,
+            watchedBudget - watchedSelected.length
+          );
+          const selectedRequests = [
+            ...watchedSelected,
+            ...watchedExtra,
+            ...watchlistRequests.slice(0, watchlistBudget),
+            ...genreRequests.slice(0, genreBudget),
+          ];
+
+          await mapLimit(selectedRequests, 5, async (req) => {
             try {
               const res = await fetchTmdbCached(req.path, req.params || {}, ticket.signal);
               const acceptable = (res?.results || []).filter(
@@ -594,6 +662,7 @@ export function App() {
           setForYouItems(picked.map((e) => e.candidate));
           setCatalogTotalPages(1);
           setCatalogPage(1);
+          if (forceRefresh) showToast('Sana özel öneriler güncellendi.');
           return;
         }
 
@@ -665,6 +734,7 @@ export function App() {
       } catch (err: any) {
         if (!ticket.signal.aborted) {
           console.warn('Catalog load error:', err.message);
+          if (forceRefresh) showToast('Öneriler yenilenemedi. Lütfen tekrar deneyin.');
           if (!append) setCatalogItems([]);
         }
       } finally {
@@ -674,13 +744,12 @@ export function App() {
         }
       }
     },
-    [query, selectedProvider]
+    [query, selectedProvider, showToast]
   );
 
   const handleRefreshForYou = useCallback(() => {
     loadCategoryResults('for-you', 1, false, '', selectedProvider, true);
-    showToast('✓ Sana özel öneriler güncellendi! ✨');
-  }, [loadCategoryResults, selectedProvider, showToast]);
+  }, [loadCategoryResults, selectedProvider]);
 
   useEffect(() => {
     if (tab === 'discover') {
@@ -830,6 +899,7 @@ export function App() {
       if (!isCurrentlyDisliked) {
         const target =
           catalogItems.find((c) => `${c.media_type}:${c.id}` === key) ||
+          forYouItems.find((c) => `${c.media_type}:${c.id}` === key) ||
           savedItems.find((s) => `${s.media_type}:${s.id}` === key);
         if (target) {
           setDislikedItems((current) => {

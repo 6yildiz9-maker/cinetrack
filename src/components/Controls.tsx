@@ -46,6 +46,8 @@ export const Controls: React.FC<ControlsProps> = ({
   listStatus,
   onListStatusChange,
 }) => {
+  const disableProviderFilters = isSearchActive || selectedCategory === 'for-you';
+
   return (
     <>
       <div className="controls">
@@ -127,6 +129,7 @@ export const Controls: React.FC<ControlsProps> = ({
                 id="upcomingChip"
                 className={`chip upcoming-chip ${selectedCategory === 'upcoming' ? 'active' : ''}`}
                 type="button"
+                disabled={isSearchActive}
                 aria-pressed={selectedCategory === 'upcoming'}
                 onClick={() =>
                   onCategoryChange(selectedCategory === 'upcoming' ? 'trending' : 'upcoming')
@@ -152,11 +155,18 @@ export const Controls: React.FC<ControlsProps> = ({
       </div>
 
       {tab === 'discover' && (
-        <div id="providerChips" className="provider-chips" role="group" aria-label="Yayın platformu filtresi">
+        <div
+          id="providerChips"
+          className="provider-chips"
+          role="group"
+          aria-label="Yayın platformu filtresi"
+          aria-disabled={disableProviderFilters}
+        >
           <span className="provider-chips-label">Platform:</span>
           <button
             className={`provider-chip ${selectedProvider === '' ? 'active' : ''}`}
             type="button"
+            disabled={disableProviderFilters}
             aria-pressed={selectedProvider === ''}
             onClick={() => onProviderChange('')}
           >
@@ -165,6 +175,7 @@ export const Controls: React.FC<ControlsProps> = ({
           <button
             className={`provider-chip provider-netflix ${selectedProvider === '8' ? 'active' : ''}`}
             type="button"
+            disabled={disableProviderFilters}
             aria-pressed={selectedProvider === '8'}
             onClick={() => onProviderChange(selectedProvider === '8' ? '' : '8')}
           >
@@ -173,6 +184,7 @@ export const Controls: React.FC<ControlsProps> = ({
           <button
             className={`provider-chip provider-prime ${selectedProvider === '119' ? 'active' : ''}`}
             type="button"
+            disabled={disableProviderFilters}
             aria-pressed={selectedProvider === '119'}
             onClick={() => onProviderChange(selectedProvider === '119' ? '' : '119')}
           >
@@ -181,6 +193,7 @@ export const Controls: React.FC<ControlsProps> = ({
           <button
             className={`provider-chip provider-disney ${selectedProvider === '337' ? 'active' : ''}`}
             type="button"
+            disabled={disableProviderFilters}
             aria-pressed={selectedProvider === '337'}
             onClick={() => onProviderChange(selectedProvider === '337' ? '' : '337')}
           >
@@ -189,6 +202,7 @@ export const Controls: React.FC<ControlsProps> = ({
           <button
             className={`provider-chip provider-blutv ${selectedProvider === '410' ? 'active' : ''}`}
             type="button"
+            disabled={disableProviderFilters}
             aria-pressed={selectedProvider === '410'}
             onClick={() => onProviderChange(selectedProvider === '410' ? '' : '410')}
           >

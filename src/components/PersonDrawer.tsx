@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { displayTitle, formatMediaDates, imageUrl } from '../utils/helpers';
 import { SavedItem } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface PersonDrawerProps {
   personId: number | null;
@@ -33,6 +34,7 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
   const [profile, setProfile] = useState<any>(null);
   const [credits, setCredits] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const dialogRef = useDialogAccessibility(isOpen && Boolean(personId), onClose);
 
   useEffect(() => {
     if (!personId || !isOpen) {
@@ -214,6 +216,7 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
         onClick={onClose}
       ></button>
       <section
+        ref={dialogRef}
         className="person-drawer"
         role="dialog"
         aria-modal="true"

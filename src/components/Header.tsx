@@ -29,7 +29,18 @@ export const Header: React.FC<HeaderProps> = ({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownLoading, setDropdownLoading] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<any>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestIdRef = useRef(0);
+  const requestControllerRef = useRef<AbortController | null>(null);
+
+  const cancelTypeahead = () => {
+    requestIdRef.current += 1;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = null;
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+    setDropdownLoading(false);
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -41,18 +52,32 @@ export const Header: React.FC<HeaderProps> = ({
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
+  useEffect(
+    () => () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      requestControllerRef.current?.abort();
+    },
+    []
+  );
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     onSearchChange(val);
 
-    clearTimeout(debounceRef.current);
+    const requestId = ++requestIdRef.current;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+    setDropdownItems([]);
     if (!val.trim() || val.trim().length < 2) {
       setDropdownOpen(false);
-      setDropdownItems([]);
+      setDropdownLoading(false);
       return;
     }
 
     debounceRef.current = setTimeout(async () => {
+      const controller = new AbortController();
+      requestControllerRef.current = controller;
       setDropdownLoading(true);
       try {
         const queryParams = new URLSearchParams({
@@ -61,9 +86,10 @@ export const Header: React.FC<HeaderProps> = ({
           query: val.trim(),
           page: '1',
         });
-        const res = await fetch(`/api/tmdb?${queryParams.toString()}`);
+        const res = await fetch(`/api/tmdb?${queryParams.toString()}`, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
+          if (requestId !== requestIdRef.current) return;
           const items = (data.results || [])
             .filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv')
             .slice(0, 6);
@@ -71,9 +97,12 @@ export const Header: React.FC<HeaderProps> = ({
           setDropdownOpen(true);
         }
       } catch (err) {
-        console.warn('Typeahead error:', err);
+        if (!controller.signal.aborted) console.warn('Typeahead error:', err);
       } finally {
-        setDropdownLoading(false);
+        if (requestId === requestIdRef.current) {
+          setDropdownLoading(false);
+          requestControllerRef.current = null;
+        }
       }
     }, 200);
   };
@@ -81,11 +110,20 @@ export const Header: React.FC<HeaderProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      cancelTypeahead();
       setDropdownOpen(false);
       onSearchSubmit(query);
     } else if (e.key === 'Escape') {
+      cancelTypeahead();
       setDropdownOpen(false);
     }
+  };
+
+  const handleSearchClear = () => {
+    cancelTypeahead();
+    setDropdownOpen(false);
+    setDropdownItems([]);
+    onSearchClear();
   };
 
   return (
@@ -119,7 +157,7 @@ export const Header: React.FC<HeaderProps> = ({
               id="searchClear"
               className="search-clear"
               type="button"
-              onClick={onSearchClear}
+              onClick={handleSearchClear}
               aria-label="Aramayı temizle ve trendlere dön"
             >
               <svg className="icon" aria-hidden="true">

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
 import { SavedItem } from '../core/cinetrack-core';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface QuickSaveModalProps {
   item: any | null;
@@ -25,6 +26,7 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
 }) => {
   const [selectedStatus, setSelectedStatus] = useState<'watching' | 'watchlist' | 'completed'>('watchlist');
   const [personalRating, setPersonalRating] = useState<number | ''>('');
+  const dialogRef = useDialogAccessibility(isOpen, onClose);
 
   useEffect(() => {
     if (item && isOpen) {
@@ -65,6 +67,7 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
       }}
     >
       <article
+        ref={dialogRef}
         className="modal quick-save-modal"
         role="dialog"
         aria-modal="true"

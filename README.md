@@ -6,7 +6,7 @@ TMDB destekli modern ve kişisel film ve dizi takip uygulaması. React 19, TypeS
 
 - **Canlı TMDB Kataloğu**: Güncel trendler, popüler filmler ve diziler, yüksek puanlı yapımlar, yakında ve yayında olan içerikler.
 - **Canlı Arama & Typeahead**: Arama kutusuna yazıldıkça anlık eşleşmeler, afişler ve izleme durumu rozetleriyle gösterilir.
-- **Sana Özel Öneri Motoru**: Kişisel puanlarınız, tamamlanan içerikler, sevilen oyuncular ve yönetmenler baz alınarak hesaplanan 7 bileşenli Bayes ve zevk profili önerileri.
+- **Sana Özel Öneri Motoru**: Kişisel puanlarınız, tamamlanan/izlenen içerikler, sevilen oyuncular ve yönetmenler, türler, hikâye anahtar kelimeleri ve kadro uyumu gibi 15 sinyali birleştiren kişiselleştirilmiş öneriler.
 - **Çoklu Profil Yönetimi**: Yerel profiller oluşturabilir, profiller arasında geçiş yapabilir, her profil için ayrı izleme listesi ve öneri tercihleri tutabilirsiniz.
 - **Bölüm ve Sezon Takibi**: Dizilerde sezon ve bölüm bazlı izleme ilerlemesi, tamamlanma yüzdesi ve sıradaki bölüm göstergesi.
 - **Türkiye Yayın Platformları**: Netflix, Prime Video, Disney+, BluTV gibi platform filtreleri ve içerik detaylarında nerede izlenebileceği bilgisi.
@@ -25,7 +25,8 @@ TMDB destekli modern ve kişisel film ve dizi takip uygulaması. React 19, TypeS
    ```bash
    npm run dev
    ```
-   Uygulama `http://0.0.0.0:3000` adresinde çalışacaktır.
+   Uygulama varsayılan olarak yalnızca bu bilgisayardan `http://127.0.0.1:3000` adresinde erişilebilir.
+   Yerel ağ üzerinden erişimi özellikle etkinleştirmek için `CINETRACK_HOST=0.0.0.0` ayarlayın; bu durumda profil verilerinize ağdaki cihazlar erişebilir.
 3. Derleme:
    ```bash
    npm run build

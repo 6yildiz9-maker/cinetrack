@@ -1028,9 +1028,20 @@ export function buildTasteProfileV3(
   for (const key of dislikedKeys) {
     if (!key || typeof key !== 'string') continue;
     const [mediaType, idStr] = key.split(':');
-    const id = Number(idStr);
-    if (!id || rawItems.some((it) => it.id === id && it.media_type === mediaType)) continue;
-    rawItems.push({ id, media_type: mediaType, status: 'disliked', isDisliked: true });
+    if (!idStr || !['movie', 'tv'].includes(mediaType)) continue;
+    const id = /^\d+$/.test(idStr) ? Number(idStr) : idStr;
+    const existingIndex = rawItems.findIndex(
+      (item) => String(item.id) === idStr && item.media_type === mediaType
+    );
+    const dislikedItem = existingIndex >= 0 ? rawItems[existingIndex] : { id, media_type: mediaType };
+    const normalizedDislikedItem = {
+      ...dislikedItem,
+      status: 'disliked',
+      isDisliked: true,
+      personal_rating: '',
+    };
+    if (existingIndex >= 0) rawItems[existingIndex] = normalizedDislikedItem;
+    else rawItems.push(normalizedDislikedItem);
   }
 
   // Deduplicate items so the same production is not counted multiple times
@@ -1042,7 +1053,15 @@ export function buildTasteProfileV3(
     const id = item.id;
     if (mediaType && id != null) {
       const uKey = `${mediaType}:${id}`;
-      if (seenItemKeys.has(uKey)) continue;
+      if (seenItemKeys.has(uKey)) {
+        const existingIndex = allItems.findIndex(
+          (entry) => `${entry.media_type}:${entry.id}` === uKey
+        );
+        if ((item.status === 'disliked' || item.isDisliked) && existingIndex >= 0) {
+          allItems[existingIndex] = item;
+        }
+        continue;
+      }
       seenItemKeys.add(uKey);
     }
     allItems.push(item);
@@ -1512,4 +1531,3 @@ export function scoreCandidatesV3(
     };
   });
 }
-

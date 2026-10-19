@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface ImportChoiceModalProps {
   isOpen: boolean;
@@ -8,6 +9,7 @@ interface ImportChoiceModalProps {
 
 export const ImportChoiceModal: React.FC<ImportChoiceModalProps> = ({ isOpen, onClose, onConfirm }) => {
   const [mode, setMode] = useState<'overwrite' | 'merge'>('overwrite');
+  const dialogRef = useDialogAccessibility(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -21,6 +23,7 @@ export const ImportChoiceModal: React.FC<ImportChoiceModalProps> = ({ isOpen, on
       }}
     >
       <article
+        ref={dialogRef}
         className="modal import-modal"
         role="dialog"
         aria-modal="true"

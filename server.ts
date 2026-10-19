@@ -7,6 +7,7 @@ import { normalizeDataDocument, DataDocument } from './src/core/cinetrack-core';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3000;
+const host = process.env.CINETRACK_HOST || '127.0.0.1';
 
 const dataDir = path.join(root, 'data');
 const dataFile = path.join(dataDir, 'cinetrack-data.json');
@@ -461,18 +462,6 @@ function tmdbCacheKey(endpoint: string, queryParams: Record<string, string>) {
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// CORS headers for all API requests
-app.use('/api', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(204);
-    return;
-  }
-  next();
-});
-
 // /api/data routes
 app.get('/api/data', (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -586,14 +575,14 @@ async function startServer() {
     });
   } else {
     const vite = await createViteServer({
-      server: { middlewareMode: true, host: '0.0.0.0', port },
+      server: { middlewareMode: true, host, port },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`CineTrack is running at http://0.0.0.0:${port}`);
+  app.listen(port, host, () => {
+    console.log(`CineTrack is running at http://${host}:${port}`);
     console.log(`Profil ve izleme listesi: ${dataFile}`);
     if (!tmdbApiKey) {
       console.log('TMDB_API_KEY is not configured; running in fallback demo mode.');
