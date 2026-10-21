@@ -12,7 +12,13 @@ import {
   buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore,
   findSavedItem, scoreActorRecommendations, calculateActorRoleBonus, diversifyActorRecommendations,
   makeMediaKey, parseMediaKey, normalizeFavoriteActor, normalizeFavoriteActors,
-  isItemSaved, filterHistoryByType, filterDislikedByType, TARGET_RECOMMENDATION_COUNT
+  isItemSaved, filterHistoryByType, filterDislikedByType, TARGET_RECOMMENDATION_COUNT,
+  POOL_TARGET_CAPACITY, POOL_LOW_WATERMARK, POOL_REPLENISH_MIN_NEW,
+  determineItemEra, determineItemPopularityTier, normalizePoolCandidate,
+  isCandidateEligibleInPool, filterEligiblePoolItems, balanceCandidatePool,
+  multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
+  loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
+  replenishCandidatePool
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -1611,7 +1617,6 @@ describe("Sana Özel Aşama 1 — Tür Filtresi, makeMediaKey ve Güvenli Eşle�
       { id: 2, media_type: "tv", name: "TV 2" },
       { id: 3, media_type: "movie", title: "Movie 3" },
     ]);
-
     assert.equal(pool.size, 2);
     const list = pool.list();
     assert.ok(list.every((item) => item.media_type === "movie"));
@@ -1619,5 +1624,234 @@ describe("Sana Özel Aşama 1 — Tür Filtresi, makeMediaKey ve Güvenli Eşle�
   });
 });
 
+describe("Sana Özel Aşama 2 — 500 + 500 Yenilenebilir Aday Havuzu", () => {
+  it("havuz kapasite sabitleri 500 hedef ve 250 alt eşik değerlerine sahiptir", () => {
+    assert.equal(POOL_TARGET_CAPACITY, 500);
+    assert.equal(POOL_LOW_WATERMARK, 250);
+    assert.equal(POOL_REPLENISH_MIN_NEW, 250);
+  });
 
+  it("normalizePoolCandidate sınırlı veri modelini ve algoritma sinyallerini doğru oluşturur", () => {
+    const rawMovie = {
+      id: 550,
+      title: "Fight Club",
+      overview: "An insomniac office worker...",
+      release_date: "1999-10-15",
+      vote_average: 8.43,
+      vote_count: 27000,
+      popularity: 78.5,
+      poster_path: "/bptfVGEQuv6vDTIMVCHjJ9Dz8PX.jpg",
+      genre_ids: [18, 53],
+    };
 
+    const candidate = normalizePoolCandidate(rawMovie, "movie", "popular", "Popüler yapım", "completed");
+    assert.ok(candidate);
+    assert.equal(candidate.id, 550);
+    assert.equal(candidate.media_type, "movie");
+    assert.equal(candidate.title, "Fight Club");
+    assert.equal(candidate.poolSource, "popular");
+    assert.equal(candidate.poolSources, 1);
+    assert.equal(candidate.seedSourceType, "completed");
+    assert.equal(candidate.era, "classic"); // 1999 -> classic
+    assert.equal(candidate.popularityTier, "high"); // pop 78.5 >= 50
+
+    // Yanlış media_type adayı kabul edilmemeli
+    const tvInMoviePool = normalizePoolCandidate({ id: 100, media_type: "tv", name: "Dizi" }, "movie", "popular");
+    assert.equal(tvInMoviePool, null);
+  });
+
+  it("determineItemEra ve determineItemPopularityTier dönem ve popülerlik boyutlarını sınıflandırır", () => {
+    assert.equal(determineItemEra("2024-05-01"), "new");
+    assert.equal(determineItemEra("2018-07-20"), "modern");
+    assert.equal(determineItemEra("2005-11-10"), "retro");
+    assert.equal(determineItemEra("1994-09-22"), "classic");
+    assert.equal(determineItemEra(""), "modern");
+
+    assert.equal(determineItemPopularityTier(60, 7.5), "high");
+    assert.equal(determineItemPopularityTier(25, 7.0), "medium");
+    assert.equal(determineItemPopularityTier(5, 8.2), "indie"); // Düşük popülerlik + yüksek puan
+    assert.equal(determineItemPopularityTier(5, 5.0), "low");
+  });
+
+  it("isCandidateEligibleInPool beş durumun tamamını (izledim, izleyeceğim, izliyorum, ilgilenmiyorum, gizle) denetler", () => {
+    const saved = [
+      baseItem({ id: 1, media_type: "movie", status: "completed" }),
+      baseItem({ id: 2, media_type: "movie", status: "watchlist" }),
+      baseItem({ id: 3, media_type: "movie", status: "watching" }),
+    ];
+    const prefs = {
+      disliked: ["movie:4"],
+      hidden: ["movie:5"],
+    };
+
+    // 1. Durum: izledim (completed) -> elenmeli
+    assert.equal(isCandidateEligibleInPool({ id: 1, media_type: "movie" }, saved, prefs), false);
+
+    // 2. Durum: izleyeceğim (watchlist) -> elenmeli
+    assert.equal(isCandidateEligibleInPool({ id: 2, media_type: "movie" }, saved, prefs), false);
+
+    // 3. Durum: izliyorum (watching) -> elenmeli
+    assert.equal(isCandidateEligibleInPool({ id: 3, media_type: "movie" }, saved, prefs), false);
+
+    // 4. Durum: ilgilenmiyorum (disliked) -> elenmeli
+    assert.equal(isCandidateEligibleInPool({ id: 4, media_type: "movie" }, saved, prefs), false);
+
+    // 5. Durum: gizle (hidden) -> elenmeli
+    assert.equal(isCandidateEligibleInPool({ id: 5, media_type: "movie" }, saved, prefs), false);
+
+    // Temiz aday -> uygun olmalı
+    assert.equal(isCandidateEligibleInPool({ id: 99, media_type: "movie" }, saved, prefs), true);
+
+    // Aynı sayısal kimlikli dizi, film kayıtlarından etkilenmemeli
+    assert.equal(isCandidateEligibleInPool({ id: 1, media_type: "tv" }, saved, prefs), true);
+  });
+
+  it("filterEligiblePoolItems listeden tüm uygunsuz adayları ayıklar", () => {
+    const items = [
+      { id: 1, media_type: "movie" },
+      { id: 2, media_type: "movie" },
+      { id: 3, media_type: "movie" },
+    ];
+    const saved = [baseItem({ id: 1, media_type: "movie", status: "completed" })];
+    const prefs = { disliked: ["movie:2"], hidden: [] };
+
+    const eligible = filterEligiblePoolItems(items, saved, prefs);
+    assert.equal(eligible.length, 1);
+    assert.equal(eligible[0].id, 3);
+  });
+
+  it("balanceCandidatePool tür tavanlarını (%25) uygulayarak çok boyutlu denge kurar", () => {
+    // 600 elemanlı havuz: 400 tanesi aynı türden (18 - dram)
+    const items = [];
+    for (let i = 1; i <= 400; i++) {
+      items.push({
+        id: i,
+        media_type: "movie",
+        genre_ids: [18],
+        vote_average: 8.0,
+        popularity: 50,
+        era: "modern",
+        popularityTier: "high",
+        poolSources: 1,
+      });
+    }
+    for (let i = 401; i <= 600; i++) {
+      items.push({
+        id: i,
+        media_type: "movie",
+        genre_ids: [28], // Aksiyon
+        vote_average: 8.0,
+        popularity: 50,
+        era: "modern",
+        popularityTier: "high",
+        poolSources: 1,
+      });
+    }
+
+    const balanced = balanceCandidatePool(items, 500);
+    assert.equal(balanced.length, 500);
+
+    // 500'lük havuzda 18 türü tavanı Math.ceil(500 * 0.25) = 125 olmalıdır (1. geçişte)
+    // 2. geçişte kalan boşluklar tamamlanır fakat tek tür monopolisi kırılır
+    const genre18Count = balanced.filter((it) => it.genre_ids[0] === 18).length;
+    const genre28Count = balanced.filter((it) => it.genre_ids[0] === 28).length;
+    assert.ok(genre28Count === 200, "Diğer türden (28) tüm uygun adaylar havuza alınmış olmalı");
+    assert.ok(genre18Count === 300, "Kalan kontenjan 18 türüyle tamamlanmış olmalı");
+  });
+
+  it("PoolReplenishmentLock aynı anahtar için eşzamanlı yenilemeleri tekilleştirir", async () => {
+    const lock = new PoolReplenishmentLock();
+    let counter = 0;
+
+    const task = async () => {
+      await new Promise((res) => setTimeout(res, 20));
+      counter += 1;
+      return counter;
+    };
+
+    // Aynı profile ve türe 3 eşzamanlı çağrı
+    const [r1, r2, r3] = await Promise.all([
+      lock.acquire("profile-1:movie", task),
+      lock.acquire("profile-1:movie", task),
+      lock.acquire("profile-1:movie", task),
+    ]);
+
+    assert.equal(r1, 1);
+    assert.equal(r2, 1);
+    assert.equal(r3, 1);
+    assert.equal(counter, 1, "Görev sadece 1 kere çalıştırılmalı ve promise paylaşılmalı");
+
+    // Kilit serbest kalınca yeni çağrı çalışmalı
+    assert.equal(lock.isLocked("profile-1:movie"), false);
+    const r4 = await lock.acquire("profile-1:movie", task);
+    assert.equal(r4, 2);
+  });
+
+  it("multiDimensionalDiversify tür, dönem ve popülerlik kotalarını gözeterek 20 adayı dengeli seçer", () => {
+    const scored = [];
+    // 50 aday üret
+    for (let i = 1; i <= 50; i++) {
+      scored.push({
+        score: 100 - i,
+        candidate: {
+          id: i,
+          media_type: "movie",
+          genre_ids: [i <= 20 ? 18 : i <= 35 ? 28 : 878], // 20 Dram, 15 Aksiyon, 15 Bilimkurgu
+          era: i <= 10 ? "classic" : i <= 25 ? "modern" : "new",
+          popularityTier: i <= 15 ? "high" : "indie",
+        },
+      });
+    }
+
+    const picked = multiDimensionalDiversify(scored, {
+      limit: 20,
+      maxPerGenre: 5,
+      maxPerEra: 8,
+      maxPerTier: 10,
+    });
+
+    assert.equal(picked.length, 20, "Hedef 20 adayı seçmeli");
+    const genreCounts = {};
+    picked.forEach((p) => {
+      const g = p.candidate.genre_ids[0];
+      genreCounts[g] = (genreCounts[g] || 0) + 1;
+    });
+
+    // Tek bir tür 20 sonucun tamamını ele geçirememeli (çeşitlendirilmiş olmalı)
+    assert.ok(genreCounts[18] <= 8, "Dram türü çeşitlilik kotalarıyla dengelenmeli");
+    assert.ok(genreCounts[28] >= 1, "Aksiyon türü dahil edilmiş olmalı");
+    assert.ok(genreCounts[878] >= 1, "Bilimkurgu türü dahil edilmiş olmalı");
+  });
+
+  it("replenishCandidatePool kaynakları sayfalar, imleçleri günceller ve havuzu tamamlar", async () => {
+    const calledPaths = [];
+    const mockFetch = async (path, params) => {
+      calledPaths.push({ path, page: params?.page });
+      return {
+        results: [
+          { id: Math.floor(Math.random() * 100000) + 1, title: `Mock Movie ${params?.page}`, vote_average: 7.5, popularity: 40 },
+          { id: Math.floor(Math.random() * 100000) + 1, title: `Mock Movie ${params?.page} B`, vote_average: 8.0, popularity: 60 },
+        ],
+      };
+    };
+
+    const pool = await replenishCandidatePool({
+      profileId: "test-profile-1",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      favoriteActors: [{ id: 101, name: "Test Actor" }],
+      fetchTmdbFn: mockFetch,
+      force: true,
+    });
+
+    assert.equal(pool.mediaType, "movie");
+    assert.ok(Array.isArray(pool.items));
+    assert.ok(pool.cursors.popular > 1, "Popüler imleci ilerletilmiş olmalı");
+    assert.ok(pool.cursors.top_rated > 1, "Top rated imleci ilerletilmiş olmalı");
+    assert.ok(pool.cursors.recent > 1, "Recent imleci ilerletilmiş olmalı");
+    assert.ok(calledPaths.some((p) => p.path === "/movie/popular"));
+    assert.ok(calledPaths.some((p) => p.path === "/movie/top_rated"));
+    assert.ok(calledPaths.some((p) => p.path === "/movie/now_playing"));
+  });
+});
