@@ -5,6 +5,7 @@ import {
   scoreActorRecommendations,
   SavedItem,
   findSavedItem,
+  makeMediaKey,
 } from '../core/cinetrack-core';
 import { fetchTmdbCached } from '../services/api';
 import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
@@ -210,7 +211,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             const isCompleted = saved?.status === 'completed';
 
             return (
-              <article key={`${item.media_type}-${item.id}`} className="card actor-rec-card">
+              <article key={makeMediaKey(item.media_type, item.id)} className="card actor-rec-card">
                 <div
                   className="poster"
                   role="button"

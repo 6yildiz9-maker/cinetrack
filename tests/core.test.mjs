@@ -10,7 +10,8 @@ import {
   scoreCandidates, diversifyList, createCandidatePool,
   RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
   buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore,
-  findSavedItem, scoreActorRecommendations
+  findSavedItem, scoreActorRecommendations,
+  makeMediaKey, parseMediaKey, normalizeFavoriteActor, normalizeFavoriteActors
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -187,12 +188,38 @@ describe("parseBackupText", () => {
 
   it("geçersiz sürüm ve yapıyı reddeder", () => {
     const wrong = (message) => /geçerli bir CineTrack yedeği değil/.test(message);
-    assert.throws(() => parseBackupText(validBackup({ version: 3 })), (error) => wrong(error.message));
+    assert.throws(() => parseBackupText(validBackup({ version: 4 })), (error) => wrong(error.message));
+    assert.throws(() => parseBackupText(validBackup({ version: 0 })), (error) => wrong(error.message));
     assert.throws(() => parseBackupText(validBackup({ version: "2" })), (error) => wrong(error.message));
     assert.throws(() => parseBackupText("null"), (error) => wrong(error.message));
     assert.throws(() => parseBackupText("[1,2,3]"), (error) => wrong(error.message));
     assert.throws(() => parseBackupText(JSON.stringify({ version: 2, items: "çok şey" })), (error) => wrong(error.message));
     assert.throws(() => parseBackupText(JSON.stringify({ version: 2 })), (error) => wrong(error.message));
+  });
+
+  it("eski ve yeni yedek sürümlerini (v1, v2, v3) geriye dönük uyumlu ayrıştırır", () => {
+    // v1 veya v2 yedeği (favoriteActors alanı yok)
+    const oldBackup = validBackup({ version: 2 });
+    const parsedOld = parseBackupText(oldBackup);
+    assert.equal(parsedOld.items.length, 2);
+    assert.deepEqual(parsedOld.favoriteActors, []);
+
+    // v3 yedeği (favoriteActors ile)
+    const v3Backup = JSON.stringify({
+      version: 3,
+      items: [baseItem()],
+      profileName: "Sinema Sever",
+      preferences: { disliked: ["movie:550"], providers: ["8"], mood: "thoughtful", reminders: false, notified: [] },
+      favoriteActors: [
+        { id: 2037, name: "Cillian Murphy", profile_path: "/photo.jpg" },
+        { id: 934, name: "Rebecca Ferguson" }
+      ]
+    });
+    const parsedV3 = parseBackupText(v3Backup);
+    assert.equal(parsedV3.items.length, 1);
+    assert.equal(parsedV3.favoriteActors.length, 2);
+    assert.equal(parsedV3.favoriteActors[0].name, "Cillian Murphy");
+    assert.equal(parsedV3.favoriteActors[1].id, 934);
   });
 
   it("geçersiz içerik kimliklerinde güvenlik hatası verir", () => {

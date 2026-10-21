@@ -1,7 +1,7 @@
 import React from 'react';
 import { MediaCard } from './MediaCard';
 import { ActorRecommendationsSection } from './ActorRecommendationsSection';
-import { SavedItem, findSavedItem } from '../core/cinetrack-core';
+import { SavedItem, findSavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { imageUrl } from '../utils/helpers';
 
 interface MediaGridProps {
@@ -292,9 +292,10 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           </div>
         ) : (
           items.map((item) => {
-            const itemKey = `${item.media_type}:${item.id}`;
-            const reason = recommendationReasons.get(itemKey);
-            const isDisliked = dislikedKeys.includes(itemKey);
+            const itemKey = makeMediaKey(item.media_type, item.id);
+            const legacyKey = `${item.media_type}-${item.id}`;
+            const reason = recommendationReasons.get(itemKey) || recommendationReasons.get(legacyKey);
+            const isDisliked = dislikedKeys.includes(itemKey) || dislikedKeys.includes(legacyKey);
             const saved = getSaved(item);
 
             return (

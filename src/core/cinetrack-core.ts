@@ -56,18 +56,92 @@ export interface Preferences {
   notified: string[];
 }
 
+export interface FavoriteActorInfo {
+  id: number;
+  name: string;
+  profile_path?: string | null;
+  character?: string;
+  [key: string]: any;
+}
+
 export interface Profile {
   id: string;
   name: string;
   createdAt: string;
   preferences: Preferences;
   items: SavedItem[];
+  favoriteActors?: FavoriteActorInfo[];
 }
 
 export interface DataDocument {
   version: 3;
   activeProfileId: string;
   profiles: Profile[];
+  revision?: number;
+  updatedAt?: string;
+}
+
+/**
+ * Standart film/dizi kimlik anahtarı üretir.
+ * Örn: makeMediaKey('movie', 872585) → "movie:872585"
+ * Örn: makeMediaKey('tv', '1396') → "tv:1396"
+ * Örn: makeMediaKey(item) → "movie:872585"
+ */
+export function makeMediaKey(typeOrItem: any, id?: any): string {
+  if (typeOrItem && typeof typeOrItem === 'object') {
+    const mediaType = typeOrItem.media_type === 'tv' ? 'tv' : 'movie';
+    const itemId = typeOrItem.id != null ? String(typeOrItem.id) : '';
+    return `${mediaType}:${itemId}`;
+  }
+  const mediaType = String(typeOrItem) === 'tv' ? 'tv' : 'movie';
+  const itemId = id != null ? String(id) : '';
+  return `${mediaType}:${itemId}`;
+}
+
+/**
+ * Hem iki nokta üst üste ("movie:872585") hem de eski tire ayracını ("movie-872585")
+ * güvenli bir şekilde ayrıştırır ve standart yapıya dönüştürür.
+ */
+export function parseMediaKey(key: unknown): { type: 'movie' | 'tv'; id: string } | null {
+  if (typeof key !== 'string' || !key.trim()) return null;
+  const trimmed = key.trim();
+  const colonMatch = trimmed.match(/^(movie|tv):([A-Za-z0-9_-]+)$/);
+  if (colonMatch) {
+    return { type: colonMatch[1] as 'movie' | 'tv', id: colonMatch[2] };
+  }
+  const hyphenMatch = trimmed.match(/^(movie|tv)-([A-Za-z0-9_-]+)$/);
+  if (hyphenMatch) {
+    return { type: hyphenMatch[1] as 'movie' | 'tv', id: hyphenMatch[2] };
+  }
+  return null;
+}
+
+export function normalizeFavoriteActor(raw: any): FavoriteActorInfo | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const id = Number(raw.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  const name = String(raw.name || '').trim();
+  if (!name) return null;
+  return {
+    id,
+    name: name.slice(0, 100),
+    profile_path: typeof raw.profile_path === 'string' ? raw.profile_path : null,
+    character: typeof raw.character === 'string' ? raw.character.slice(0, 100) : undefined,
+  };
+}
+
+export function normalizeFavoriteActors(raw: any, maxActors = 100): FavoriteActorInfo[] {
+  if (!Array.isArray(raw)) return [];
+  const list: FavoriteActorInfo[] = [];
+  const seen = new Set<number>();
+  for (const item of raw) {
+    if (list.length >= maxActors) break;
+    const actor = normalizeFavoriteActor(item);
+    if (!actor || seen.has(actor.id)) continue;
+    seen.add(actor.id);
+    list.push(actor);
+  }
+  return list;
 }
 
 export function validItemId(value: unknown): boolean {
@@ -352,12 +426,13 @@ export function parseBackupText(text: string): {
   items: SavedItem[];
   profileName: string;
   preferences: any;
+  favoriteActors: FavoriteActorInfo[];
 } {
   const backup = JSON.parse(text);
   if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
     throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
   }
-  if (![1, 2].includes(backup.version) || !Array.isArray(backup.items)) {
+  if (![1, 2, 3].includes(backup.version) || !Array.isArray(backup.items)) {
     throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
   }
   if (
@@ -378,11 +453,12 @@ export function parseBackupText(text: string): {
       backup.preferences && typeof backup.preferences === 'object' && !Array.isArray(backup.preferences)
         ? backup.preferences
         : null,
+    favoriteActors: normalizeFavoriteActors(backup.favoriteActors),
   };
 }
 
 export const PROFILE_ID_PATTERN = /^profile-[A-Za-z0-9_-]{1,60}$/;
-export const DISLIKED_KEY_PATTERN = /^(?:movie|tv):(?:[1-9]\d{0,11}|custom-[A-Za-z0-9_-]{1,80})$/;
+export const DISLIKED_KEY_PATTERN = /^(?:movie|tv)[:\-](?:[1-9]\d{0,11}|custom-[A-Za-z0-9_-]{1,80})$/;
 
 export function normalizePreferences(
   raw: any,
@@ -393,6 +469,10 @@ export function normalizePreferences(
     disliked: Array.isArray(source.disliked)
       ? source.disliked
           .filter((key: any) => typeof key === 'string' && DISLIKED_KEY_PATTERN.test(key))
+          .map((key: string) => {
+            const parsed = parseMediaKey(key);
+            return parsed ? makeMediaKey(parsed.type, parsed.id) : key;
+          })
           .slice(-500)
       : [],
     providers: Array.isArray(source.providers)
@@ -435,6 +515,7 @@ export function normalizeProfile(
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt.slice(0, 40) : '',
     preferences: normalizePreferences(raw.preferences, { knownMoods }),
     items: dedupeItems(items).slice(0, maxItems),
+    favoriteActors: normalizeFavoriteActors(raw.favoriteActors),
   };
 }
 
@@ -459,6 +540,7 @@ export function normalizeDataDocument(
         createdAt: '',
         preferences: raw.preferences,
         items: raw.items,
+        favoriteActors: raw.favoriteActors,
       },
     ];
     activeCandidate = candidates[0].id;
@@ -475,10 +557,13 @@ export function normalizeDataDocument(
     profiles.push(profile);
   }
   if (!profiles.length) return null;
+  const rawRev = Number(raw.revision);
   return {
     version: 3,
     activeProfileId: seen.has(activeCandidate) ? activeCandidate : profiles[0].id,
     profiles,
+    revision: Number.isSafeInteger(rawRev) && rawRev > 0 ? rawRev : 1,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString(),
   };
 }
 
@@ -1578,14 +1663,6 @@ export function scoreCandidatesV3(
   });
 }
 
-export interface FavoriteActorInfo {
-  id: number;
-  name: string;
-  profile_path?: string | null;
-  character?: string;
-  [key: string]: any;
-}
-
 export interface ActorRecommendationItem {
   id: number;
   title: string;
@@ -1671,8 +1748,16 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
     .sort((a, b) => b[1] - a[1])
     .map(([id]) => Number(id));
 
-  // Disliked set
-  const dislikedSet = new Set(dislikedKeys || []);
+  // Disliked set - hem iki nokta üst üste hem de tire formatını güvenle eşleştir
+  const dislikedSet = new Set<string>();
+  for (const k of dislikedKeys || []) {
+    dislikedSet.add(k);
+    const parsed = parseMediaKey(k);
+    if (parsed) {
+      dislikedSet.add(makeMediaKey(parsed.type, parsed.id));
+      dislikedSet.add(`${parsed.type}-${parsed.id}`);
+    }
+  }
 
   // 2. Havuz oluştur: her oyuncunun combined_credits listesini birleştir
   const candidatesMap = new Map<string, any>();
@@ -1685,7 +1770,7 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
     for (const credit of credits) {
       if (!credit || !credit.id) continue;
       const mediaType: 'movie' | 'tv' = credit.media_type === 'tv' ? 'tv' : 'movie';
-      const key = `${mediaType}-${credit.id}`;
+      const key = makeMediaKey(mediaType, credit.id);
 
       // Başlık kontrolü
       const title = String(credit.title || credit.name || '').trim();
@@ -1697,7 +1782,7 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
       }
 
       // İlgilenilmeyenlerde var mı?
-      if (dislikedSet.has(key)) {
+      if (dislikedSet.has(key) || dislikedSet.has(`${mediaType}-${credit.id}`)) {
         continue;
       }
 
