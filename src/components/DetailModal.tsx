@@ -60,34 +60,19 @@ export const DetailModal: React.FC<DetailModalProps> = ({
       return;
     }
 
-    const currentSaved = savedItem;
-    setStatus(currentSaved?.status || 'watchlist');
-    setPersonalRating(
-      currentSaved && currentSaved.personal_rating !== '' && Number(currentSaved.personal_rating) > 0
-        ? Number(currentSaved.personal_rating)
-        : ''
-    );
-
-    const initProgress = currentSaved?.season_progress || {};
-    const initCounts = currentSaved?.season_episode_counts || {};
-    setSeasonProgress(initProgress);
-    setSeasonCounts(initCounts);
-    setCurrentSeason(
-      Number(currentSaved?.current_season) || defaultCurrentSeason(initProgress, initCounts)
-    );
-
     if (item.custom) {
-      setDetails(item);
+      setDetails({ ...item, media_type: item.media_type || 'movie' });
       return;
     }
 
     // Fetch full details
     let active = true;
-    fetchTmdb(`/${item.media_type}/${item.id}`, { append_to_response: 'credits,videos' })
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    fetchTmdb(`/${mediaType}/${item.id}`, { append_to_response: 'credits,videos' })
       .then((data) => {
-        if (!active) return;
-        setDetails(data);
-        if (item.media_type === 'tv' && data.seasons) {
+        if (!active || !data) return;
+        setDetails({ ...data, media_type: mediaType });
+        if (mediaType === 'tv' && data.seasons) {
           const counts = buildSeasonCounts(data);
           setSeasonCounts(counts);
         }
@@ -96,7 +81,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
     // Fetch providers
     setLoadingProviders(true);
-    fetchTmdb(`/${item.media_type}/${item.id}/watch/providers`)
+    fetchTmdb(`/${mediaType}/${item.id}/watch/providers`)
       .then((data) => {
         if (!active) return;
         setProviders(data?.results?.TR || null);
@@ -109,11 +94,35 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     return () => {
       active = false;
     };
+  }, [item?.id, item?.media_type, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !item) return;
+    setStatus(savedItem?.status || 'watchlist');
+    setPersonalRating(
+      savedItem && savedItem.personal_rating !== '' && Number(savedItem.personal_rating) > 0
+        ? Number(savedItem.personal_rating)
+        : ''
+    );
+
+    const initProgress = savedItem?.season_progress || {};
+    const initCounts = savedItem?.season_episode_counts || {};
+    setSeasonProgress(initProgress);
+    if (Object.keys(initCounts).length > 0) {
+      setSeasonCounts(initCounts);
+    }
+    setCurrentSeason(
+      Number(savedItem?.current_season) || defaultCurrentSeason(initProgress, initCounts)
+    );
   }, [item, isOpen, savedItem]);
 
   if (!isOpen || !item) return null;
 
-  const currentItem = details || item;
+  const currentItem = {
+    ...item,
+    ...(details || {}),
+    media_type: item.media_type || details?.media_type || (item.title ? 'movie' : 'tv'),
+  };
   const title = displayTitle(currentItem);
   const backdrop = currentItem.backdrop_path
     ? imageUrl(currentItem.backdrop_path, 'w780')
@@ -132,7 +141,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     .slice(0, 10);
 
   // TV Seasons & tracker
-  const isTv = item.media_type === 'tv' && !item.custom;
+  const isTv = currentItem.media_type === 'tv' && !currentItem.custom;
   const seasonNumbers = [
     ...new Set([
       ...Object.keys(seasonCounts).map(Number),
@@ -166,6 +175,21 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     ? Math.min(100, Math.round((totalEpisodesWatched / knownEpisodesTotal) * 100))
     : null;
   const nextEpNum = (seasonProgress[currentSeason] || 0) + 1;
+
+  const handleQuickSetStatus = (newStatus: 'watching' | 'watchlist' | 'completed') => {
+    setStatus(newStatus);
+    let tracking = {};
+    if (isTv) {
+      tracking = {
+        season_progress: seasonProgress,
+        season_episode_counts: seasonCounts,
+        current_season: currentSeason,
+        next_episode: nextEpNum,
+        episodes_watched: totalEpisodesWatched,
+      };
+    }
+    onSave(currentItem, newStatus, personalRating, tracking);
+  };
 
   const handleSave = () => {
     let tracking = {};
@@ -233,6 +257,25 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               : currentItem.episode_run_time?.[0]
               ? ` | ${currentItem.episode_run_time[0]} dk/bölüm`
               : ''}
+            {Number(currentItem.matchScore || item?.matchScore) > 0 && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  background: 'linear-gradient(135deg, #e11d48, #f43f5e)',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  fontSize: '11px',
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  marginLeft: '6px',
+                  boxShadow: '0 2px 8px rgba(225, 29, 72, 0.4)',
+                }}
+              >
+                🎯 %{Math.round(Number(currentItem.matchScore || item?.matchScore))} Sana Özel Uyumu
+              </span>
+            )}
           </div>
 
           <div id="detailGenres" className="detail-tags" aria-label="Türler">
@@ -241,6 +284,50 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 {genre}
               </span>
             ))}
+          </div>
+
+          {/* Quick List Status Buttons */}
+          <div className="detail-quick-status-bar" role="group" aria-label="Hızlı liste durumu">
+            <button
+              type="button"
+              className={`detail-status-pill pill-watchlist ${status === 'watchlist' && savedItem ? 'is-active' : ''}`}
+              onClick={() => handleQuickSetStatus('watchlist')}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href={status === 'watchlist' && savedItem ? '#icon-check' : '#icon-plus'}></use>
+              </svg>
+              <span>{savedItem && status === 'watchlist' ? 'İzleneceklerde ✓' : '+ İzleneceklere Ekle'}</span>
+            </button>
+            <button
+              type="button"
+              className={`detail-status-pill pill-watching ${status === 'watching' && savedItem ? 'is-active' : ''}`}
+              onClick={() => handleQuickSetStatus('watching')}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-play"></use>
+              </svg>
+              <span>{savedItem && status === 'watching' ? 'İzleniyor ▶' : '▶ İzliyorum'}</span>
+            </button>
+            <button
+              type="button"
+              className={`detail-status-pill pill-completed ${status === 'completed' && savedItem ? 'is-active' : ''}`}
+              onClick={() => handleQuickSetStatus('completed')}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-check"></use>
+              </svg>
+              <span>{savedItem && status === 'completed' ? 'Tamamlandı ✓' : '✓ İzlendi'}</span>
+            </button>
+            {savedItem && (
+              <button
+                type="button"
+                className="detail-status-pill pill-remove"
+                onClick={handleRemove}
+                title="Listeden Kaldır"
+              >
+                ✕ Listeden Çıkar
+              </button>
+            )}
           </div>
 
           <p id="detailOverview" className="detail-overview">
@@ -440,7 +527,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               id="detailStatus"
               aria-label="İzleme durumu"
               value={status}
-              onChange={(e) => setStatus(e.target.value as any)}
+              onChange={(e) => {
+                const newStatus = e.target.value as 'watching' | 'watchlist' | 'completed';
+                setStatus(newStatus);
+                handleQuickSetStatus(newStatus);
+              }}
             >
               <option value="watchlist">İzlenecek</option>
               <option value="watching">İzliyorum</option>
@@ -464,7 +555,20 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     role="radio"
                     aria-label={`10 üzerinden ${star}`}
                     aria-checked={personalRating === star}
-                    onClick={() => setPersonalRating(star)}
+                    onClick={() => {
+                      setPersonalRating(star);
+                      let tracking = {};
+                      if (isTv) {
+                        tracking = {
+                          season_progress: seasonProgress,
+                          season_episode_counts: seasonCounts,
+                          current_season: currentSeason,
+                          next_episode: nextEpNum,
+                          episodes_watched: totalEpisodesWatched,
+                        };
+                      }
+                      onSave(currentItem, status, star, tracking);
+                    }}
                   >
                     {star}
                   </button>
@@ -473,7 +577,20 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                   id="clearRating"
                   className="star-clear"
                   type="button"
-                  onClick={() => setPersonalRating('')}
+                  onClick={() => {
+                    setPersonalRating('');
+                    let tracking = {};
+                    if (isTv) {
+                      tracking = {
+                        season_progress: seasonProgress,
+                        season_episode_counts: seasonCounts,
+                        current_season: currentSeason,
+                        next_episode: nextEpNum,
+                        episodes_watched: totalEpisodesWatched,
+                      };
+                    }
+                    onSave(currentItem, status, '', tracking);
+                  }}
                 >
                   Temizle
                 </button>
@@ -490,12 +607,14 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               </button>
             )}
 
-            {!item.custom && (
+            {!currentItem.custom && (
               <button
                 id="dislikeDetail"
                 className="btn"
                 type="button"
-                onClick={() => onToggleDislike(`${item.media_type}:${item.id}`)}
+                onClick={() =>
+                  onToggleDislike(`${currentItem.media_type}:${currentItem.id}`)
+                }
               >
                 {isDisliked ? 'İlgilenmiyorum tercihini kaldır' : 'İlgilenmiyorum'}
               </button>

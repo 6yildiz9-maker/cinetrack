@@ -7,6 +7,9 @@ interface ControlsProps {
   upcomingCount: number;
   dislikedCount?: number;
   favoriteActorsCount?: number;
+  watchingCount?: number;
+  watchlistCount?: number;
+  completedCount?: number;
   // Filters
   genres: Record<number, string>;
   selectedGenre: string;
@@ -31,6 +34,9 @@ export const Controls: React.FC<ControlsProps> = ({
   upcomingCount,
   dislikedCount = 0,
   favoriteActorsCount = 0,
+  watchingCount = 0,
+  watchlistCount = 0,
+  completedCount = 0,
   genres,
   selectedGenre,
   onGenreChange,
@@ -219,7 +225,7 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'all'}
             onClick={() => onListStatusChange('all')}
           >
-            Tümü
+            Tümü <span className="chip-badge badge-all">{myListCount}</span>
           </button>
           <button
             className={`chip ${listStatus === 'watching' ? 'active' : ''}`}
@@ -227,7 +233,7 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'watching'}
             onClick={() => onListStatusChange('watching')}
           >
-            İzliyorum
+            İzliyorum <span className="chip-badge badge-watching">{watchingCount}</span>
           </button>
           <button
             className={`chip ${listStatus === 'watchlist' ? 'active' : ''}`}
@@ -235,7 +241,7 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'watchlist'}
             onClick={() => onListStatusChange('watchlist')}
           >
-            İzlenecek
+            İzlenecek <span className="chip-badge badge-watchlist">{watchlistCount}</span>
           </button>
           <button
             className={`chip ${listStatus === 'completed' ? 'active' : ''}`}
@@ -243,7 +249,7 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'completed'}
             onClick={() => onListStatusChange('completed')}
           >
-            Tamamlandı
+            Tamamlandı <span className="chip-badge badge-completed">{completedCount}</span>
           </button>
           <button
             className={`chip ${listStatus === 'upcoming' ? 'active' : ''}`}

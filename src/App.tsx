@@ -33,6 +33,7 @@ import {
   buildTasteProfileV3,
   scoreCandidatesV3,
   RECOMMENDATION_WEIGHTS_V3,
+  findSavedItem,
 } from './core/cinetrack-core';
 import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
@@ -504,8 +505,14 @@ export function App() {
           );
 
           const pool = createCandidatePool({ maxItems: 500 });
-          const isSaved = (item: any, type: string) =>
-            currentSaved.some((s) => s.id === item.id && s.media_type === type);
+          const isSaved = (item: any, type?: string) =>
+            findSavedItem(currentSaved, item) != null ||
+            currentSaved.some(
+              (s) =>
+                String(s.id) === String(item.id) ||
+                (s.media_type === (type || item.media_type || (item.title ? 'movie' : 'tv')) &&
+                  String(s.id) === String(item.id))
+            );
 
           const watchedRequests: any[] = [];
           const secondaryWatchedRequests: any[] = [];
@@ -650,6 +657,12 @@ export function App() {
               mood: currentPrefs.mood,
             }
           );
+          // Strictly exclude any items that are already in the user's saved list
+          scored = scored.filter(
+            (entry) =>
+              findSavedItem(currentSaved, entry.candidate) == null &&
+              !currentSaved.some((s) => String(s.id) === String(entry.candidate.id))
+          );
           scored.sort((a, b) => b.score - a.score);
           const picked = diversifyList(scored, { limit: 24, maxPerGenre: 6 });
 
@@ -659,7 +672,12 @@ export function App() {
           });
 
           setForYouReasons(reasonsMap);
-          setForYouItems(picked.map((e) => e.candidate));
+          setForYouItems(
+            picked.map((e) => ({
+              ...e.candidate,
+              matchScore: Math.max(1, Math.min(100, Math.round(Number(e.score) || 75))),
+            }))
+          );
           setCatalogTotalPages(1);
           setCatalogPage(1);
           if (forceRefresh) showToast('Sana özel öneriler güncellendi.');
@@ -790,37 +808,73 @@ export function App() {
     personalRating: number | '',
     tracking: any = {}
   ) => {
-    const existingIndex = savedItems.findIndex(
-      (entry) => entry.id === item.id && entry.media_type === item.media_type
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    const targetId = String(item.id);
+    const targetTitle = (item.title || item.name || '').trim().toLowerCase();
+    const existing = savedItemsRef.current.find(
+      (entry) =>
+        (String(entry.id) === targetId && entry.media_type === mediaType) ||
+        String(entry.id) === targetId ||
+        (Boolean(targetTitle) && (entry.title || '').trim().toLowerCase() === targetTitle)
     );
-    const prev = existingIndex >= 0 ? savedItems[existingIndex] : null;
     const normalized = normalizeSavedItem({
       ...item,
+      media_type: mediaType,
       ...tracking,
       status,
       personal_rating: personalRating || '',
-      personal_rating_cleared: Boolean(prev && !personalRating && prev.personal_rating !== ''),
-      addedAt: prev ? prev.addedAt : new Date().toISOString(),
+      personal_rating_cleared: Boolean(existing && !personalRating && existing.personal_rating !== ''),
+      addedAt: existing ? existing.addedAt : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
     if (!normalized) return;
 
-    if (existingIndex >= 0) {
-      const next = [...savedItems];
-      next[existingIndex] = normalized;
-      setSavedItems(next);
+    setSavedItems((currentSaved) => {
+      const existingIndex = currentSaved.findIndex(
+        (entry) =>
+          (String(entry.id) === targetId && entry.media_type === mediaType) ||
+          String(entry.id) === targetId ||
+          (Boolean(targetTitle) && (entry.title || '').trim().toLowerCase() === targetTitle)
+      );
+
+      let next: SavedItem[];
+      if (existingIndex >= 0) {
+        next = [...currentSaved];
+        next[existingIndex] = normalized;
+      } else {
+        next = [normalized, ...currentSaved];
+      }
+      savedItemsRef.current = next;
+      return next;
+    });
+
+    // Immediately remove from recommendations (Sana Özel) so it NEVER lingers!
+    setForYouItems((prev) =>
+      prev.filter(
+        (i) =>
+          String(i.id) !== targetId &&
+          (!targetTitle || (i.title || i.name || '').trim().toLowerCase() !== targetTitle)
+      )
+    );
+
+    const title = displayTitle(item);
+    if (status === 'completed') {
+      showToast(`✓ "${title}" izlendi listesine kaydedildi! 🎉`);
+    } else if (status === 'watching') {
+      showToast(`▶ "${title}" izleniyor olarak kaydedildi! 🍿`);
     } else {
-      setSavedItems([normalized, ...savedItems]);
+      showToast(`✓ "${title}" izlenecekler listesine kaydedildi! ✨`);
     }
 
     // Auto-enrich TV show metadata if episode count or runtime is missing
     if (normalized.media_type === 'tv' && !normalized.custom && !normalized.number_of_episodes) {
-      fetchTmdb(`/tv/${normalized.id}`)
+      const tvId = normalized.id;
+      fetchTmdb(`/tv/${tvId}`)
         .then((tvDetails) => {
           if (tvDetails) {
             setSavedItems((currentList) =>
               currentList.map((entry) => {
-                if (entry.id === normalized.id && entry.media_type === 'tv') {
+                if (entry.id === tvId && entry.media_type === 'tv') {
                   return {
                     ...entry,
                     number_of_episodes: Number(tvDetails.number_of_episodes) || 10,
@@ -882,9 +936,21 @@ export function App() {
   };
 
   const handleRemoveItem = (item: any) => {
-    setSavedItems((prev) =>
-      prev.filter((entry) => !(entry.id === item.id && entry.media_type === item.media_type))
-    );
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    const targetId = String(item.id);
+    const targetTitle = (item.title || item.name || '').trim().toLowerCase();
+    setSavedItems((prev) => {
+      const next = prev.filter(
+        (entry) =>
+          !(
+            (String(entry.id) === targetId && entry.media_type === mediaType) ||
+            String(entry.id) === targetId ||
+            (Boolean(targetTitle) && (entry.title || '').trim().toLowerCase() === targetTitle)
+          )
+      );
+      savedItemsRef.current = next;
+      return next;
+    });
     showToast(`"${displayTitle(item)}" listeden kaldırıldı.`);
   };
 
@@ -1024,9 +1090,26 @@ export function App() {
   const getDisplayedItems = () => {
     if (tab === 'discover') {
       const source = category === 'for-you' ? forYouItems : catalogItems;
-      const filtered = source.filter(
-        (item) => !preferences.disliked.includes(`${item.media_type}:${item.id}`)
-      );
+      const filtered = source.filter((item) => {
+        const itemType = item.media_type || (item.title ? 'movie' : 'tv');
+        const key = `${itemType}:${item.id}`;
+        if (preferences.disliked.includes(key)) return false;
+
+        // In Sana Özel (recommendations), strictly filter out items already in the user's list
+        if (category === 'for-you') {
+          const isAlreadySaved =
+            findSavedItem(savedItems, item) != null ||
+            savedItems.some(
+              (s) =>
+                String(s.id) === String(item.id) ||
+                ((s.title || '').trim().toLowerCase() === (item.title || item.name || '').trim().toLowerCase() &&
+                  Boolean(item.title || item.name))
+            );
+          if (isAlreadySaved) return false;
+        }
+
+        return true;
+      });
       return filterAndSortItems(filtered);
     }
 
@@ -1058,12 +1141,52 @@ export function App() {
   const watchingItem = savedItems.find((item) => item.status === 'watching') || null;
   const currentHeroItem = watchingItem || trendingTop || catalogItems[0] || null;
 
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const upcomingCount = savedItems.filter((item) => {
+    const airDate = resolveAirDate(item);
+    return airDate && airDate >= todayStr && (selectedType === 'all' || item.media_type === selectedType);
+  }).length;
+  const watchingCount = savedItems.filter(
+    (item) => item.status === 'watching' && (selectedType === 'all' || item.media_type === selectedType)
+  ).length;
+  const watchlistCount = savedItems.filter(
+    (item) => item.status === 'watchlist' && (selectedType === 'all' || item.media_type === selectedType)
+  ).length;
+  const completedCount = savedItems.filter(
+    (item) => item.status === 'completed' && (selectedType === 'all' || item.media_type === selectedType)
+  ).length;
+  const allListCount = savedItems.filter(
+    (item) => selectedType === 'all' || item.media_type === selectedType
+  ).length;
+
   // Header and Catalog Section Titles
   const getCatalogTitles = () => {
     if (tab === 'list') {
+      const typeLabel =
+        selectedType === 'movie'
+          ? 'film'
+          : selectedType === 'tv'
+          ? 'dizi'
+          : 'içerik (film + dizi)';
+      const statusTitles: Record<string, { title: string; count: number }> = {
+        all: { title: 'Tüm takip listem', count: allListCount },
+        watching: { title: 'Şu an izlediklerim', count: watchingCount },
+        watchlist: { title: 'İzlenecekler listem', count: watchlistCount },
+        completed: { title: 'Tamamladıklarım', count: completedCount },
+        upcoming: { title: 'Yaklaşan yayınlar', count: upcomingCount },
+        actors: { title: 'Favori oyuncularım', count: favoriteActors.length },
+        disliked: { title: 'İlgilenmediğim içerikler', count: preferences.disliked.length },
+      };
+      const info = statusTitles[listStatus] || statusTitles.all;
+      if (listStatus === 'actors') {
+        return {
+          title: `${info.title} (${info.count})`,
+          description: `Takip ettiğin ${info.count} favori oyuncu ve senin için kişiselleştirilmiş film & dizi önerileri`,
+        };
+      }
       return {
-        title: 'Kişisel takip listem',
-        description: 'Kişisel izleme listen bu tarayıcıda saklanır',
+        title: `${info.title} (${info.count})`,
+        description: `Listenizde toplam ${info.count} kayıtlı ${typeLabel} bulunuyor`,
       };
     }
     if (query) {
@@ -1091,12 +1214,6 @@ export function App() {
   };
 
   const { title: catalogTitle, description: catalogDescription } = getCatalogTitles();
-
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const upcomingCount = savedItems.filter((item) => {
-    const airDate = resolveAirDate(item);
-    return airDate && airDate >= todayStr;
-  }).length;
 
   // Profile Management
   const handleSaveProfileName = (newName: string) => {
@@ -1257,9 +1374,7 @@ export function App() {
         onOpenProfile={() => setProfileOpen(true)}
         onOpenAdd={() => setAddCustomOpen(true)}
         onSelectItem={(item) => setDetailItem(item)}
-        getSaved={(item) =>
-          savedItems.find((s) => s.id === item.id && s.media_type === item.media_type)
-        }
+        getSaved={(item) => findSavedItem(savedItems, item)}
       />
 
       <main className="shell">
@@ -1274,10 +1389,13 @@ export function App() {
         <Controls
           tab={tab}
           onTabChange={setTab}
-          myListCount={savedItems.length}
+          myListCount={allListCount}
           upcomingCount={upcomingCount}
           dislikedCount={preferences.disliked.length}
           favoriteActorsCount={favoriteActors.length}
+          watchingCount={watchingCount}
+          watchlistCount={watchlistCount}
+          completedCount={completedCount}
           genres={genresMap}
           selectedGenre={selectedGenre}
           onGenreChange={setSelectedGenre}
@@ -1346,18 +1464,14 @@ export function App() {
       {/* Modals & Drawers */}
       <DetailModal
         item={detailItem}
-        savedItem={
-          detailItem
-            ? savedItems.find(
-                (s) => s.id === detailItem.id && s.media_type === detailItem.media_type
-              )
-            : undefined
-        }
+        savedItem={detailItem ? findSavedItem(savedItems, detailItem) : undefined}
         isOpen={Boolean(detailItem)}
         genresMap={genresMap}
         isDisliked={
           detailItem
-            ? preferences.disliked.includes(`${detailItem.media_type}:${detailItem.id}`)
+            ? preferences.disliked.includes(
+                `${detailItem.media_type || (detailItem.title ? 'movie' : 'tv')}:${detailItem.id}`
+              )
             : false
         }
         favoriteActors={favoriteActors}
@@ -1374,13 +1488,7 @@ export function App() {
 
       <QuickSaveModal
         item={quickSaveItem}
-        savedItem={
-          quickSaveItem
-            ? savedItems.find(
-                (s) => s.id === quickSaveItem.id && s.media_type === quickSaveItem.media_type
-              )
-            : undefined
-        }
+        savedItem={quickSaveItem ? findSavedItem(savedItems, quickSaveItem) : undefined}
         isOpen={Boolean(quickSaveItem)}
         onClose={() => setQuickSaveItem(null)}
         onSave={(item, status, rating) => {

@@ -9,6 +9,7 @@ interface StatsProps {
 export const Stats: React.FC<StatsProps> = ({ items }) => {
   const total = items.length;
   const watching = items.filter((item) => item.status === 'watching').length;
+  const watchlist = items.filter((item) => item.status === 'watchlist').length;
   const completed = items.filter((item) => item.status === 'completed').length;
   const rated = items.filter(
     (item) => Number.isFinite(Number(item.personal_rating)) && item.personal_rating !== ''
@@ -57,6 +58,20 @@ export const Stats: React.FC<StatsProps> = ({ items }) => {
           <div className="stat-label">İzliyorum</div>
           <div id="statWatching" className="stat-value">
             {watching}
+          </div>
+        </div>
+      </div>
+
+      <div className="stat">
+        <div className="stat-icon" style={{ background: '#0284c718', color: '#38bdf8' }}>
+          <svg className="icon" aria-hidden="true">
+            <use href="#icon-plus"></use>
+          </svg>
+        </div>
+        <div>
+          <div className="stat-label">İzlenecek</div>
+          <div id="statWatchlist" className="stat-value">
+            {watchlist}
           </div>
         </div>
       </div>

@@ -231,11 +231,17 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     poster_path: typeof item.poster_path === 'string' ? item.poster_path : '',
     backdrop_path: typeof item.backdrop_path === 'string' ? item.backdrop_path : '',
     overview: typeof item.overview === 'string' ? item.overview.slice(0, 5000) : '',
-    genre_ids: Array.isArray(item.genre_ids)
-      ? item.genre_ids
-          .filter((id: any) => Number.isSafeInteger(Number(id)) && Number(id) > 0)
-          .map(Number)
-      : [],
+    genre_ids:
+      Array.isArray(item.genre_ids) && item.genre_ids.length
+        ? item.genre_ids
+            .filter((id: any) => Number.isSafeInteger(Number(id)) && Number(id) > 0)
+            .map(Number)
+        : Array.isArray(item.genres)
+        ? item.genres
+            .map((g: any) => (typeof g === 'object' && g ? g.id : g))
+            .filter((id: any) => Number.isSafeInteger(Number(id)) && Number(id) > 0)
+            .map(Number)
+        : [],
     genres: Array.isArray(item.genres)
       ? item.genres
           .map((genre: any) => (typeof genre === 'string' ? genre : genre?.name))
@@ -261,6 +267,46 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : '',
     custom: Boolean(item.custom || String(item.id).startsWith('custom-')),
   };
+}
+
+/**
+ * Robust item lookup in the user's saved list.
+ * Matches by ID and media_type, with resilient fallbacks for ID alone and title.
+ */
+export function findSavedItem(
+  savedItems: SavedItem[] | undefined | null,
+  item: any
+): SavedItem | undefined {
+  if (!Array.isArray(savedItems) || !item || item.id == null) return undefined;
+  const targetId = String(item.id);
+  const targetType = item.media_type || (item.title ? 'movie' : 'tv');
+
+  // 1. Exact match by ID and media_type
+  const exact = savedItems.find(
+    (entry) => String(entry.id) === targetId && entry.media_type === targetType
+  );
+  if (exact) return exact;
+
+  // 2. Fallback: match by ID alone
+  const byId = savedItems.filter((entry) => String(entry.id) === targetId);
+  if (byId.length > 0) {
+    const withType = byId.find((entry) => entry.media_type === targetType);
+    return withType || byId[0];
+  }
+
+  // 3. Fallback: match by title/name if available
+  const rawTitle = (item.title || item.name || '').trim().toLowerCase();
+  if (rawTitle) {
+    const byTitle = savedItems.filter(
+      (entry) => (entry.title || '').trim().toLowerCase() === rawTitle
+    );
+    if (byTitle.length > 0) {
+      const withType = byTitle.find((entry) => entry.media_type === targetType);
+      return withType || byTitle[0];
+    }
+  }
+
+  return undefined;
 }
 
 export function dedupeItems(items: SavedItem[]): SavedItem[] {
@@ -1530,4 +1576,284 @@ export function scoreCandidatesV3(
       tags: tags.slice(0, 4),
     };
   });
+}
+
+export interface FavoriteActorInfo {
+  id: number;
+  name: string;
+  profile_path?: string | null;
+  character?: string;
+  [key: string]: any;
+}
+
+export interface ActorRecommendationItem {
+  id: number;
+  title: string;
+  name?: string;
+  media_type: 'movie' | 'tv';
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  overview?: string;
+  genre_ids: number[];
+  release_date?: string;
+  first_air_date?: string;
+  vote_average: number;
+  vote_count: number;
+  popularity: number;
+  character?: string;
+  order?: number;
+  matchedActors: Array<{
+    id: number;
+    name: string;
+    character?: string;
+    order?: number;
+  }>;
+  matchScore: number;
+  reason: string;
+  [key: string]: any;
+}
+
+export interface ScoreActorRecommendationsOptions {
+  favoriteActors: FavoriteActorInfo[];
+  actorCreditsMap: Record<number | string, any[]>;
+  savedItems?: any[];
+  dislikedKeys?: string[];
+  genresMap?: Record<number, string>;
+  sortMode?: 'best_match' | 'newest';
+  now?: number;
+}
+
+/**
+ * Favori oyuncuların yer aldığı, kullanıcının henüz izlemediği / listesine eklemediği
+ * yapımları bir havuzda toplayıp sinyal ağırlıklarına göre puanlar.
+ */
+export function scoreActorRecommendations(options: ScoreActorRecommendationsOptions): ActorRecommendationItem[] {
+  const {
+    favoriteActors = [],
+    actorCreditsMap = {},
+    savedItems = [],
+    dislikedKeys = [],
+    genresMap = {},
+    sortMode = 'best_match',
+    now = Date.now(),
+  } = options;
+
+  if (!Array.isArray(favoriteActors) || favoriteActors.length === 0) {
+    return [];
+  }
+
+  // 1. Kullanıcının sevdiği türleri analiz et (savedItems'taki puanı >= 7 veya completed yapımlardan)
+  const userGenreWeightMap: Record<number, number> = {};
+  let totalGenreWeight = 0;
+  for (const item of savedItems) {
+    if (!item) continue;
+    let weight = 1;
+    const rating = Number(item.personal_rating);
+    if (Number.isFinite(rating) && rating >= 7) weight = 2.5;
+    else if (item.status === 'completed') weight = 1.8;
+    else if (item.status === 'watching') weight = 1.2;
+    else if (item.status === 'disliked' || item.isDisliked) weight = -2;
+
+    const gids: number[] = Array.isArray(item.genre_ids)
+      ? item.genre_ids
+      : Array.isArray(item.genres)
+      ? item.genres.map((g: any) => g?.id).filter(Boolean)
+      : [];
+    for (const gid of gids) {
+      userGenreWeightMap[gid] = (userGenreWeightMap[gid] || 0) + weight;
+      totalGenreWeight += Math.max(0, weight);
+    }
+  }
+
+  // En sevilen tür id'leri
+  const topGenreIds = Object.entries(userGenreWeightMap)
+    .filter(([, val]) => val > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([id]) => Number(id));
+
+  // Disliked set
+  const dislikedSet = new Set(dislikedKeys || []);
+
+  // 2. Havuz oluştur: her oyuncunun combined_credits listesini birleştir
+  const candidatesMap = new Map<string, any>();
+
+  for (const actor of favoriteActors) {
+    if (!actor || !actor.id) continue;
+    const credits = actorCreditsMap[actor.id] || [];
+    if (!Array.isArray(credits)) continue;
+
+    for (const credit of credits) {
+      if (!credit || !credit.id) continue;
+      const mediaType: 'movie' | 'tv' = credit.media_type === 'tv' ? 'tv' : 'movie';
+      const key = `${mediaType}-${credit.id}`;
+
+      // Başlık kontrolü
+      const title = String(credit.title || credit.name || '').trim();
+      if (!title) continue;
+
+      // Kullanıcının kayıtlı listesinde var mı? (İzlenen, izlenecek, tamamlanan vb.)
+      if (findSavedItem(savedItems, credit)) {
+        continue;
+      }
+
+      // İlgilenilmeyenlerde var mı?
+      if (dislikedSet.has(key)) {
+        continue;
+      }
+
+      const actorEntry = {
+        id: actor.id,
+        name: actor.name,
+        character: credit.character || '',
+        order: typeof credit.order === 'number' ? credit.order : 99,
+      };
+
+      if (candidatesMap.has(key)) {
+        const existing = candidatesMap.get(key);
+        // Aynı oyuncuyu tekrar ekleme
+        if (!existing.matchedActors.some((a: any) => a.id === actor.id)) {
+          existing.matchedActors.push(actorEntry);
+        }
+      } else {
+        candidatesMap.set(key, {
+          ...credit,
+          id: credit.id,
+          media_type: mediaType,
+          title,
+          matchedActors: [actorEntry],
+        });
+      }
+    }
+  }
+
+  const currentYear = new Date(now).getFullYear();
+
+  // 3. Her adayı sinyal tablosuna göre puanla
+  const results: ActorRecommendationItem[] = [];
+
+  for (const candidate of candidatesMap.values()) {
+    const matchedCount = candidate.matchedActors.length;
+    // Sinyal 1: Favori oyuncunun yapımda bulunması (30 puan)
+    const actorPresenceScore = 30;
+
+    // Sinyal 2: Birden fazla favori oyuncunun bulunması (+10 bonus)
+    const multiActorBonus = matchedCount > 1 ? 10 : 0;
+
+    // Sinyal 3: Kullanıcının sevdiği türlere uyum (20 puan)
+    const cGenres: number[] = Array.isArray(candidate.genre_ids)
+      ? candidate.genre_ids
+      : Array.isArray(candidate.genres)
+      ? candidate.genres.map((g: any) => g?.id).filter(Boolean)
+      : [];
+
+    let genreScore = 10; // nötr başlangıç
+    let matchedGenreName = '';
+    if (topGenreIds.length > 0 && cGenres.length > 0) {
+      const matchCount = cGenres.filter((gid) => topGenreIds.includes(gid)).length;
+      if (matchCount > 0) {
+        genreScore = Math.min(20, 12 + matchCount * 4);
+        const topGid = cGenres.find((gid) => topGenreIds.includes(gid));
+        if (topGid && genresMap[topGid]) {
+          matchedGenreName = genresMap[topGid];
+        }
+      } else {
+        genreScore = 6;
+      }
+    } else if (cGenres.length > 0 && genresMap[cGenres[0]]) {
+      matchedGenreName = genresMap[cGenres[0]];
+    }
+
+    // Sinyal 4: Kullanıcının geçmiş puanlarından tahmin edilen ilgi (15 puan)
+    let tasteScore = 11;
+    if (savedItems.length > 0) {
+      if (genreScore >= 16) tasteScore = 14;
+      else if (genreScore <= 8) tasteScore = 7;
+    }
+
+    // Sinyal 5: Genel içerik kalitesi ve oy sayısı (10 puan)
+    const vAvg = Number(candidate.vote_average) || 0;
+    const vCnt = Number(candidate.vote_count) || 0;
+    const bayes = bayesianRating(vAvg, vCnt, { prior: 6.5, minVotes: 200 });
+    const qualityScore = clamp01((bayes - 4.5) / 4.0) * 10;
+
+    // Sinyal 6: Yenilik / güncellik (5 puan)
+    const releaseDate = candidate.release_date || candidate.first_air_date || '';
+    let recencyScore = 2;
+    if (releaseDate) {
+      const relYear = parseInt(releaseDate.substring(0, 4), 10);
+      if (Number.isFinite(relYear)) {
+        if (relYear >= currentYear) recencyScore = 5;
+        else if (relYear >= currentYear - 2) recencyScore = 4;
+        else if (relYear >= currentYear - 5) recencyScore = 3;
+        else if (relYear >= currentYear - 10) recencyScore = 2;
+        else recencyScore = 1;
+      }
+    }
+
+    // Sinyal 7: İzleme platformunda bulunması / erişilebilirlik (10 puan)
+    const platformScore = 8; // Türkiye yaygın akış platformu ortalaması
+
+    // Toplam puanı hesapla (0-100)
+    const totalScoreRaw =
+      actorPresenceScore +
+      multiActorBonus +
+      genreScore +
+      tasteScore +
+      qualityScore +
+      recencyScore +
+      platformScore;
+
+    const matchScore = Math.min(99, Math.max(52, Math.round(totalScoreRaw)));
+
+    // Gerekçe metni oluştur ("Neden önerildi?")
+    let reason = '';
+    if (matchedCount > 1) {
+      const names = candidate.matchedActors.map((a: any) => a.name).join(' ve ');
+      if (matchedGenreName) {
+        reason = `Favori oyuncuların ${names} kadroda ve sevdiğin ${matchedGenreName} türüyle uyuşuyor.`;
+      } else {
+        reason = `Birden fazla favori oyuncun (${names}) bu yapımda bir araya geliyor.`;
+      }
+    } else {
+      const singleActor = candidate.matchedActors[0];
+      const isLead = singleActor.order <= 2;
+      const roleText = isLead ? 'başrolde' : 'kadroda';
+      if (matchedGenreName) {
+        reason = `Favori oyuncun ${singleActor.name} ${roleText} ve ${matchedGenreName} tür tercihlerinle eşleşiyor.`;
+      } else if (vAvg >= 7.5) {
+        reason = `Favori oyuncun ${singleActor.name} ${roleText} ve yapım yüksek izleyici puanına (%${Math.round(vAvg * 10)}) sahip.`;
+      } else {
+        reason = `Favori oyuncun ${singleActor.name} ${roleText} yer alıyor.`;
+      }
+    }
+
+    results.push({
+      ...candidate,
+      matchScore,
+      reason,
+    });
+  }
+
+  // 4. İki ayrı sıralama modu desteği
+  if (sortMode === 'newest') {
+    results.sort((a, b) => {
+      const dateA = a.release_date || a.first_air_date || '';
+      const dateB = b.release_date || b.first_air_date || '';
+      if (!dateA && !dateB) return b.matchScore - a.matchScore;
+      if (!dateA) return 1;
+      if (!dateB) return -1;
+      const cmp = dateB.localeCompare(dateA);
+      return cmp !== 0 ? cmp : b.matchScore - a.matchScore;
+    });
+  } else {
+    // 'best_match' (en güçlü eşleşmeler)
+    results.sort((a, b) => {
+      if (b.matchScore !== a.matchScore) {
+        return b.matchScore - a.matchScore;
+      }
+      return (b.popularity || 0) - (a.popularity || 0);
+    });
+  }
+
+  return results;
 }

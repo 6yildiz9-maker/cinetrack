@@ -1,6 +1,7 @@
 import React from 'react';
 import { MediaCard } from './MediaCard';
-import { SavedItem } from '../core/cinetrack-core';
+import { ActorRecommendationsSection } from './ActorRecommendationsSection';
+import { SavedItem, findSavedItem } from '../core/cinetrack-core';
 import { imageUrl } from '../utils/helpers';
 
 interface MediaGridProps {
@@ -62,8 +63,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onToggleFavoriteActor,
   onRefreshForYou,
 }) => {
-  const getSaved = (item: any) =>
-    savedItems.find((entry) => entry.id === item.id && entry.media_type === item.media_type);
+  const getSaved = (item: any) => findSavedItem(savedItems, item);
 
   return (
     <section aria-labelledby="catalogTitle">
@@ -316,6 +316,20 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           })
         )}
       </div>
+
+      {listStatus === 'actors' && favoriteActors.length > 0 && (
+        <ActorRecommendationsSection
+          favoriteActors={favoriteActors}
+          savedItems={savedItems}
+          dislikedKeys={dislikedKeys}
+          genresMap={genres}
+          onOpenDetails={onOpenDetails}
+          onQuickAdd={onQuickAdd}
+          onSetStatus={onSetStatus}
+          onQuickSave={onQuickSave}
+          onOpenPerson={onOpenPerson}
+        />
+      )}
 
       {tab === 'discover' && category === 'for-you' && items.length > 0 && onRefreshForYou && (
         <div className="for-you-refresh-wrap">

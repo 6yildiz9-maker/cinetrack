@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { displayTitle, formatMediaDates, imageUrl } from '../utils/helpers';
-import { SavedItem } from '../core/cinetrack-core';
+import { SavedItem, findSavedItem } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
@@ -91,8 +91,7 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
     .filter((item, index, list) => list.findIndex((e) => e.id === item.id) === index)
     .slice(0, 16);
 
-  const getSaved = (item: any) =>
-    savedItems.find((entry) => entry.id === item.id && entry.media_type === item.media_type);
+  const getSaved = (item: any) => findSavedItem(savedItems, item);
 
   const renderCreditsList = (list: any[], mediaType: 'movie' | 'tv') => {
     if (list.length === 0) {

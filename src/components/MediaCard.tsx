@@ -34,8 +34,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   const poster = getPoster(item);
   const status = savedItem?.status || '';
   const statusText =
-    status === 'watching' ? 'İzliyorum' : status === 'completed' ? 'Tamamlandı' : status === 'watchlist' ? 'Listemde' : '';
-  const statusIcon = status === 'watching' ? 'icon-play' : status === 'completed' ? 'icon-check' : 'icon-plus';
+    status === 'watching' ? 'İzliyorum' : status === 'completed' ? 'Tamamlandı' : status === 'watchlist' ? 'İzlenecek' : '';
+  const statusIcon = status === 'watching' ? 'icon-play' : status === 'completed' ? 'icon-check' : 'icon-check';
   const genreNames = (item.genre_ids || [])
     .map((id: number) => genres[id])
     .filter(Boolean)
@@ -130,6 +130,16 @@ export const MediaCard: React.FC<MediaCardProps> = ({
 
         <span className="badge">{kind}</span>
 
+        {(Number(item.matchScore) > 0 || (tab === 'discover' && Boolean(recommendationReason))) && (
+          <span
+            className="match-badge"
+            title={`Sana Özel zevk uyumluluğu: %${Math.round(Number(item.matchScore) || 82)}`}
+            aria-label={`Uyumluluk: %${Math.round(Number(item.matchScore) || 82)}`}
+          >
+            🎯 %{Math.round(Number(item.matchScore) || 82)} Uyum
+          </span>
+        )}
+
         {countdownText && (
           <span className="release-countdown" title={`Yayın tarihi: ${airDate}`}>
             📅 {countdownText}
@@ -154,7 +164,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             }}
           >
             <svg className="icon" aria-hidden="true">
-              <use href="#icon-plus"></use>
+              <use href={status === 'watchlist' ? '#icon-check' : '#icon-plus'}></use>
             </svg>
           </button>
 
@@ -246,6 +256,30 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         )}
 
         <div className="poster-overlay">
+          {savedItem ? (
+            <div className={`overlay-saved-pill status-${status}`}>
+              <svg className="icon" aria-hidden="true">
+                <use href={`#${statusIcon}`}></use>
+              </svg>
+              <span>{statusText}</span>
+            </div>
+          ) : (
+            <button
+              className="overlay-btn overlay-add-btn"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuickAdd(item);
+              }}
+              title="İzleme listeme ekle"
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-plus"></use>
+              </svg>
+              Listeme Ekle
+            </button>
+          )}
+
           <button
             className="overlay-btn"
             type="button"

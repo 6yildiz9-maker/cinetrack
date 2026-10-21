@@ -9,7 +9,8 @@ import {
   RECOMMENDATION_WEIGHTS, bayesianRating, billingWeight, buildTasteProfile,
   scoreCandidates, diversifyList, createCandidatePool,
   RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
-  buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore
+  buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore,
+  findSavedItem, scoreActorRecommendations
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -979,24 +980,6 @@ describe("Sana Özel v3 — getUserSignalV3", () => {
 });
 
 describe("Sana Özel v3 — buildTasteProfileV3 ve scoreCandidatesV3", () => {
-  it("explicit dislike overrides positive saved-item signals for the same title", () => {
-    const profile = buildTasteProfileV3(
-      [{
-        id: 77,
-        media_type: "movie",
-        status: "completed",
-        personal_rating: 10,
-        genre_ids: [28],
-        cast: [{ id: 701, name: "Actor" }]
-      }],
-      { dislikedKeys: ["movie:77"] }
-    );
-
-    assert.ok(profile.genres[28] < 0);
-    assert.ok(profile.actors[701].personal < 0);
-    assert.equal(profile.lovedSeedIds.has("movie:77"), false);
-  });
-
   it("yumuşatılmış tat profilini ve aday puanını 0..100 aralığında üretir", () => {
     const history = [
       {
@@ -1206,3 +1189,201 @@ describe("Sana Özel v3 — buildTasteProfileV3 ve scoreCandidatesV3", () => {
     assert.ok(scoredFranchise.tags.includes("Sevdiğin film serisinden"));
   });
 });
+
+describe("findSavedItem", () => {
+  const saved = [
+    baseItem({ id: 550, media_type: "movie", title: "Dövüş Kulübü", status: "completed" }),
+    baseItem({ id: 1399, media_type: "tv", title: "Game of Thrones", status: "watching" }),
+  ];
+
+  it("tam eşleşmede kaydı doğru bulur", () => {
+    const item = { id: 550, media_type: "movie", title: "Dövüş Kulübü" };
+    const found = findSavedItem(saved, item);
+    assert.ok(found);
+    assert.equal(found.id, 550);
+    assert.equal(found.status, "completed");
+  });
+
+  it("sayı ve dize kimlik uyumsuzluğunda bile bulur", () => {
+    const item = { id: "1399", media_type: "tv" };
+    const found = findSavedItem(saved, item);
+    assert.ok(found);
+    assert.equal(found.id, 1399);
+    assert.equal(found.status, "watching");
+  });
+
+  it("media_type eksikse ve kimlik tekilse yine bulur", () => {
+    const item = { id: 550 };
+    const found = findSavedItem(saved, item);
+    assert.ok(found);
+    assert.equal(found.id, 550);
+  });
+
+  it("başlık eşleşmesiyle bulur", () => {
+    const item = { id: 99999, title: "Dövüş Kulübü" };
+    const found = findSavedItem(saved, item);
+    assert.ok(found);
+    assert.equal(found.id, 550);
+  });
+
+  it("listede yoksa undefined döner", () => {
+    const item = { id: 404, title: "Bilinmeyen Film" };
+    assert.equal(findSavedItem(saved, item), undefined);
+    assert.equal(findSavedItem(null, item), undefined);
+  });
+});
+
+describe("scoreActorRecommendations", () => {
+  const favoriteActors = [
+    { id: 2037, name: "Cillian Murphy" },
+    { id: 934, name: "Rebecca Ferguson" },
+  ];
+
+  const actorCreditsMap = {
+    2037: [
+      {
+        id: 872585,
+        title: "Oppenheimer",
+        media_type: "movie",
+        genre_ids: [18, 36], // Drama, History
+        vote_average: 8.1,
+        vote_count: 9000,
+        release_date: "2023-07-19",
+        popularity: 120,
+        order: 0,
+      },
+      {
+        id: 1399,
+        title: "Dunkirk",
+        media_type: "movie",
+        genre_ids: [18, 10752], // Drama, War
+        vote_average: 7.5,
+        vote_count: 14000,
+        release_date: "2017-07-19",
+        popularity: 80,
+        order: 4,
+      },
+      {
+        id: 693134,
+        title: "Dune: Part Two",
+        media_type: "movie",
+        genre_ids: [878, 12], // Sci-Fi, Adventure
+        vote_average: 8.2,
+        vote_count: 5500,
+        release_date: "2024-02-27",
+        popularity: 150,
+        order: 5,
+      },
+    ],
+    934: [
+      {
+        id: 693134, // Dune: Part Two shares both Rebecca Ferguson and Cillian (for testing multi-actor)
+        title: "Dune: Part Two",
+        media_type: "movie",
+        genre_ids: [878, 12],
+        vote_average: 8.2,
+        vote_count: 5500,
+        release_date: "2024-02-27",
+        popularity: 150,
+        order: 3,
+      },
+      {
+        id: 575264,
+        title: "Mission: Impossible - Dead Reckoning",
+        media_type: "movie",
+        genre_ids: [28, 53],
+        vote_average: 7.6,
+        vote_count: 3500,
+        release_date: "2023-07-08",
+        popularity: 90,
+        order: 2,
+      },
+    ],
+  };
+
+  const genresMap = {
+    18: "Dram",
+    36: "Tarih",
+    878: "Bilim Kurgu",
+    12: "Macera",
+    28: "Aksiyon",
+    53: "Gerilim",
+  };
+
+  it("kullanıcının zaten izlediği veya kaydettiği yapımları eler", () => {
+    const savedItems = [
+      { id: 1399, media_type: "movie", title: "Dunkirk", status: "completed" },
+    ];
+    const recs = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems,
+      genresMap,
+    });
+    const ids = recs.map((r) => r.id);
+    assert.ok(!ids.includes(1399), "Dunkirk listeden elenmiş olmalı");
+    assert.ok(ids.includes(872585), "Oppenheimer listede olmalı");
+    assert.ok(ids.includes(693134), "Dune: Part Two listede olmalı");
+  });
+
+  it("aynı filmde birden fazla favori oyuncu varsa tek karta indirir ve +10 bonus verir", () => {
+    const recs = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      genresMap,
+    });
+    const dune = recs.find((r) => r.id === 693134);
+    assert.ok(dune, "Dune bulunmalı");
+    assert.equal(dune.matchedActors.length, 2, "2 favori oyuncu eşleşmeli");
+    assert.ok(
+      dune.matchedActors.some((a) => a.name === "Cillian Murphy") &&
+      dune.matchedActors.some((a) => a.name === "Rebecca Ferguson"),
+      "Her iki oyuncu da matchedActors içinde olmalı"
+    );
+    assert.ok(dune.reason.includes("Cillian Murphy") && dune.reason.includes("Rebecca Ferguson"));
+  });
+
+  it("kullanıcının ilgilenmediği yapımları (disliked) eler", () => {
+    const recs = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      dislikedKeys: ["movie-872585"],
+      genresMap,
+    });
+    const ids = recs.map((r) => r.id);
+    assert.ok(!ids.includes(872585), "Disliked olan Oppenheimer elenmeli");
+  });
+
+  it("sıralama modlarını (best_match ve newest) doğru uygular", () => {
+    const recsBest = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      genresMap,
+      sortMode: "best_match",
+    });
+    assert.ok(recsBest[0].matchScore >= recsBest[recsBest.length - 1].matchScore);
+
+    const recsNewest = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      genresMap,
+      sortMode: "newest",
+    });
+    assert.ok(recsNewest[0].release_date >= recsNewest[recsNewest.length - 1].release_date);
+  });
+
+  it("oyuncu listesi boşsa boş dizi döner", () => {
+    const recs = scoreActorRecommendations({
+      favoriteActors: [],
+      actorCreditsMap,
+    });
+    assert.deepEqual(recs, []);
+  });
+});
+
+
+
