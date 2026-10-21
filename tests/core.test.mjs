@@ -10,7 +10,7 @@ import {
   scoreCandidates, diversifyList, createCandidatePool,
   RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
   buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore,
-  findSavedItem, scoreActorRecommendations,
+  findSavedItem, scoreActorRecommendations, calculateActorRoleBonus, diversifyActorRecommendations,
   makeMediaKey, parseMediaKey, normalizeFavoriteActor, normalizeFavoriteActors
 } from "../src/core/cinetrack-core.ts";
 
@@ -1409,6 +1409,128 @@ describe("scoreActorRecommendations", () => {
       actorCreditsMap,
     });
     assert.deepEqual(recs, []);
+  });
+
+  it("TMDB kadro sırasına (order) göre başrol ve yardımcı rolleri farklı puanlar", () => {
+    assert.equal(calculateActorRoleBonus(0).bonus, 12);
+    assert.equal(calculateActorRoleBonus(0).label, "1. Başrol (#1)");
+    assert.equal(calculateActorRoleBonus(1).bonus, 10);
+    assert.equal(calculateActorRoleBonus(4).bonus, 7);
+    assert.equal(calculateActorRoleBonus(8).bonus, 4);
+    assert.equal(calculateActorRoleBonus(20).bonus, 1);
+    assert.equal(calculateActorRoleBonus(undefined).bonus, 3);
+
+    const recs = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      genresMap,
+      enableDiversity: false,
+    });
+    const oppenheimer = recs.find((r) => r.id === 872585); // order 0
+    const deadReckoning = recs.find((r) => r.id === 575264); // order 2
+    assert.equal(oppenheimer.signalBreakdown.actorPresence, 18 + 12); // 30
+    assert.equal(oppenheimer.signalBreakdown.actorRoleText, "1. Başrol (#1)");
+    assert.equal(deadReckoning.signalBreakdown.actorPresence, 18 + 10); // 28
+  });
+
+  it("platformScore sabitini kaldırır: doğrulanmışsa puan verir, bilinmiyorsa nötr (5) bırakır", () => {
+    // 1) Bilinmeyen / doğrulanmamış platform -> nötr 5
+    const recsUnknown = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      genresMap,
+      providerIndex: {},
+    });
+    const oppUnk = recsUnknown.find((r) => r.id === 872585);
+    assert.equal(oppUnk.signalBreakdown.platformScore, 5);
+    assert.equal(oppUnk.signalBreakdown.platformVerified, false);
+
+    // 2) Doğrulanmış platform verisi ve kullanıcının tercih ettiği sağlayıcı eşleşmesi -> 10
+    const recsVerified = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [],
+      genresMap,
+      preferredProviders: ["8"], // Netflix
+      providerIndex: {
+        "movie:872585": [{ id: "8", name: "Netflix" }],
+        "movie:575264": [{ id: "337", name: "Disney+" }],
+      },
+    });
+    const oppHit = recsVerified.find((r) => r.id === 872585);
+    assert.equal(oppHit.signalBreakdown.platformScore, 10);
+    assert.equal(oppHit.signalBreakdown.platformVerified, true);
+
+    const drOther = recsVerified.find((r) => r.id === 575264);
+    assert.equal(drOther.signalBreakdown.platformScore, 6); // Başka bir platformda izlenebilir
+    assert.equal(drOther.signalBreakdown.platformVerified, true);
+  });
+
+  it("tasteScore'u kullanıcının gerçek 1-10 puanlarına ve tür/oyuncu benzerliğine bağlar", () => {
+    // Kullanıcı dram ve Cillian Murphy'ye 10/10 puan vermiş
+    const highUserSaved = [
+      { id: 999, media_type: "movie", title: "Peaky Blinders", genre_ids: [18], personal_rating: 10, cast: [{ id: 2037 }] }
+    ];
+    const recsHigh = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: highUserSaved,
+      genresMap,
+    });
+    const oppHigh = recsHigh.find((r) => r.id === 872585); // Dram (18) + Cillian (2037)
+    assert.ok(oppHigh.signalBreakdown.tasteScore >= 13, "Yüksek puanlanan tür ve oyuncuda tasteScore yüksek olmalı");
+
+    // Kullanıcı benzer türdeki yapımlara düşük (2/10) puan vermiş
+    const lowUserSaved = [
+      { id: 888, media_type: "movie", title: "Sıkıcı Dram", genre_ids: [18], personal_rating: 2 }
+    ];
+    const recsLow = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: lowUserSaved,
+      genresMap,
+    });
+    const oppLow = recsLow.find((r) => r.id === 872585);
+    assert.ok(oppLow.signalBreakdown.tasteScore <= 5, "Düşük puanlanan türde tasteScore düşük olmalı");
+  });
+
+  it("matchScore gerçek sinyallerden hesaplanır ve güven düzeyi ayrı üretilir", () => {
+    const recs = scoreActorRecommendations({
+      favoriteActors,
+      actorCreditsMap,
+      savedItems: [
+        { id: 1, media_type: "movie", personal_rating: 9, genre_ids: [18] },
+        { id: 2, media_type: "movie", personal_rating: 8, genre_ids: [36] },
+      ],
+      genresMap,
+    });
+    for (const item of recs) {
+      assert.ok(item.matchScore >= 1 && item.matchScore <= 99);
+      assert.ok(item.confidenceScore >= 0 && item.confidenceScore <= 100);
+      assert.ok(["high", "medium", "low"].includes(item.confidenceLevel));
+      assert.ok(item.signalBreakdown, "signalBreakdown alanı bulunmalı");
+      assert.equal(typeof item.signalBreakdown.actorPresence, "number");
+      assert.equal(typeof item.signalBreakdown.tasteScore, "number");
+      assert.equal(typeof item.signalBreakdown.platformScore, "number");
+    }
+  });
+
+  it("favori oyuncu sonuçlarında çeşitlilik (diversity) uygulayarak tek tür yığılmasını azaltır", () => {
+    const items = [
+      { id: 1, genre_ids: [18], matchScore: 95 },
+      { id: 2, genre_ids: [18], matchScore: 94 },
+      { id: 3, genre_ids: [18], matchScore: 93 },
+      { id: 4, genre_ids: [18], matchScore: 92 },
+      { id: 5, genre_ids: [878], matchScore: 90 },
+      { id: 6, genre_ids: [28], matchScore: 89 },
+    ];
+    const diversified = diversifyActorRecommendations(items, { maxPerGenre: 2, limit: 10 });
+    // İlk 3 eleman içinde 18 türünden en fazla 2 tane olmalı, 878 öne çekilmeli
+    const top3Genres = diversified.slice(0, 3).map((it) => it.genre_ids[0]);
+    assert.equal(top3Genres.filter((g) => g === 18).length, 2);
+    assert.ok(top3Genres.includes(878), "Farklı tür (878) çeşitlilik sayesinde öne çıkmalı");
   });
 });
 

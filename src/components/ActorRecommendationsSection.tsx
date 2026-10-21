@@ -3,6 +3,7 @@ import {
   FavoriteActorInfo,
   ActorRecommendationItem,
   scoreActorRecommendations,
+  calculateActorRoleBonus,
   SavedItem,
   findSavedItem,
   makeMediaKey,
@@ -15,6 +16,8 @@ interface ActorRecommendationsSectionProps {
   savedItems: SavedItem[];
   dislikedKeys: string[];
   genresMap: Record<number, string>;
+  preferredProviders?: string[];
+  providerIndex?: Record<string, any[]>;
   onOpenDetails: (item: any) => void;
   onQuickAdd: (item: any) => void;
   onSetStatus: (item: any, status: 'watching' | 'watchlist' | 'completed') => void;
@@ -27,6 +30,8 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   savedItems,
   dislikedKeys,
   genresMap,
+  preferredProviders = [],
+  providerIndex = {},
   onOpenDetails,
   onQuickAdd,
   onSetStatus,
@@ -35,8 +40,11 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
 }) => {
   const [actorCreditsMap, setActorCreditsMap] = useState<Record<number, any[]>>({});
   const [isLoading, setIsLoading] = useState(false);
-  const [sortMode, setSortMode] = useState<'best_match' | 'newest'>('best_match');
+  const [sortMode, setSortMode] = useState<'best_match' | 'newest' | 'hidden_gems'>('best_match');
   const [typeFilter, setTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
+  const [enableDiversity, setEnableDiversity] = useState<boolean>(true);
+  const [showDevPanel, setShowDevPanel] = useState<boolean>(false);
+  const [inspectedCardKeys, setInspectedCardKeys] = useState<Set<string>>(new Set());
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Favori oyuncuların combined_credits verilerini çek
@@ -94,6 +102,19 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     loadCredits();
   }, [loadCredits]);
 
+  // Kart detay teftişini aç/kapat
+  const toggleInspectCard = useCallback((key: string) => {
+    setInspectedCardKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
   // Önerileri puanla ve filtrele
   const rawRecommendations = useMemo(() => {
     if (!favoriteActors || favoriteActors.length === 0) return [];
@@ -103,9 +124,23 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       savedItems,
       dislikedKeys,
       genresMap,
+      providerIndex,
+      preferredProviders,
       sortMode,
+      enableDiversity,
+      maxPerGenre: 3,
     });
-  }, [favoriteActors, actorCreditsMap, savedItems, dislikedKeys, genresMap, sortMode]);
+  }, [
+    favoriteActors,
+    actorCreditsMap,
+    savedItems,
+    dislikedKeys,
+    genresMap,
+    providerIndex,
+    preferredProviders,
+    sortMode,
+    enableDiversity,
+  ]);
 
   const filteredRecommendations = useMemo(() => {
     if (typeFilter === 'all') return rawRecommendations;
@@ -121,11 +156,11 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       <div className="actor-recs-head">
         <div>
           <div className="actor-recs-title">
-            <span className="actor-recs-badge">Öneri Motoru</span>
+            <span className="actor-recs-badge">Öneri Motoru v2</span>
             <h3 id="actorRecsHeading">🎬 Oyuncularımdan Öneriler</h3>
           </div>
           <p className="actor-recs-sub">
-            Favori oyuncularının yer aldığı, henüz izlemediğin ve ilgini çekebilecek yapımlar.
+            Favori oyuncularının yer aldığı, gerçek kullanıcı puanlarına ve kadro sırasına göre kişiselleştirilmiş keşifler.
           </p>
         </div>
 
@@ -135,14 +170,25 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             className={`actor-recs-tab-btn ${sortMode === 'best_match' ? 'active' : ''}`}
             onClick={() => setSortMode('best_match')}
             aria-pressed={sortMode === 'best_match'}
+            title="En güçlü eşleşen yapımları öne çıkarır"
           >
             🎯 En Güçlü Eşleşmeler
+          </button>
+          <button
+            type="button"
+            className={`actor-recs-tab-btn ${sortMode === 'hidden_gems' ? 'active' : ''}`}
+            onClick={() => setSortMode('hidden_gems')}
+            aria-pressed={sortMode === 'hidden_gems'}
+            title="Gözden kaçmış, yüksek puanlı kaliteli yapımları keşfeder"
+          >
+            💎 Gizli Cevherler
           </button>
           <button
             type="button"
             className={`actor-recs-tab-btn ${sortMode === 'newest' ? 'active' : ''}`}
             onClick={() => setSortMode('newest')}
             aria-pressed={sortMode === 'newest'}
+            title="En yeni vizyona giren ve yakındaki yapımları gösterir"
           >
             ✨ En Yeniler & Yakında
           </button>
@@ -157,6 +203,28 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             <option value="movie">Sadece Filmler</option>
             <option value="tv">Sadece Diziler</option>
           </select>
+
+          {sortMode === 'best_match' && (
+            <button
+              type="button"
+              className={`actor-recs-tab-btn ${enableDiversity ? 'active' : ''}`}
+              onClick={() => setEnableDiversity((v) => !v)}
+              title="Aynı türün peş peşe yığılmasını önleyerek farklı türleri dengeler"
+              aria-pressed={enableDiversity}
+            >
+              🌈 Çeşitlilik: {enableDiversity ? 'Açık' : 'Kapalı'}
+            </button>
+          )}
+
+          <button
+            type="button"
+            className={`actor-recs-dev-toggle ${showDevPanel ? 'active' : ''}`}
+            onClick={() => setShowDevPanel((v) => !v)}
+            title="Tüm kartlarda 7 sinyal puanını ve ağırlık dökümünü gösterir"
+            aria-pressed={showDevPanel}
+          >
+            🔬 {showDevPanel ? 'Algoritma Panelini Gizle' : 'Geliştirici / Sinyal Paneli'}
+          </button>
 
           <button
             type="button"
@@ -201,7 +269,8 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
         </div>
       ) : (
         <div className="grid">
-          {filteredRecommendations.slice(0, 20).map((item) => {
+          {filteredRecommendations.slice(0, 24).map((item) => {
+            const key = makeMediaKey(item.media_type, item.id);
             const title = displayTitle(item);
             const poster = getPoster(item);
             const year = releaseYear(item);
@@ -209,9 +278,25 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             const saved = findSavedItem(savedItems, item);
             const isWatchlist = saved?.status === 'watchlist';
             const isCompleted = saved?.status === 'completed';
+            const breakdown = item.signalBreakdown;
+            const isInspected = showDevPanel || inspectedCardKeys.has(key);
+
+            const confBadgeClass =
+              item.confidenceLevel === 'high'
+                ? 'conf-high'
+                : item.confidenceLevel === 'medium'
+                ? 'conf-medium'
+                : 'conf-low';
+
+            const confText =
+              item.confidenceLevel === 'high'
+                ? `🟢 %${item.confidenceScore} Yüksek Güven`
+                : item.confidenceLevel === 'medium'
+                ? `🟡 %${item.confidenceScore} Orta Güven`
+                : `🔵 %${item.confidenceScore} Keşif / Az Veri`;
 
             return (
-              <article key={makeMediaKey(item.media_type, item.id)} className="card actor-rec-card">
+              <article key={key} className="card actor-rec-card">
                 <div
                   className="poster"
                   role="button"
@@ -246,10 +331,18 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
 
                   <span
                     className="match-badge"
-                    title={`Zevk & oyuncu uyumu: %${item.matchScore}`}
+                    title={`Gerçek sinyal uyum puanı: %${item.matchScore}`}
                     aria-label={`Uyum: %${item.matchScore}`}
                   >
                     🎯 %{item.matchScore} Uyum
+                  </span>
+
+                  {/* Güven Düzeyi Rozeti */}
+                  <span
+                    className={`actor-rec-confidence-badge ${confBadgeClass}`}
+                    title={`Algoritma Güven Düzeyi: %${item.confidenceScore} (${item.confidenceLevel})`}
+                  >
+                    {confText}
                   </span>
 
                   {saved && (
@@ -293,30 +386,36 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                       )}
                     </div>
 
-                    {/* Eşleşen favori oyuncular */}
+                    {/* Eşleşen favori oyuncular ve kadro sırası rol verisi */}
                     <div style={{ marginTop: '6px' }}>
-                      {item.matchedActors.map((actor: any) => (
-                        <button
-                          key={actor.id}
-                          type="button"
-                          className="actor-rec-matched-pill"
-                          title={`${actor.name} filmografisini gör`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenPerson?.(actor.id, actor.name);
-                          }}
-                        >
-                          <svg className="icon" aria-hidden="true">
-                            <use href="#icon-star"></use>
-                          </svg>
-                          <span>{actor.name}</span>
-                          {actor.character && (
-                            <span style={{ color: '#94a3b8', fontWeight: 500 }}>
-                              ({actor.character})
+                      {item.matchedActors.map((actor: any) => {
+                        const roleInfo = calculateActorRoleBonus(actor.order);
+                        return (
+                          <button
+                            key={actor.id}
+                            type="button"
+                            className="actor-rec-matched-pill"
+                            title={`${actor.name} filmografisini gör (${roleInfo.label})`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenPerson?.(actor.id, actor.name);
+                            }}
+                          >
+                            <svg className="icon" aria-hidden="true">
+                              <use href="#icon-star"></use>
+                            </svg>
+                            <span>{actor.name}</span>
+                            {actor.character && (
+                              <span style={{ color: '#94a3b8', fontWeight: 500 }}>
+                                ({actor.character})
+                              </span>
+                            )}
+                            <span className="actor-rec-role-badge">
+                              {roleInfo.label}
                             </span>
-                          )}
-                        </button>
-                      ))}
+                          </button>
+                        );
+                      })}
                     </div>
 
                     {/* Neden önerildi gerekçe kutusu */}
@@ -324,6 +423,140 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                       <div className="actor-rec-reason">
                         <strong>Neden önerildi?</strong>
                         <span>{item.reason}</span>
+                      </div>
+                    )}
+
+                    {/* Geliştirici Sinyal İnceleme Butonu */}
+                    <button
+                      type="button"
+                      className="actor-rec-inspect-btn"
+                      onClick={() => toggleInspectCard(key)}
+                      title="Bu yapımın sinyal puanlarını ayrıntılı gör"
+                    >
+                      <span>🔬 {isInspected ? 'Sinyal Puanlarını Kapat' : 'Sinyal Puanlarını İncele'}</span>
+                    </button>
+
+                    {/* Geliştirici / Algoritma Paneli (Aşama 2: Sinyal Dökümü) */}
+                    {isInspected && breakdown && (
+                      <div className="actor-rec-dev-panel">
+                        <div className="actor-rec-dev-header">
+                          <span>🔬 Algoritma Sinyalleri</span>
+                          <span>Skor: %{item.matchScore}</span>
+                        </div>
+
+                        {/* Sinyal 1: Oyuncu & Kadro Sırası */}
+                        <div className="actor-rec-dev-row">
+                          <div className="actor-rec-dev-row-top">
+                            <span className="actor-rec-dev-label">🎭 Oyuncu & Kadro Sırası ({breakdown.actorRoleText}):</span>
+                            <span className="actor-rec-dev-val">{breakdown.actorPresence} / 30</span>
+                          </div>
+                          <div className="actor-rec-dev-bar-wrap">
+                            <div
+                              className="actor-rec-dev-bar"
+                              style={{ width: `${(breakdown.actorPresence / 30) * 100}%`, background: '#38bdf8' }}
+                            ></div>
+                          </div>
+                        </div>
+
+                        {/* Sinyal 2: Çoklu Oyuncu Bonusu */}
+                        {breakdown.multiActorBonus > 0 && (
+                          <div className="actor-rec-dev-row">
+                            <div className="actor-rec-dev-row-top">
+                              <span className="actor-rec-dev-label">👥 Çoklu Favori Oyuncu:</span>
+                              <span className="actor-rec-dev-val" style={{ color: '#fde047' }}>+{breakdown.multiActorBonus} / 10</span>
+                            </div>
+                            <div className="actor-rec-dev-bar-wrap">
+                              <div
+                                className="actor-rec-dev-bar"
+                                style={{ width: '100%', background: '#eab308' }}
+                              ></div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Sinyal 3: Tür Uyumu */}
+                        <div className="actor-rec-dev-row">
+                          <div className="actor-rec-dev-row-top">
+                            <span className="actor-rec-dev-label">🏷️ Sevilen Tür Uyumu:</span>
+                            <span className="actor-rec-dev-val">{breakdown.genreScore} / 20</span>
+                          </div>
+                          <div className="actor-rec-dev-bar-wrap">
+                            <div
+                              className="actor-rec-dev-bar"
+                              style={{ width: `${(breakdown.genreScore / 20) * 100}%`, background: '#a855f7' }}
+                            ></div>
+                          </div>
+                        </div>
+
+                        {/* Sinyal 4: Kullanıcı Puan Zevki */}
+                        <div className="actor-rec-dev-row">
+                          <div className="actor-rec-dev-row-top">
+                            <span className="actor-rec-dev-label">🎯 Kullanıcı Puan Zevki (1-10):</span>
+                            <span className="actor-rec-dev-val">{breakdown.tasteScore} / 15</span>
+                          </div>
+                          <div className="actor-rec-dev-bar-wrap">
+                            <div
+                              className="actor-rec-dev-bar"
+                              style={{ width: `${(breakdown.tasteScore / 15) * 100}%`, background: '#ec4899' }}
+                            ></div>
+                          </div>
+                          <span className="actor-rec-dev-detail-sub">{breakdown.tasteExplanation}</span>
+                        </div>
+
+                        {/* Sinyal 5: Genel Kalite */}
+                        <div className="actor-rec-dev-row">
+                          <div className="actor-rec-dev-row-top">
+                            <span className="actor-rec-dev-label">⭐ TMDB Kalite (Bayes):</span>
+                            <span className="actor-rec-dev-val">{breakdown.qualityScore} / 10</span>
+                          </div>
+                          <div className="actor-rec-dev-bar-wrap">
+                            <div
+                              className="actor-rec-dev-bar"
+                              style={{ width: `${(breakdown.qualityScore / 10) * 100}%`, background: '#f59e0b' }}
+                            ></div>
+                          </div>
+                        </div>
+
+                        {/* Sinyal 6: Güncellik */}
+                        <div className="actor-rec-dev-row">
+                          <div className="actor-rec-dev-row-top">
+                            <span className="actor-rec-dev-label">📅 Vizyon & Güncellik:</span>
+                            <span className="actor-rec-dev-val">{breakdown.recencyScore} / 5</span>
+                          </div>
+                          <div className="actor-rec-dev-bar-wrap">
+                            <div
+                              className="actor-rec-dev-bar"
+                              style={{ width: `${(breakdown.recencyScore / 5) * 100}%`, background: '#10b981' }}
+                            ></div>
+                          </div>
+                        </div>
+
+                        {/* Sinyal 7: Platform Uyumu */}
+                        <div className="actor-rec-dev-row">
+                          <div className="actor-rec-dev-row-top">
+                            <span className="actor-rec-dev-label">
+                              📺 Platform Uyumu {breakdown.platformVerified ? '✓ Doğrulandı' : '(Bilinmiyor, Nötr)'}:
+                            </span>
+                            <span className="actor-rec-dev-val">{breakdown.platformScore} / 10</span>
+                          </div>
+                          <div className="actor-rec-dev-bar-wrap">
+                            <div
+                              className="actor-rec-dev-bar"
+                              style={{
+                                width: `${(breakdown.platformScore / 10) * 100}%`,
+                                background: breakdown.platformVerified ? '#06b6d4' : '#64748b',
+                              }}
+                            ></div>
+                          </div>
+                        </div>
+
+                        {/* Alt Özet: Ham Toplam ve Güven */}
+                        <div className="actor-rec-dev-footer">
+                          <span>Ham Toplam: {breakdown.rawTotal} / 100</span>
+                          <span style={{ color: breakdown.confidenceLevel === 'high' ? '#34d399' : '#fbbf24' }}>
+                            Güven: %{breakdown.confidenceScore}
+                          </span>
+                        </div>
                       </div>
                     )}
                   </div>

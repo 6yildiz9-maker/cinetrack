@@ -1422,6 +1422,7 @@ export function App() {
           genres={genresMap}
           recommendationReasons={category === 'for-you' ? forYouReasons : recommendationReasons}
           dislikedKeys={preferences.disliked}
+          preferredProviders={preferences.providers}
           tab={tab}
           query={query}
           listStatus={listStatus}

@@ -14,6 +14,8 @@ interface MediaGridProps {
   genres: Record<number, string>;
   recommendationReasons: Map<string, string>;
   dislikedKeys: string[];
+  preferredProviders?: string[];
+  providerIndex?: Record<string, any[]>;
   tab: 'discover' | 'list';
   query: string;
   listStatus: string;
@@ -44,6 +46,8 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   genres,
   recommendationReasons,
   dislikedKeys,
+  preferredProviders = [],
+  providerIndex = {},
   tab,
   query,
   listStatus,
@@ -324,6 +328,8 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           savedItems={savedItems}
           dislikedKeys={dislikedKeys}
           genresMap={genres}
+          preferredProviders={preferredProviders}
+          providerIndex={providerIndex}
           onOpenDetails={onOpenDetails}
           onQuickAdd={onQuickAdd}
           onSetStatus={onSetStatus}
