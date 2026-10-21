@@ -34,6 +34,12 @@ import {
   scoreCandidatesV3,
   RECOMMENDATION_WEIGHTS_V3,
   findSavedItem,
+  makeMediaKey,
+  isItemSaved,
+  filterHistoryByType,
+  filterDislikedByType,
+  TARGET_RECOMMENDATION_COUNT,
+  FavoriteActorInfo,
 } from './core/cinetrack-core';
 import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
@@ -175,6 +181,7 @@ export function App() {
   const [recommendationReasons, setRecommendationReasons] = useState<Map<string, string>>(new Map());
   const [forYouItems, setForYouItems] = useState<any[]>([]);
   const [forYouReasons, setForYouReasons] = useState<Map<string, string>>(new Map());
+  const [forYouExplanation, setForYouExplanation] = useState<string>('');
   const [serverSyncReady, setServerSyncReady] = useState(false);
 
   const [detailItem, setDetailItem] = useState<any | null>(null);
@@ -188,6 +195,9 @@ export function App() {
 
   const requestGateRef = useRef(createRequestGate());
   const toastTimerRef = useRef<any>(null);
+  const lastForYouTypeRef = useRef<string>('all');
+  const selectedTypeRef = useRef<string>(selectedType);
+  selectedTypeRef.current = selectedType;
   const initialLocalSnapshotRef = useRef<string | null>(null);
   const localEditedDuringStartupRef = useRef(false);
   const localWasDirtyRef = useRef<boolean | null>(null);
@@ -202,6 +212,8 @@ export function App() {
   genresMapRef.current = genresMap;
   const dislikedItemsRef = useRef(dislikedItems);
   dislikedItemsRef.current = dislikedItems;
+  const favoriteActorsRef = useRef<FavoriteActorInfo[]>(favoriteActors);
+  favoriteActorsRef.current = favoriteActors;
   const currentLocalSnapshot = JSON.stringify({
     profiles,
     activeProfileId,
@@ -373,7 +385,8 @@ export function App() {
       append = false,
       currentQuery = query,
       provider = selectedProvider,
-      forceRefresh = false
+      forceRefresh = false,
+      typeFilter?: string
     ) => {
       const ticket = requestGateRef.current.begin();
       if (!append) {
@@ -425,21 +438,34 @@ export function App() {
         }
 
         if (cat === 'for-you') {
-          // If already loaded and not explicitly force-refreshed, reuse cached recommendations
-          if (forYouItems.length > 0 && !forceRefresh) {
+          const effectiveType = typeFilter || selectedTypeRef.current || 'all';
+          const targetType = effectiveType === 'movie' || effectiveType === 'tv' ? effectiveType : 'all';
+
+          // If already loaded for the current type and not explicitly force-refreshed, reuse cached recommendations
+          if (forYouItems.length > 0 && !forceRefresh && lastForYouTypeRef.current === targetType) {
             setIsLoading(false);
             return;
           }
+          lastForYouTypeRef.current = targetType;
 
-          const currentSaved = savedItemsRef.current;
+          const rawSaved = savedItemsRef.current;
           const currentPrefs = preferencesRef.current;
           const currentGenres = genresMapRef.current;
+
+          // Film önerisi istendiğinde dizi geçmişini ilgi profili hesabının dışında bırak; yalnızca film geçmişini ve film tercihlerini değerlendir.
+          const currentSaved = filterHistoryByType(rawSaved, targetType);
+          const currentDislikedKeys = filterDislikedByType(currentPrefs.disliked, targetType);
 
           // Sana Özel v3:
           // Watched & Completed items have highest importance (2.5x / 1.6x)
           // Watchlist items have auxiliary influence (0.35x)
           const watchedSeeds = currentSaved
-            .filter((item) => item.status === 'completed' || item.status === 'watching' || Number(item.personal_rating) >= 7)
+            .filter(
+              (item) =>
+                item.status === 'completed' ||
+                item.status === 'watching' ||
+                Number(item.personal_rating) >= 7
+            )
             .sort(
               (a, b) =>
                 Number(b.personal_rating || (b.status === 'completed' ? 7 : 5)) -
@@ -448,12 +474,16 @@ export function App() {
             .slice(0, 10);
 
           const watchlistSeeds = currentSaved
-            .filter((item) => item.status === 'watchlist' && (item.personal_rating === '' || Number(item.personal_rating) < 7))
+            .filter(
+              (item) =>
+                item.status === 'watchlist' &&
+                (item.personal_rating === '' || Number(item.personal_rating) < 7)
+            )
             .slice(0, 4);
 
           const seeds = [...watchedSeeds, ...watchlistSeeds];
           const moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
-          const dislikedSeeds = currentPrefs.disliked
+          const dislikedSeeds = currentDislikedKeys
             .map((key) => {
               const [mediaType, id] = key.split(':');
               if (!/^\d+$/.test(id) || !['movie', 'tv'].includes(mediaType)) return undefined;
@@ -489,44 +519,39 @@ export function App() {
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
           const creditsByKey = new Map(
-            historyCredits.map((entry) => [`${entry.media_type}:${entry.id}`, entry])
+            historyCredits.map((entry) => [makeMediaKey(entry), entry])
           );
 
           // Build Taste Profile V3 with smoothing lambda = 1 and time decay
           const tasteProfile = buildTasteProfileV3(
             [
-              ...currentSaved.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
-              ...dislikedSeeds.map((item) => creditsByKey.get(`${item.media_type}:${item.id}`) || item),
+              ...currentSaved.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
+              ...dislikedSeeds.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
             ],
             {
               lambda: 1,
-              dislikedKeys: currentPrefs.disliked,
+              dislikedKeys: currentDislikedKeys,
             }
           );
 
-          const pool = createCandidatePool({ maxItems: 500 });
-          const isSaved = (item: any, type?: string) =>
-            findSavedItem(currentSaved, item) != null ||
-            currentSaved.some(
-              (s) =>
-                String(s.id) === String(item.id) ||
-                (s.media_type === (type || item.media_type || (item.title ? 'movie' : 'tv')) &&
-                  String(s.id) === String(item.id))
-            );
+          // Candidate Pool with strict allowedMediaType restriction at ingestion level
+          const pool = createCandidatePool({ maxItems: 600, allowedMediaType: targetType });
+          const isCandidateEligible = (item: any, defaultMediaType?: string) => {
+            const itemType = item.media_type || defaultMediaType || (item.title ? 'movie' : 'tv');
+            if (targetType !== 'all' && itemType !== targetType) return false;
+            const itemKey = makeMediaKey(itemType, item.id);
+            if (currentPrefs.disliked.includes(itemKey)) return false;
+            if (isItemSaved(rawSaved, item, itemType)) return false;
+            return true;
+          };
 
-          const watchedRequests: any[] = [];
-          const secondaryWatchedRequests: any[] = [];
-          const watchlistRequests: any[] = [];
-          const genreRequests: any[] = [];
-          for (const seed of watchedSeeds) {
-            watchedRequests.push({
+          const TARGET_COUNT = TARGET_RECOMMENDATION_COUNT; // 20
+
+          // AŞAMA 1: Birincil Kişiselleştirilmiş Adaylar (Sıkı Eşikler)
+          const st1Requests: any[] = [];
+          for (const seed of watchedSeeds.slice(0, 8)) {
+            st1Requests.push({
               path: `/${seed.media_type}/${seed.id}/recommendations`,
-              mediaType: seed.media_type,
-              reason: `İzlediğin “${displayTitle(seed)}” yapımına benzer`,
-              seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
-            });
-            secondaryWatchedRequests.push({
-              path: `/${seed.media_type}/${seed.id}/similar`,
               mediaType: seed.media_type,
               reason: `İzlediğin “${displayTitle(seed)}” yapımına benzer`,
               seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
@@ -534,7 +559,7 @@ export function App() {
           }
 
           for (const seed of watchlistSeeds) {
-            watchlistRequests.push({
+            st1Requests.push({
               path: `/${seed.media_type}/${seed.id}/recommendations`,
               mediaType: seed.media_type,
               reason: `İzleme listendeki “${displayTitle(seed)}” benzeri`,
@@ -542,10 +567,10 @@ export function App() {
             });
           }
 
-          // Discover by liked genres and mood
+          // Discover by top liked genres and mood (vote_count >= 80, vote_average >= 6.5)
           const likedGenreIds = tasteProfile.positiveGenres.slice(0, 4);
-          const allGenreIds = [...new Set([...likedGenreIds, ...moodGenres.map(String)])];
-          for (const gid of allGenreIds) {
+          const primaryGenreIds = [...new Set([...likedGenreIds, ...moodGenres.map(String)])];
+          for (const gid of primaryGenreIds) {
             const label = currentGenres[Number(gid)] || '';
             const reason =
               moodGenres.includes(Number(gid)) && !likedGenreIds.includes(gid)
@@ -553,79 +578,165 @@ export function App() {
                 : label
                 ? `${label} türünü sevdiğin için`
                 : 'Sevdiğin türlerden seçmeler';
-            genreRequests.push({
-              path: '/discover/movie',
-              params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6' },
-              mediaType: 'movie',
-              reason,
-            });
-            genreRequests.push({
-              path: '/discover/tv',
-              params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6' },
-              mediaType: 'tv',
-              reason,
-            });
+
+            if (targetType === 'all' || targetType === 'movie') {
+              st1Requests.push({
+                path: '/discover/movie',
+                params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6.5' },
+                mediaType: 'movie',
+                reason,
+              });
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              st1Requests.push({
+                path: '/discover/tv',
+                params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '80', 'vote_average.gte': '6.5' },
+                mediaType: 'tv',
+                reason,
+              });
+            }
           }
 
-          const requestLimit = 20;
-          const genreBudget = Math.min(8, genreRequests.length);
-          const watchlistBudget = Math.min(4, watchlistRequests.length);
-          const watchedBudget = Math.max(0, requestLimit - genreBudget - watchlistBudget);
-          const watchedSelected = watchedRequests.slice(0, watchedBudget);
-          const watchedExtra = secondaryWatchedRequests.slice(
-            0,
-            watchedBudget - watchedSelected.length
-          );
-          const selectedRequests = [
-            ...watchedSelected,
-            ...watchedExtra,
-            ...watchlistRequests.slice(0, watchlistBudget),
-            ...genreRequests.slice(0, genreBudget),
-          ];
-
-          await mapLimit(selectedRequests, 5, async (req) => {
+          await mapLimit(st1Requests, 5, async (req) => {
             try {
               const res = await fetchTmdbCached(req.path, req.params || {}, ticket.signal);
-              const acceptable = (res?.results || []).filter(
-                (item: any) =>
-                  !currentPrefs.disliked.includes(`${req.mediaType}:${item.id}`) &&
-                  !isSaved(item, req.mediaType)
-              );
+              const acceptable = (res?.results || []).filter((item: any) => isCandidateEligible(item, req.mediaType));
               pool.add(req.path, req.reason, req.mediaType, acceptable, req.seedSourceType || '');
             } catch {}
           });
+          if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          // Ensure at least 60 candidates; supplement with trending/popular if needed
-          if (pool.size < 60) {
-            const fallbacks = [
-              { path: '/movie/popular', mediaType: 'movie', reason: 'Popüler filmler arasından' },
-              { path: '/tv/popular', mediaType: 'tv', reason: 'Popüler diziler arasından' },
-              { path: '/trending/all/day', mediaType: '', reason: 'Bugün trend olan yapımlar' },
-              { path: '/movie/top_rated', mediaType: 'movie', reason: 'Yüksek puanlı seçkiler' },
-            ];
-            await mapLimit(fallbacks, 4, async (req) => {
+          let currentStage = 1;
+          const getValidCandidates = () =>
+            pool.list().filter((c) => isCandidateEligible(c));
+
+          let candidates = getValidCandidates();
+          let quickScored = scoreCandidatesV3(candidates, tasteProfile, {
+            weights: RECOMMENDATION_WEIGHTS_V3,
+            genreNames: currentGenres,
+            mood: currentPrefs.mood,
+          });
+          let quickPicked = diversifyList(quickScored, { limit: TARGET_COUNT, maxPerGenre: 5 });
+
+          // AŞAMA 2: Sonuç 20'den azsa tür, benzerlik ve oyuncu eşiklerini gevşet
+          if (quickPicked.length < TARGET_COUNT) {
+            currentStage = 2;
+            const st2Requests: any[] = [];
+
+            // 1. Watched seeds similar endpoint
+            for (const seed of watchedSeeds) {
+              st2Requests.push({
+                path: `/${seed.media_type}/${seed.id}/similar`,
+                mediaType: seed.media_type,
+                reason: `“${displayTitle(seed)}” tarzında yapımlar`,
+                seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
+              });
+            }
+
+            // 2. Discover across secondary positive genres with relaxed quality (vote_count >= 35, vote_average >= 5.8)
+            const secondaryGenres = tasteProfile.positiveGenres.slice(0, 8);
+            for (const gid of secondaryGenres) {
+              const label = currentGenres[Number(gid)] || '';
+              const reason = label ? `${label} türünde keşifler` : 'Keşif seçkileri';
+              if (targetType === 'all' || targetType === 'movie') {
+                st2Requests.push({
+                  path: '/discover/movie',
+                  params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '35', 'vote_average.gte': '5.8' },
+                  mediaType: 'movie',
+                  reason,
+                });
+              }
+              if (targetType === 'all' || targetType === 'tv') {
+                st2Requests.push({
+                  path: '/discover/tv',
+                  params: { with_genres: gid, sort_by: 'popularity.desc', 'vote_count.gte': '35', 'vote_average.gte': '5.8' },
+                  mediaType: 'tv',
+                  reason,
+                });
+              }
+            }
+
+            // 3. Favorite actors discovery if any
+            const favoriteActorsList = favoriteActorsRef.current || [];
+            for (const actor of favoriteActorsList.slice(0, 3)) {
+              if (targetType === 'all' || targetType === 'movie') {
+                st2Requests.push({
+                  path: '/discover/movie',
+                  params: { with_cast: String(actor.id), sort_by: 'popularity.desc' },
+                  mediaType: 'movie',
+                  reason: `Favori oyuncun ${actor.name} kadrosunda`,
+                });
+              }
+              if (targetType === 'all' || targetType === 'tv') {
+                st2Requests.push({
+                  path: '/discover/tv',
+                  params: { with_cast: String(actor.id), sort_by: 'popularity.desc' },
+                  mediaType: 'tv',
+                  reason: `Favori oyuncun ${actor.name} kadrosunda`,
+                });
+              }
+            }
+
+            await mapLimit(st2Requests, 5, async (req) => {
               try {
-                const res = await fetchTmdbCached(req.path, {}, ticket.signal);
-                const acceptable = (res?.results || []).filter(
-                  (item: any) =>
-                    !currentPrefs.disliked.includes(`${item.media_type || req.mediaType}:${item.id}`) &&
-                    !isSaved(item, item.media_type || req.mediaType)
-                );
+                const res = await fetchTmdbCached(req.path, req.params || {}, ticket.signal);
+                const acceptable = (res?.results || []).filter((item: any) => isCandidateEligible(item, req.mediaType));
+                pool.add(req.path, req.reason, req.mediaType, acceptable, req.seedSourceType || '');
+              } catch {}
+            });
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+
+            candidates = getValidCandidates();
+            quickScored = scoreCandidatesV3(candidates, tasteProfile, {
+              weights: RECOMMENDATION_WEIGHTS_V3,
+              genreNames: currentGenres,
+              mood: currentPrefs.mood,
+            });
+            quickPicked = diversifyList(quickScored, { limit: TARGET_COUNT, maxPerGenre: 7 });
+          }
+
+          // AŞAMA 3: Hâlâ 20'den azsa kalite, tarih ve popülerlik eşiklerini gevşet
+          if (quickPicked.length < TARGET_COUNT) {
+            currentStage = 3;
+            const st3Requests: any[] = [];
+
+            if (targetType === 'all' || targetType === 'movie') {
+              st3Requests.push(
+                { path: '/movie/popular', params: { page: '1' }, mediaType: 'movie', reason: 'Popüler filmler arasından' },
+                { path: '/movie/popular', params: { page: '2' }, mediaType: 'movie', reason: 'Popüler filmler arasından' },
+                { path: '/movie/top_rated', params: { page: '1' }, mediaType: 'movie', reason: 'Klasik ve yüksek puanlı filmler' },
+                { path: '/trending/movie/week', params: {}, mediaType: 'movie', reason: 'Bu haftanın trend filmleri' }
+              );
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              st3Requests.push(
+                { path: '/tv/popular', params: { page: '1' }, mediaType: 'tv', reason: 'Popüler diziler arasından' },
+                { path: '/tv/popular', params: { page: '2' }, mediaType: 'tv', reason: 'Popüler diziler arasından' },
+                { path: '/tv/top_rated', params: { page: '1' }, mediaType: 'tv', reason: 'Yüksek puanlı diziler' },
+                { path: '/trending/tv/week', params: {}, mediaType: 'tv', reason: 'Bu haftanın trend dizileri' }
+              );
+            }
+
+            await mapLimit(st3Requests, 4, async (req) => {
+              try {
+                const res = await fetchTmdbCached(req.path, req.params || {}, ticket.signal);
+                const acceptable = (res?.results || []).filter((item: any) => isCandidateEligible(item, req.mediaType));
                 pool.add(req.path, req.reason, req.mediaType, acceptable);
               } catch {}
             });
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
           }
-          if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          // Quick initial scoring with v3
-          let scored = scoreCandidatesV3(pool.list(), tasteProfile, {
+          // Kesin tür filtresi ve ilk sıralama (tür filtresi puanlama ve çeşitlendirmeden önce devreye girer)
+          candidates = getValidCandidates();
+          let scored = scoreCandidatesV3(candidates, tasteProfile, {
             weights: RECOMMENDATION_WEIGHTS_V3,
             genreNames: currentGenres,
             mood: currentPrefs.mood,
           });
           scored.sort((a, b) => b.score - a.score);
 
-          // Hydrate top candidates with credits
+          // En yüksek puanlı adayları (ilk 40) detay ve kadro bilgisiyle zenginleştir
           const shortlist = scored.slice(0, 40);
           await mapLimit(shortlist, 5, async (entry) => {
             try {
@@ -647,7 +758,7 @@ export function App() {
           });
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          // Final deep scoring with full credits, keywords, and franchise data
+          // Derin zenginleştirilmiş nihai puanlama
           scored = scoreCandidatesV3(
             shortlist.map((e) => e.candidate),
             tasteProfile,
@@ -657,18 +768,46 @@ export function App() {
               mood: currentPrefs.mood,
             }
           );
-          // Strictly exclude any items that are already in the user's saved list
+
+          // Kullanıcının listesinde bulunan veya disliked kayıtları makeMediaKey ile kesin dışla
           scored = scored.filter(
             (entry) =>
-              findSavedItem(currentSaved, entry.candidate) == null &&
-              !currentSaved.some((s) => String(s.id) === String(entry.candidate.id))
+              !isItemSaved(rawSaved, entry.candidate) &&
+              !currentPrefs.disliked.includes(makeMediaKey(entry.candidate))
           );
           scored.sort((a, b) => b.score - a.score);
-          const picked = diversifyList(scored, { limit: 24, maxPerGenre: 6 });
+
+          // Çeşitlendirme ve hedef sayı (20) garantisi
+          const genreLimit = currentStage === 1 ? 5 : currentStage === 2 ? 7 : 10;
+          let picked = diversifyList(scored, { limit: TARGET_COUNT, maxPerGenre: genreLimit });
+          if (picked.length < TARGET_COUNT && scored.length > picked.length) {
+            // Sonuç azsa tür tavanını gevşeterek 20 hedefine ulaş
+            picked = diversifyList(scored, { limit: TARGET_COUNT, maxPerGenre: TARGET_COUNT });
+          }
+
+          // Kullanıcıya aşamalı genişleme ve kalan sonuç sayısını açıklama
+          const finalCount = picked.length;
+          const typeWord = targetType === 'movie' ? 'film' : targetType === 'tv' ? 'dizi' : 'içerik';
+          let explanationText = '';
+          if (finalCount >= TARGET_COUNT) {
+            if (currentStage === 1) {
+              explanationText = `Zevk profiline ve izleme geçmişine göre ${finalCount} ${typeWord} önerisi hazırlandı.`;
+            } else if (currentStage === 2) {
+              explanationText = `Profiline tam uyan ${typeWord} sayısı sınırlı olduğundan tür ve benzerlik eşikleri genişletilerek ${finalCount} ${typeWord} önerisi hazırlandı.`;
+            } else {
+              explanationText = `Kriterlerine uygun ${typeWord} sayısı sınırlı olduğu için tür, kalite ve popülerlik eşikleri kademeli genişletilerek ${finalCount} ${typeWord} önerisi hazırlandı.`;
+            }
+          } else if (finalCount > 0) {
+            explanationText = `Listen ve tercihlerine uygun ${finalCount} ${typeWord} bulundu. Kriterler, tür ve keşif havuzları aşamalı genişletilmesine rağmen kalan sonuç sayısı bu kadardır.`;
+          } else {
+            explanationText = `Henüz ${typeWord} önerisi üretilemedi. Listenize birkaç yapım ekleyerek önerileri zenginleştirebilirsiniz.`;
+          }
+
+          setForYouExplanation(explanationText);
 
           const reasonsMap = new Map<string, string>();
           picked.forEach((entry) => {
-            reasonsMap.set(`${entry.candidate.media_type}:${entry.candidate.id}`, entry.tags.join(' · '));
+            reasonsMap.set(makeMediaKey(entry.candidate), entry.tags.join(' · '));
           });
 
           setForYouReasons(reasonsMap);
@@ -680,7 +819,7 @@ export function App() {
           );
           setCatalogTotalPages(1);
           setCatalogPage(1);
-          if (forceRefresh) showToast('Sana özel öneriler güncellendi.');
+          if (forceRefresh) showToast(explanationText);
           return;
         }
 
@@ -766,17 +905,33 @@ export function App() {
   );
 
   const handleRefreshForYou = useCallback(() => {
-    loadCategoryResults('for-you', 1, false, '', selectedProvider, true);
-  }, [loadCategoryResults, selectedProvider]);
+    loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType);
+  }, [loadCategoryResults, selectedProvider, selectedType]);
+
+  const handleSelectType = useCallback(
+    (newType: string) => {
+      setSelectedType(newType);
+      selectedTypeRef.current = newType;
+      if (tab === 'discover' && category === 'for-you') {
+        loadCategoryResults('for-you', 1, false, query, selectedProvider, false, newType);
+      }
+    },
+    [tab, category, query, selectedProvider, loadCategoryResults]
+  );
 
   useEffect(() => {
     if (tab === 'discover') {
-      if (category === 'for-you' && forYouItems.length > 0) {
+      if (category === 'for-you') {
+        if (lastForYouTypeRef.current === selectedType && forYouItems.length > 0) {
+          return;
+        }
+        lastForYouTypeRef.current = selectedType;
+        loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType);
         return;
       }
       loadCategoryResults(category, 1, false, query, selectedProvider);
     }
-  }, [tab, category, query, selectedProvider, loadCategoryResults, forYouItems.length]);
+  }, [tab, category, query, selectedProvider, selectedType, loadCategoryResults, forYouItems.length]);
 
   // Load more pagination
   const handleLoadMore = () => {
@@ -829,12 +984,14 @@ export function App() {
     });
     if (!normalized) return;
 
+    const itemKey = makeMediaKey(mediaType, targetId);
     setSavedItems((currentSaved) => {
       const existingIndex = currentSaved.findIndex(
         (entry) =>
-          (String(entry.id) === targetId && entry.media_type === mediaType) ||
-          String(entry.id) === targetId ||
-          (Boolean(targetTitle) && (entry.title || '').trim().toLowerCase() === targetTitle)
+          makeMediaKey(entry) === itemKey ||
+          (Boolean(targetTitle) &&
+            entry.media_type === mediaType &&
+            (entry.title || '').trim().toLowerCase() === targetTitle)
       );
 
       let next: SavedItem[];
@@ -850,11 +1007,7 @@ export function App() {
 
     // Immediately remove from recommendations (Sana Özel) so it NEVER lingers!
     setForYouItems((prev) =>
-      prev.filter(
-        (i) =>
-          String(i.id) !== targetId &&
-          (!targetTitle || (i.title || i.name || '').trim().toLowerCase() !== targetTitle)
-      )
+      prev.filter((i) => makeMediaKey(i) !== itemKey)
     );
 
     const title = displayTitle(item);
@@ -936,17 +1089,16 @@ export function App() {
   };
 
   const handleRemoveItem = (item: any) => {
+    const itemKey = makeMediaKey(item);
     const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
-    const targetId = String(item.id);
     const targetTitle = (item.title || item.name || '').trim().toLowerCase();
     setSavedItems((prev) => {
       const next = prev.filter(
         (entry) =>
-          !(
-            (String(entry.id) === targetId && entry.media_type === mediaType) ||
-            String(entry.id) === targetId ||
-            (Boolean(targetTitle) && (entry.title || '').trim().toLowerCase() === targetTitle)
-          )
+          makeMediaKey(entry) !== itemKey &&
+          (!targetTitle ||
+            entry.media_type !== mediaType ||
+            (entry.title || '').trim().toLowerCase() !== targetTitle)
       );
       savedItemsRef.current = next;
       return next;
@@ -1092,20 +1244,12 @@ export function App() {
       const source = category === 'for-you' ? forYouItems : catalogItems;
       const filtered = source.filter((item) => {
         const itemType = item.media_type || (item.title ? 'movie' : 'tv');
-        const key = `${itemType}:${item.id}`;
+        const key = makeMediaKey(itemType, item.id);
         if (preferences.disliked.includes(key)) return false;
 
         // In Sana Özel (recommendations), strictly filter out items already in the user's list
         if (category === 'for-you') {
-          const isAlreadySaved =
-            findSavedItem(savedItems, item) != null ||
-            savedItems.some(
-              (s) =>
-                String(s.id) === String(item.id) ||
-                ((s.title || '').trim().toLowerCase() === (item.title || item.name || '').trim().toLowerCase() &&
-                  Boolean(item.title || item.name))
-            );
-          if (isAlreadySaved) return false;
+          if (isItemSaved(savedItems, item, itemType)) return false;
         }
 
         return true;
@@ -1199,7 +1343,13 @@ export function App() {
       trending: { title: 'Güncel trendler', description: 'TMDB\'den canlı olarak yükleniyor' },
       'for-you': {
         title: 'Sana özel',
-        description: 'İzleme listen ve kişisel puanlarından oluşturulan öneriler',
+        description:
+          forYouExplanation ||
+          (selectedType === 'movie'
+            ? 'Film izleme geçmişin ve kişisel puanlarından oluşturulan 20 film önerisi'
+            : selectedType === 'tv'
+            ? 'Dizi izleme geçmişin ve kişisel puanlarından oluşturulan 20 dizi önerisi'
+            : 'İzleme listen ve kişisel puanlarından oluşturulan 20 öneri'),
       },
       gems: {
         title: 'Keşfedilmemiş mücevherler',
@@ -1400,7 +1550,7 @@ export function App() {
           selectedGenre={selectedGenre}
           onGenreChange={setSelectedGenre}
           selectedType={selectedType}
-          onTypeChange={setSelectedType}
+          onTypeChange={handleSelectType}
           selectedCategory={category}
           onCategoryChange={setCategory}
           isSearchActive={Boolean(query.trim())}

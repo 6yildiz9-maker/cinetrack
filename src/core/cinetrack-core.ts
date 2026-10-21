@@ -345,7 +345,7 @@ export function normalizeSavedItem(item: any): SavedItem | null {
 
 /**
  * Robust item lookup in the user's saved list.
- * Matches by ID and media_type, with resilient fallbacks for ID alone and title.
+ * Matches by ID and media_type, avoiding cross-matching between movies and tv shows with the same numeric ID.
  */
 export function findSavedItem(
   savedItems: SavedItem[] | undefined | null,
@@ -353,35 +353,75 @@ export function findSavedItem(
 ): SavedItem | undefined {
   if (!Array.isArray(savedItems) || !item || item.id == null) return undefined;
   const targetId = String(item.id);
-  const targetType = item.media_type || (item.title ? 'movie' : 'tv');
+  const targetType =
+    item.media_type || (item.title ? 'movie' : (item.name ? 'tv' : undefined));
 
-  // 1. Exact match by ID and media_type
-  const exact = savedItems.find(
-    (entry) => String(entry.id) === targetId && entry.media_type === targetType
-  );
-  if (exact) return exact;
-
-  // 2. Fallback: match by ID alone
-  const byId = savedItems.filter((entry) => String(entry.id) === targetId);
-  if (byId.length > 0) {
-    const withType = byId.find((entry) => entry.media_type === targetType);
-    return withType || byId[0];
+  // 1. Exact match by ID and media_type if type is known
+  if (targetType) {
+    const exact = savedItems.find(
+      (entry) => String(entry.id) === targetId && entry.media_type === targetType
+    );
+    if (exact) return exact;
   }
 
-  // 3. Fallback: match by title/name if available
+  // 2. Fallback: match by ID alone ONLY when targetType was not specified at all
+  if (!targetType) {
+    const byId = savedItems.filter((entry) => String(entry.id) === targetId);
+    if (byId.length > 0) return byId[0];
+  }
+
+  // 3. Fallback: match by title/name if available, respecting media_type if specified
   const rawTitle = (item.title || item.name || '').trim().toLowerCase();
   if (rawTitle) {
     const byTitle = savedItems.filter(
-      (entry) => (entry.title || '').trim().toLowerCase() === rawTitle
+      (entry) =>
+        (entry.title || '').trim().toLowerCase() === rawTitle &&
+        (!targetType || entry.media_type === targetType)
     );
     if (byTitle.length > 0) {
-      const withType = byTitle.find((entry) => entry.media_type === targetType);
-      return withType || byTitle[0];
+      return byTitle[0];
     }
   }
 
   return undefined;
 }
+
+/**
+ * Checks if an item is already in the user's saved list using standardized makeMediaKey.
+ */
+export function isItemSaved(
+  savedItems: SavedItem[] | undefined | null,
+  item: any,
+  defaultType?: string
+): boolean {
+  if (!Array.isArray(savedItems) || !item || item.id == null) return false;
+  const itemType = defaultType || item.media_type || (item.title ? 'movie' : (item.name ? 'tv' : 'movie'));
+  const itemKey = makeMediaKey(itemType, item.id);
+  if (savedItems.some((s) => makeMediaKey(s) === itemKey)) return true;
+  const found = findSavedItem(savedItems, { ...item, media_type: itemType });
+  return found != null;
+}
+
+export function filterHistoryByType(
+  savedItems: SavedItem[] | undefined | null,
+  mediaType: string = 'all'
+): SavedItem[] {
+  if (!Array.isArray(savedItems)) return [];
+  if (mediaType !== 'movie' && mediaType !== 'tv') return [...savedItems];
+  return savedItems.filter((item) => item.media_type === mediaType);
+}
+
+export function filterDislikedByType(
+  dislikedKeys: string[] | undefined | null,
+  mediaType: string = 'all'
+): string[] {
+  if (!Array.isArray(dislikedKeys)) return [];
+  if (mediaType !== 'movie' && mediaType !== 'tv') return [...dislikedKeys];
+  return dislikedKeys.filter((key) => key.startsWith(`${mediaType}:`));
+}
+
+export const TARGET_RECOMMENDATION_COUNT = 20;
+
 
 export function dedupeItems(items: SavedItem[]): SavedItem[] {
   const unique = new Map<string, SavedItem>();
@@ -935,7 +975,10 @@ export function diversifyList(scored: any[], { limit = 24, maxPerGenre = 6 } = {
   return picked;
 }
 
-export function createCandidatePool({ maxItems = 2000 } = {}) {
+export function createCandidatePool({
+  maxItems = 2000,
+  allowedMediaType,
+}: { maxItems?: number; allowedMediaType?: 'movie' | 'tv' | 'all' | string } = {}) {
   const map = new Map<string, any>();
   return {
     add(
@@ -948,8 +991,13 @@ export function createCandidatePool({ maxItems = 2000 } = {}) {
       for (const item of Array.isArray(items) ? items : []) {
         if (!item || typeof item !== 'object' || item.id == null) continue;
         const mediaType =
-          item.media_type === 'movie' || item.media_type === 'tv' ? item.media_type : mediaTypeGuess;
+          item.media_type === 'movie' || item.media_type === 'tv'
+            ? item.media_type
+            : (item.title ? 'movie' : (item.name ? 'tv' : mediaTypeGuess));
         if (mediaType !== 'movie' && mediaType !== 'tv') continue;
+        if (allowedMediaType && allowedMediaType !== 'all' && mediaType !== allowedMediaType) {
+          continue;
+        }
         const key = `${mediaType}:${item.id}`;
         const existing = map.get(key);
         if (existing) {

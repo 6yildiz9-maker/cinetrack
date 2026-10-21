@@ -11,7 +11,8 @@ import {
   RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
   buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore,
   findSavedItem, scoreActorRecommendations, calculateActorRoleBonus, diversifyActorRecommendations,
-  makeMediaKey, parseMediaKey, normalizeFavoriteActor, normalizeFavoriteActors
+  makeMediaKey, parseMediaKey, normalizeFavoriteActor, normalizeFavoriteActors,
+  isItemSaved, filterHistoryByType, filterDislikedByType, TARGET_RECOMMENDATION_COUNT
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -1531,6 +1532,90 @@ describe("scoreActorRecommendations", () => {
     const top3Genres = diversified.slice(0, 3).map((it) => it.genre_ids[0]);
     assert.equal(top3Genres.filter((g) => g === 18).length, 2);
     assert.ok(top3Genres.includes(878), "Farklı tür (878) çeşitlilik sayesinde öne çıkmalı");
+  });
+});
+
+describe("Sana Özel Aşama 1 — Tür Filtresi, makeMediaKey ve Güvenli Eşleşme", () => {
+  it("hedef öneri sayısı TARGET_RECOMMENDATION_COUNT = 20'dir", () => {
+    assert.equal(TARGET_RECOMMENDATION_COUNT, 20);
+  });
+
+  it("aynı sayısal kimlikli film ve diziyi makeMediaKey ile birbirinden ayırır", () => {
+    const movieKey = makeMediaKey("movie", 1399);
+    const tvKey = makeMediaKey("tv", 1399);
+    assert.equal(movieKey, "movie:1399");
+    assert.equal(tvKey, "tv:1399");
+    assert.notEqual(movieKey, tvKey, "Film ve dizi anahtarları farklı olmalı");
+  });
+
+  it("findSavedItem aynı sayısal kimlikli film ve diziyi birbirine karıştırmaz", () => {
+    const saved = [
+      baseItem({ id: 1399, media_type: "tv", name: "Game of Thrones", status: "watching" }),
+    ];
+
+    // Dizi olan 1399 aranırsa bulunmalı
+    const tvResult = findSavedItem(saved, { id: 1399, media_type: "tv" });
+    assert.ok(tvResult);
+    assert.equal(tvResult.name, "Game of Thrones");
+
+    // Film olan 1399 aranırsa bulunmamalı (yanlışlıkla diziyi film olarak döndürmemeli)
+    const movieResult = findSavedItem(saved, { id: 1399, media_type: "movie", title: "Dunkirk" });
+    assert.equal(movieResult, undefined, "Dizi kaydı film aramasına eşleşmemeli");
+  });
+
+  it("isItemSaved tür güvenli karşılaştırma yapar", () => {
+    const saved = [
+      baseItem({ id: 872585, media_type: "movie", title: "Oppenheimer", status: "completed" }),
+    ];
+
+    assert.equal(isItemSaved(saved, { id: 872585, media_type: "movie" }), true);
+    assert.equal(isItemSaved(saved, { id: 872585, media_type: "tv" }), false);
+    assert.equal(isItemSaved(saved, { id: 99999, media_type: "movie" }), false);
+  });
+
+  it("filterHistoryByType film istendiğinde dizileri, dizi istendiğinde filmleri eler", () => {
+    const items = [
+      baseItem({ id: 1, media_type: "movie", title: "Film 1" }),
+      baseItem({ id: 2, media_type: "tv", title: "Dizi 2" }),
+      baseItem({ id: 3, media_type: "movie", title: "Film 3" }),
+    ];
+
+    const movieOnly = filterHistoryByType(items, "movie");
+    assert.equal(movieOnly.length, 2);
+    assert.ok(movieOnly.every((i) => i.media_type === "movie"));
+
+    const tvOnly = filterHistoryByType(items, "tv");
+    assert.equal(tvOnly.length, 1);
+    assert.ok(tvOnly.every((i) => i.media_type === "tv"));
+
+    const all = filterHistoryByType(items, "all");
+    assert.equal(all.length, 3);
+  });
+
+  it("filterDislikedByType tür bazlı olumsuz sinyalleri filtreler", () => {
+    const disliked = ["movie:100", "tv:200", "movie:300"];
+    const movieDisliked = filterDislikedByType(disliked, "movie");
+    assert.deepEqual(movieDisliked, ["movie:100", "movie:300"]);
+
+    const tvDisliked = filterDislikedByType(disliked, "tv");
+    assert.deepEqual(tvDisliked, ["tv:200"]);
+
+    const allDisliked = filterDislikedByType(disliked, "all");
+    assert.deepEqual(allDisliked, disliked);
+  });
+
+  it("createCandidatePool allowedMediaType filtresini aday kabulünde kesin uygular", () => {
+    const pool = createCandidatePool({ allowedMediaType: "movie" });
+    pool.add("test", "test reason", "movie", [
+      { id: 1, media_type: "movie", title: "Movie 1" },
+      { id: 2, media_type: "tv", name: "TV 2" },
+      { id: 3, media_type: "movie", title: "Movie 3" },
+    ]);
+
+    assert.equal(pool.size, 2);
+    const list = pool.list();
+    assert.ok(list.every((item) => item.media_type === "movie"));
+    assert.equal(list.some((item) => item.id === 2), false, "Dizi adayı havuzdan elenmiş olmalı");
   });
 });
 
