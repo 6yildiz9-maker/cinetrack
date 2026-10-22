@@ -2209,3 +2209,225 @@ describe("Sorun B — Tüm İçerikler modunda 10 Film + 10 Dizi Garantisi ve Ba
   });
 });
 
+describe("Sorun C — Havuz Yenileme İsteği Yönetimi, Sınırlı İş Kuyruğu ve Kilit/İptal Ayrımı", () => {
+  it("yarış senaryosu: ilk çağrının iptal sinyali (abort) kilidi paylaşan sonraki çağrıyı etkilemez", async () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    savePersistentPoolData("profile-race-test", {
+      mediaType: "movie",
+      updatedAt: new Date().toISOString(),
+      items: [],
+      cursors: { popular: 1, top_rated: 1, recent: 1, exploration: 1, genre_discover: {}, similar: {}, person_credits: {} },
+    });
+
+    let nextId = 50000;
+    const mockFetch = async (path, params) => {
+      // Yapay gecikme: iptal sinyalinin yarışta tetiklenebilmesi için
+      await new Promise((r) => setTimeout(r, 25));
+      return {
+        results: Array.from({ length: 20 }, () => ({
+          id: nextId++,
+          title: `Movie ${nextId}`,
+          vote_average: 7.7,
+          popularity: 40,
+          genre_ids: [28],
+        })),
+      };
+    };
+
+    const controller1 = new AbortController();
+    const controller2 = new AbortController();
+
+    // 1. Çağıran istek başlatır
+    const promise1 = replenishCandidatePool({
+      profileId: "profile-race-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      signal: controller1.signal,
+      force: true,
+      concurrency: 2,
+    });
+
+    // 2. Çağıran hemen ardından aynı kilide bağlanır
+    const promise2 = replenishCandidatePool({
+      profileId: "profile-race-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      signal: controller2.signal,
+      force: true,
+      concurrency: 2,
+    });
+
+    // 1. Çağıran 10ms sonra isteği iptal eder (ör. kullanıcı kategori değiştirdi veya sekmeyi kapattı)
+    setTimeout(() => {
+      controller1.abort();
+    }, 10);
+
+    // 1. Çağıranın promise'i AbortError fırlatmalı
+    let p1Error = null;
+    try {
+      await promise1;
+    } catch (err) {
+      p1Error = err;
+    }
+    assert.ok(p1Error, "1. çağıran iptal hatası almalı");
+    assert.equal(p1Error.name, "AbortError");
+
+    // 2. Çağıran ise İPTAL HATASI ALMAMALI, arka planda güvenle tamamlanan havuz verisini devralmalı!
+    const result2 = await promise2;
+    assert.ok(result2, "2. çağıran geçerli havuz sonucunu almalı");
+    assert.equal(result2.mediaType, "movie");
+    assert.ok(result2.items.length > 0, "Havuz başarıyla doldurulmuş olmalı");
+  });
+
+  it("sınırlı iş kuyruğu (bounded queue) eşzamanlı TMDB istek limitini aşmaz", async () => {
+    let activeInFlight = 0;
+    let maxInFlight = 0;
+
+    const mockFetch = async (path, params) => {
+      activeInFlight++;
+      maxInFlight = Math.max(maxInFlight, activeInFlight);
+      await new Promise((r) => setTimeout(r, 15));
+      activeInFlight--;
+      return {
+        results: [
+          { id: Math.floor(Math.random() * 100000) + 1, title: "Test", vote_average: 7.5, popularity: 30, genre_ids: [18] }
+        ],
+      };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-concurrency-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: true,
+      concurrency: 3,
+      maxTotalRequests: 12,
+    });
+
+    assert.ok(maxInFlight > 0, "İstekler çalıştırılmış olmalı");
+    assert.ok(maxInFlight <= 3, `Eşzamanlı istek sayısı 3'ü aşmamalı, ölçülen: ${maxInFlight}`);
+  });
+
+  it("hata alan kaynak tekrar denenebilir (retryable) olarak kuyruğa alınır ve başarılı olunca imleç kesinleştirilir", async () => {
+    let popularAttempt = 0;
+    const mockFetch = async (path, params) => {
+      if (path === "/movie/popular") {
+        popularAttempt++;
+        if (popularAttempt === 1) {
+          // İlk denemede geçici hata
+          throw new Error("Temporary network glitch");
+        }
+      }
+      return {
+        results: [
+          { id: Math.floor(Math.random() * 100000) + 1, title: "Success Movie", vote_average: 8, popularity: 50, genre_ids: [28] }
+        ],
+      };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-retry-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: true,
+      concurrency: 1,
+      maxTotalRequests: 10,
+    });
+
+    assert.ok(popularAttempt >= 2, "Hata alan kaynak kuyruktan tekrar denenmiş olmalı");
+    assert.ok(result.cursors.popular > 1, "Başarılı tekrar denemeden sonra imleç kesinleştirilmiş olmalı");
+  });
+
+  it("tüm denemeleri başarısız olan kaynağın imleci ilerletilmez, sonraki yenileme için korunur", async () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    savePersistentPoolData("profile-exhaust-test", {
+      mediaType: "movie",
+      updatedAt: new Date().toISOString(),
+      items: [],
+      cursors: { popular: 7, top_rated: 1, recent: 1, exploration: 1, genre_discover: {}, similar: {}, person_credits: {} },
+    });
+
+    const mockFetch = async (path, params) => {
+      if (path === "/movie/popular") {
+        throw new Error("Persistent 500 error");
+      }
+      return {
+        results: [
+          { id: Math.floor(Math.random() * 100000) + 1, title: "Other Movie", vote_average: 7, popularity: 30, genre_ids: [35] }
+        ],
+      };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-exhaust-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: true,
+      concurrency: 2,
+      maxTotalRequests: 10,
+    });
+
+    // popular kaynağı her denemede hata aldığı için imleç 7'de kalmalı, kesinlikle 8 veya daha fazlaya ilerletilmemeli!
+    assert.equal(result.cursors.popular, 7, "Tüm denemeleri başarısız olan kaynağın imleci korunmalı");
+    assert.ok(result.cursors.top_rated > 1, "Başarılı kaynağın imleci ise güncellenmeli");
+  });
+
+  it("yeni havuz 250 yeni adayla (veya 500 kapasiteye) tamamlanana kadar sayfalamaya devam eder", async () => {
+    let nextId = 80000;
+    let pageCounter = 0;
+    const mockFetch = async (path, params) => {
+      pageCounter++;
+      // Her sayfa 20 benzersiz aday döndürsün
+      return {
+        total_pages: 50,
+        results: Array.from({ length: 20 }, () => ({
+          id: nextId++,
+          title: `Movie ${nextId}`,
+          vote_average: 7.5,
+          popularity: 45,
+          genre_ids: [18],
+        })),
+      };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-target-complete-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: true,
+      concurrency: 3,
+      maxTotalRequests: 50,
+    });
+
+    assert.equal(result.items.length, 500, "Havuz 500 hedefine tamamlanmalı");
+    assert.ok(pageCounter >= 13, "En az 250-500 aday toplayabilmek için yeterli sayfa çekilmiş olmalı");
+  });
+});
+
+

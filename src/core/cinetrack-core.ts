@@ -2827,29 +2827,81 @@ export function selectBalancedRecommendations({
 }
 
 /**
- * Havuz yenilemelerini kilitleyen ve tekilleştiren mutex mekanizması.
+ * Havuz yenilemelerini kilitleyen, tekilleştiren ve iptal (abort) davranışını
+ * arkaplan görevinden bağımsız yöneten mutex mekanizması (Sorun C çözümü).
  */
 export class PoolReplenishmentLock {
   private activeLocks = new Map<string, Promise<any>>();
 
-  public async acquire<T>(key: string, task: () => Promise<T>): Promise<T> {
-    const existing = this.activeLocks.get(key);
-    if (existing) {
-      return existing as Promise<T>;
+  public async acquire<T>(
+    key: string,
+    task: () => Promise<T>,
+    callerSignal?: AbortSignal
+  ): Promise<T> {
+    if (callerSignal?.aborted) {
+      throw callerSignal.reason || new DOMException('This operation was aborted', 'AbortError');
     }
-    const promise = (async () => {
-      try {
-        return await task();
-      } finally {
-        this.activeLocks.delete(key);
-      }
-    })();
-    this.activeLocks.set(key, promise);
-    return promise;
+
+    let sharedPromise = this.activeLocks.get(key) as Promise<T> | undefined;
+    if (!sharedPromise) {
+      sharedPromise = (async () => {
+        try {
+          return await task();
+        } finally {
+          this.activeLocks.delete(key);
+        }
+      })();
+      this.activeLocks.set(key, sharedPromise);
+    }
+
+    // İptal ve kilit davranışını birbirinden ayır:
+    // Eğer çağıran kendi signal'ini geçerse, yalnızca o çağıranın beklemesi iptal edilir.
+    // Arka plandaki paylaşılan yenileme görevi diğer çağıranlar ve havuz bütünlüğü için devam eder.
+    if (!callerSignal) {
+      return sharedPromise;
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+
+      const onAbort = () => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(callerSignal.reason || new DOMException('This operation was aborted', 'AbortError'));
+        }
+      };
+
+      const cleanup = () => {
+        callerSignal.removeEventListener('abort', onAbort);
+      };
+
+      callerSignal.addEventListener('abort', onAbort, { once: true });
+
+      sharedPromise!
+        .then((result) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            resolve(result);
+          }
+        })
+        .catch((err) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(err);
+          }
+        });
+    });
   }
 
   public isLocked(key: string): boolean {
     return this.activeLocks.has(key);
+  }
+
+  public clear(): void {
+    this.activeLocks.clear();
   }
 }
 
@@ -2911,10 +2963,29 @@ export interface ReplenishCandidatePoolParams {
   fetchTmdbFn: (path: string, params?: Record<string, string>, signal?: AbortSignal) => Promise<any>;
   signal?: AbortSignal;
   force?: boolean;
+  concurrency?: number;
+  maxTotalRequests?: number;
+}
+
+export interface PoolQueueTask {
+  id: string;
+  source: PoolSourceType;
+  endpointKey: string;
+  path: string;
+  params: Record<string, string>;
+  page: number;
+  reason?: string;
+  seedSourceType?: 'completed' | 'watching' | 'watchlist' | '';
+  cursorTarget?: {
+    type: 'popular' | 'top_rated' | 'recent' | 'exploration' | 'genre_discover' | 'similar' | 'person_credits';
+    key?: string;
+  };
+  retries: number;
 }
 
 /**
- * 250 uygun adayın altına düşünce tetiklenen ve 500'e tamamlayana kadar sayfalayan yenileme döngüsü.
+ * 250 uygun adayın altına düşünce tetiklenen ve 500'e tamamlayana kadar
+ * sınırlı bir iş kuyruğu (bounded work queue) ile çalışan yenileme döngüsü (Sorun C).
  */
 export async function replenishCandidatePool({
   profileId,
@@ -2925,279 +2996,322 @@ export async function replenishCandidatePool({
   fetchTmdbFn,
   signal,
   force = false,
+  concurrency = 3,
+  maxTotalRequests = 60,
 }: ReplenishCandidatePoolParams): Promise<PersistentCandidatePoolData> {
   const lockKey = `${profileId}:${mediaType}`;
 
-  return poolReplenishmentLock.acquire(lockKey, async () => {
-    let poolData = loadPersistentPoolData(profileId, mediaType);
+  // Kilit ve iptal davranışını birbirinden ayır:
+  // Çağıranın iptal sinyali (signal) yalnızca çağıranın beklemesini iptal eder,
+  // arka plandaki kuyruk ve kilit görevi havuz bütünlüğünü korumak için tamamlanır.
+  return poolReplenishmentLock.acquire(
+    lockKey,
+    async () => {
+      let poolData = loadPersistentPoolData(profileId, mediaType);
 
-    // 1. Beş durum kontrolü ile mevcut havuzu temizle
-    poolData.items = filterEligiblePoolItems(poolData.items, savedItems, preferences);
+      // 1. Beş durum kontrolü ile mevcut havuzu temizle
+      poolData.items = filterEligiblePoolItems(poolData.items, savedItems, preferences);
 
-    // 2. Havuz 250 uygun adaya düşünce yenileyip 500'e tamamlama kontrolü (Sorun A düzeltmesi)
-    if (!force && poolData.items.length > POOL_LOW_WATERMARK) {
-      savePersistentPoolData(profileId, poolData);
-      return poolData;
-    }
-
-    const existingItemMap = new Map<string, PoolCandidateItem>();
-    for (const it of poolData.items) {
-      existingItemMap.set(makeMediaKey(it), it);
-    }
-    let newlyAdded = 0;
-    const cursors = poolData.cursors || (poolData.cursors = createDefaultPoolCursors());
-    cursors.genre_discover = cursors.genre_discover || {};
-    cursors.similar = cursors.similar || {};
-    cursors.person_credits = cursors.person_credits || {};
-
-    const watchedSeeds = filterHistoryByType(savedItems, mediaType)
-      .filter((s) => s.status === 'completed' || s.status === 'watching' || Number(s.personal_rating) >= 7)
-      .sort((a, b) => Number(b.personal_rating || 7) - Number(a.personal_rating || 7))
-      .slice(0, 6);
-
-    const tasteProfile = buildTasteProfileV3(
-      filterHistoryByType(savedItems, mediaType),
-      { dislikedKeys: filterDislikedByType(preferences.disliked, mediaType) }
-    );
-    const topGenreIds = tasteProfile.positiveGenres.slice(0, 4);
-
-    let loopIteration = 0;
-    const maxIterations = 8;
-    const failedEndpointsThisRun = new Set<string>();
-
-    // 500 hedefine (POOL_TARGET_CAPACITY) ulaşılana kadar sayfalayarak tamamla
-    while (
-      poolData.items.length < POOL_TARGET_CAPACITY &&
-      loopIteration < maxIterations
-    ) {
-      if (signal?.aborted) break;
-      loopIteration += 1;
-
-      interface ReplenishRequest {
-        path: string;
-        params?: Record<string, string>;
-        source: PoolSourceType;
-        reason?: string;
-        seedSourceType?: 'completed' | 'watching' | 'watchlist' | '';
-        cursorTarget?: {
-          type: 'popular' | 'top_rated' | 'recent' | 'exploration' | 'genre_discover' | 'similar' | 'person_credits';
-          key?: string;
-          nextPage: number;
-        };
+      // 2. Havuz 250 uygun adaya düşünce yenileyip 500'e tamamlama kontrolü (Sorun A düzeltmesi)
+      if (!force && poolData.items.length > POOL_LOW_WATERMARK) {
+        savePersistentPoolData(profileId, poolData);
+        return poolData;
       }
 
-      const requests: ReplenishRequest[] = [];
+      const existingItemMap = new Map<string, PoolCandidateItem>();
+      for (const it of poolData.items) {
+        existingItemMap.set(makeMediaKey(it), it);
+      }
+      let newlyAdded = 0;
+      const cursors = poolData.cursors || (poolData.cursors = createDefaultPoolCursors());
+      cursors.genre_discover = cursors.genre_discover || {};
+      cursors.similar = cursors.similar || {};
+      cursors.person_credits = cursors.person_credits || {};
+
+      const watchedSeeds = filterHistoryByType(savedItems, mediaType)
+        .filter((s) => s.status === 'completed' || s.status === 'watching' || Number(s.personal_rating) >= 7)
+        .sort((a, b) => Number(b.personal_rating || 7) - Number(a.personal_rating || 7))
+        .slice(0, 6);
+
+      const tasteProfile = buildTasteProfileV3(
+        filterHistoryByType(savedItems, mediaType),
+        { dislikedKeys: filterDislikedByType(preferences.disliked, mediaType) }
+      );
+      const topGenreIds = tasteProfile.positiveGenres.slice(0, 4);
+
+      // Sorun C: Sınırlı iş kuyruğu (bounded work queue) ile kaynak yönetimi
+      const queue: PoolQueueTask[] = [];
+      const failedEndpoints = new Set<string>();
+      const MAX_RETRIES_PER_ENDPOINT = 2;
 
       // 1. Popüler kaynak (sayfalanır)
       const popPage = cursors.popular || 1;
-      const popPath = `/${mediaType}/popular`;
-      if (!failedEndpointsThisRun.has(popPath)) {
-        requests.push({
-          path: popPath,
-          params: { page: String(popPage) },
-          source: 'popular',
-          reason: 'Popüler yapımlar arasından',
-          cursorTarget: { type: 'popular', nextPage: popPage + 1 },
-        });
-      }
+      queue.push({
+        id: `popular:p${popPage}`,
+        source: 'popular',
+        endpointKey: 'popular',
+        path: `/${mediaType}/popular`,
+        params: { page: String(popPage) },
+        page: popPage,
+        reason: 'Popüler yapımlar arasından',
+        cursorTarget: { type: 'popular' },
+        retries: 0,
+      });
 
       // 2. Yüksek puanlı kaynak (sayfalanır)
       const topPage = cursors.top_rated || 1;
-      const topPath = `/${mediaType}/top_rated`;
-      if (!failedEndpointsThisRun.has(topPath)) {
-        requests.push({
-          path: topPath,
-          params: { page: String(topPage) },
-          source: 'top_rated',
-          reason: 'Yüksek puanlı seçkiler',
-          cursorTarget: { type: 'top_rated', nextPage: topPage + 1 },
-        });
-      }
+      queue.push({
+        id: `top_rated:p${topPage}`,
+        source: 'top_rated',
+        endpointKey: 'top_rated',
+        path: `/${mediaType}/top_rated`,
+        params: { page: String(topPage) },
+        page: topPage,
+        reason: 'Yüksek puanlı seçkiler',
+        cursorTarget: { type: 'top_rated' },
+        retries: 0,
+      });
 
       // 3. Yeni / Vizyonda / Yayında kaynak (sayfalanır)
       const recPage = cursors.recent || 1;
       const recentPath = mediaType === 'movie' ? '/movie/now_playing' : '/tv/on_the_air';
-      if (!failedEndpointsThisRun.has(recentPath)) {
-        requests.push({
-          path: recentPath,
-          params: { page: String(recPage) },
-          source: 'recent',
-          reason: 'Yeni ve vizyondaki yapımlar',
-          cursorTarget: { type: 'recent', nextPage: recPage + 1 },
-        });
-      }
+      queue.push({
+        id: `recent:p${recPage}`,
+        source: 'recent',
+        endpointKey: 'recent',
+        path: recentPath,
+        params: { page: String(recPage) },
+        page: recPage,
+        reason: 'Yeni ve vizyondaki yapımlar',
+        cursorTarget: { type: 'recent' },
+        retries: 0,
+      });
 
       // 4. Tür keşfi kaynakları (sayfalanır)
       for (const gid of topGenreIds) {
         const gidKey = String(gid);
         const gPage = cursors.genre_discover[gidKey] || 1;
-        const gKeyStr = `genre:${gidKey}`;
-        if (!failedEndpointsThisRun.has(gKeyStr)) {
-          requests.push({
-            path: `/discover/${mediaType}`,
-            params: { with_genres: gidKey, sort_by: 'popularity.desc', page: String(gPage) },
-            source: 'genre_discover',
-            reason: 'Sevdiğin türlerde keşif',
-            cursorTarget: { type: 'genre_discover', key: gidKey, nextPage: gPage + 1 },
-          });
-        }
+        queue.push({
+          id: `genre:${gidKey}:p${gPage}`,
+          source: 'genre_discover',
+          endpointKey: `genre:${gidKey}`,
+          path: `/discover/${mediaType}`,
+          params: { with_genres: gidKey, sort_by: 'popularity.desc', page: String(gPage) },
+          page: gPage,
+          reason: 'Sevdiğin türlerde keşif',
+          cursorTarget: { type: 'genre_discover', key: gidKey },
+          retries: 0,
+        });
       }
 
       // 5. Benzer içerik kaynakları (sayfalanır)
       for (const seed of watchedSeeds) {
         const seedKey = makeMediaKey(seed);
         const simPage = cursors.similar[seedKey] || 1;
-        const simPath = `/${mediaType}/${seed.id}/recommendations`;
-        if (!failedEndpointsThisRun.has(simPath)) {
-          requests.push({
-            path: simPath,
-            params: { page: String(simPage) },
-            source: 'similar',
-            reason: `“${seed.title || seed.name}” yapımına benzer`,
-            seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
-            cursorTarget: { type: 'similar', key: seedKey, nextPage: simPage + 1 },
-          });
-        }
+        queue.push({
+          id: `similar:${seedKey}:p${simPage}`,
+          source: 'similar',
+          endpointKey: `similar:${seedKey}`,
+          path: `/${mediaType}/${seed.id}/recommendations`,
+          params: { page: String(simPage) },
+          page: simPage,
+          reason: `“${seed.title || seed.name}” yapımına benzer`,
+          seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
+          cursorTarget: { type: 'similar', key: seedKey },
+          retries: 0,
+        });
       }
 
       // 6. Oyuncu / Yönetmen kaynakları (sayfalanır)
       for (const actor of favoriteActors.slice(0, 3)) {
         const actorKey = String(actor.id);
         const aPage = cursors.person_credits[actorKey] || 1;
-        const aKeyStr = `actor:${actorKey}`;
-        if (!failedEndpointsThisRun.has(aKeyStr)) {
-          requests.push({
-            path: `/discover/${mediaType}`,
-            params: { with_cast: actorKey, sort_by: 'popularity.desc', page: String(aPage) },
-            source: 'person_credits',
-            reason: `Favori oyuncun ${actor.name} kadrosunda`,
-            cursorTarget: { type: 'person_credits', key: actorKey, nextPage: aPage + 1 },
-          });
-        }
+        queue.push({
+          id: `actor:${actorKey}:p${aPage}`,
+          source: 'person_credits',
+          endpointKey: `actor:${actorKey}`,
+          path: `/discover/${mediaType}`,
+          params: { with_cast: actorKey, sort_by: 'popularity.desc', page: String(aPage) },
+          page: aPage,
+          reason: `Favori oyuncun ${actor.name} kadrosunda`,
+          cursorTarget: { type: 'person_credits', key: actorKey },
+          retries: 0,
+        });
       }
 
       // 7. Keşif amaçlı kaynak (sayfalanır)
       const expPage = cursors.exploration || 1;
-      if (!failedEndpointsThisRun.has('exploration')) {
-        requests.push({
-          path: `/discover/${mediaType}`,
-          params: {
-            'vote_count.gte': '100',
-            'vote_count.lte': '2500',
-            'vote_average.gte': '7.2',
-            sort_by: 'popularity.asc',
-            page: String(expPage),
-          },
-          source: 'exploration',
-          reason: 'Keşfedilmeyi bekleyen yüksek puanlı yapımlar',
-          cursorTarget: { type: 'exploration', nextPage: expPage + 1 },
+      queue.push({
+        id: `exploration:p${expPage}`,
+        source: 'exploration',
+        endpointKey: 'exploration',
+        path: `/discover/${mediaType}`,
+        params: {
+          'vote_count.gte': '100',
+          'vote_count.lte': '2500',
+          'vote_average.gte': '7.2',
+          sort_by: 'popularity.asc',
+          page: String(expPage),
+        },
+        page: expPage,
+        reason: 'Keşfedilmeyi bekleyen yüksek puanlı yapımlar',
+        cursorTarget: { type: 'exploration' },
+        retries: 0,
+      });
+
+      let totalRequestsExecuted = 0;
+      let activeWorkers = 0;
+      const resolveWaiters: (() => void)[] = [];
+
+      const notifyWorkAvailable = () => {
+        if (resolveWaiters.length > 0) {
+          const waiter = resolveWaiters.shift();
+          if (waiter) waiter();
+        }
+      };
+
+      const wakeAllWaiters = () => {
+        while (resolveWaiters.length > 0) {
+          resolveWaiters.shift()?.();
+        }
+      };
+
+      const waitForWork = (): Promise<void> => {
+        return new Promise((resolve) => {
+          resolveWaiters.push(resolve);
         });
-      }
+      };
 
-      if (requests.length === 0) {
-        break;
-      }
+      const worker = async (): Promise<void> => {
+        while (true) {
+          // Havuz hedefine (500 adet VE en az 250 yeni benzersiz aday) ulaşıldıysa dur
+          const targetSatisfied =
+            poolData.items.length >= POOL_TARGET_CAPACITY &&
+            newlyAdded >= POOL_REPLENISH_MIN_NEW;
 
-      // İstekleri paralel çalıştır
-      const fetchedResults = await Promise.allSettled(
-        requests.map(async (req) => {
-          try {
-            const data = await fetchTmdbFn(req.path, req.params || {}, signal);
-            return {
-              req,
-              items: Array.isArray(data?.results) ? data.results : [],
-              success: true,
-            };
-          } catch {
-            return {
-              req,
-              items: [],
-              success: false,
-            };
+          if (targetSatisfied || totalRequestsExecuted >= maxTotalRequests) {
+            wakeAllWaiters();
+            break;
           }
-        })
-      );
 
-      let addedInIteration = 0;
-      let successfulRequestsCount = 0;
+          let task = queue.shift();
 
-      for (const res of fetchedResults) {
-        if (res.status !== 'fulfilled') continue;
-        const { req, items, success } = res.value;
-
-        // Hatalı sayfalar: İstek başarısız olduysa imleci İLERLETME!
-        // Böylece hatalı sayfa sonraki yenilemede tekrar denenir.
-        if (!success) {
-          if (req.cursorTarget?.type === 'genre_discover' && req.cursorTarget.key) {
-            failedEndpointsThisRun.add(`genre:${req.cursorTarget.key}`);
-          } else if (req.cursorTarget?.type === 'person_credits' && req.cursorTarget.key) {
-            failedEndpointsThisRun.add(`actor:${req.cursorTarget.key}`);
-          } else if (req.cursorTarget?.type === 'exploration') {
-            failedEndpointsThisRun.add('exploration');
-          } else {
-            failedEndpointsThisRun.add(req.path);
-          }
-          continue;
-        }
-
-        successfulRequestsCount += 1;
-
-        // İstek başarılı olduysa imleci bir sonraki sayfaya ilerlet
-        if (req.cursorTarget) {
-          const { type, key, nextPage } = req.cursorTarget;
-          if (type === 'popular') cursors.popular = nextPage;
-          else if (type === 'top_rated') cursors.top_rated = nextPage;
-          else if (type === 'recent') cursors.recent = nextPage;
-          else if (type === 'exploration') cursors.exploration = nextPage;
-          else if (type === 'genre_discover' && key) cursors.genre_discover[key] = nextPage;
-          else if (type === 'similar' && key) cursors.similar[key] = nextPage;
-          else if (type === 'person_credits' && key) cursors.person_credits[key] = nextPage;
-        }
-
-        for (const rawItem of items) {
-          if (!isCandidateEligibleInPool(rawItem, savedItems, preferences)) continue;
-          const candidate = normalizePoolCandidate(
-            rawItem,
-            mediaType,
-            req.source,
-            req.reason,
-            req.seedSourceType
-          );
-          if (!candidate) continue;
-
-          const key = makeMediaKey(candidate);
-          const existingItem = existingItemMap.get(key);
-          if (existingItem) {
-            existingItem.poolSources = (existingItem.poolSources || 1) + 1;
-            if (req.seedSourceType && !existingItem.seedSourceType) {
-              existingItem.seedSourceType = req.seedSourceType;
-              if (req.reason) existingItem.poolReason = req.reason;
+          if (!task) {
+            if (activeWorkers === 0) {
+              // Kuyrukta iş kalmadı ve çalışan başka işçi yok; kaynaklar tükendi
+              wakeAllWaiters();
+              break;
             }
+            // Başka işçiler hâlâ çalışıyor olabilir ve yeni sayfalar ekleyebilir, bekle
+            await waitForWork();
             continue;
           }
 
-          existingItemMap.set(key, candidate);
-          poolData.items.push(candidate);
-          newlyAdded += 1;
-          addedInIteration += 1;
-          if (poolData.items.length >= POOL_TARGET_CAPACITY * 1.5) break;
+          activeWorkers++;
+          try {
+            totalRequestsExecuted++;
+            const data = await fetchTmdbFn(task.path, task.params);
+            const results = Array.isArray(data?.results) ? data.results : [];
+
+            // KURAL 3: Sayfa imlecini YALNIZCA başarılı yanıt sonrasında kesinleştir!
+            if (task.cursorTarget) {
+              const { type, key } = task.cursorTarget;
+              const nextPage = task.page + 1;
+              if (type === 'popular') cursors.popular = nextPage;
+              else if (type === 'top_rated') cursors.top_rated = nextPage;
+              else if (type === 'recent') cursors.recent = nextPage;
+              else if (type === 'exploration') cursors.exploration = nextPage;
+              else if (type === 'genre_discover' && key) cursors.genre_discover[key] = nextPage;
+              else if (type === 'similar' && key) cursors.similar[key] = nextPage;
+              else if (type === 'person_credits' && key) cursors.person_credits[key] = nextPage;
+            }
+
+            // Adayları havuza ekle ve tekilleştir
+            for (const rawItem of results) {
+              if (!isCandidateEligibleInPool(rawItem, savedItems, preferences)) continue;
+              const candidate = normalizePoolCandidate(
+                rawItem,
+                mediaType,
+                task.source,
+                task.reason,
+                task.seedSourceType
+              );
+              if (!candidate) continue;
+
+              const key = makeMediaKey(candidate);
+              const existingItem = existingItemMap.get(key);
+              if (existingItem) {
+                existingItem.poolSources = (existingItem.poolSources || 1) + 1;
+                if (task.seedSourceType && !existingItem.seedSourceType) {
+                  existingItem.seedSourceType = task.seedSourceType;
+                  if (task.reason) existingItem.poolReason = task.reason;
+                }
+                continue;
+              }
+
+              existingItemMap.set(key, candidate);
+              poolData.items.push(candidate);
+              newlyAdded += 1;
+            }
+
+            // KURAL 1: Havuz hedefine ulaşılmadıysa ve kaynakta sonraki sayfa varsa kuyruğa ekle
+            const hasMorePages =
+              results.length > 0 &&
+              task.page < (Number(data?.total_pages) || 100) &&
+              task.page < 50;
+
+            const stillNeedsMore =
+              poolData.items.length < POOL_TARGET_CAPACITY ||
+              newlyAdded < POOL_REPLENISH_MIN_NEW;
+
+            if (hasMorePages && stillNeedsMore && !failedEndpoints.has(task.endpointKey)) {
+              queue.push({
+                id: `${task.endpointKey}:p${task.page + 1}`,
+                source: task.source,
+                endpointKey: task.endpointKey,
+                path: task.path,
+                params: { ...task.params, page: String(task.page + 1) },
+                page: task.page + 1,
+                reason: task.reason,
+                seedSourceType: task.seedSourceType,
+                cursorTarget: task.cursorTarget,
+                retries: 0,
+              });
+              notifyWorkAvailable();
+            }
+          } catch {
+            // KURAL 2: Hata alan kaynağı boş saymak yerine TEKRAR DENENEBİLİR olarak kaydet.
+            // Sayfa imleci İLERLETİLMEZ; böylece bu ve sonraki koşuda tekrar denenir.
+            if (task.retries < MAX_RETRIES_PER_ENDPOINT) {
+              queue.push({
+                ...task,
+                retries: task.retries + 1,
+              });
+              notifyWorkAvailable();
+            } else {
+              failedEndpoints.add(task.endpointKey);
+            }
+          } finally {
+            activeWorkers--;
+            notifyWorkAvailable();
+          }
         }
-      }
+      };
 
-      // Başarılı istek olmasına rağmen hiç yeni aday eklenemediyse veya tüm istekler başarısızsa
-      if (successfulRequestsCount === 0 || (addedInIteration === 0 && loopIteration >= 3)) {
-        break;
-      }
-    }
+      const workerCount = Math.max(1, Math.min(concurrency, queue.length));
+      const workers = Array.from({ length: workerCount }, () => worker());
+      await Promise.all(workers);
 
-    // 5. Boyut dengesi (tür, dönem, popülerlik) ve 500 hedefine kırpma
-    poolData.items = balanceCandidatePool(poolData.items, POOL_TARGET_CAPACITY);
-    poolData.updatedAt = new Date().toISOString();
+      // 5. Çok boyutlu denge kur (tür, dönem, popülerlik) ve 500 hedefine kırp
+      poolData.items = balanceCandidatePool(poolData.items, POOL_TARGET_CAPACITY);
+      poolData.updatedAt = new Date().toISOString();
 
-    // 6. Güncellenmiş imleçler ve havuzu kalıcı kaydet
-    savePersistentPoolData(profileId, poolData);
+      // 6. Güncellenmiş imleçler ve havuzu kalıcı kaydet
+      savePersistentPoolData(profileId, poolData);
 
-    return poolData;
-  });
+      return poolData;
+    },
+    signal
+  );
 }
 
