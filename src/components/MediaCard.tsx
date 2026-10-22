@@ -1,6 +1,6 @@
 import React from 'react';
 import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
-import { SavedItem, reminderDaysUntil, resolveAirDate, makeMediaKey } from '../core/cinetrack-core';
+import { SavedItem, reminderDaysUntil, resolveAirDate, makeMediaKey, getTasteRingLabel } from '../core/cinetrack-core';
 
 interface MediaCardProps {
   item: any;
@@ -133,10 +133,15 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         {(Number(item.matchScore) > 0 || (tab === 'discover' && Boolean(recommendationReason))) && (
           <span
             className="match-badge"
-            title={`Sana Özel zevk uyumluluğu: %${Math.round(Number(item.matchScore) || 82)}`}
+            title={`Sana Özel zevk uyumluluğu: %${Math.round(Number(item.matchScore) || 82)}${item.ring ? ` (${getTasteRingLabel(item.ring)})` : ''}`}
             aria-label={`Uyumluluk: %${Math.round(Number(item.matchScore) || 82)}`}
           >
             🎯 %{Math.round(Number(item.matchScore) || 82)} Uyum
+            {item.ring && (
+              <span className="opacity-90 ml-1 text-[10px]">
+                · {item.ring === 'core' ? '1. Halka' : item.ring === 'inner' ? '2. Halka' : item.ring === 'outer' ? '3. Halka' : 'Yörünge'}
+              </span>
+            )}
           </span>
         )}
 

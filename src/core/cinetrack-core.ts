@@ -1476,6 +1476,273 @@ export function buildTasteProfileV3(
   };
 }
 
+/* ============================================================================
+ * Aşama 3: Kalıcı Zevk Haritası (Taste Map) ve Konsantrik Halka Takibi (Sorun D)
+ * ============================================================================ */
+
+export type TasteRing = 'core' | 'inner' | 'outer' | 'orbit';
+
+export interface TasteMapEntry {
+  mediaKey: string;
+  mediaType: 'movie' | 'tv';
+  id: number;
+  title: string;
+  matchScore: number;
+  rawScore: number;
+  ring: TasteRing;
+  initialRing: TasteRing;
+  parts: Record<string, number>;
+  tags: string[];
+  shownCount: number;
+  skippedCount: number;
+  ringDemotions: number;
+  demotionPenalty: number;
+  lastShownAt: string | null;
+  lastScoredAt: string;
+  status: 'active' | 'saved' | 'disliked' | 'hidden';
+}
+
+export interface PersistentTasteMapData {
+  profileId: string;
+  updatedAt: string;
+  entries: Record<string, TasteMapEntry>;
+  lastRecommendedKeys: string[];
+  lastBatchTimestamp: string | null;
+}
+
+export function assignTasteRing(score: number): TasteRing {
+  const s = Number(score) || 0;
+  if (s >= 85) return 'core';
+  if (s >= 70) return 'inner';
+  if (s >= 55) return 'outer';
+  return 'orbit';
+}
+
+export function demoteTasteRing(currentRing: TasteRing, steps: number = 1): TasteRing {
+  const ringOrder: TasteRing[] = ['core', 'inner', 'outer', 'orbit'];
+  const currentIndex = ringOrder.indexOf(currentRing);
+  if (currentIndex === -1) return 'orbit';
+  const targetIndex = Math.min(ringOrder.length - 1, currentIndex + Math.max(1, steps));
+  return ringOrder[targetIndex];
+}
+
+export function getTasteRingLabel(ring?: TasteRing | null): string {
+  switch (ring) {
+    case 'core':
+      return 'Çekirdek Halka (1. Halka)';
+    case 'inner':
+      return 'Yakın Halka (2. Halka)';
+    case 'outer':
+      return 'Dış Halka (3. Halka)';
+    case 'orbit':
+      return 'Yörünge (4. Halka)';
+    default:
+      return '';
+  }
+}
+
+export function getTasteMapStorageKey(profileId: string): string {
+  return `cinetrack_taste_map_${profileId}`;
+}
+
+export function createDefaultTasteMapData(profileId: string): PersistentTasteMapData {
+  return {
+    profileId,
+    updatedAt: new Date().toISOString(),
+    entries: {},
+    lastRecommendedKeys: [],
+    lastBatchTimestamp: null,
+  };
+}
+
+export function loadPersistentTasteMap(profileId: string): PersistentTasteMapData {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const key = getTasteMapStorageKey(profileId);
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.entries === 'object') {
+          return {
+            profileId,
+            updatedAt: parsed.updatedAt || new Date().toISOString(),
+            entries: parsed.entries || {},
+            lastRecommendedKeys: Array.isArray(parsed.lastRecommendedKeys) ? parsed.lastRecommendedKeys : [],
+            lastBatchTimestamp: parsed.lastBatchTimestamp || null,
+          };
+        }
+      }
+    }
+  } catch {}
+  return createDefaultTasteMapData(profileId);
+}
+
+export function savePersistentTasteMap(profileId: string, data: PersistentTasteMapData): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const key = getTasteMapStorageKey(profileId);
+      localStorage.setItem(key, JSON.stringify(data));
+    }
+  } catch {}
+}
+
+export function markTasteMapItemStatus(
+  tasteMap: PersistentTasteMapData,
+  itemOrKey: any,
+  status: 'saved' | 'disliked' | 'hidden' | 'active'
+): PersistentTasteMapData {
+  if (!tasteMap || !tasteMap.entries) return tasteMap;
+  const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
+  const entry = tasteMap.entries[key];
+  if (entry) {
+    entry.status = status;
+    tasteMap.updatedAt = new Date().toISOString();
+  }
+  return tasteMap;
+}
+
+export interface UpdateTasteMapWithBatchParams {
+  tasteMap: PersistentTasteMapData;
+  newRecommendedItems: any[];
+  savedItems: SavedItem[];
+  preferences: Preferences;
+  now?: string;
+}
+
+export function updateTasteMapWithBatch({
+  tasteMap,
+  newRecommendedItems,
+  savedItems,
+  preferences,
+  now = new Date().toISOString(),
+}: UpdateTasteMapWithBatchParams): PersistentTasteMapData {
+  const updatedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.entries || {}) };
+  const newKeys = new Set<string>();
+
+  for (const item of newRecommendedItems) {
+    const cand = item.candidate || item;
+    const key = makeMediaKey(cand);
+    newKeys.add(key);
+  }
+
+  // 1. Önceki vitrinde (lastRecommendedKeys) gösterilmiş olan yapımları değerlendir:
+  // Eğer kullanıcı bunları kaydetmediyse (savedItems'ta yok) ve beğenmeyip gizlemediyse
+  // ve yeni vitrinde de yer almıyorsa, bu yapımlar kullanıcı tarafından "atlandı / pas geçildi" (skipped) sayılır.
+  const prevKeys = Array.isArray(tasteMap.lastRecommendedKeys) ? tasteMap.lastRecommendedKeys : [];
+  for (const prevKey of prevKeys) {
+    const entry = updatedEntries[prevKey];
+    if (!entry) continue;
+
+    // Durum 1,2,3: Kaydedildiyse
+    const [mediaType, rawId] = prevKey.split(':');
+    const isSaved = isItemSaved(savedItems, { id: rawId, media_type: mediaType }, mediaType as any);
+    if (isSaved) {
+      entry.status = 'saved';
+      continue;
+    }
+
+    // Durum 4,5: Beğenilmedi / gizlendiyse
+    if (preferences.disliked?.includes(prevKey) || preferences.hidden?.includes(prevKey)) {
+      entry.status = preferences.disliked?.includes(prevKey) ? 'disliked' : 'hidden';
+      continue;
+    }
+
+    // Yeni listede yer almadıysa atlandı sayacı artır ve halka geriletmesi uygula
+    if (!newKeys.has(prevKey)) {
+      entry.skippedCount = (entry.skippedCount || 0) + 1;
+
+      // Halka Geriletmesi (Ring Demotion) kuralı:
+      // Her 2 atlamada bir halka bir basamak dışarı geriletilir (core -> inner -> outer -> orbit).
+      const expectedDemotions = Math.floor(entry.skippedCount / 2);
+      if (expectedDemotions > (entry.ringDemotions || 0) && entry.ring !== 'orbit') {
+        const demoteSteps = expectedDemotions - (entry.ringDemotions || 0);
+        entry.ring = demoteTasteRing(entry.ring, demoteSteps);
+        entry.ringDemotions = expectedDemotions;
+      }
+
+      // Demotion ceza puanı: her atlama için 5 puan, her halka düşüşü için ek 5 puan (maks 35 puan)
+      entry.demotionPenalty = Math.min(35, entry.skippedCount * 5 + (entry.ringDemotions || 0) * 5);
+      entry.matchScore = Math.max(1, Math.min(100, Math.round(entry.rawScore - entry.demotionPenalty)));
+      entry.lastScoredAt = now;
+    }
+  }
+
+  // 2. Yeni vitrindeki adayı kaydet / güncelle
+  for (const item of newRecommendedItems) {
+    const cand = item.candidate || item;
+    const key = makeMediaKey(cand);
+    const mediaType: 'movie' | 'tv' = cand.media_type === 'tv' ? 'tv' : 'movie';
+    const id = Number(cand.id);
+    const title = String(cand.title || cand.name || '');
+    const rawScore = Number(item.rawScore ?? item.score ?? cand.score ?? 75);
+    const existing = updatedEntries[key];
+
+    const demotionPenalty = existing?.demotionPenalty || item.demotionPenalty || 0;
+    const ringDemotions = existing?.ringDemotions || item.ringDemotions || 0;
+    const skippedCount = existing?.skippedCount || item.skippedCount || 0;
+    const shownCount = (existing?.shownCount || 0) + 1;
+
+    let ring: TasteRing = existing?.ring || item.ring || assignTasteRing(rawScore);
+    const initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
+    const netMatchScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+
+    updatedEntries[key] = {
+      mediaKey: key,
+      mediaType,
+      id,
+      title,
+      matchScore: netMatchScore,
+      rawScore,
+      ring,
+      initialRing,
+      parts: item.parts || existing?.parts || {},
+      tags: Array.isArray(item.tags) ? item.tags : existing?.tags || [],
+      shownCount,
+      skippedCount,
+      ringDemotions,
+      demotionPenalty,
+      lastShownAt: now,
+      lastScoredAt: now,
+      status: 'active',
+    };
+  }
+
+  return {
+    profileId: tasteMap.profileId,
+    updatedAt: now,
+    entries: updatedEntries,
+    lastRecommendedKeys: Array.from(newKeys),
+    lastBatchTimestamp: now,
+  };
+}
+
+export function syncPoolCandidatesWithTasteMap(
+  poolItems: PoolCandidateItem[],
+  tasteMap: PersistentTasteMapData
+): PoolCandidateItem[] {
+  if (!Array.isArray(poolItems) || !tasteMap?.entries) return poolItems;
+  return poolItems.map((item) => {
+    const key = makeMediaKey(item);
+    const entry = tasteMap.entries[key];
+    if (!entry) return item;
+    return {
+      ...item,
+      matchScore: entry.matchScore,
+      rawScore: entry.rawScore,
+      ring: entry.ring,
+      initialRing: entry.initialRing,
+      demotionPenalty: entry.demotionPenalty,
+      shownCount: entry.shownCount,
+      skippedCount: entry.skippedCount,
+      ringDemotions: entry.ringDemotions,
+      lastShownAt: entry.lastShownAt,
+      lastScoredAt: entry.lastScoredAt,
+      tags: entry.tags,
+      signalBreakdown: entry.parts,
+    };
+  });
+}
+
 export function scoreCandidatesV3(
   candidates: any[],
   profile: TasteProfileV3,
@@ -1483,10 +1750,12 @@ export function scoreCandidatesV3(
     weights = RECOMMENDATION_WEIGHTS_V3,
     genreNames = null as Record<number | string, string> | null,
     mood = '',
+    tasteMap = null as PersistentTasteMapData | null,
   }: {
     weights?: typeof RECOMMENDATION_WEIGHTS_V3;
     genreNames?: Record<number | string, string> | null;
     mood?: string;
+    tasteMap?: PersistentTasteMapData | null;
   } = {}
 ) {
   const actorOf = (id: any) => profile.actors?.[String(id)] || null;
@@ -1727,11 +1996,54 @@ export function scoreCandidatesV3(
       tags.push('Yeni keşif için');
     }
 
+    // Sorun D: Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion) Entegrasyonu
+    const key = makeMediaKey(candidate);
+    const tasteEntry = tasteMap?.entries ? tasteMap.entries[key] : null;
+
+    let demotionPenalty = 0;
+    let ring: TasteRing;
+    let shownCount = 0;
+    let skippedCount = 0;
+    let ringDemotions = 0;
+    let lastShownAt: string | null = null;
+
+    if (tasteEntry) {
+      demotionPenalty = tasteEntry.demotionPenalty || 0;
+      ring = tasteEntry.ring || assignTasteRing(rawScore);
+      shownCount = tasteEntry.shownCount || 0;
+      skippedCount = tasteEntry.skippedCount || 0;
+      ringDemotions = tasteEntry.ringDemotions || 0;
+      lastShownAt = tasteEntry.lastShownAt || null;
+    } else {
+      ring = assignTasteRing(rawScore);
+    }
+
+    const effectiveScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+
+    // Sinyalleri ve kalıcı zevk alanlarını doğrudan aday nesnesi üzerine de yaz
+    candidate.matchScore = effectiveScore;
+    candidate.rawScore = rawScore;
+    candidate.ring = ring;
+    candidate.demotionPenalty = demotionPenalty;
+    candidate.shownCount = shownCount;
+    candidate.skippedCount = skippedCount;
+    candidate.ringDemotions = ringDemotions;
+    candidate.lastShownAt = lastShownAt;
+    candidate.tags = tags.slice(0, 4);
+    candidate.signalBreakdown = parts;
+
     return {
       candidate,
-      score: rawScore,
+      score: effectiveScore,
+      rawScore,
       parts,
       tags: tags.slice(0, 4),
+      ring,
+      demotionPenalty,
+      shownCount,
+      skippedCount,
+      ringDemotions,
+      lastShownAt,
     };
   });
 }
@@ -2275,6 +2587,20 @@ export interface PoolCandidateItem {
   crew?: { id: number; name: string; job: string; department?: string }[];
   belongs_to_collection?: any;
   production_companies?: any[];
+
+  // Sorun D: Kullanıcıya özel kalıcı öneri ve Zevk Haritası alanları
+  matchScore?: number;
+  rawScore?: number;
+  ring?: TasteRing;
+  initialRing?: TasteRing;
+  signalBreakdown?: Record<string, number>;
+  tags?: string[];
+  lastShownAt?: string | null;
+  lastScoredAt?: string | null;
+  shownCount?: number;
+  skippedCount?: number;
+  ringDemotions?: number;
+  demotionPenalty?: number;
 }
 
 export interface CandidatePoolCursors {
@@ -2393,6 +2719,18 @@ export function normalizePoolCandidate(
     production_companies: Array.isArray(raw.production_companies)
       ? raw.production_companies.slice(0, 5)
       : undefined,
+    matchScore: typeof raw.matchScore === 'number' ? raw.matchScore : undefined,
+    rawScore: typeof raw.rawScore === 'number' ? raw.rawScore : undefined,
+    ring: raw.ring || undefined,
+    initialRing: raw.initialRing || undefined,
+    signalBreakdown: raw.signalBreakdown || undefined,
+    tags: Array.isArray(raw.tags) ? raw.tags : undefined,
+    lastShownAt: raw.lastShownAt || undefined,
+    lastScoredAt: raw.lastScoredAt || undefined,
+    shownCount: typeof raw.shownCount === 'number' ? raw.shownCount : undefined,
+    skippedCount: typeof raw.skippedCount === 'number' ? raw.skippedCount : undefined,
+    ringDemotions: typeof raw.ringDemotions === 'number' ? raw.ringDemotions : undefined,
+    demotionPenalty: typeof raw.demotionPenalty === 'number' ? raw.demotionPenalty : undefined,
   };
 }
 
@@ -2918,10 +3256,12 @@ export function loadPersistentPoolData(
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && parsed.mediaType === mediaType && Array.isArray(parsed.items)) {
+          const tasteMap = loadPersistentTasteMap(profileId);
+          const syncedItems = syncPoolCandidatesWithTasteMap(parsed.items, tasteMap);
           return {
             mediaType,
             updatedAt: parsed.updatedAt || new Date().toISOString(),
-            items: parsed.items,
+            items: syncedItems,
             cursors: {
               ...createDefaultPoolCursors(),
               ...(parsed.cursors || {}),

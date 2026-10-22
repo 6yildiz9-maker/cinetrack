@@ -50,6 +50,12 @@ import {
   POOL_LOW_WATERMARK,
   POOL_TARGET_CAPACITY,
   CURRENT_SCHEMA_VERSION,
+  loadPersistentTasteMap,
+  savePersistentTasteMap,
+  updateTasteMapWithBatch,
+  markTasteMapItemStatus,
+  assignTasteRing,
+  getTasteRingLabel,
 } from './core/cinetrack-core';
 import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
@@ -612,8 +618,9 @@ export function App() {
           }
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          // Bağımsız puanlama ve sıralama:
+          // Bağımsız puanlama ve sıralama (Sorun D: Kalıcı Zevk Haritası ve Halka Geriletmesi entegrasyonu):
           // 'all' modunda filmler ve diziler ayrı ayrı puanlanır ve ayrı ayrı sıralanır
+          const tasteMap = loadPersistentTasteMap(activeProfileId);
           let movieScored: any[] = [];
           let tvScored: any[] = [];
           if (movieCandidates.length > 0) {
@@ -621,6 +628,7 @@ export function App() {
               weights: RECOMMENDATION_WEIGHTS_V3,
               genreNames: currentGenres,
               mood: currentPrefs.mood,
+              tasteMap,
             }).sort((a, b) => b.score - a.score);
           }
           if (tvCandidates.length > 0) {
@@ -628,6 +636,7 @@ export function App() {
               weights: RECOMMENDATION_WEIGHTS_V3,
               genreNames: currentGenres,
               mood: currentPrefs.mood,
+              tasteMap,
             }).sort((a, b) => b.score - a.score);
           }
 
@@ -682,6 +691,7 @@ export function App() {
                 weights: RECOMMENDATION_WEIGHTS_V3,
                 genreNames: currentGenres,
                 mood: currentPrefs.mood,
+                tasteMap,
               }
             )
               .filter((entry) => isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs))
@@ -696,6 +706,7 @@ export function App() {
                 weights: RECOMMENDATION_WEIGHTS_V3,
                 genreNames: currentGenres,
                 mood: currentPrefs.mood,
+                tasteMap,
               }
             )
               .filter((entry) => isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs))
@@ -725,6 +736,15 @@ export function App() {
           const explanationText = balancedResult.explanation;
           setForYouExplanation(explanationText);
 
+          // Sorun D: Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion) güncellemesi
+          const updatedTasteMap = updateTasteMapWithBatch({
+            tasteMap,
+            newRecommendedItems: picked,
+            savedItems: rawSaved,
+            preferences: currentPrefs,
+          });
+          savePersistentTasteMap(activeProfileId, updatedTasteMap);
+
           const reasonsMap = new Map<string, string>();
           picked.forEach((entry) => {
             const cand = entry.candidate || entry;
@@ -733,10 +753,17 @@ export function App() {
 
           setForYouReasons(reasonsMap);
           setForYouItems(
-            picked.map((e) => ({
-              ...(e.candidate || e),
-              matchScore: Math.max(1, Math.min(100, Math.round(Number(e.score) || 75))),
-            }))
+            picked.map((e) => {
+              const cand = e.candidate || e;
+              const key = makeMediaKey(cand);
+              const mapEntry = updatedTasteMap.entries[key];
+              return {
+                ...cand,
+                matchScore: mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(e.score) || 75))),
+                ring: mapEntry?.ring ?? e.ring ?? assignTasteRing(Number(e.score) || 75),
+                tasteMapEntry: mapEntry,
+              };
+            })
           );
           setCatalogTotalPages(1);
           setCatalogPage(1);
@@ -931,6 +958,13 @@ export function App() {
       prev.filter((i) => makeMediaKey(i) !== itemKey)
     );
 
+    // Sorun D: Kalıcı Zevk Haritasında yapımı 'saved' olarak işaretle
+    try {
+      const currentTasteMap = loadPersistentTasteMap(activeProfileId);
+      markTasteMapItemStatus(currentTasteMap, itemKey, 'saved');
+      savePersistentTasteMap(activeProfileId, currentTasteMap);
+    } catch {}
+
     const title = displayTitle(item);
     if (status === 'completed') {
       showToast(`✓ "${title}" izlendi listesine kaydedildi! 🎉`);
@@ -1061,6 +1095,14 @@ export function App() {
           ? 'İlgilenmiyorum listesinden kaldırıldı.'
           : '🚫 İlgilenmiyorum olarak işaretlendi (Önerilerden gizlendi).'
       );
+
+      // Sorun D: Kalıcı Zevk Haritasında yapımı 'disliked' veya 'active' olarak güncelle
+      try {
+        const currentTasteMap = loadPersistentTasteMap(activeProfileId);
+        markTasteMapItemStatus(currentTasteMap, key, isCurrentlyDisliked ? 'active' : 'disliked');
+        savePersistentTasteMap(activeProfileId, currentTasteMap);
+      } catch {}
+
       return { ...prev, disliked };
     });
   };

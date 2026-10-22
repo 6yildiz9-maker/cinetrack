@@ -18,7 +18,11 @@ import {
   isCandidateEligibleInPool, filterEligiblePoolItems, balanceCandidatePool,
   multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
   loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
-  replenishCandidatePool, selectBalancedRecommendations
+  replenishCandidatePool, selectBalancedRecommendations,
+  assignTasteRing, demoteTasteRing, getTasteRingLabel,
+  loadPersistentTasteMap, savePersistentTasteMap, updateTasteMapWithBatch,
+  markTasteMapItemStatus, syncPoolCandidatesWithTasteMap,
+  createDefaultTasteMapData, getTasteMapStorageKey
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -2429,5 +2433,365 @@ describe("Sorun C — Havuz Yenileme İsteği Yönetimi, Sınırlı İş Kuyruğ
     assert.ok(pageCounter >= 13, "En az 250-500 aday toplayabilmek için yeterli sayfa çekilmiş olmalı");
   });
 });
+
+describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion)", () => {
+  it("assignTasteRing ve demoteTasteRing puan aralıklarına göre doğru halka atar ve basamak basamak geriletir", () => {
+    assert.equal(assignTasteRing(95), "core");
+    assert.equal(assignTasteRing(85), "core");
+    assert.equal(assignTasteRing(84), "inner");
+    assert.equal(assignTasteRing(70), "inner");
+    assert.equal(assignTasteRing(69), "outer");
+    assert.equal(assignTasteRing(55), "outer");
+    assert.equal(assignTasteRing(54), "orbit");
+    assert.equal(assignTasteRing(20), "orbit");
+
+    // Geriletme adımları
+    assert.equal(demoteTasteRing("core", 1), "inner");
+    assert.equal(demoteTasteRing("core", 2), "outer");
+    assert.equal(demoteTasteRing("core", 3), "orbit");
+    assert.equal(demoteTasteRing("inner", 1), "outer");
+    assert.equal(demoteTasteRing("outer", 1), "orbit");
+    assert.equal(demoteTasteRing("orbit", 1), "orbit"); // En dış halkada kalır
+
+    // getTasteRingLabel Türkçe etiketleri
+    assert.equal(getTasteRingLabel("core"), "Çekirdek Halka (1. Halka)");
+    assert.equal(getTasteRingLabel("inner"), "Yakın Halka (2. Halka)");
+    assert.equal(getTasteRingLabel("outer"), "Dış Halka (3. Halka)");
+    assert.equal(getTasteRingLabel("orbit"), "Yörünge (4. Halka)");
+  });
+
+  it("loadPersistentTasteMap ve savePersistentTasteMap profil bazlı localStorage ile güvenle saklar ve okur", () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    const profileId = "prof_taste_42";
+    const initialMap = loadPersistentTasteMap(profileId);
+    assert.equal(initialMap.profileId, profileId);
+    assert.deepEqual(initialMap.entries, {});
+    assert.deepEqual(initialMap.lastRecommendedKeys, []);
+
+    // Veri kaydet
+    initialMap.entries["movie:101"] = {
+      mediaKey: "movie:101",
+      mediaType: "movie",
+      id: 101,
+      title: "Interstellar",
+      matchScore: 92,
+      rawScore: 92,
+      ring: "core",
+      initialRing: "core",
+      parts: { genre: 0.9, actor: 0.8 },
+      tags: ["Bilimkurgu"],
+      shownCount: 1,
+      skippedCount: 0,
+      ringDemotions: 0,
+      demotionPenalty: 0,
+      lastShownAt: "2026-10-22T10:00:00.000Z",
+      lastScoredAt: "2026-10-22T10:00:00.000Z",
+      status: "active",
+    };
+    initialMap.lastRecommendedKeys = ["movie:101"];
+    savePersistentTasteMap(profileId, initialMap);
+
+    const loaded = loadPersistentTasteMap(profileId);
+    assert.equal(loaded.entries["movie:101"].title, "Interstellar");
+    assert.equal(loaded.entries["movie:101"].ring, "core");
+    assert.equal(loaded.lastRecommendedKeys[0], "movie:101");
+  });
+
+  it("updateTasteMapWithBatch: ilk gösterimde (shownCount: 1, skippedCount: 0) kaydı oluşturur", () => {
+    const tasteMap = createDefaultTasteMapData("profile_test");
+    const candidates = [
+      {
+        candidate: { id: 501, media_type: "movie", title: "Film 501" },
+        score: 88,
+        rawScore: 88,
+        parts: { genre: 0.8 },
+        tags: ["Aksiyon"],
+      },
+      {
+        candidate: { id: 601, media_type: "tv", name: "Dizi 601" },
+        score: 72,
+        rawScore: 72,
+        parts: { genre: 0.7 },
+        tags: ["Dram"],
+      },
+    ];
+
+    const updated = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: candidates,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      now: "2026-10-22T12:00:00.000Z",
+    });
+
+    const m501 = updated.entries["movie:501"];
+    assert.ok(m501, "movie:501 haritada bulunmalı");
+    assert.equal(m501.shownCount, 1);
+    assert.equal(m501.skippedCount, 0);
+    assert.equal(m501.ring, "core");
+    assert.equal(m501.matchScore, 88);
+    assert.equal(m501.demotionPenalty, 0);
+
+    const t601 = updated.entries["tv:601"];
+    assert.ok(t601, "tv:601 haritada bulunmalı");
+    assert.equal(t601.shownCount, 1);
+    assert.equal(t601.skippedCount, 0);
+    assert.equal(t601.ring, "inner");
+    assert.equal(t601.matchScore, 72);
+  });
+
+  it("updateTasteMapWithBatch: pas geçilen (kaydedilmeyen) yapımlarda skippedCount artar ve halka geriletmesi uygulanır", () => {
+    let tasteMap = createDefaultTasteMapData("profile_demote_test");
+    const itemA = {
+      candidate: { id: 701, media_type: "movie", title: "Aday A" },
+      score: 90,
+      rawScore: 90,
+      parts: { genre: 0.9 },
+      tags: ["Harika"],
+    };
+    const itemB = {
+      candidate: { id: 702, media_type: "movie", title: "Aday B" },
+      score: 86,
+      rawScore: 86,
+      parts: { genre: 0.85 },
+      tags: ["Güzel"],
+    };
+
+    // 1. Gösterim: itemA ve itemB gösterildi
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemA, itemB],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      now: "2026-10-22T12:00:00.000Z",
+    });
+    assert.equal(tasteMap.entries["movie:701"].ring, "core");
+    assert.equal(tasteMap.entries["movie:701"].skippedCount, 0);
+
+    // 2. Yenileme: Kullanıcı hiçbirini kaydetmedi, yeni adaylar (itemC, itemD) gösterildi
+    const itemC = { candidate: { id: 703, media_type: "movie", title: "Aday C" }, score: 85 };
+    const itemD = { candidate: { id: 704, media_type: "movie", title: "Aday D" }, score: 84 };
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemC, itemD],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      now: "2026-10-22T12:05:00.000Z",
+    });
+
+    // 1. Atlamada skippedCount=1 olur, hafif ceza uygulanır (5 puan)
+    assert.equal(tasteMap.entries["movie:701"].skippedCount, 1);
+    assert.equal(tasteMap.entries["movie:701"].demotionPenalty, 5);
+    assert.equal(tasteMap.entries["movie:701"].matchScore, 85); // 90 - 5 = 85
+    assert.equal(tasteMap.entries["movie:701"].ring, "core"); // 2. atlamaya kadar ring henüz düşmez
+
+    // 3. Yenileme: itemE ve itemF gösterildi, itemA ve itemB hâlâ seçilmedi
+    // 2. Atlamada (skippedCount=2) Halka Geriletmesi TETİKLENİR! ('core' -> 'inner')
+    const itemE = { candidate: { id: 705, media_type: "movie", title: "Aday E" }, score: 82 };
+    tasteMap.lastRecommendedKeys = ["movie:701", "movie:702"]; // Simüle edilmiş önceki vitrin
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemE],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      now: "2026-10-22T12:10:00.000Z",
+    });
+
+    const demotedEntry = tasteMap.entries["movie:701"];
+    assert.equal(demotedEntry.skippedCount, 2);
+    assert.equal(demotedEntry.ringDemotions, 1, "Halka geriletmesi 1 kez gerçekleşmiş olmalı");
+    assert.equal(demotedEntry.ring, "inner", "Çekirdek halkadan yakın halkaya (core -> inner) geriletilmeli");
+    // Demotion ceza puanı: 2 atlama * 5 + 1 geriletme * 5 = 15
+    assert.equal(demotedEntry.demotionPenalty, 15);
+    assert.equal(demotedEntry.matchScore, 75); // 90 - 15 = 75
+  });
+
+  it("updateTasteMapWithBatch: kaydedilen (saved) yapımlarda atlandı sayacı ve ceza artırılmaz", () => {
+    let tasteMap = createDefaultTasteMapData("profile_save_test");
+    const itemA = {
+      candidate: { id: 801, media_type: "movie", title: "Kaydedilecek Film" },
+      score: 95,
+      rawScore: 95,
+    };
+
+    // İlk gösterim
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemA],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+    });
+
+    // Kullanıcı bu yapımı izleneceklere ekledi!
+    const saved = [baseItem({ id: 801, media_type: "movie", status: "watchlist" })];
+
+    // Yeni öneri partisi geldi
+    const itemB = { candidate: { id: 802, media_type: "movie", title: "Yeni Film" }, score: 80 };
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemB],
+      savedItems: saved,
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+    });
+
+    const entry = tasteMap.entries["movie:801"];
+    assert.equal(entry.status, "saved");
+    assert.equal(entry.skippedCount, 0, "Kaydedilen yapımın skippedCount değeri artmamalı");
+    assert.equal(entry.demotionPenalty, 0, "Kaydedilen yapıma ceza verilmemeli");
+  });
+
+  it("updateTasteMapWithBatch: ilgilenmiyorum veya gizle durumunda olan yapımlar 'disliked'/'hidden' olarak işaretlenir", () => {
+    let tasteMap = createDefaultTasteMapData("profile_dislike_test");
+    const itemA = {
+      candidate: { id: 901, media_type: "movie", title: "Sevilmeyen Film" },
+      score: 85,
+      rawScore: 85,
+    };
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemA],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+    });
+
+    // Kullanıcı ilgilenmiyorum olarak işaretledi
+    const nextItem = { candidate: { id: 902, media_type: "movie", title: "Başka Film" }, score: 80 };
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [nextItem],
+      savedItems: [],
+      preferences: { disliked: ["movie:901"], hidden: [], mood: "balanced" },
+    });
+
+    assert.equal(tasteMap.entries["movie:901"].status, "disliked");
+    assert.equal(tasteMap.entries["movie:901"].skippedCount, 0, "İlgilenilmeyen yapım atlandı olarak cezalandırılmaz");
+  });
+
+  it("scoreCandidatesV3: tasteMap demotion cezasını ve halka durumunu aday nesnesi üzerine entegre eder", () => {
+    const tasteProfile = {
+      genres: { "28": 0.8 },
+      actors: {},
+      directors: {},
+      keywords: {},
+      mediaPreference: { movie: 0.8, tv: 0.2 },
+      lovedSeedIds: new Set(),
+      lovedFranchiseIds: new Set(),
+      lovedProductionCompanyIds: new Set(),
+      lovedOverviewTokens: new Set(),
+      positiveGenres: ["28"],
+      coOccurredPairs: new Set(),
+    };
+
+    const candidateFresh = {
+      id: 1001,
+      media_type: "movie",
+      title: "Taze Aday",
+      genre_ids: [28],
+      vote_average: 8.0,
+      vote_count: 500,
+      popularity: 30,
+    };
+
+    const candidateDemoted = {
+      id: 1002,
+      media_type: "movie",
+      title: "Daha Önce 3 Kez Atlanmış Aday",
+      genre_ids: [28],
+      vote_average: 8.0,
+      vote_count: 500,
+      popularity: 30,
+    };
+
+    // Kalıcı zevk haritası oluştur: 1002 daha önce gösterilmiş ve 3 kez atlanmış (1 halka geriletmesi, 20 ceza puanı)
+    const tasteMap = createDefaultTasteMapData("profile_score_test");
+    tasteMap.entries["movie:1002"] = {
+      mediaKey: "movie:1002",
+      mediaType: "movie",
+      id: 1002,
+      title: "Daha Önce 3 Kez Atlanmış Aday",
+      matchScore: 65,
+      rawScore: 85,
+      ring: "inner",
+      initialRing: "core",
+      parts: { genre: 0.8 },
+      tags: [],
+      shownCount: 3,
+      skippedCount: 3,
+      ringDemotions: 1,
+      demotionPenalty: 20,
+      lastShownAt: "2026-10-22T08:00:00.000Z",
+      lastScoredAt: "2026-10-22T08:00:00.000Z",
+      status: "active",
+    };
+
+    const scored = scoreCandidatesV3([candidateDemoted, candidateFresh], tasteProfile, { tasteMap });
+
+    const freshScored = scored.find((s) => s.candidate.id === 1001);
+    const demotedScored = scored.find((s) => s.candidate.id === 1002);
+
+    assert.ok(freshScored.score > demotedScored.score, "Taze adayın net puanı atlanan adaydan yüksek olmalı");
+    assert.equal(demotedScored.demotionPenalty, 20, "Atlanan adaya 20 puanlık geriletme cezası yansıtılmalı");
+    assert.equal(demotedScored.ring, "inner", "Geriletilmiş halka durumu ('inner') korunmalı");
+    assert.equal(demotedScored.candidate.ring, "inner", "Aday nesnesi üzerine ring yazılmalı");
+    assert.equal(demotedScored.candidate.matchScore, demotedScored.score, "Aday nesnesi üzerine nihai matchScore yazılmalı");
+  });
+
+  it("syncPoolCandidatesWithTasteMap: aday havuzundaki öğeleri kalıcı zevk haritası ile senkronize eder", () => {
+    const poolItems = [
+      {
+        id: 2001,
+        media_type: "movie",
+        title: "Havuz Filmi",
+        genre_ids: [18],
+        vote_average: 7.8,
+        vote_count: 300,
+        popularity: 25,
+        poolSource: "popular",
+        poolSources: 1,
+        era: "modern",
+        popularityTier: "medium",
+      },
+    ];
+
+    const tasteMap = createDefaultTasteMapData("profile_sync_test");
+    tasteMap.entries["movie:2001"] = {
+      mediaKey: "movie:2001",
+      mediaType: "movie",
+      id: 2001,
+      title: "Havuz Filmi",
+      matchScore: 82,
+      rawScore: 87,
+      ring: "inner",
+      initialRing: "core",
+      parts: { genre: 0.8, quality: 0.75 },
+      tags: ["Dram"],
+      shownCount: 2,
+      skippedCount: 1,
+      ringDemotions: 0,
+      demotionPenalty: 5,
+      lastShownAt: "2026-10-22T09:00:00.000Z",
+      lastScoredAt: "2026-10-22T09:00:00.000Z",
+      status: "active",
+    };
+
+    const synced = syncPoolCandidatesWithTasteMap(poolItems, tasteMap);
+    assert.equal(synced[0].matchScore, 82);
+    assert.equal(synced[0].ring, "inner");
+    assert.equal(synced[0].demotionPenalty, 5);
+    assert.equal(synced[0].shownCount, 2);
+    assert.equal(synced[0].skippedCount, 1);
+  });
+});
+
 
 

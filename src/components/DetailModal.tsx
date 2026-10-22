@@ -6,6 +6,7 @@ import {
   defaultCurrentSeason,
   sanitizeSeasonProgress,
   makeMediaKey,
+  getTasteRingLabel,
 } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
@@ -275,6 +276,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 }}
               >
                 🎯 %{Math.round(Number(currentItem.matchScore || item?.matchScore))} Sana Özel Uyumu
+                {(currentItem.ring || item?.ring) && ` · ${getTasteRingLabel(currentItem.ring || item?.ring)}`}
               </span>
             )}
           </div>
