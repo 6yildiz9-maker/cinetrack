@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
-import { SavedItem } from '../core/cinetrack-core';
+import { SavedItem, makeMediaKey } from '../core/cinetrack-core';
 
 interface HeaderProps {
   profileName: string;
@@ -192,7 +192,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                     return (
                       <button
-                        key={`${item.media_type}:${item.id}`}
+                        key={makeMediaKey(item)}
                         className="search-dropdown-item"
                         type="button"
                         onClick={() => {

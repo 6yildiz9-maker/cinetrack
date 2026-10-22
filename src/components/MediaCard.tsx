@@ -1,6 +1,6 @@
 import React from 'react';
 import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
-import { SavedItem, reminderDaysUntil, resolveAirDate } from '../core/cinetrack-core';
+import { SavedItem, reminderDaysUntil, resolveAirDate, makeMediaKey } from '../core/cinetrack-core';
 
 interface MediaCardProps {
   item: any;
@@ -55,7 +55,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
       ? 'rating-mid'
       : 'rating-low';
 
-  const itemKey = `${item.media_type}:${item.id}`;
+  const itemKey = makeMediaKey(item);
   const airDate = resolveAirDate(item);
 
   let countdownText = '';

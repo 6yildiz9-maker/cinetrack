@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { displayTitle, formatMediaDates, imageUrl } from '../utils/helpers';
-import { SavedItem, findSavedItem } from '../core/cinetrack-core';
+import { SavedItem, findSavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
@@ -119,7 +119,7 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
 
       return (
         <article
-          key={`${mediaType}:${item.id}`}
+          key={makeMediaKey(mediaType, item.id)}
           className="person-credit"
           role="button"
           tabIndex={0}

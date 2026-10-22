@@ -74,8 +74,11 @@ export interface Profile {
   favoriteActors?: FavoriteActorInfo[];
 }
 
+export const CURRENT_SCHEMA_VERSION = 3;
+
 export interface DataDocument {
   version: 3;
+  schemaVersion: number;
   activeProfileId: string;
   profiles: Profile[];
   revision?: number;
@@ -427,7 +430,7 @@ export const TARGET_RECOMMENDATION_COUNT = 20;
 export function dedupeItems(items: SavedItem[]): SavedItem[] {
   const unique = new Map<string, SavedItem>();
   for (const item of items) {
-    const key = `${item.media_type}:${item.id}`;
+    const key = makeMediaKey(item);
     const existing = unique.get(key);
     if (!existing) {
       unique.set(key, item);
@@ -468,6 +471,7 @@ export function parseBackupText(text: string): {
   profileName: string;
   preferences: any;
   favoriteActors: FavoriteActorInfo[];
+  schemaVersion: number;
 } {
   const backup = JSON.parse(text);
   if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
@@ -487,6 +491,9 @@ export function parseBackupText(text: string): {
   ) {
     throw new Error('Yedekte geçersiz içerik kimliği veya türü var. Güvenlik nedeniyle içe aktarma durduruldu.');
   }
+  const rawSchemaVer = Number(backup.schemaVersion || backup.version);
+  const schemaVersion =
+    Number.isSafeInteger(rawSchemaVer) && rawSchemaVer > 0 ? rawSchemaVer : CURRENT_SCHEMA_VERSION;
   return {
     items: dedupeItems(backup.items.map(normalizeSavedItem).filter(Boolean) as SavedItem[]),
     profileName: typeof backup.profileName === 'string' ? backup.profileName.trim().slice(0, 40) : '',
@@ -495,6 +502,7 @@ export function parseBackupText(text: string): {
         ? backup.preferences
         : null,
     favoriteActors: normalizeFavoriteActors(backup.favoriteActors),
+    schemaVersion,
   };
 }
 
@@ -610,8 +618,12 @@ export function normalizeDataDocument(
   }
   if (!profiles.length) return null;
   const rawRev = Number(raw.revision);
+  const rawSchemaVer = Number(raw.schemaVersion || raw.version);
+  const schemaVersion =
+    Number.isSafeInteger(rawSchemaVer) && rawSchemaVer > 0 ? rawSchemaVer : CURRENT_SCHEMA_VERSION;
   return {
     version: 3,
+    schemaVersion,
     activeProfileId: seen.has(activeCandidate) ? activeCandidate : profiles[0].id,
     profiles,
     revision: Number.isSafeInteger(rawRev) && rawRev > 0 ? rawRev : 1,
@@ -894,7 +906,7 @@ export function scoreCandidates(
     const knownDirector = directorEntry ? directorOf(directorEntry.id) : null;
     const crewScore = knownDirector ? clamp01((knownDirector.personal + 1) / 2) : 0.5;
 
-    const key = `${candidate.media_type}:${candidate.id}`;
+    const key = makeMediaKey(candidate);
     const providers = providerIndex?.[key] || null;
     let platformScore = 0.5;
     let platformTag = '';
@@ -1010,7 +1022,7 @@ export function createCandidatePool({
         if (allowedMediaType && allowedMediaType !== 'all' && mediaType !== allowedMediaType) {
           continue;
         }
-        const key = `${mediaType}:${item.id}`;
+        const key = makeMediaKey(mediaType, item.id);
         const existing = map.get(key);
         if (existing) {
           existing.poolSources += 1;
@@ -1218,8 +1230,9 @@ export function buildTasteProfileV3(
   // Incorporate explicit disliked signals if provided as keys
   for (const key of dislikedKeys) {
     if (!key || typeof key !== 'string') continue;
-    const [mediaType, idStr] = key.split(':');
-    if (!idStr || !['movie', 'tv'].includes(mediaType)) continue;
+    const parsed = parseMediaKey(key);
+    if (!parsed) continue;
+    const { type: mediaType, id: idStr } = parsed;
     const id = /^\d+$/.test(idStr) ? Number(idStr) : idStr;
     const existingIndex = rawItems.findIndex(
       (item) => String(item.id) === idStr && item.media_type === mediaType
@@ -1243,10 +1256,10 @@ export function buildTasteProfileV3(
     const mediaType = item.media_type;
     const id = item.id;
     if (mediaType && id != null) {
-      const uKey = `${mediaType}:${id}`;
+      const uKey = makeMediaKey(mediaType, id);
       if (seenItemKeys.has(uKey)) {
         const existingIndex = allItems.findIndex(
-          (entry) => `${entry.media_type}:${entry.id}` === uKey
+          (entry) => makeMediaKey(entry) === uKey
         );
         if ((item.status === 'disliked' || item.isDisliked) && existingIndex >= 0) {
           allItems[existingIndex] = item;
@@ -1271,7 +1284,7 @@ export function buildTasteProfileV3(
 
     const isLoved = u >= 0.4;
     if (isLoved && item.id != null) {
-      lovedSeedIds.add(`${item.media_type}:${item.id}`);
+      lovedSeedIds.add(makeMediaKey(item));
       if (item.belongs_to_collection?.id) {
         lovedFranchiseIds.add(Number(item.belongs_to_collection.id));
       }

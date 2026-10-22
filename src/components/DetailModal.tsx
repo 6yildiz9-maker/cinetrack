@@ -5,6 +5,7 @@ import {
   buildSeasonCounts,
   defaultCurrentSeason,
   sanitizeSeasonProgress,
+  makeMediaKey,
 } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
@@ -613,7 +614,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 className="btn"
                 type="button"
                 onClick={() =>
-                  onToggleDislike(`${currentItem.media_type}:${currentItem.id}`)
+                  onToggleDislike(makeMediaKey(currentItem))
                 }
               >
                 {isDisliked ? 'İlgilenmiyorum tercihini kaldır' : 'İlgilenmiyorum'}
