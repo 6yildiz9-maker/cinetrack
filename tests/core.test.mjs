@@ -18,7 +18,7 @@ import {
   isCandidateEligibleInPool, filterEligiblePoolItems, balanceCandidatePool,
   multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
   loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
-  replenishCandidatePool
+  replenishCandidatePool, CURRENT_SCHEMA_VERSION
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -1855,3 +1855,89 @@ describe("Sana Özel Aşama 2 — 500 + 500 Yenilenebilir Aday Havuzu", () => {
     assert.ok(calledPaths.some((p) => p.path === "/movie/now_playing"));
   });
 });
+
+describe("Sana Özel Aşama 3 — Veri Modeli, Favori Oyuncular, Yedekleme ve Anahtar Standardı", () => {
+  it("CURRENT_SCHEMA_VERSION 3 olarak tanımlıdır", () => {
+    assert.equal(CURRENT_SCHEMA_VERSION, 3);
+  });
+
+  it("normalizeDataDocument belge sürümlemesini (schemaVersion) ve profil favoriteActors alanını korur", () => {
+    const raw = {
+      version: 3,
+      schemaVersion: 3,
+      activeProfileId: "profile-1",
+      profiles: [
+        {
+          id: "profile-1",
+          name: "Test Profili",
+          preferences: { disliked: ["movie:10"] },
+          items: [baseItem({ id: 100, media_type: "movie" })],
+          favoriteActors: [
+            { id: 287, name: "Brad Pitt", profile_path: "/brad.jpg" }
+          ],
+        },
+      ],
+    };
+
+    const doc = normalizeDataDocument(raw);
+    assert.ok(doc);
+    assert.equal(doc.schemaVersion, 3);
+    assert.equal(doc.version, 3);
+    assert.equal(doc.profiles.length, 1);
+    assert.ok(Array.isArray(doc.profiles[0].favoriteActors));
+    assert.equal(doc.profiles[0].favoriteActors.length, 1);
+    assert.equal(doc.profiles[0].favoriteActors[0].name, "Brad Pitt");
+  });
+
+  it("parseBackupText JSON yedeğinden favoriteActors ve schemaVersion alanlarını ayrıştırır", () => {
+    const backupJson = JSON.stringify({
+      version: 3,
+      schemaVersion: 3,
+      profileName: "Sinema Sever",
+      items: [baseItem({ id: 500, media_type: "movie" })],
+      favoriteActors: [
+        { id: 2037, name: "Cillian Murphy", character: "Oppenheimer" }
+      ],
+    });
+
+    const parsed = parseBackupText(backupJson);
+    assert.equal(parsed.schemaVersion, 3);
+    assert.equal(parsed.profileName, "Sinema Sever");
+    assert.equal(parsed.items.length, 1);
+    assert.equal(parsed.favoriteActors.length, 1);
+    assert.equal(parsed.favoriteActors[0].id, 2037);
+    assert.equal(parsed.favoriteActors[0].name, "Cillian Murphy");
+  });
+
+  it("eski yedekler (favoriteActors ve schemaVersion olmayan) için geriye dönük uyumluluk sağlar", () => {
+    const legacyJson = JSON.stringify({
+      version: 2,
+      profileName: "Eski Profil",
+      items: [baseItem({ id: 200, media_type: "movie" })],
+      preferences: { disliked: [] },
+    });
+
+    const parsed = parseBackupText(legacyJson);
+    assert.equal(parsed.schemaVersion, 2);
+    assert.ok(Array.isArray(parsed.favoriteActors));
+    assert.equal(parsed.favoriteActors.length, 0, "Eski yedeklerde boş liste ile geriye dönük uyumluluk sağlanmalı");
+  });
+
+  it("makeMediaKey ve parseMediaKey tüm kombinasyonları standartlaştırır", () => {
+    assert.equal(makeMediaKey("movie", 100), "movie:100");
+    assert.equal(makeMediaKey("tv", 200), "tv:200");
+    assert.equal(makeMediaKey({ media_type: "movie", id: 300 }), "movie:300");
+    assert.equal(makeMediaKey({ media_type: "tv", id: 400 }), "tv:400");
+
+    const parsedColon = parseMediaKey("movie:550");
+    assert.deepEqual(parsedColon, { type: "movie", id: "550" });
+
+    const parsedHyphen = parseMediaKey("tv-1396");
+    assert.deepEqual(parsedHyphen, { type: "tv", id: "1396" });
+
+    assert.equal(parseMediaKey(""), null);
+    assert.equal(parseMediaKey(null), null);
+    assert.equal(parseMediaKey("invalid"), null);
+  });
+});
+

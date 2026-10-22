@@ -59,7 +59,7 @@ const allowedQueryKeys = new Set([
 ]);
 
 function emptyDocument(): DataDocument {
-  return { version: 3, activeProfileId: '', profiles: [] };
+  return { version: 3, schemaVersion: 3, activeProfileId: '', profiles: [] };
 }
 
 function readData(): DataDocument {

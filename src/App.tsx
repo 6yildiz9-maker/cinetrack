@@ -35,6 +35,8 @@ import {
   RECOMMENDATION_WEIGHTS_V3,
   findSavedItem,
   makeMediaKey,
+  parseMediaKey,
+  normalizeFavoriteActors,
   isItemSaved,
   filterHistoryByType,
   filterDislikedByType,
@@ -272,6 +274,7 @@ export function App() {
   const pushToServer = useCallback(async () => {
     const payload: DataDocument = {
       version: 3,
+      schemaVersion: 3,
       activeProfileId,
       profiles: profiles.map((p) => ({
         id: p.id,
@@ -279,6 +282,7 @@ export function App() {
         createdAt: p.createdAt || '',
         preferences: p.id === activeProfileId ? preferences : loadProfilePreferences(p.id),
         items: p.id === activeProfileId ? savedItems : loadProfileItems(p.id),
+        favoriteActors: p.id === activeProfileId ? favoriteActors : loadFavoriteActors(p.id),
       })),
     };
     const ok = await pushServerData(payload);
@@ -288,7 +292,7 @@ export function App() {
     } else {
       setSyncStatus('Değişiklikler yerel veri dosyasına yazılamadı; şimdilik yalnızca bu tarayıcıda.');
     }
-  }, [profiles, activeProfileId, profileName, preferences, savedItems]);
+  }, [profiles, activeProfileId, profileName, preferences, savedItems, favoriteActors]);
 
   useEffect(() => {
     if (!serverSyncReady) return;
@@ -305,7 +309,10 @@ export function App() {
         if (remote) {
           const doc = normalizeDataDocument(remote);
           if (doc) {
-            const remoteHasData = doc.profiles.some((p) => p.items.length > 0) || doc.profiles.length > 1;
+            const remoteHasData =
+              doc.profiles.some(
+                (p) => p.items.length > 0 || (p.favoriteActors && p.favoriteActors.length > 0)
+              ) || doc.profiles.length > 1;
             const isDirty = localWasDirtyRef.current || localEditedDuringStartupRef.current;
             if (remoteHasData && !isDirty) {
               setProfiles(doc.profiles);
@@ -314,6 +321,15 @@ export function App() {
               setProfileName(active.name);
               setPreferences(active.preferences);
               setSavedItems(active.items);
+              if (active.favoriteActors) {
+                setFavoriteActors(active.favoriteActors);
+                localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(active.favoriteActors));
+              }
+              for (const p of doc.profiles) {
+                if (p.favoriteActors) {
+                  localStorage.setItem(favActorsStorageKey(p.id), JSON.stringify(p.favoriteActors));
+                }
+              }
             }
           }
         }
@@ -346,7 +362,7 @@ export function App() {
       if (!airDate) continue;
       const days = reminderDaysUntil(airDate, today);
       if (days === null) continue;
-      const key = `${item.media_type}:${item.id}:${airDate}`;
+      const key = `${makeMediaKey(item)}:${airDate}`;
       if (preferences.notified.includes(key)) continue;
 
       const next = item.next_episode_to_air;
@@ -493,10 +509,10 @@ export function App() {
           const moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
           const dislikedSeeds = currentDislikedKeys
             .map((key) => {
-              const [mediaType, id] = key.split(':');
-              if (!/^\d+$/.test(id) || !['movie', 'tv'].includes(mediaType)) return undefined;
+              const parsed = parseMediaKey(key);
+              if (!parsed || !/^\d+$/.test(parsed.id)) return undefined;
               return dislikedItemsRef.current.find(
-                (item) => String(item.id) === id && item.media_type === mediaType
+                (item) => String(item.id) === parsed.id && item.media_type === parsed.type
               );
             })
             .filter(Boolean)
@@ -982,17 +998,17 @@ export function App() {
       // Cache disliked item details so "İlgilenmediklerim" tab can display posters & details
       if (!isCurrentlyDisliked) {
         const target =
-          catalogItems.find((c) => `${c.media_type}:${c.id}` === key) ||
-          forYouItems.find((c) => `${c.media_type}:${c.id}` === key) ||
-          savedItems.find((s) => `${s.media_type}:${s.id}` === key);
+          catalogItems.find((c) => makeMediaKey(c) === key) ||
+          forYouItems.find((c) => makeMediaKey(c) === key) ||
+          savedItems.find((s) => makeMediaKey(s) === key);
         if (target) {
           setDislikedItems((current) => {
-            if (current.some((item) => `${item.media_type}:${item.id}` === key)) return current;
+            if (current.some((item) => makeMediaKey(item) === key)) return current;
             const updated = [target, ...current];
             try {
               const cache: Record<string, any> = {};
               updated.forEach((item) => {
-                cache[`${item.media_type}:${item.id}`] = item;
+                cache[makeMediaKey(item)] = item;
               });
               localStorage.setItem('cinetrack_disliked_cache', JSON.stringify(cache));
             } catch {}
@@ -1014,13 +1030,15 @@ export function App() {
   useEffect(() => {
     if (tab === 'list' && listStatus === 'disliked') {
       const missingKeys = preferences.disliked.filter(
-        (key) => !dislikedItems.some((item) => `${item.media_type}:${item.id}` === key)
+        (key) => !dislikedItems.some((item) => makeMediaKey(item) === key)
       );
       if (missingKeys.length > 0) {
         Promise.allSettled(
           missingKeys.map((key) => {
-            const [type, id] = key.split(':');
-            return fetchTmdb(`/${type}/${id}`).then((res) => ({ ...res, media_type: type }));
+            const parsed = parseMediaKey(key);
+            if (!parsed) return Promise.resolve(null);
+            const { type, id } = parsed;
+            return fetchTmdb(`/${type}/${id}`).then((res) => (res ? { ...res, media_type: type } : null));
           })
         ).then((results) => {
           const newItems = results
@@ -1030,12 +1048,12 @@ export function App() {
             setDislikedItems((prev) => {
               const combined = [...prev, ...newItems].filter(
                 (item, idx, arr) =>
-                  arr.findIndex((x) => `${x.media_type}:${x.id}` === `${item.media_type}:${item.id}`) === idx
+                  arr.findIndex((x) => makeMediaKey(x) === makeMediaKey(item)) === idx
               );
               try {
                 const cache: Record<string, any> = {};
                 combined.forEach((item) => {
-                  cache[`${item.media_type}:${item.id}`] = item;
+                  cache[makeMediaKey(item)] = item;
                 });
                 localStorage.setItem('cinetrack_disliked_cache', JSON.stringify(cache));
               } catch {}
@@ -1125,7 +1143,7 @@ export function App() {
 
     if (listStatus === 'disliked') {
       const activeDisliked = dislikedItems.filter((item) =>
-        preferences.disliked.includes(`${item.media_type}:${item.id}`)
+        preferences.disliked.includes(makeMediaKey(item))
       );
       return filterAndSortItems(activeDisliked);
     }
@@ -1311,11 +1329,13 @@ export function App() {
   // Export / Import
   const handleExportBackup = () => {
     const backup = {
-      version: 2,
+      version: 3,
+      schemaVersion: 3,
       profileId: activeProfileId,
       profileName,
       items: savedItems,
       preferences,
+      favoriteActors,
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1352,6 +1372,18 @@ export function App() {
         notified: [],
       }));
     }
+
+    // Geriye dönük uyumluluk: eski yedeklerde favoriteActors yoksa boş liste ile çalışır
+    const backupActors = normalizeFavoriteActors(pendingBackup.favoriteActors || []);
+    const importedActors =
+      mode === 'merge'
+        ? normalizeFavoriteActors([...favoriteActors, ...backupActors])
+        : backupActors;
+    setFavoriteActors(importedActors);
+    try {
+      localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(importedActors));
+    } catch {}
+
     setPendingBackup(null);
     setProfileOpen(false);
     showToast('Yedek başarıyla içe aktarıldı!');
@@ -1486,9 +1518,7 @@ export function App() {
         genresMap={genresMap}
         isDisliked={
           detailItem
-            ? preferences.disliked.includes(
-                `${detailItem.media_type || (detailItem.title ? 'movie' : 'tv')}:${detailItem.id}`
-              )
+            ? preferences.disliked.includes(makeMediaKey(detailItem))
             : false
         }
         favoriteActors={favoriteActors}

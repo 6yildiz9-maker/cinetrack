@@ -2081,9 +2081,8 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
     }
 
     // Sinyal 7: İzleme platformu — Doğrulanmışsa puan ver, bilinmiyorsa nötr bırak (10 puan)
-    const key = makeMediaKey(candidate.media_type, candidate.id);
-    const colonKey = `${candidate.media_type}:${candidate.id}`;
-    const rawProviders = candidate.watch_providers || candidate.providers || providerIndex?.[key] || providerIndex?.[colonKey] || null;
+    const key = makeMediaKey(candidate);
+    const rawProviders = candidate.watch_providers || candidate.providers || providerIndex?.[key] || null;
 
     let platformScore = 5; // Nötr başlangıç
     let platformVerified = false;
