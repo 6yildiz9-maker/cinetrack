@@ -22,7 +22,8 @@ import {
   assignTasteRing, demoteTasteRing, getTasteRingLabel,
   loadPersistentTasteMap, savePersistentTasteMap, updateTasteMapWithBatch,
   markTasteMapItemStatus, syncPoolCandidatesWithTasteMap,
-  createDefaultTasteMapData, getTasteMapStorageKey
+  createDefaultTasteMapData, getTasteMapStorageKey,
+  calculateTastePillars, computeTasteProfileSignature, buildTasteProfileSummary
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -2792,6 +2793,100 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     assert.equal(synced[0].skippedCount, 1);
   });
 });
+
+describe("Kullanıcıya Özel Zevk Haritası — 3 Sütun, Profil İmzası ve Lazy Evaluation", () => {
+  it("calculateTastePillars: 15 algoritma sinyalini 3 ana sütuna (Tür/Hikâye, Kadro/Yaratıcılar, Keşif/Kalite) doğru indirger", () => {
+    const parts = {
+      genre: 0.9,
+      keywords: 0.8,
+      story: 0.7,
+      lovedSim: 0.8,
+      actor: 0.85,
+      genreActor: 0.75,
+      director: 0.9,
+      castHarmony: 0.8,
+      quality: 0.85,
+      popularity: 0.7,
+      context: 0.6,
+      exploration: 0.5,
+      sourceSignal: 0.8,
+    };
+
+    const pillars = calculateTastePillars(parts);
+    assert.ok(pillars.genreStoryScore >= 70 && pillars.genreStoryScore <= 100);
+    assert.ok(pillars.castCreatorsScore >= 70 && pillars.castCreatorsScore <= 100);
+    assert.ok(pillars.discoveryQualityScore >= 60 && pillars.discoveryQualityScore <= 100);
+  });
+
+  it("computeTasteProfileSignature: profil değişmediğinde aynı imzayı korur, puan/içerik/tercih değiştiğinde güncellenir", () => {
+    const saved = [
+      { id: 1, media_type: "movie", status: "completed", personal_rating: 9, updatedAt: "2026-10-22T08:00:00Z" },
+      { id: 2, media_type: "tv", status: "watching", personal_rating: 8, updatedAt: "2026-10-22T08:00:00Z" },
+    ];
+    const prefs = { disliked: ["movie:99"], providers: [], mood: "thrill", reminders: false, notified: [] };
+    const favActors = [{ id: 10, name: "Oyuncu X" }];
+
+    const sig1 = computeTasteProfileSignature(saved, prefs, favActors);
+    const sig2 = computeTasteProfileSignature(saved, prefs, favActors);
+    assert.equal(sig1, sig2, "Profil değişmediğinde imza birebir aynı olmalı");
+
+    // Puan değiştiğinde
+    const savedChanged = [
+      { id: 1, media_type: "movie", status: "completed", personal_rating: 10, updatedAt: "2026-10-22T08:05:00Z" },
+      { id: 2, media_type: "tv", status: "watching", personal_rating: 8, updatedAt: "2026-10-22T08:00:00Z" },
+    ];
+    const sigPuanChanged = computeTasteProfileSignature(savedChanged, prefs, favActors);
+    assert.notEqual(sig1, sigPuanChanged, "Kullanıcı puanı değiştiğinde imza değişmeli");
+
+    // Mood değiştiğinde
+    const prefsMoodChanged = { ...prefs, mood: "chill" };
+    const sigMoodChanged = computeTasteProfileSignature(saved, prefsMoodChanged, favActors);
+    assert.notEqual(sig1, sigMoodChanged, "Ruh hali değiştiğinde imza değişmeli");
+
+    // Favori oyuncu eklendiğinde
+    const sigFavChanged = computeTasteProfileSignature(saved, prefs, [...favActors, { id: 11, name: "Oyuncu Y" }]);
+    assert.notEqual(sig1, sigFavChanged, "Favori oyuncular değiştiğinde imza değişmeli");
+  });
+
+  it("buildTasteProfileSummary: zevk profilinden tür, oyuncu, yönetmen ve halka dağılımını özetler", () => {
+    const tasteProfile = {
+      positiveGenres: ["28", "878", "18"],
+      genres: { "28": 0.8, "878": 0.6, "18": 0.4 },
+      actors: {
+        "101": { name: "Başrol Aktör", personal: 0.8, nAppearances: 3 },
+        "102": { name: "Yan Oyuncu", personal: 0.3, nAppearances: 1 },
+      },
+      directors: {
+        "201": { name: "Usta Yönetmen", personal: 0.7 },
+      },
+      lovedOverviewTokens: new Set(["uzay", "yapay zeka", "distopya"]),
+      mediaPreference: { movie: 0.8, tv: 0.2 },
+      lovedSeedIds: new Set(),
+      lovedFranchiseIds: new Set(),
+      lovedProductionCompanyIds: new Set(),
+      coOccurredPairs: new Set(),
+    };
+
+    const tasteMap = createDefaultTasteMapData("profile_sum_test");
+    tasteMap.entries["movie:1"] = { mediaKey: "movie:1", ring: "core" };
+    tasteMap.entries["movie:2"] = { mediaKey: "movie:2", ring: "inner" };
+    tasteMap.entries["tv:1"] = { mediaKey: "tv:1", ring: "outer" };
+    tasteMap.entries["tv:2"] = { mediaKey: "tv:2", ring: "orbit" };
+
+    const summary = buildTasteProfileSummary(tasteProfile, tasteMap, { "28": "Aksiyon", "878": "Bilim Kurgu", "18": "Dram" });
+
+    assert.equal(summary.topGenres.length, 3);
+    assert.equal(summary.topGenres[0].name, "Aksiyon");
+    assert.equal(summary.topActors[0].name, "Başrol Aktör");
+    assert.equal(summary.topDirectors[0].name, "Usta Yönetmen");
+    assert.equal(summary.totalEvaluatedCandidates, 4);
+    assert.equal(summary.ringCounts.core, 1);
+    assert.equal(summary.ringCounts.inner, 1);
+    assert.equal(summary.ringCounts.outer, 1);
+    assert.equal(summary.ringCounts.orbit, 1);
+  });
+});
+
 
 
 

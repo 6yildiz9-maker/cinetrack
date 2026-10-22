@@ -11,6 +11,7 @@ import { AddCustomModal } from './components/AddCustomModal';
 import { ProfileModal } from './components/ProfileModal';
 import { ImportChoiceModal } from './components/ImportChoiceModal';
 import { Toast } from './components/Toast';
+import { TasteMapView } from './components/TasteMapView';
 
 import {
   SavedItem,
@@ -56,6 +57,10 @@ import {
   markTasteMapItemStatus,
   assignTasteRing,
   getTasteRingLabel,
+  PersistentTasteMapData,
+  TasteProfileSummary,
+  computeTasteProfileSignature,
+  buildTasteProfileSummary,
 } from './core/cinetrack-core';
 import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
@@ -178,7 +183,8 @@ export function App() {
   const [syncStatus, setSyncStatus] = useState<string>('Kayıt yeri: data/cinetrack-data.json');
 
   // Discover & Grid State
-  const [tab, setTab] = useState<'discover' | 'list'>('discover');
+  const [tab, setTab] = useState<'discover' | 'list' | 'taste-map'>('discover');
+  const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
   const [listStatus, setListStatus] = useState<string>('all');
   const [query, setQuery] = useState<string>('');
@@ -458,16 +464,60 @@ export function App() {
           const effectiveType = typeFilter || selectedTypeRef.current || 'all';
           const targetType = effectiveType === 'movie' || effectiveType === 'tv' ? effectiveType : 'all';
 
+          const rawSaved = savedItemsRef.current;
+          const currentPrefs = preferencesRef.current;
+          const currentGenres = genresMapRef.current;
+          const currentSig = computeTasteProfileSignature(rawSaved, currentPrefs, favoriteActorsRef.current);
+          const storedTasteMap = loadPersistentTasteMap(activeProfileId);
+
+          // Ana ilke: Kullanıcının zevk profili ve adaylarla eşleşme haritası, yalnızca gerektiğinde güncellensin.
+          // Öneri kartları her render olduğunda veya kullanıcı uygulamada başka bir alana geçtiğinde tüm adaylar yeniden puanlanmasın.
+          if (
+            !forceRefresh &&
+            storedTasteMap.profileSignature === currentSig &&
+            storedTasteMap.lastTargetType === targetType &&
+            Array.isArray(storedTasteMap.cachedBalancedItems) &&
+            storedTasteMap.cachedBalancedItems.length > 0
+          ) {
+            const restored = storedTasteMap.cachedBalancedItems.filter((item: any) =>
+              isCandidateEligibleInPool(item.candidate || item, rawSaved, currentPrefs)
+            );
+            if (restored.length > 0) {
+              lastForYouTypeRef.current = targetType;
+              setForYouExplanation(storedTasteMap.lastExplanation || '');
+              const reasonsMap = new Map<string, string>();
+              restored.forEach((entry: any) => {
+                const cand = entry.candidate || entry;
+                reasonsMap.set(makeMediaKey(cand), (entry.tags || []).join(' · '));
+              });
+              setForYouReasons(reasonsMap);
+              setForYouItems(
+                restored.map((e: any) => {
+                  const cand = e.candidate || e;
+                  const key = makeMediaKey(cand);
+                  const mapEntry = storedTasteMap.entries[key];
+                  return {
+                    ...cand,
+                    matchScore: mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(e.score) || 75))),
+                    ring: mapEntry?.ring ?? e.ring ?? assignTasteRing(Number(e.score) || 75),
+                    tasteMapEntry: mapEntry,
+                  };
+                })
+              );
+              setTasteMap(storedTasteMap);
+              setCatalogTotalPages(1);
+              setCatalogPage(1);
+              setIsLoading(false);
+              return;
+            }
+          }
+
           // If already loaded for the current type and not explicitly force-refreshed, reuse cached recommendations
           if (forYouItems.length > 0 && !forceRefresh && lastForYouTypeRef.current === targetType) {
             setIsLoading(false);
             return;
           }
           lastForYouTypeRef.current = targetType;
-
-          const rawSaved = savedItemsRef.current;
-          const currentPrefs = preferencesRef.current;
-          const currentGenres = genresMapRef.current;
 
           // Film önerisi istendiğinde dizi geçmişini ilgi profili hesabının dışında bırak; yalnızca film geçmişini ve film tercihlerini değerlendir.
           const currentSaved = filterHistoryByType(rawSaved, targetType);
@@ -736,14 +786,20 @@ export function App() {
           const explanationText = balancedResult.explanation;
           setForYouExplanation(explanationText);
 
-          // Sorun D: Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion) güncellemesi
+          // Sorun D & Zevk Haritası: Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion) güncellemesi
+          const tasteSummary = buildTasteProfileSummary(tasteProfile, tasteMap, currentGenres);
           const updatedTasteMap = updateTasteMapWithBatch({
             tasteMap,
             newRecommendedItems: picked,
             savedItems: rawSaved,
             preferences: currentPrefs,
+            profileSignature: currentSig,
+            targetType,
+            explanation: explanationText,
+            summary: tasteSummary,
           });
           savePersistentTasteMap(activeProfileId, updatedTasteMap);
+          setTasteMap(updatedTasteMap);
 
           const reasonsMap = new Map<string, string>();
           picked.forEach((entry) => {
@@ -856,6 +912,10 @@ export function App() {
     loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType);
   }, [loadCategoryResults, selectedProvider, selectedType]);
 
+  const handleRefreshTasteMap = useCallback(() => {
+    loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType);
+  }, [loadCategoryResults, selectedProvider, selectedType]);
+
   const handleSelectType = useCallback(
     (newType: string) => {
       setSelectedType(newType);
@@ -866,6 +926,15 @@ export function App() {
     },
     [tab, category, query, selectedProvider, loadCategoryResults]
   );
+
+  useEffect(() => {
+    if (tab === 'taste-map') {
+      const stored = loadPersistentTasteMap(activeProfileId);
+      if (Object.keys(stored.entries || {}).length === 0 && !isLoading) {
+        loadCategoryResults('for-you', 1, false, '', selectedProvider, false, selectedType);
+      }
+    }
+  }, [tab, activeProfileId, isLoading, loadCategoryResults, selectedProvider, selectedType]);
 
   useEffect(() => {
     if (tab === 'discover') {
@@ -963,6 +1032,7 @@ export function App() {
       const currentTasteMap = loadPersistentTasteMap(activeProfileId);
       markTasteMapItemStatus(currentTasteMap, itemKey, 'saved');
       savePersistentTasteMap(activeProfileId, currentTasteMap);
+      setTasteMap({ ...currentTasteMap });
     } catch {}
 
     const title = displayTitle(item);
@@ -1058,6 +1128,14 @@ export function App() {
       savedItemsRef.current = next;
       return next;
     });
+
+    try {
+      const currentTasteMap = loadPersistentTasteMap(activeProfileId);
+      markTasteMapItemStatus(currentTasteMap, itemKey, 'active');
+      savePersistentTasteMap(activeProfileId, currentTasteMap);
+      setTasteMap({ ...currentTasteMap });
+    } catch {}
+
     showToast(`"${displayTitle(item)}" listeden kaldırıldı.`);
   };
 
@@ -1101,6 +1179,7 @@ export function App() {
         const currentTasteMap = loadPersistentTasteMap(activeProfileId);
         markTasteMapItemStatus(currentTasteMap, key, isCurrentlyDisliked ? 'active' : 'disliked');
         savePersistentTasteMap(activeProfileId, currentTasteMap);
+        setTasteMap({ ...currentTasteMap });
       } catch {}
 
       return { ...prev, disliked };
@@ -1266,6 +1345,15 @@ export function App() {
     (item) => selectedType === 'all' || item.media_type === selectedType
   ).length;
 
+  const tasteSummary = React.useMemo<TasteProfileSummary>(() => {
+    if (tasteMap.summary && tasteMap.summary.topGenres && tasteMap.summary.topGenres.length > 0) {
+      return tasteMap.summary;
+    }
+    const currentSaved = filterHistoryByType(savedItems, 'all');
+    const profile = buildTasteProfileV3(currentSaved, { dislikedKeys: preferences.disliked });
+    return buildTasteProfileSummary(profile, tasteMap, genresMap);
+  }, [tasteMap, savedItems, preferences.disliked, genresMap]);
+
   // Header and Catalog Section Titles
   const getCatalogTitles = () => {
     if (tab === 'list') {
@@ -1345,6 +1433,7 @@ export function App() {
     setSavedItems(loadProfileItems(newId));
     setPreferences(loadProfilePreferences(newId));
     setFavoriteActors(loadFavoriteActors(newId));
+    setTasteMap(loadPersistentTasteMap(newId));
     setForYouItems([]);
     setForYouReasons(new Map());
     setQuery('');
@@ -1366,6 +1455,7 @@ export function App() {
     setSavedItems([]);
     setPreferences(newProf.preferences);
     setFavoriteActors([]);
+    setTasteMap(loadPersistentTasteMap(newId));
     setForYouItems([]);
     setForYouReasons(new Map());
     setProfileOpen(false);
@@ -1525,39 +1615,53 @@ export function App() {
           onListStatusChange={setListStatus}
         />
 
-        <MediaGrid
-          title={catalogTitle}
-          description={catalogDescription}
-          isLoading={isLoading}
-          loadingMore={loadingMore}
-          items={displayedItems}
-          savedItems={savedItems}
-          genres={genresMap}
-          recommendationReasons={category === 'for-you' ? forYouReasons : recommendationReasons}
-          dislikedKeys={preferences.disliked}
-          preferredProviders={preferences.providers}
-          tab={tab}
-          query={query}
-          listStatus={listStatus}
-          category={category}
-          page={catalogPage}
-          totalPages={catalogTotalPages}
-          hasMore={tab === 'discover' && category !== 'for-you' && catalogPage < catalogTotalPages}
-          favoriteActors={favoriteActors}
-          onLoadMore={handleLoadMore}
-          onOpenDetails={(item) => setDetailItem(item)}
-          onQuickAdd={handleQuickAdd}
-          onSetStatus={handleSetStatus}
-          onQuickSave={(item) => setQuickSaveItem(item)}
-          onToggleDislike={handleToggleDislike}
-          onEmptyAction={handleEmptyAction}
-          onOpenPerson={(id, name) => {
-            setPersonId(id);
-            setPersonName(name);
-          }}
-          onToggleFavoriteActor={handleToggleFavoriteActor}
-          onRefreshForYou={handleRefreshForYou}
-        />
+        {tab === 'taste-map' ? (
+          <TasteMapView
+            tasteMap={tasteMap}
+            summary={tasteSummary}
+            genresMap={genresMap}
+            onOpenDetails={(item) => setDetailItem(item)}
+            onQuickSave={(item) => setQuickSaveItem(item)}
+            onSetStatus={(item, status) => handleSetStatus(item, status)}
+            onToggleDislike={(key) => handleToggleDislike(key)}
+            onRefreshTasteMap={handleRefreshTasteMap}
+            isLoading={isLoading}
+          />
+        ) : (
+          <MediaGrid
+            title={catalogTitle}
+            description={catalogDescription}
+            isLoading={isLoading}
+            loadingMore={loadingMore}
+            items={displayedItems}
+            savedItems={savedItems}
+            genres={genresMap}
+            recommendationReasons={category === 'for-you' ? forYouReasons : recommendationReasons}
+            dislikedKeys={preferences.disliked}
+            preferredProviders={preferences.providers}
+            tab={tab}
+            query={query}
+            listStatus={listStatus}
+            category={category}
+            page={catalogPage}
+            totalPages={catalogTotalPages}
+            hasMore={tab === 'discover' && category !== 'for-you' && catalogPage < catalogTotalPages}
+            favoriteActors={favoriteActors}
+            onLoadMore={handleLoadMore}
+            onOpenDetails={(item) => setDetailItem(item)}
+            onQuickAdd={handleQuickAdd}
+            onSetStatus={handleSetStatus}
+            onQuickSave={(item) => setQuickSaveItem(item)}
+            onToggleDislike={handleToggleDislike}
+            onEmptyAction={handleEmptyAction}
+            onOpenPerson={(id, name) => {
+              setPersonId(id);
+              setPersonName(name);
+            }}
+            onToggleFavoriteActor={handleToggleFavoriteActor}
+            onRefreshForYou={handleRefreshForYou}
+          />
+        )}
       </main>
 
       <footer>
