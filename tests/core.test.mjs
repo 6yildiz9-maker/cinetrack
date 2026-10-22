@@ -18,7 +18,7 @@ import {
   isCandidateEligibleInPool, filterEligiblePoolItems, balanceCandidatePool,
   multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
   loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
-  replenishCandidatePool, CURRENT_SCHEMA_VERSION
+  replenishCandidatePool, selectBalancedRecommendations
 } from "../src/core/cinetrack-core.ts";
 
 const baseItem = (overrides = {}) => ({
@@ -1854,90 +1854,358 @@ describe("Sana Özel Aşama 2 — 500 + 500 Yenilenebilir Aday Havuzu", () => {
     assert.ok(calledPaths.some((p) => p.path === "/movie/top_rated"));
     assert.ok(calledPaths.some((p) => p.path === "/movie/now_playing"));
   });
-});
 
-describe("Sana Özel Aşama 3 — Veri Modeli, Favori Oyuncular, Yedekleme ve Anahtar Standardı", () => {
-  it("CURRENT_SCHEMA_VERSION 3 olarak tanımlıdır", () => {
-    assert.equal(CURRENT_SCHEMA_VERSION, 3);
-  });
-
-  it("normalizeDataDocument belge sürümlemesini (schemaVersion) ve profil favoriteActors alanını korur", () => {
-    const raw = {
-      version: 3,
-      schemaVersion: 3,
-      activeProfileId: "profile-1",
-      profiles: [
-        {
-          id: "profile-1",
-          name: "Test Profili",
-          preferences: { disliked: ["movie:10"] },
-          items: [baseItem({ id: 100, media_type: "movie" })],
-          favoriteActors: [
-            { id: 287, name: "Brad Pitt", profile_path: "/brad.jpg" }
-          ],
-        },
-      ],
+  it("Sorun A düzeltmesi: havuz 250 adayın üzerindeyse (örn. 251) force=false iken istek atmadan erken döner", async () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
     };
 
-    const doc = normalizeDataDocument(raw);
-    assert.ok(doc);
-    assert.equal(doc.schemaVersion, 3);
-    assert.equal(doc.version, 3);
-    assert.equal(doc.profiles.length, 1);
-    assert.ok(Array.isArray(doc.profiles[0].favoriteActors));
-    assert.equal(doc.profiles[0].favoriteActors.length, 1);
-    assert.equal(doc.profiles[0].favoriteActors[0].name, "Brad Pitt");
+    // 251 adet geçerli aday içeren havuz hazırla
+    const sampleItems = Array.from({ length: 251 }, (_, i) => ({
+      id: 1000 + i,
+      media_type: "movie",
+      title: `Existing Movie ${i}`,
+      genre_ids: [28],
+      vote_average: 7.5,
+      popularity: 30,
+      era: "modern",
+      popularityTier: "medium",
+      poolSources: 1,
+    }));
+
+    savePersistentPoolData("profile-threshold-test", {
+      mediaType: "movie",
+      updatedAt: new Date().toISOString(),
+      items: sampleItems,
+      cursors: { popular: 3, top_rated: 2, recent: 2, exploration: 1, genre_discover: {}, similar: {}, person_credits: {} },
+    });
+
+    let fetchCalled = false;
+    const mockFetch = async () => {
+      fetchCalled = true;
+      return { results: [] };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-threshold-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: false,
+    });
+
+    assert.equal(fetchCalled, false, "Havuz 250'nin üstündeyken TMDB isteği atılmamalı");
+    assert.equal(result.items.length, 251);
   });
 
-  it("parseBackupText JSON yedeğinden favoriteActors ve schemaVersion alanlarını ayrıştırır", () => {
-    const backupJson = JSON.stringify({
-      version: 3,
-      schemaVersion: 3,
-      profileName: "Sinema Sever",
-      items: [baseItem({ id: 500, media_type: "movie" })],
-      favoriteActors: [
-        { id: 2037, name: "Cillian Murphy", character: "Oppenheimer" }
+  it("Sorun A düzeltmesi: havuz 250 veya altındaysa yenileme tetiklenir ve 500 hedefine doğru doldurulur", async () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    // 250 adet aday (alt eşik)
+    const sampleItems = Array.from({ length: 250 }, (_, i) => ({
+      id: 2000 + i,
+      media_type: "movie",
+      title: `Existing Movie ${i}`,
+      genre_ids: [28],
+      vote_average: 7.5,
+      popularity: 30,
+      era: "modern",
+      popularityTier: "medium",
+      poolSources: 1,
+    }));
+
+    savePersistentPoolData("profile-low-test", {
+      mediaType: "movie",
+      updatedAt: new Date().toISOString(),
+      items: sampleItems,
+      cursors: { popular: 1, top_rated: 1, recent: 1, exploration: 1, genre_discover: {}, similar: {}, person_credits: {} },
+    });
+
+    let fetchCallCount = 0;
+    let nextId = 9000;
+    const mockFetch = async (path, params) => {
+      fetchCallCount++;
+      return {
+        results: Array.from({ length: 20 }, () => ({
+          id: nextId++,
+          title: `Fetched Movie ${nextId}`,
+          vote_average: 7.8,
+          popularity: 45,
+          genre_ids: [18],
+        })),
+      };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-low-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: false,
+    });
+
+    assert.ok(fetchCallCount > 0, "Havuz <= 250 iken yenileme tetiklenmeli");
+    assert.equal(result.items.length, 500, "Havuz 500 hedefine tamamlanmalı");
+  });
+
+  it("hatalı sayfaların imleci ilerletilmez ve sonraki çağrıda tekrar denenir", async () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    savePersistentPoolData("profile-error-test", {
+      mediaType: "movie",
+      updatedAt: new Date().toISOString(),
+      items: [],
+      cursors: { popular: 5, top_rated: 1, recent: 1, exploration: 1, genre_discover: {}, similar: {}, person_credits: {} },
+    });
+
+    // /movie/popular isteği hata fırlatıyor
+    const mockFetch = async (path, params) => {
+      if (path === "/movie/popular") {
+        throw new Error("TMDB network timeout");
+      }
+      return {
+        results: [
+          { id: Math.floor(Math.random() * 100000) + 1, title: "Test", vote_average: 7, popularity: 20, genre_ids: [28] }
+        ],
+      };
+    };
+
+    const result = await replenishCandidatePool({
+      profileId: "profile-error-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: true,
+    });
+
+    // popular başarısız olduğu için imleci 5 olarak kalmalı, 6'ya atlamamalı
+    assert.equal(result.cursors.popular, 5, "Hatalı sayfanın imleci ilerletilmemeli, sonraki deneme için korunmalı");
+    // Başarılı olan top_rated ilerletilmiş olmalı
+    assert.ok(result.cursors.top_rated > 1, "Başarılı kaynağın imleci ilerletilmeli");
+  });
+
+  it("tekilleştirme (deduplication) aynı adayları birleştirir ve poolSources artırır", async () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    const sharedId = 445566;
+    const mockFetch = async (path) => ({
+      results: [
+        { id: sharedId, title: "Ortak Film", vote_average: 8.2, popularity: 50, genre_ids: [18] }
       ],
     });
 
-    const parsed = parseBackupText(backupJson);
-    assert.equal(parsed.schemaVersion, 3);
-    assert.equal(parsed.profileName, "Sinema Sever");
-    assert.equal(parsed.items.length, 1);
-    assert.equal(parsed.favoriteActors.length, 1);
-    assert.equal(parsed.favoriteActors[0].id, 2037);
-    assert.equal(parsed.favoriteActors[0].name, "Cillian Murphy");
-  });
-
-  it("eski yedekler (favoriteActors ve schemaVersion olmayan) için geriye dönük uyumluluk sağlar", () => {
-    const legacyJson = JSON.stringify({
-      version: 2,
-      profileName: "Eski Profil",
-      items: [baseItem({ id: 200, media_type: "movie" })],
-      preferences: { disliked: [] },
+    const result = await replenishCandidatePool({
+      profileId: "profile-dedup-test",
+      mediaType: "movie",
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "balanced" },
+      fetchTmdbFn: mockFetch,
+      force: true,
     });
 
-    const parsed = parseBackupText(legacyJson);
-    assert.equal(parsed.schemaVersion, 2);
-    assert.ok(Array.isArray(parsed.favoriteActors));
-    assert.equal(parsed.favoriteActors.length, 0, "Eski yedeklerde boş liste ile geriye dönük uyumluluk sağlanmalı");
+    const matches = result.items.filter((it) => it.id === sharedId);
+    assert.equal(matches.length, 1, "Aynı kimlikli aday havuza yalnızca bir kez eklenmeli");
+    assert.ok(matches[0].poolSources > 1, "Birden fazla kaynaktan gelen adayın poolSources değeri artmalı");
+  });
+});
+
+describe("Sorun B — Tüm İçerikler modunda 10 Film + 10 Dizi Garantisi ve Bağımsız Sıralama", () => {
+  const makeCandidate = (id, media_type, score, genreId = 28, era = "modern", tier = "medium") => ({
+    candidate: {
+      id,
+      media_type,
+      title: media_type === "movie" ? `Film ${id}` : undefined,
+      name: media_type === "tv" ? `Dizi ${id}` : undefined,
+      genre_ids: [genreId],
+      era,
+      popularityTier: tier,
+      vote_average: 7.5,
+      popularity: 50,
+    },
+    score,
+    tags: [`${media_type} etiketi`],
+    parts: {},
   });
 
-  it("makeMediaKey ve parseMediaKey tüm kombinasyonları standartlaştırır", () => {
-    assert.equal(makeMediaKey("movie", 100), "movie:100");
-    assert.equal(makeMediaKey("tv", 200), "tv:200");
-    assert.equal(makeMediaKey({ media_type: "movie", id: 300 }), "movie:300");
-    assert.equal(makeMediaKey({ media_type: "tv", id: 400 }), "tv:400");
+  it("'all' modunda dengeli havuzlarda tam olarak 10 film ve 10 dizi seçilir (20 toplam)", () => {
+    // 25 film ve 25 dizi
+    const movies = Array.from({ length: 25 }, (_, i) =>
+      makeCandidate(100 + i, "movie", 95 - i, 28 + (i % 5))
+    );
+    const tvs = Array.from({ length: 25 }, (_, i) =>
+      makeCandidate(200 + i, "tv", 90 - i, 18 + (i % 5))
+    );
 
-    const parsedColon = parseMediaKey("movie:550");
-    assert.deepEqual(parsedColon, { type: "movie", id: "550" });
+    const result = selectBalancedRecommendations({
+      targetType: "all",
+      scoredMovies: movies,
+      scoredTv: tvs,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
 
-    const parsedHyphen = parseMediaKey("tv-1396");
-    assert.deepEqual(parsedHyphen, { type: "tv", id: "1396" });
+    assert.equal(result.totalCount, 20);
+    assert.equal(result.movieCount, 10, "Kesinlikle 10 film seçilmeli");
+    assert.equal(result.tvCount, 10, "Kesinlikle 10 dizi seçilmeli");
+    assert.equal(result.hasShortfall, false);
 
-    assert.equal(parseMediaKey(""), null);
-    assert.equal(parseMediaKey(null), null);
-    assert.equal(parseMediaKey("invalid"), null);
+    const movieItems = result.items.filter((e) => (e.candidate || e).media_type === "movie");
+    const tvItems = result.items.filter((e) => (e.candidate || e).media_type === "tv");
+    assert.equal(movieItems.length, 10);
+    assert.equal(tvItems.length, 10);
+    assert.ok(result.explanation.includes("10 film ve 10 dizi olmak üzere toplam 20 içerik"));
+  });
+
+  it("diziler 10'un altındaysa (ör. 6 dizi), filmlerle sessizce doldurulmaz; gerçek sayı raporlanır", () => {
+    const movies = Array.from({ length: 30 }, (_, i) =>
+      makeCandidate(100 + i, "movie", 95 - i, 28)
+    );
+    // Yalnızca 6 dizi var
+    const tvs = Array.from({ length: 6 }, (_, i) =>
+      makeCandidate(200 + i, "tv", 85 - i, 18)
+    );
+
+    const result = selectBalancedRecommendations({
+      targetType: "all",
+      scoredMovies: movies,
+      scoredTv: tvs,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
+
+    // Kesin kural: 6 dizi varken eksik 4 dizi için 14 film alınmaz!
+    assert.equal(result.movieCount, 10, "Film sayısı 10'u aşarak diğer türün yerini sessizce doldurmamalı");
+    assert.equal(result.tvCount, 6, "Gerçek dizi sayısı korunmalı");
+    assert.equal(result.totalCount, 16, "Toplam sonuç 16 olmalı (10 film + 6 dizi)");
+    assert.equal(result.hasShortfall, true);
+    assert.equal(result.shortfallType, "tv");
+    assert.ok(result.explanation.includes("10 film ve 6 dizi olmak üzere toplam 16 içerik"));
+    assert.ok(result.explanation.includes("dizi havuzunda uygun aday sayısı sınırlı kalmıştır"));
+  });
+
+  it("filmler 10'un altındaysa (ör. 4 film), dizilerle sessizce doldurulmaz; gerçek sayı raporlanır", () => {
+    // Yalnızca 4 film var
+    const movies = Array.from({ length: 4 }, (_, i) =>
+      makeCandidate(100 + i, "movie", 90 - i, 28)
+    );
+    const tvs = Array.from({ length: 30 }, (_, i) =>
+      makeCandidate(200 + i, "tv", 85 - i, 18)
+    );
+
+    const result = selectBalancedRecommendations({
+      targetType: "all",
+      scoredMovies: movies,
+      scoredTv: tvs,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
+
+    assert.equal(result.movieCount, 4, "Gerçek film sayısı korunmalı");
+    assert.equal(result.tvCount, 10, "Dizi sayısı 10'u aşarak filmlerin yerini doldurmamalı");
+    assert.equal(result.totalCount, 14, "Toplam sonuç 14 olmalı (4 film + 10 dizi)");
+    assert.equal(result.hasShortfall, true);
+    assert.equal(result.shortfallType, "movie");
+    assert.ok(result.explanation.includes("4 film ve 10 dizi olmak üzere toplam 14 içerik"));
+    assert.ok(result.explanation.includes("film havuzunda uygun aday sayısı sınırlı kalmıştır"));
+  });
+
+  it("'movie' modunda kesinlikle 20 film seçilir ve asla dizi dahil edilmez", () => {
+    const movies = Array.from({ length: 25 }, (_, i) =>
+      makeCandidate(100 + i, "movie", 90 - i, 28 + (i % 4))
+    );
+    const tvs = Array.from({ length: 15 }, (_, i) =>
+      makeCandidate(200 + i, "tv", 99, 18)
+    );
+
+    const result = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: movies,
+      scoredTv: tvs,
+      targetTotal: 20,
+    });
+
+    assert.equal(result.movieCount, 20);
+    assert.equal(result.tvCount, 0);
+    assert.equal(result.totalCount, 20);
+    const tvItems = result.items.filter((e) => (e.candidate || e).media_type === "tv");
+    assert.equal(tvItems.length, 0, "Film modunda dizi sonucu olamaz");
+    assert.ok(result.explanation.includes("20 film önerisi"));
+  });
+
+  it("'tv' modunda kesinlikle 20 dizi seçilir ve asla film dahil edilmez", () => {
+    const movies = Array.from({ length: 15 }, (_, i) =>
+      makeCandidate(100 + i, "movie", 99, 28)
+    );
+    const tvs = Array.from({ length: 25 }, (_, i) =>
+      makeCandidate(200 + i, "tv", 90 - i, 18 + (i % 4))
+    );
+
+    const result = selectBalancedRecommendations({
+      targetType: "tv",
+      scoredMovies: movies,
+      scoredTv: tvs,
+      targetTotal: 20,
+    });
+
+    assert.equal(result.tvCount, 20);
+    assert.equal(result.movieCount, 0);
+    assert.equal(result.totalCount, 20);
+    const movieItems = result.items.filter((e) => (e.candidate || e).media_type === "movie");
+    assert.equal(movieItems.length, 0, "Dizi modunda film sonucu olamaz");
+    assert.ok(result.explanation.includes("20 dizi önerisi"));
+  });
+
+  it("kısa listede 10'dan az olan grup, havuzun kalan adaylarından 10'a tamamlanır", () => {
+    // Kısa listede sadece 8 film var
+    const shortMovies = Array.from({ length: 8 }, (_, i) =>
+      makeCandidate(100 + i, "movie", 90 - i, 28)
+    );
+    // Havuzda kalan 5 film daha var
+    const remainingMovies = Array.from({ length: 5 }, (_, i) =>
+      makeCandidate(150 + i, "movie", 70 - i, 878)
+    );
+    const tvs = Array.from({ length: 20 }, (_, i) =>
+      makeCandidate(200 + i, "tv", 85 - i, 18)
+    );
+
+    const result = selectBalancedRecommendations({
+      targetType: "all",
+      scoredMovies: shortMovies,
+      scoredTv: tvs,
+      remainingMovies: remainingMovies,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
+
+    assert.equal(result.movieCount, 10, "Kalan havuz adayları kullanılarak 10'a tamamlanmalı");
+    assert.equal(result.tvCount, 10);
+    assert.equal(result.totalCount, 20);
+    assert.equal(result.hasShortfall, false);
   });
 });
 

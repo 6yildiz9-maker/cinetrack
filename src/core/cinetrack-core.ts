@@ -2541,18 +2541,28 @@ export function multiDimensionalDiversify(
   const eraCounts: Record<string, number> = {};
   const tierCounts: Record<string, number> = {};
 
-  const getGenre = (entry: any) =>
-    (entry.candidate?.genre_ids || [])[0] != null ? String(entry.candidate.genre_ids[0]) : '';
-  const getEra = (entry: any): string =>
-    entry.candidate?.era || determineItemEra(entry.candidate?.release_date || entry.candidate?.first_air_date);
-  const getTier = (entry: any): string =>
-    entry.candidate?.popularityTier ||
-    determineItemPopularityTier(entry.candidate?.popularity, entry.candidate?.vote_average);
+  const getCandidate = (entry: any) => entry?.candidate || entry;
+  const getGenre = (entry: any) => {
+    const c = getCandidate(entry);
+    return (c?.genre_ids || [])[0] != null ? String(c.genre_ids[0]) : '';
+  };
+  const getEra = (entry: any): string => {
+    const c = getCandidate(entry);
+    return c?.era || determineItemEra(c?.release_date || c?.first_air_date);
+  };
+  const getTier = (entry: any): string => {
+    const c = getCandidate(entry);
+    return (
+      c?.popularityTier ||
+      determineItemPopularityTier(c?.popularity, c?.vote_average)
+    );
+  };
 
   // 1. Geçiş: Sıkı çok boyutlu kotalar
   for (const entry of ordered) {
     if (picked.length >= limit) break;
-    const key = makeMediaKey(entry.candidate);
+    const cand = getCandidate(entry);
+    const key = makeMediaKey(cand);
     if (seen.has(key)) continue;
 
     const genre = getGenre(entry);
@@ -2574,7 +2584,8 @@ export function multiDimensionalDiversify(
   if (picked.length < limit) {
     for (const entry of ordered) {
       if (picked.length >= limit) break;
-      const key = makeMediaKey(entry.candidate);
+      const cand = getCandidate(entry);
+      const key = makeMediaKey(cand);
       if (seen.has(key)) continue;
       const genre = getGenre(entry);
       if (genre && (genreCounts[genre] || 0) >= maxPerGenre + 2) continue;
@@ -2589,7 +2600,8 @@ export function multiDimensionalDiversify(
   if (picked.length < limit) {
     for (const entry of ordered) {
       if (picked.length >= limit) break;
-      const key = makeMediaKey(entry.candidate);
+      const cand = getCandidate(entry);
+      const key = makeMediaKey(cand);
       if (seen.has(key)) continue;
       picked.push(entry);
       seen.add(key);
@@ -2597,6 +2609,221 @@ export function multiDimensionalDiversify(
   }
 
   return picked;
+}
+
+export interface SelectBalancedRecommendationsOptions {
+  targetType: 'all' | 'movie' | 'tv';
+  scoredMovies?: any[];
+  scoredTv?: any[];
+  remainingMovies?: any[];
+  remainingTv?: any[];
+  targetTotal?: number;
+  minPerTypeInAll?: number;
+  maxPerGenre?: number;
+  maxPerEra?: number;
+  maxPerTier?: number;
+}
+
+export interface BalancedRecommendationResult {
+  items: any[];
+  movieCount: number;
+  tvCount: number;
+  totalCount: number;
+  explanation: string;
+  hasShortfall: boolean;
+  shortfallType?: 'movie' | 'tv' | 'both' | null;
+}
+
+/**
+  * Sorun B çözümü:
+  * "Tüm içerikler" (all) modunda film ve dizileri bağımsız olarak puanlayıp sıralar,
+  * her iki gruptan en az 10'ar aday seçerek 10 film + 10 dizi garantisi sağlar.
+  * Bir türden 10 aday çıkmadığında diğer türden fazladan adaylarla sessizce doldurmaz;
+  * gerçek sayıları açıklar.
+  * "Yalnızca film" veya "yalnızca dizi" istendiğinde ise hedefi 20 yapar ve seçilen türü kesin koşul uygular.
+  */
+export function selectBalancedRecommendations({
+  targetType,
+  scoredMovies = [],
+  scoredTv = [],
+  remainingMovies = [],
+  remainingTv = [],
+  targetTotal = TARGET_RECOMMENDATION_COUNT,
+  minPerTypeInAll = 10,
+  maxPerGenre,
+  maxPerEra,
+  maxPerTier,
+}: SelectBalancedRecommendationsOptions): BalancedRecommendationResult {
+  const normTarget = targetType === 'movie' || targetType === 'tv' ? targetType : 'all';
+
+  if (normTarget === 'all') {
+    const movieLimit = Math.max(1, minPerTypeInAll);
+    const tvLimit = Math.max(1, minPerTypeInAll);
+
+    // 1. Filmleri bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
+    let pickedMovies = multiDimensionalDiversify(scoredMovies, {
+      limit: movieLimit,
+      maxPerGenre: maxPerGenre ?? 3,
+      maxPerEra: maxPerEra ?? 4,
+      maxPerTier: maxPerTier ?? 5,
+    });
+
+    // 10'un altındaysa kalan uygun havuz filmlerinden tamamla
+    if (pickedMovies.length < movieLimit && remainingMovies.length > 0) {
+      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
+      for (const rem of remainingMovies) {
+        if (pickedMovies.length >= movieLimit) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          pickedMovies.push(rem);
+        }
+      }
+    }
+
+    // 2. Dizileri bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
+    let pickedTv = multiDimensionalDiversify(scoredTv, {
+      limit: tvLimit,
+      maxPerGenre: maxPerGenre ?? 3,
+      maxPerEra: maxPerEra ?? 4,
+      maxPerTier: maxPerTier ?? 5,
+    });
+
+    // 10'un altındaysa kalan uygun havuz dizilerinden tamamla
+    if (pickedTv.length < tvLimit && remainingTv.length > 0) {
+      const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
+      for (const rem of remainingTv) {
+        if (pickedTv.length >= tvLimit) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          pickedTv.push(rem);
+        }
+      }
+    }
+
+    // KESİN KURAL: Bir türden 10 uygun aday çıkmıyorsa diğer türden fazladan adaylarla sessizce doldurma!
+    const movieCount = pickedMovies.length;
+    const tvCount = pickedTv.length;
+    const totalCount = movieCount + tvCount;
+
+    // Her iki gruptan seçilen tüm adayları (10 film + 10 dizi) nihai listede birleştir ve puana göre sırala
+    const items = [...pickedMovies, ...pickedTv].sort(
+      (a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)
+    );
+
+    const movieShortfall = movieCount < movieLimit;
+    const tvShortfall = tvCount < tvLimit;
+    const hasShortfall = movieShortfall || tvShortfall;
+    let shortfallType: 'movie' | 'tv' | 'both' | null = null;
+    if (movieShortfall && tvShortfall) shortfallType = 'both';
+    else if (movieShortfall) shortfallType = 'movie';
+    else if (tvShortfall) shortfallType = 'tv';
+
+    let explanation = '';
+    if (!hasShortfall) {
+      explanation = `500'lük yenilenebilir zevk havuzundan ${movieCount} film ve ${tvCount} dizi olmak üzere toplam ${totalCount} içerik, tür, dönem ve popülerlik dengesi gözetilerek hazırlandı.`;
+    } else if (shortfallType === 'both') {
+      explanation = `Listen ve tercihlerine uygun ${movieCount} film ve ${tvCount} dizi olmak üzere toplam ${totalCount} içerik bulundu. Kriterler ve havuz genişletilmesine rağmen her iki türde de uygun aday sayısı sınırlı kalmıştır.`;
+    } else if (shortfallType === 'movie') {
+      explanation = `Listen ve tercihlerine uygun ${movieCount} film ve ${tvCount} dizi olmak üzere toplam ${totalCount} içerik bulundu. Kriterler ve havuz genişletilmesine rağmen film havuzunda uygun aday sayısı sınırlı kalmıştır.`;
+    } else {
+      explanation = `Listen ve tercihlerine uygun ${movieCount} film ve ${tvCount} dizi olmak üzere toplam ${totalCount} içerik bulundu. Kriterler ve havuz genişletilmesine rağmen dizi havuzunda uygun aday sayısı sınırlı kalmıştır.`;
+    }
+
+    return {
+      items,
+      movieCount,
+      tvCount,
+      totalCount,
+      explanation,
+      hasShortfall,
+      shortfallType,
+    };
+  }
+
+  if (normTarget === 'movie') {
+    let pickedMovies = multiDimensionalDiversify(scoredMovies, {
+      limit: targetTotal,
+      maxPerGenre: maxPerGenre ?? 5,
+      maxPerEra: maxPerEra ?? 8,
+      maxPerTier: maxPerTier ?? 10,
+    });
+
+    if (pickedMovies.length < targetTotal && remainingMovies.length > 0) {
+      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
+      for (const rem of remainingMovies) {
+        if (pickedMovies.length >= targetTotal) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          pickedMovies.push(rem);
+        }
+      }
+    }
+
+    const movieCount = pickedMovies.length;
+    const hasShortfall = movieCount < targetTotal;
+    let explanation = '';
+    if (movieCount >= targetTotal) {
+      explanation = `500'lük yenilenebilir zevk havuzundan tür, dönem ve popülerlik dengesi gözetilerek ${movieCount} film önerisi hazırlandı.`;
+    } else if (movieCount > 0) {
+      explanation = `Listen ve tercihlerine uygun ${movieCount} film bulundu. Kriterler ve havuz genişletilmesine rağmen kalan sonuç sayısı bu kadardır.`;
+    } else {
+      explanation = 'Henüz film önerisi üretilemedi. Listenize birkaç yapım ekleyerek havuzu zenginleştirebilirsiniz.';
+    }
+
+    return {
+      items: pickedMovies,
+      movieCount,
+      tvCount: 0,
+      totalCount: movieCount,
+      explanation,
+      hasShortfall,
+      shortfallType: hasShortfall ? 'movie' : null,
+    };
+  }
+
+  // normTarget === 'tv'
+  let pickedTv = multiDimensionalDiversify(scoredTv, {
+    limit: targetTotal,
+    maxPerGenre: maxPerGenre ?? 5,
+    maxPerEra: maxPerEra ?? 8,
+    maxPerTier: maxPerTier ?? 10,
+  });
+
+  if (pickedTv.length < targetTotal && remainingTv.length > 0) {
+    const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
+    for (const rem of remainingTv) {
+      if (pickedTv.length >= targetTotal) break;
+      const key = makeMediaKey(rem.candidate || rem);
+      if (!pickedKeys.has(key)) {
+        pickedKeys.add(key);
+        pickedTv.push(rem);
+      }
+    }
+  }
+
+  const tvCount = pickedTv.length;
+  const hasShortfall = tvCount < targetTotal;
+  let explanation = '';
+  if (tvCount >= targetTotal) {
+    explanation = `500'lük yenilenebilir zevk havuzundan tür, dönem ve popülerlik dengesi gözetilerek ${tvCount} dizi önerisi hazırlandı.`;
+  } else if (tvCount > 0) {
+    explanation = `Listen ve tercihlerine uygun ${tvCount} dizi bulundu. Kriterler ve havuz genişletilmesine rağmen kalan sonuç sayısı bu kadardır.`;
+  } else {
+    explanation = 'Henüz dizi önerisi üretilemedi. Listenize birkaç yapım ekleyerek havuzu zenginleştirebilirsiniz.';
+  }
+
+  return {
+    items: pickedTv,
+    movieCount: 0,
+    tvCount,
+    totalCount: tvCount,
+    explanation,
+    hasShortfall,
+    shortfallType: hasShortfall ? 'tv' : null,
+  };
 }
 
 /**
@@ -2707,15 +2934,21 @@ export async function replenishCandidatePool({
     // 1. Beş durum kontrolü ile mevcut havuzu temizle
     poolData.items = filterEligiblePoolItems(poolData.items, savedItems, preferences);
 
-    // 2. Havuz 250 uygun adaya düşünce yenileyip 500'e tamamlama kontrolü
-    if (!force && poolData.items.length >= POOL_LOW_WATERMARK && poolData.items.length >= 450) {
+    // 2. Havuz 250 uygun adaya düşünce yenileyip 500'e tamamlama kontrolü (Sorun A düzeltmesi)
+    if (!force && poolData.items.length > POOL_LOW_WATERMARK) {
       savePersistentPoolData(profileId, poolData);
       return poolData;
     }
 
-    const existingKeys = new Set<string>(poolData.items.map((it) => makeMediaKey(it)));
+    const existingItemMap = new Map<string, PoolCandidateItem>();
+    for (const it of poolData.items) {
+      existingItemMap.set(makeMediaKey(it), it);
+    }
     let newlyAdded = 0;
-    const cursors = poolData.cursors;
+    const cursors = poolData.cursors || (poolData.cursors = createDefaultPoolCursors());
+    cursors.genre_discover = cursors.genre_discover || {};
+    cursors.similar = cursors.similar || {};
+    cursors.person_credits = cursors.person_credits || {};
 
     const watchedSeeds = filterHistoryByType(savedItems, mediaType)
       .filter((s) => s.status === 'completed' || s.status === 'watching' || Number(s.personal_rating) >= 7)
@@ -2730,109 +2963,140 @@ export async function replenishCandidatePool({
 
     let loopIteration = 0;
     const maxIterations = 8;
+    const failedEndpointsThisRun = new Set<string>();
 
+    // 500 hedefine (POOL_TARGET_CAPACITY) ulaşılana kadar sayfalayarak tamamla
     while (
-      newlyAdded < POOL_REPLENISH_MIN_NEW &&
       poolData.items.length < POOL_TARGET_CAPACITY &&
       loopIteration < maxIterations
     ) {
       if (signal?.aborted) break;
       loopIteration += 1;
 
-      const requests: Array<{
+      interface ReplenishRequest {
         path: string;
         params?: Record<string, string>;
         source: PoolSourceType;
         reason?: string;
         seedSourceType?: 'completed' | 'watching' | 'watchlist' | '';
-      }> = [];
+        cursorTarget?: {
+          type: 'popular' | 'top_rated' | 'recent' | 'exploration' | 'genre_discover' | 'similar' | 'person_credits';
+          key?: string;
+          nextPage: number;
+        };
+      }
+
+      const requests: ReplenishRequest[] = [];
 
       // 1. Popüler kaynak (sayfalanır)
       const popPage = cursors.popular || 1;
-      cursors.popular = popPage + 1;
-      requests.push({
-        path: `/${mediaType}/popular`,
-        params: { page: String(popPage) },
-        source: 'popular',
-        reason: 'Popüler yapımlar arasından',
-      });
+      const popPath = `/${mediaType}/popular`;
+      if (!failedEndpointsThisRun.has(popPath)) {
+        requests.push({
+          path: popPath,
+          params: { page: String(popPage) },
+          source: 'popular',
+          reason: 'Popüler yapımlar arasından',
+          cursorTarget: { type: 'popular', nextPage: popPage + 1 },
+        });
+      }
 
       // 2. Yüksek puanlı kaynak (sayfalanır)
       const topPage = cursors.top_rated || 1;
-      cursors.top_rated = topPage + 1;
-      requests.push({
-        path: `/${mediaType}/top_rated`,
-        params: { page: String(topPage) },
-        source: 'top_rated',
-        reason: 'Yüksek puanlı seçkiler',
-      });
+      const topPath = `/${mediaType}/top_rated`;
+      if (!failedEndpointsThisRun.has(topPath)) {
+        requests.push({
+          path: topPath,
+          params: { page: String(topPage) },
+          source: 'top_rated',
+          reason: 'Yüksek puanlı seçkiler',
+          cursorTarget: { type: 'top_rated', nextPage: topPage + 1 },
+        });
+      }
 
       // 3. Yeni / Vizyonda / Yayında kaynak (sayfalanır)
       const recPage = cursors.recent || 1;
-      cursors.recent = recPage + 1;
       const recentPath = mediaType === 'movie' ? '/movie/now_playing' : '/tv/on_the_air';
-      requests.push({
-        path: recentPath,
-        params: { page: String(recPage) },
-        source: 'recent',
-        reason: 'Yeni ve vizyondaki yapımlar',
-      });
+      if (!failedEndpointsThisRun.has(recentPath)) {
+        requests.push({
+          path: recentPath,
+          params: { page: String(recPage) },
+          source: 'recent',
+          reason: 'Yeni ve vizyondaki yapımlar',
+          cursorTarget: { type: 'recent', nextPage: recPage + 1 },
+        });
+      }
 
       // 4. Tür keşfi kaynakları (sayfalanır)
       for (const gid of topGenreIds) {
         const gidKey = String(gid);
         const gPage = cursors.genre_discover[gidKey] || 1;
-        cursors.genre_discover[gidKey] = gPage + 1;
-        requests.push({
-          path: `/discover/${mediaType}`,
-          params: { with_genres: gidKey, sort_by: 'popularity.desc', page: String(gPage) },
-          source: 'genre_discover',
-          reason: 'Sevdiğin türlerde keşif',
-        });
+        const gKeyStr = `genre:${gidKey}`;
+        if (!failedEndpointsThisRun.has(gKeyStr)) {
+          requests.push({
+            path: `/discover/${mediaType}`,
+            params: { with_genres: gidKey, sort_by: 'popularity.desc', page: String(gPage) },
+            source: 'genre_discover',
+            reason: 'Sevdiğin türlerde keşif',
+            cursorTarget: { type: 'genre_discover', key: gidKey, nextPage: gPage + 1 },
+          });
+        }
       }
 
       // 5. Benzer içerik kaynakları (sayfalanır)
       for (const seed of watchedSeeds) {
         const seedKey = makeMediaKey(seed);
         const simPage = cursors.similar[seedKey] || 1;
-        cursors.similar[seedKey] = simPage + 1;
-        requests.push({
-          path: `/${mediaType}/${seed.id}/recommendations`,
-          params: { page: String(simPage) },
-          source: 'similar',
-          reason: `“${seed.title || seed.name}” yapımına benzer`,
-          seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
-        });
+        const simPath = `/${mediaType}/${seed.id}/recommendations`;
+        if (!failedEndpointsThisRun.has(simPath)) {
+          requests.push({
+            path: simPath,
+            params: { page: String(simPage) },
+            source: 'similar',
+            reason: `“${seed.title || seed.name}” yapımına benzer`,
+            seedSourceType: seed.status === 'completed' ? 'completed' : 'watching',
+            cursorTarget: { type: 'similar', key: seedKey, nextPage: simPage + 1 },
+          });
+        }
       }
 
       // 6. Oyuncu / Yönetmen kaynakları (sayfalanır)
       for (const actor of favoriteActors.slice(0, 3)) {
         const actorKey = String(actor.id);
         const aPage = cursors.person_credits[actorKey] || 1;
-        cursors.person_credits[actorKey] = aPage + 1;
-        requests.push({
-          path: `/discover/${mediaType}`,
-          params: { with_cast: actorKey, sort_by: 'popularity.desc', page: String(aPage) },
-          source: 'person_credits',
-          reason: `Favori oyuncun ${actor.name} kadrosunda`,
-        });
+        const aKeyStr = `actor:${actorKey}`;
+        if (!failedEndpointsThisRun.has(aKeyStr)) {
+          requests.push({
+            path: `/discover/${mediaType}`,
+            params: { with_cast: actorKey, sort_by: 'popularity.desc', page: String(aPage) },
+            source: 'person_credits',
+            reason: `Favori oyuncun ${actor.name} kadrosunda`,
+            cursorTarget: { type: 'person_credits', key: actorKey, nextPage: aPage + 1 },
+          });
+        }
       }
 
       // 7. Keşif amaçlı kaynak (sayfalanır)
       const expPage = cursors.exploration || 1;
-      cursors.exploration = expPage + 1;
-      requests.push({
-        path: `/discover/${mediaType}`,
-        params: {
-          'vote_count.gte': '100',
-          'vote_count.lte': '2500',
-          'vote_average.gte': '7.2',
-          sort_by: 'popularity.asc',
-          page: String(expPage),
-        },
-        source: 'exploration',
-        reason: 'Keşfedilmeyi bekleyen yüksek puanlı yapımlar',
-      });
+      if (!failedEndpointsThisRun.has('exploration')) {
+        requests.push({
+          path: `/discover/${mediaType}`,
+          params: {
+            'vote_count.gte': '100',
+            'vote_count.lte': '2500',
+            'vote_average.gte': '7.2',
+            sort_by: 'popularity.asc',
+            page: String(expPage),
+          },
+          source: 'exploration',
+          reason: 'Keşfedilmeyi bekleyen yüksek puanlı yapımlar',
+          cursorTarget: { type: 'exploration', nextPage: expPage + 1 },
+        });
+      }
+
+      if (requests.length === 0) {
+        break;
+      }
 
       // İstekleri paralel çalıştır
       const fetchedResults = await Promise.allSettled(
@@ -2842,16 +3106,53 @@ export async function replenishCandidatePool({
             return {
               req,
               items: Array.isArray(data?.results) ? data.results : [],
+              success: true,
             };
           } catch {
-            return { req, items: [] };
+            return {
+              req,
+              items: [],
+              success: false,
+            };
           }
         })
       );
 
+      let addedInIteration = 0;
+      let successfulRequestsCount = 0;
+
       for (const res of fetchedResults) {
         if (res.status !== 'fulfilled') continue;
-        const { req, items } = res.value;
+        const { req, items, success } = res.value;
+
+        // Hatalı sayfalar: İstek başarısız olduysa imleci İLERLETME!
+        // Böylece hatalı sayfa sonraki yenilemede tekrar denenir.
+        if (!success) {
+          if (req.cursorTarget?.type === 'genre_discover' && req.cursorTarget.key) {
+            failedEndpointsThisRun.add(`genre:${req.cursorTarget.key}`);
+          } else if (req.cursorTarget?.type === 'person_credits' && req.cursorTarget.key) {
+            failedEndpointsThisRun.add(`actor:${req.cursorTarget.key}`);
+          } else if (req.cursorTarget?.type === 'exploration') {
+            failedEndpointsThisRun.add('exploration');
+          } else {
+            failedEndpointsThisRun.add(req.path);
+          }
+          continue;
+        }
+
+        successfulRequestsCount += 1;
+
+        // İstek başarılı olduysa imleci bir sonraki sayfaya ilerlet
+        if (req.cursorTarget) {
+          const { type, key, nextPage } = req.cursorTarget;
+          if (type === 'popular') cursors.popular = nextPage;
+          else if (type === 'top_rated') cursors.top_rated = nextPage;
+          else if (type === 'recent') cursors.recent = nextPage;
+          else if (type === 'exploration') cursors.exploration = nextPage;
+          else if (type === 'genre_discover' && key) cursors.genre_discover[key] = nextPage;
+          else if (type === 'similar' && key) cursors.similar[key] = nextPage;
+          else if (type === 'person_credits' && key) cursors.person_credits[key] = nextPage;
+        }
 
         for (const rawItem of items) {
           if (!isCandidateEligibleInPool(rawItem, savedItems, preferences)) continue;
@@ -2865,7 +3166,7 @@ export async function replenishCandidatePool({
           if (!candidate) continue;
 
           const key = makeMediaKey(candidate);
-          const existingItem = poolData.items.find((it) => makeMediaKey(it) === key);
+          const existingItem = existingItemMap.get(key);
           if (existingItem) {
             existingItem.poolSources = (existingItem.poolSources || 1) + 1;
             if (req.seedSourceType && !existingItem.seedSourceType) {
@@ -2875,13 +3176,17 @@ export async function replenishCandidatePool({
             continue;
           }
 
-          if (!existingKeys.has(key)) {
-            existingKeys.add(key);
-            poolData.items.push(candidate);
-            newlyAdded += 1;
-            if (poolData.items.length >= POOL_TARGET_CAPACITY * 1.5) break;
-          }
+          existingItemMap.set(key, candidate);
+          poolData.items.push(candidate);
+          newlyAdded += 1;
+          addedInIteration += 1;
+          if (poolData.items.length >= POOL_TARGET_CAPACITY * 1.5) break;
         }
+      }
+
+      // Başarılı istek olmasına rağmen hiç yeni aday eklenemediyse veya tüm istekler başarısızsa
+      if (successfulRequestsCount === 0 || (addedInIteration === 0 && loopIteration >= 3)) {
+        break;
       }
     }
 

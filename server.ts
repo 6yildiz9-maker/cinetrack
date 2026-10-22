@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFil
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
-import { normalizeDataDocument, DataDocument } from './src/core/cinetrack-core';
+import { normalizeDataDocument, DataDocument, CURRENT_SCHEMA_VERSION } from './src/core/cinetrack-core';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3000;
@@ -59,7 +59,7 @@ const allowedQueryKeys = new Set([
 ]);
 
 function emptyDocument(): DataDocument {
-  return { version: 3, schemaVersion: 3, activeProfileId: '', profiles: [] };
+  return { version: 3, schemaVersion: CURRENT_SCHEMA_VERSION, activeProfileId: '', profiles: [] };
 }
 
 function readData(): DataDocument {
