@@ -1,8 +1,8 @@
 import React from 'react';
 
 interface ControlsProps {
-  tab: 'discover' | 'list';
-  onTabChange: (tab: 'discover' | 'list') => void;
+  tab: 'discover' | 'list' | 'taste-map';
+  onTabChange: (tab: 'discover' | 'list' | 'taste-map') => void;
   myListCount: number;
   upcomingCount: number;
   dislikedCount?: number;
@@ -74,10 +74,19 @@ export const Controls: React.FC<ControlsProps> = ({
           >
             Listem <span id="myListBadge">{myListCount}</span>
           </button>
+          <button
+            className={`tab ${tab === 'taste-map' ? 'active' : ''}`}
+            type="button"
+            aria-pressed={tab === 'taste-map'}
+            onClick={() => onTabChange('taste-map')}
+          >
+            🗺️ Zevk Haritası
+          </button>
         </div>
 
-        <div className="filters">
-          {tab === 'discover' && (
+        {tab !== 'taste-map' && (
+          <div className="filters">
+            {tab === 'discover' && (
             <select
               id="genreFilter"
               aria-label="Tür filtresi"
@@ -158,6 +167,7 @@ export const Controls: React.FC<ControlsProps> = ({
             <option value="recent">Son eklenen / çıkan</option>
           </select>
         </div>
+        )}
       </div>
 
       {tab === 'discover' && (

@@ -1477,20 +1477,154 @@ export function buildTasteProfileV3(
 }
 
 /* ============================================================================
- * Aşama 3: Kalıcı Zevk Haritası (Taste Map) ve Konsantrik Halka Takibi (Sorun D)
+ * Aşama 3: Kalıcı Zevk Haritası (Taste Map) ve Konsantrik Halka Takibi (Sorun D & Zevk Haritası)
  * ============================================================================ */
 
 export type TasteRing = 'core' | 'inner' | 'outer' | 'orbit';
+
+export interface TastePillarsSummary {
+  genreStoryScore: number;       // 0-100 (Tür ve hikâye: tür, anahtar kelime, özet)
+  castCreatorsScore: number;     // 0-100 (Kadro ve yaratıcılar: oyuncu, yönetmen, kadro uyumu)
+  discoveryQualityScore: number; // 0-100 (Keşif ve kalite: kalite, popülerlik, yenilik)
+}
+
+export function calculateTastePillars(parts: Record<string, number> = {}): TastePillarsSummary {
+  // 1. Tür ve hikâye (Tür: genre; Anahtar kelime: keywords; Özet: story, lovedSim)
+  const genreVal = parts.genre ?? 0.5;
+  const keywordsVal = parts.keywords ?? 0.5;
+  const storyVal = parts.story ?? 0.5;
+  const lovedSimVal = parts.lovedSim ?? 0.5;
+  const genreStoryScore = Math.round(
+    (genreVal * 0.35 + keywordsVal * 0.25 + storyVal * 0.25 + lovedSimVal * 0.15) * 100
+  );
+
+  // 2. Kadro ve yaratıcılar (Oyuncu: actor; Oyuncu x Tür: genreActor; Yönetmen: director; Kadro uyumu: castHarmony)
+  const actorVal = parts.actor ?? 0.5;
+  const genreActorVal = parts.genreActor ?? 0.5;
+  const directorVal = parts.director ?? 0.5;
+  const castHarmonyVal = parts.castHarmony ?? 0.5;
+  const castCreatorsScore = Math.round(
+    (actorVal * 0.4 + genreActorVal * 0.15 + directorVal * 0.25 + castHarmonyVal * 0.2) * 100
+  );
+
+  // 3. Keşif ve kalite (Kalite: quality; Popülerlik: popularity; Yenilik/Bağlam: context, exploration, sourceSignal)
+  const qualityVal = parts.quality ?? 0.5;
+  const popularityVal = parts.popularity ?? 0.5;
+  const contextVal = parts.context ?? 0.5;
+  const explorationVal = parts.exploration ?? 0.5;
+  const sourceVal = parts.sourceSignal ?? 0.5;
+  const discoveryQualityScore = Math.round(
+    (qualityVal * 0.4 + popularityVal * 0.2 + contextVal * 0.2 + explorationVal * 0.1 + sourceVal * 0.1) * 100
+  );
+
+  return {
+    genreStoryScore: Math.max(1, Math.min(100, genreStoryScore)),
+    castCreatorsScore: Math.max(1, Math.min(100, castCreatorsScore)),
+    discoveryQualityScore: Math.max(1, Math.min(100, discoveryQualityScore)),
+  };
+}
+
+export function computeTasteProfileSignature(
+  savedItems: SavedItem[] = [],
+  preferences: Preferences = { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+  favoriteActors: FavoriteActorInfo[] = []
+): string {
+  const ratingsSum = (savedItems || []).reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+  const mood = preferences?.mood || '';
+  const dislikedCount = (preferences?.disliked || []).length;
+  const favActorsCount = (favoriteActors || []).length;
+  const lastSavedAt = savedItems[0]?.updatedAt || savedItems[0]?.addedAt || '';
+  return `sig_${savedItems.length}_${ratingsSum}_${mood}_${dislikedCount}_${favActorsCount}_${lastSavedAt.slice(0, 19)}`;
+}
+
+export interface TasteProfileSummary {
+  topGenres: Array<{ id: string; name: string; score: number }>;
+  topActors: Array<{ id: string; name: string; score: number; appearances: number }>;
+  topDirectors: Array<{ id: string; name: string; score: number }>;
+  storyKeywords: string[];
+  totalEvaluatedCandidates: number;
+  ringCounts: {
+    core: number;
+    inner: number;
+    outer: number;
+    orbit: number;
+  };
+}
+
+export function buildTasteProfileSummary(
+  tasteProfile: TasteProfileV3,
+  tasteMap: PersistentTasteMapData,
+  genresMap: Record<number | string, string> = {}
+): TasteProfileSummary {
+  const topGenres = (tasteProfile?.positiveGenres || [])
+    .slice(0, 5)
+    .map((gid) => ({
+      id: String(gid),
+      name: genresMap[gid] || `Tür ${gid}`,
+      score: Math.round(((tasteProfile?.genres?.[gid] ?? 0.5) + 1) * 50),
+    }));
+
+  const topActors = Object.entries(tasteProfile?.actors || {})
+    .filter(([, data]) => (data.personal || 0) > 0.05)
+    .sort((a, b) => b[1].personal - a[1].personal)
+    .slice(0, 6)
+    .map(([id, data]) => ({
+      id,
+      name: data.name,
+      score: Math.round((data.personal + 1) * 50),
+      appearances: Math.round(data.nAppearances || 1),
+    }));
+
+  const topDirectors = Object.entries(tasteProfile?.directors || {})
+    .filter(([, data]) => (data.personal || 0) > 0.05)
+    .sort((a, b) => b[1].personal - a[1].personal)
+    .slice(0, 4)
+    .map(([id, data]) => ({
+      id,
+      name: data.name,
+      score: Math.round((data.personal + 1) * 50),
+    }));
+
+  const storyKeywords = Array.from(tasteProfile?.lovedOverviewTokens || []).slice(0, 8);
+
+  const ringCounts = { core: 0, inner: 0, outer: 0, orbit: 0 };
+  const entries = Object.values(tasteMap?.entries || {});
+  for (const entry of entries) {
+    if (entry.ring && ringCounts[entry.ring] !== undefined) {
+      ringCounts[entry.ring]++;
+    } else {
+      ringCounts.orbit++;
+    }
+  }
+
+  return {
+    topGenres,
+    topActors,
+    topDirectors,
+    storyKeywords,
+    totalEvaluatedCandidates: entries.length,
+    ringCounts,
+  };
+}
 
 export interface TasteMapEntry {
   mediaKey: string;
   mediaType: 'movie' | 'tv';
   id: number;
   title: string;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  vote_average?: number;
+  popularity?: number;
+  genre_ids?: number[];
+  release_date?: string;
+  first_air_date?: string;
+  overview?: string;
   matchScore: number;
   rawScore: number;
   ring: TasteRing;
   initialRing: TasteRing;
+  pillars?: TastePillarsSummary;
   parts: Record<string, number>;
   tags: string[];
   shownCount: number;
@@ -1504,10 +1638,15 @@ export interface TasteMapEntry {
 
 export interface PersistentTasteMapData {
   profileId: string;
+  profileSignature?: string;
   updatedAt: string;
   entries: Record<string, TasteMapEntry>;
   lastRecommendedKeys: string[];
   lastBatchTimestamp: string | null;
+  cachedBalancedItems?: any[];
+  lastTargetType?: string;
+  lastExplanation?: string;
+  summary?: TasteProfileSummary;
 }
 
 export function assignTasteRing(score: number): TasteRing {
@@ -1548,6 +1687,7 @@ export function getTasteMapStorageKey(profileId: string): string {
 export function createDefaultTasteMapData(profileId: string): PersistentTasteMapData {
   return {
     profileId,
+    profileSignature: '',
     updatedAt: new Date().toISOString(),
     entries: {},
     lastRecommendedKeys: [],
@@ -1565,10 +1705,15 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
         if (parsed && typeof parsed.entries === 'object') {
           return {
             profileId,
+            profileSignature: parsed.profileSignature || '',
             updatedAt: parsed.updatedAt || new Date().toISOString(),
             entries: parsed.entries || {},
             lastRecommendedKeys: Array.isArray(parsed.lastRecommendedKeys) ? parsed.lastRecommendedKeys : [],
             lastBatchTimestamp: parsed.lastBatchTimestamp || null,
+            cachedBalancedItems: Array.isArray(parsed.cachedBalancedItems) ? parsed.cachedBalancedItems : undefined,
+            lastTargetType: parsed.lastTargetType || undefined,
+            lastExplanation: parsed.lastExplanation || undefined,
+            summary: parsed.summary || undefined,
           };
         }
       }
@@ -1607,6 +1752,10 @@ export interface UpdateTasteMapWithBatchParams {
   savedItems: SavedItem[];
   preferences: Preferences;
   now?: string;
+  profileSignature?: string;
+  targetType?: string;
+  explanation?: string;
+  summary?: TasteProfileSummary;
 }
 
 export function updateTasteMapWithBatch({
@@ -1615,6 +1764,10 @@ export function updateTasteMapWithBatch({
   savedItems,
   preferences,
   now = new Date().toISOString(),
+  profileSignature,
+  targetType,
+  explanation,
+  summary,
 }: UpdateTasteMapWithBatchParams): PersistentTasteMapData {
   const updatedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.entries || {}) };
   const newKeys = new Set<string>();
@@ -1686,16 +1839,28 @@ export function updateTasteMapWithBatch({
     const initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
     const netMatchScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
 
+    const parts = item.parts || existing?.parts || {};
+    const pillars = calculateTastePillars(parts);
+
     updatedEntries[key] = {
       mediaKey: key,
       mediaType,
       id,
       title,
+      poster_path: cand.poster_path || existing?.poster_path || null,
+      backdrop_path: cand.backdrop_path || existing?.backdrop_path || null,
+      vote_average: Number(cand.vote_average ?? existing?.vote_average ?? 0),
+      popularity: Number(cand.popularity ?? existing?.popularity ?? 0),
+      genre_ids: Array.isArray(cand.genre_ids) ? cand.genre_ids : existing?.genre_ids || [],
+      release_date: cand.release_date || existing?.release_date,
+      first_air_date: cand.first_air_date || existing?.first_air_date,
+      overview: cand.overview || existing?.overview || '',
       matchScore: netMatchScore,
       rawScore,
       ring,
       initialRing,
-      parts: item.parts || existing?.parts || {},
+      pillars,
+      parts,
       tags: Array.isArray(item.tags) ? item.tags : existing?.tags || [],
       shownCount,
       skippedCount,
@@ -1709,10 +1874,15 @@ export function updateTasteMapWithBatch({
 
   return {
     profileId: tasteMap.profileId,
+    profileSignature: profileSignature ?? tasteMap.profileSignature ?? '',
     updatedAt: now,
     entries: updatedEntries,
     lastRecommendedKeys: Array.from(newKeys),
     lastBatchTimestamp: now,
+    cachedBalancedItems: newRecommendedItems,
+    lastTargetType: targetType || tasteMap.lastTargetType || 'all',
+    lastExplanation: explanation || tasteMap.lastExplanation || '',
+    summary: summary || tasteMap.summary,
   };
 }
 
