@@ -19,7 +19,7 @@ import {
   multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
   loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
   replenishCandidatePool, selectBalancedRecommendations,
-  assignTasteRing, demoteTasteRing, getTasteRingLabel,
+  assignTasteRing, demoteTasteRing, getTasteRingLabel, normalizeTasteRing,
   loadPersistentTasteMap, savePersistentTasteMap, updateTasteMapWithBatch,
   markTasteMapItemStatus, syncPoolCandidatesWithTasteMap,
   createDefaultTasteMapData, getTasteMapStorageKey,
@@ -2886,6 +2886,158 @@ describe("Kullanıcıya Özel Zevk Haritası — 3 Sütun, Profil İmzası ve La
     assert.equal(summary.ringCounts.orbit, 1);
   });
 });
+
+describe("Halka Sistemi — Halka 0 (Yeni Eşleşme), Halka 1 (Yakın Zamanda Gösterildi), Halka 2 (Daha Önce Atlandı)", () => {
+  it("Halka 0: Bu profil için henüz gösterilmemiş taze aday ring0 olarak etiketlenir", () => {
+    const tasteProfile = {
+      positiveGenres: ["28"],
+      genres: { "28": 0.9 },
+      actors: {},
+      directors: {},
+      keywords: {},
+      mediaPreference: { movie: 0.8, tv: 0.2 },
+      lovedSeedIds: new Set(),
+      lovedFranchiseIds: new Set(),
+      lovedProductionCompanyIds: new Set(),
+      lovedOverviewTokens: new Set(),
+      coOccurredPairs: new Set(),
+    };
+
+    const tasteMap = createDefaultTasteMapData("profile_ring_test");
+    const freshCandidate = {
+      id: 5001,
+      media_type: "movie",
+      title: "Taze Eşleşme",
+      genre_ids: [28],
+      vote_average: 8.5,
+      vote_count: 800,
+      popularity: 50,
+    };
+
+    const [scored] = scoreCandidatesV3([freshCandidate], tasteProfile, { tasteMap });
+    assert.equal(scored.ring, "ring0", "Henüz gösterilmemiş aday Halka 0 olmalı");
+    assert.equal(getTasteRingLabel(scored.ring), "Halka 0 — Yeni Eşleşme");
+  });
+
+  it("Halka 1: Önceki öneri grubunda gösterilmiş içerik ring1 (dinleniyor) olur ve bir sonraki grupta gösterilmez", () => {
+    const tasteProfile = {
+      positiveGenres: ["28"],
+      genres: { "28": 0.9 },
+      actors: {},
+      directors: {},
+      keywords: {},
+      mediaPreference: { movie: 0.8, tv: 0.2 },
+      lovedSeedIds: new Set(),
+      lovedFranchiseIds: new Set(),
+      lovedProductionCompanyIds: new Set(),
+      lovedOverviewTokens: new Set(),
+      coOccurredPairs: new Set(),
+    };
+
+    const tasteMap = createDefaultTasteMapData("profile_ring_test2");
+    tasteMap.lastRecommendedKeys = ["movie:6001"]; // Önceki grupta gösterildi
+
+    const candidateShownRecently = {
+      id: 6001,
+      media_type: "movie",
+      title: "Önceki Grupta Gösterilen Film",
+      genre_ids: [28],
+      vote_average: 9.0,
+      vote_count: 1000,
+      popularity: 80,
+    };
+
+    const [scored] = scoreCandidatesV3([candidateShownRecently], tasteProfile, { tasteMap });
+    assert.equal(scored.ring, "ring1", "Önceki grupta gösterilen içerik Halka 1 (Yakın zamanda gösterildi) olmalı");
+    assert.equal(getTasteRingLabel(scored.ring), "Halka 1 — Yakın Zamanda Gösterildi");
+
+    // selectBalancedRecommendations içinde Halka 1 kesinlikle elenmeli
+    const freshMovies = Array.from({ length: 10 }, (_, i) => ({
+      candidate: { id: 7000 + i, media_type: "movie", title: `Taze ${i}`, genre_ids: [28] },
+      score: 80 - i,
+      ring: "ring0",
+    }));
+
+    const result = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: [scored, ...freshMovies],
+      targetTotal: 10,
+    });
+
+    const hasRestingItem = result.items.some((item) => (item.candidate || item).id === 6001);
+    assert.equal(hasRestingItem, false, "Halka 1 (yakın zamanda gösterilen) aday bir sonraki grupta gösterilmemeli");
+  });
+
+  it("Halka 2: Daha önce atlanan adayın gerçek matchScore değeri (ör. 91) korunur; yeni adaylar yetersizse devreye girer", () => {
+    const tasteProfile = {
+      positiveGenres: ["28"],
+      genres: { "28": 0.9 },
+      actors: {},
+      directors: {},
+      keywords: {},
+      mediaPreference: { movie: 0.8, tv: 0.2 },
+      lovedSeedIds: new Set(),
+      lovedFranchiseIds: new Set(),
+      lovedProductionCompanyIds: new Set(),
+      lovedOverviewTokens: new Set(),
+      coOccurredPairs: new Set(),
+    };
+
+    const tasteMap = createDefaultTasteMapData("profile_ring_test3");
+    tasteMap.lastRecommendedKeys = ["movie:9999"]; // Başka bir yapım son grupta
+    tasteMap.entries["movie:8001"] = {
+      mediaKey: "movie:8001",
+      mediaType: "movie",
+      id: 8001,
+      title: "Daha Önce Atlanan Film",
+      matchScore: 91,
+      rawScore: 91,
+      ring: "ring2",
+      parts: { genre: 0.9 },
+      tags: [],
+      shownCount: 2,
+      skippedCount: 1,
+      ringDemotions: 0,
+      demotionPenalty: 0,
+      lastShownAt: "2026-10-22T08:00:00.000Z",
+      lastScoredAt: "2026-10-22T08:00:00.000Z",
+      status: "active",
+    };
+
+    const candidateSkipped = {
+      id: 8001,
+      media_type: "movie",
+      title: "Daha Önce Atlanan Film",
+      genre_ids: [28],
+      vote_average: 8.8,
+      vote_count: 1200,
+      popularity: 70,
+    };
+
+    const [scored] = scoreCandidatesV3([candidateSkipped], tasteProfile, { tasteMap });
+    assert.equal(scored.ring, "ring2", "Daha önce atlanan içerik Halka 2 olmalı");
+    assert.equal(getTasteRingLabel(scored.ring), "Halka 2 — Daha Önce Atlandı");
+    // Önemli kural: Gerçek matchScore puanı düşürülmez!
+    assert.ok(scored.score >= 80, `Gerçek eşleşme skoru düşürülmeden korunmalı (alınan: ${scored.score})`);
+
+    // Halka 0 adayları yetersiz olduğunda (örneğin sadece 2 taze aday varken), Halka 2 devreye girip listeyi tamamlamalı
+    const twoFreshMovies = [
+      { candidate: { id: 9001, media_type: "movie", title: "Taze 1", genre_ids: [28] }, score: 85, ring: "ring0" },
+      { candidate: { id: 9002, media_type: "movie", title: "Taze 2", genre_ids: [28] }, score: 84, ring: "ring0" },
+    ];
+
+    const result = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: [...twoFreshMovies, scored],
+      targetTotal: 3,
+    });
+
+    assert.equal(result.items.length, 3);
+    const includedSkipped = result.items.find((item) => (item.candidate || item).id === 8001);
+    assert.ok(includedSkipped, "Taze adaylar yetmediğinde Halka 2 adayı devreye girip listeyi tamamlamalı");
+  });
+});
+
 
 
 

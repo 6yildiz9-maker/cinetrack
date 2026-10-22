@@ -1480,7 +1480,7 @@ export function buildTasteProfileV3(
  * Aşama 3: Kalıcı Zevk Haritası (Taste Map) ve Konsantrik Halka Takibi (Sorun D & Zevk Haritası)
  * ============================================================================ */
 
-export type TasteRing = 'core' | 'inner' | 'outer' | 'orbit';
+export type TasteRing = 'ring0' | 'ring1' | 'ring2' | 'core' | 'inner' | 'outer' | 'orbit';
 
 export interface TastePillarsSummary {
   genreStoryScore: number;       // 0-100 (Tür ve hikâye: tür, anahtar kelime, özet)
@@ -1548,6 +1548,9 @@ export interface TasteProfileSummary {
     inner: number;
     outer: number;
     orbit: number;
+    ring0?: number;
+    ring1?: number;
+    ring2?: number;
   };
 }
 
@@ -1587,11 +1590,30 @@ export function buildTasteProfileSummary(
 
   const storyKeywords = Array.from(tasteProfile?.lovedOverviewTokens || []).slice(0, 8);
 
-  const ringCounts = { core: 0, inner: 0, outer: 0, orbit: 0 };
+  const ringCounts: {
+    core: number;
+    inner: number;
+    outer: number;
+    orbit: number;
+    ring0?: number;
+    ring1?: number;
+    ring2?: number;
+  } = { core: 0, inner: 0, outer: 0, orbit: 0, ring0: 0, ring1: 0, ring2: 0 };
+
   const entries = Object.values(tasteMap?.entries || {});
   for (const entry of entries) {
-    if (entry.ring && ringCounts[entry.ring] !== undefined) {
-      ringCounts[entry.ring]++;
+    const r = entry.ring;
+    if (r === 'core' || r === 'inner' || r === 'outer' || r === 'orbit') {
+      ringCounts[r]++;
+    } else if (r === 'ring0') {
+      ringCounts.ring0 = (ringCounts.ring0 || 0) + 1;
+      ringCounts.core++;
+    } else if (r === 'ring1') {
+      ringCounts.ring1 = (ringCounts.ring1 || 0) + 1;
+      ringCounts.inner++;
+    } else if (r === 'ring2') {
+      ringCounts.ring2 = (ringCounts.ring2 || 0) + 1;
+      ringCounts.outer++;
     } else {
       ringCounts.orbit++;
     }
@@ -1649,7 +1671,21 @@ export interface PersistentTasteMapData {
   summary?: TasteProfileSummary;
 }
 
-export function assignTasteRing(score: number): TasteRing {
+export function normalizeTasteRing(ring?: TasteRing | null): 'ring0' | 'ring1' | 'ring2' {
+  if (!ring) return 'ring0';
+  if (ring === 'ring0' || ring === 'core') return 'ring0';
+  if (ring === 'ring1' || ring === 'inner') return 'ring1';
+  return 'ring2';
+}
+
+export function assignTasteRing(
+  score: number,
+  context?: { inLastBatch?: boolean; shownCount?: number; skippedCount?: number }
+): TasteRing {
+  if (context?.inLastBatch) return 'ring1';
+  if ((context?.skippedCount || 0) > 0 || (context?.shownCount || 0) > 0) return 'ring2';
+  if (context !== undefined) return 'ring0';
+
   const s = Number(score) || 0;
   if (s >= 85) return 'core';
   if (s >= 70) return 'inner';
@@ -1658,6 +1694,10 @@ export function assignTasteRing(score: number): TasteRing {
 }
 
 export function demoteTasteRing(currentRing: TasteRing, steps: number = 1): TasteRing {
+  if (currentRing === 'ring0') return steps >= 2 ? 'ring2' : 'ring1';
+  if (currentRing === 'ring1') return 'ring2';
+  if (currentRing === 'ring2') return 'ring2';
+
   const ringOrder: TasteRing[] = ['core', 'inner', 'outer', 'orbit'];
   const currentIndex = ringOrder.indexOf(currentRing);
   if (currentIndex === -1) return 'orbit';
@@ -1667,6 +1707,12 @@ export function demoteTasteRing(currentRing: TasteRing, steps: number = 1): Tast
 
 export function getTasteRingLabel(ring?: TasteRing | null): string {
   switch (ring) {
+    case 'ring0':
+      return 'Halka 0 — Yeni Eşleşme';
+    case 'ring1':
+      return 'Halka 1 — Yakın Zamanda Gösterildi';
+    case 'ring2':
+      return 'Halka 2 — Daha Önce Atlandı';
     case 'core':
       return 'Çekirdek Halka (1. Halka)';
     case 'inner':
@@ -1676,7 +1722,7 @@ export function getTasteRingLabel(ring?: TasteRing | null): string {
     case 'orbit':
       return 'Yörünge (4. Halka)';
     default:
-      return '';
+      return 'Halka 0 — Yeni Eşleşme';
   }
 }
 
@@ -2166,7 +2212,7 @@ export function scoreCandidatesV3(
       tags.push('Yeni keşif için');
     }
 
-    // Sorun D: Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion) Entegrasyonu
+    // Sorun D & Zevk Haritası: Halka 0, 1, 2 ve Kalıcı Zevk Haritası Entegrasyonu
     const key = makeMediaKey(candidate);
     const tasteEntry = tasteMap?.entries ? tasteMap.entries[key] : null;
 
@@ -2177,22 +2223,46 @@ export function scoreCandidatesV3(
     let ringDemotions = 0;
     let lastShownAt: string | null = null;
 
-    if (tasteEntry) {
-      demotionPenalty = tasteEntry.demotionPenalty || 0;
-      ring = tasteEntry.ring || assignTasteRing(rawScore);
-      shownCount = tasteEntry.shownCount || 0;
-      skippedCount = tasteEntry.skippedCount || 0;
-      ringDemotions = tasteEntry.ringDemotions || 0;
-      lastShownAt = tasteEntry.lastShownAt || null;
+    if (tasteMap) {
+      const inLastBatch = Boolean(tasteMap.lastRecommendedKeys && tasteMap.lastRecommendedKeys.includes(key));
+      shownCount = tasteEntry?.shownCount || 0;
+      skippedCount = tasteEntry?.skippedCount || 0;
+      ringDemotions = tasteEntry?.ringDemotions || 0;
+      lastShownAt = tasteEntry?.lastShownAt || null;
+
+      if (inLastBatch) {
+        ring = 'ring1';
+      } else if (tasteEntry?.ring && ['core', 'inner', 'outer', 'orbit'].includes(tasteEntry.ring)) {
+        ring = tasteEntry.ring;
+      } else if (tasteEntry?.ring === 'ring2' || skippedCount > 0 || (shownCount > 0 && !inLastBatch)) {
+        ring = 'ring2';
+      } else {
+        ring = tasteEntry?.ring || 'ring0';
+      }
+
+      if (['core', 'inner', 'outer', 'orbit'].includes(ring)) {
+        demotionPenalty = tasteEntry?.demotionPenalty || 0;
+      } else {
+        demotionPenalty = 0;
+      }
     } else {
       ring = assignTasteRing(rawScore);
     }
 
-    const effectiveScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+    let effectiveScore: number;
+    let finalRawScore: number;
+
+    if (tasteEntry && typeof tasteEntry.matchScore === 'number' && !['inner', 'outer', 'orbit'].includes(ring)) {
+      effectiveScore = tasteEntry.matchScore;
+      finalRawScore = tasteEntry.rawScore || tasteEntry.matchScore;
+    } else {
+      finalRawScore = rawScore;
+      effectiveScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+    }
 
     // Sinyalleri ve kalıcı zevk alanlarını doğrudan aday nesnesi üzerine de yaz
     candidate.matchScore = effectiveScore;
-    candidate.rawScore = rawScore;
+    candidate.rawScore = finalRawScore;
     candidate.ring = ring;
     candidate.demotionPenalty = demotionPenalty;
     candidate.shownCount = shownCount;
@@ -3164,22 +3234,43 @@ export function selectBalancedRecommendations({
 }: SelectBalancedRecommendationsOptions): BalancedRecommendationResult {
   const normTarget = targetType === 'movie' || targetType === 'tv' ? targetType : 'all';
 
+  // Halka 1 (Yakın zamanda gösterildi) adayları bir sonraki öneri grubunda kesinlikle gösterilmez (dinlendirilir).
+  const isResting = (e: any) => {
+    const ring = e?.ring || e?.candidate?.ring;
+    return ring === 'ring1';
+  };
+  const isRing2 = (e: any) => {
+    const ring = e?.ring || e?.candidate?.ring;
+    return ring === 'ring2' || ring === 'outer' || ring === 'orbit';
+  };
+
   if (normTarget === 'all') {
     const movieLimit = Math.max(1, minPerTypeInAll);
     const tvLimit = Math.max(1, minPerTypeInAll);
 
-    // 1. Filmleri bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
-    let pickedMovies = multiDimensionalDiversify(scoredMovies, {
+    // Halka 1 (Yakın zamanda gösterilenler) hariç tutulur
+    const eligibleMovies = scoredMovies.filter((e) => !isResting(e));
+    const eligibleTv = scoredTv.filter((e) => !isResting(e));
+
+    // Öncelik 1: Halka 0 (Yeni eşleşmeler) vs Öncelik 2: Halka 2 (Daha önce atlananlar)
+    const moviesRing0 = eligibleMovies.filter((e) => !isRing2(e));
+    const moviesRing2 = eligibleMovies.filter((e) => isRing2(e));
+
+    const tvRing0 = eligibleTv.filter((e) => !isRing2(e));
+    const tvRing2 = eligibleTv.filter((e) => isRing2(e));
+
+    // 1. Filmleri Halka 0 üzerinden bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
+    let pickedMovies = multiDimensionalDiversify(moviesRing0, {
       limit: movieLimit,
       maxPerGenre: maxPerGenre ?? 3,
       maxPerEra: maxPerEra ?? 4,
       maxPerTier: maxPerTier ?? 5,
     });
 
-    // 10'un altındaysa kalan uygun havuz filmlerinden tamamla
-    if (pickedMovies.length < movieLimit && remainingMovies.length > 0) {
+    // 10'un altındaysa Halka 2 (daha önce atlanan, gerçek matchScore'u korunan adaylar) ile tamamla
+    if (pickedMovies.length < movieLimit && moviesRing2.length > 0) {
       const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of remainingMovies) {
+      for (const rem of moviesRing2) {
         if (pickedMovies.length >= movieLimit) break;
         const key = makeMediaKey(rem.candidate || rem);
         if (!pickedKeys.has(key)) {
@@ -3189,19 +3280,47 @@ export function selectBalancedRecommendations({
       }
     }
 
-    // 2. Dizileri bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
-    let pickedTv = multiDimensionalDiversify(scoredTv, {
+    // Hâlâ 10'un altındaysa havuzun kalan uygun adaylarından tamamla (dinlendirilenler hariç)
+    if (pickedMovies.length < movieLimit && remainingMovies.length > 0) {
+      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
+      for (const rem of remainingMovies) {
+        if (pickedMovies.length >= movieLimit) break;
+        if (isResting(rem)) continue;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          pickedMovies.push(rem);
+        }
+      }
+    }
+
+    // 2. Dizileri Halka 0 üzerinden bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
+    let pickedTv = multiDimensionalDiversify(tvRing0, {
       limit: tvLimit,
       maxPerGenre: maxPerGenre ?? 3,
       maxPerEra: maxPerEra ?? 4,
       maxPerTier: maxPerTier ?? 5,
     });
 
-    // 10'un altındaysa kalan uygun havuz dizilerinden tamamla
+    // 10'un altındaysa Halka 2 (daha önce atlanan, gerçek matchScore'u korunan adaylar) ile tamamla
+    if (pickedTv.length < tvLimit && tvRing2.length > 0) {
+      const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
+      for (const rem of tvRing2) {
+        if (pickedTv.length >= tvLimit) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          pickedTv.push(rem);
+        }
+      }
+    }
+
+    // Hâlâ 10'un altındaysa havuzun kalan uygun adaylarından tamamla (dinlendirilenler hariç)
     if (pickedTv.length < tvLimit && remainingTv.length > 0) {
       const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
       for (const rem of remainingTv) {
         if (pickedTv.length >= tvLimit) break;
+        if (isResting(rem)) continue;
         const key = makeMediaKey(rem.candidate || rem);
         if (!pickedKeys.has(key)) {
           pickedKeys.add(key);
@@ -3251,17 +3370,34 @@ export function selectBalancedRecommendations({
   }
 
   if (normTarget === 'movie') {
-    let pickedMovies = multiDimensionalDiversify(scoredMovies, {
+    const eligibleMovies = scoredMovies.filter((e) => !isResting(e));
+    const moviesRing0 = eligibleMovies.filter((e) => !isRing2(e));
+    const moviesRing2 = eligibleMovies.filter((e) => isRing2(e));
+
+    let pickedMovies = multiDimensionalDiversify(moviesRing0, {
       limit: targetTotal,
       maxPerGenre: maxPerGenre ?? 5,
       maxPerEra: maxPerEra ?? 8,
       maxPerTier: maxPerTier ?? 10,
     });
 
+    if (pickedMovies.length < targetTotal && moviesRing2.length > 0) {
+      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
+      for (const rem of moviesRing2) {
+        if (pickedMovies.length >= targetTotal) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          pickedMovies.push(rem);
+        }
+      }
+    }
+
     if (pickedMovies.length < targetTotal && remainingMovies.length > 0) {
       const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
       for (const rem of remainingMovies) {
         if (pickedMovies.length >= targetTotal) break;
+        if (isResting(rem)) continue;
         const key = makeMediaKey(rem.candidate || rem);
         if (!pickedKeys.has(key)) {
           pickedKeys.add(key);
@@ -3293,17 +3429,34 @@ export function selectBalancedRecommendations({
   }
 
   // normTarget === 'tv'
-  let pickedTv = multiDimensionalDiversify(scoredTv, {
+  const eligibleTv = scoredTv.filter((e) => !isResting(e));
+  const tvRing0 = eligibleTv.filter((e) => !isRing2(e));
+  const tvRing2 = eligibleTv.filter((e) => isRing2(e));
+
+  let pickedTv = multiDimensionalDiversify(tvRing0, {
     limit: targetTotal,
     maxPerGenre: maxPerGenre ?? 5,
     maxPerEra: maxPerEra ?? 8,
     maxPerTier: maxPerTier ?? 10,
   });
 
+  if (pickedTv.length < targetTotal && tvRing2.length > 0) {
+    const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
+    for (const rem of tvRing2) {
+      if (pickedTv.length >= targetTotal) break;
+      const key = makeMediaKey(rem.candidate || rem);
+      if (!pickedKeys.has(key)) {
+        pickedKeys.add(key);
+        pickedTv.push(rem);
+      }
+    }
+  }
+
   if (pickedTv.length < targetTotal && remainingTv.length > 0) {
     const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
     for (const rem of remainingTv) {
       if (pickedTv.length >= targetTotal) break;
+      if (isResting(rem)) continue;
       const key = makeMediaKey(rem.candidate || rem);
       if (!pickedKeys.has(key)) {
         pickedKeys.add(key);

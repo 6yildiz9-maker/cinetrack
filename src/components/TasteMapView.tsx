@@ -5,6 +5,7 @@ import {
   TasteMapEntry,
   TasteProfileSummary,
   getTasteRingLabel,
+  normalizeTasteRing,
   makeMediaKey,
 } from '../core/cinetrack-core';
 import { getPoster, releaseYear } from '../utils/helpers';
@@ -32,7 +33,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   onRefreshTasteMap,
   isLoading = false,
 }) => {
-  const [selectedRing, setSelectedRing] = useState<TasteRing>('core');
+  const [selectedRing, setSelectedRing] = useState<TasteRing>('ring0');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'movie' | 'tv'>('all');
 
   const entriesList = useMemo(() => {
@@ -41,13 +42,10 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
 
   // Ring counts
   const ringCounts = useMemo(() => {
-    const counts: Record<TasteRing, number> = { core: 0, inner: 0, outer: 0, orbit: 0 };
+    const counts: Record<string, number> = { ring0: 0, ring1: 0, ring2: 0 };
     for (const e of entriesList) {
-      if (e.ring && counts[e.ring] !== undefined) {
-        counts[e.ring]++;
-      } else {
-        counts.orbit++;
-      }
+      const norm = normalizeTasteRing(e.ring);
+      counts[norm] = (counts[norm] || 0) + 1;
     }
     return counts;
   }, [entriesList]);
@@ -56,8 +54,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   const activeRingEntries = useMemo(() => {
     return entriesList
       .filter((e) => {
-        const ringMatches = (e.ring || 'orbit') === selectedRing;
-        if (!ringMatches) return false;
+        const norm = normalizeTasteRing(e.ring);
+        const targetNorm = normalizeTasteRing(selectedRing);
+        if (norm !== targetNorm) return false;
         if (mediaFilter === 'all') return true;
         return e.mediaType === mediaFilter;
       })
@@ -68,51 +67,41 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
     id: TasteRing;
     name: string;
     sub: string;
-    range: string;
+    priority: string;
     badgeColor: string;
     borderColor: string;
     desc: string;
     icon: string;
   }> = [
     {
-      id: 'core',
-      name: '1. Çekirdek Halka',
-      sub: 'Zevk Merkezi',
-      range: '%85 - %100',
-      badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
-      borderColor: 'border-rose-500',
-      desc: 'Zevk profilinle en güçlü uyuşan, sevdiğin türlerin ve favori oyuncuların kesiştiği ana yapımlar.',
-      icon: '🎯',
+      id: 'ring0',
+      name: 'Halka 0 — Yeni Eşleşme',
+      sub: 'Öncelikli Havuz',
+      priority: '1. Öncelik',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+      borderColor: 'border-emerald-500',
+      desc: 'Bu profil için henüz öneri vitrininde gösterilmemiş taze adaylar. Normal öneri sıralamasında 1. önceliktedir.',
+      icon: '🌟',
     },
     {
-      id: 'inner',
-      name: '2. Yakın Halka',
-      sub: 'Güçlü Eşleşmeler',
-      range: '%70 - %84',
+      id: 'ring1',
+      name: 'Halka 1 — Yakın Zamanda Gösterildi',
+      sub: 'Dinlendirme Havuzu',
+      priority: 'Dinleniyor',
       badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
       borderColor: 'border-amber-500',
-      desc: 'Yüksek uyuşma sunan, sevdiğin yan türler ve yönetmenlerin yer aldığı güçlü alternatifler.',
-      icon: '✨',
+      desc: 'Önceki öneri grubunda gösterilmiş, fakat henüz bir listeye eklenmemiş içerikler. Bir sonraki öneri grubunda gösterilmez.',
+      icon: '⏳',
     },
     {
-      id: 'outer',
-      name: '3. Dış Halka',
-      sub: 'Kontrollü Keşif',
-      range: '%55 - %69',
+      id: 'ring2',
+      name: 'Halka 2 — Daha Önce Atlandı',
+      sub: 'Yedek Eşleşmeler',
+      priority: '2. Öncelik (Yedek)',
       badgeColor: 'bg-sky-500/20 text-sky-300 border-sky-500/40',
       borderColor: 'border-sky-500',
-      desc: 'Konfor alanının hemen dışındaki yan zevkler, bağımsız keşifler ve gizli cevherler.',
-      icon: '🔭',
-    },
-    {
-      id: 'orbit',
-      name: '4. Yörünge',
-      sub: 'Uzak Keşif & Geriletilenler',
-      range: '< %55',
-      badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/40',
-      borderColor: 'border-purple-500',
-      desc: 'Deneysel öneriler veya önceki vitrinlerde atlandığı için halka geriletmesi uygulanan yapımlar.',
-      icon: '🪐',
+      desc: 'En az bir öneri yenileme döngüsünde dinlendirilmiş, gerçek eşleşme puanı (%91 gibi) korunan adaylar. Yeni eşleşmeler yetersiz kaldığında devreye girer.',
+      icon: '🔄',
     },
   ];
 
@@ -334,11 +323,11 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
           </div>
         </div>
 
-        {/* 4 Halka Kartları */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* 3 Halka Kartları */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {ringsMeta.map((meta) => {
             const count = ringCounts[meta.id] || 0;
-            const isSelected = selectedRing === meta.id;
+            const isSelected = normalizeTasteRing(selectedRing) === normalizeTasteRing(meta.id);
             return (
               <button
                 key={meta.id}
@@ -346,17 +335,17 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                 onClick={() => setSelectedRing(meta.id)}
                 className={`text-left p-4 rounded-xl border transition-all relative overflow-hidden group ${
                   isSelected
-                    ? `bg-slate-900/95 border-rose-500 ring-2 ring-rose-500/30 shadow-lg shadow-rose-950/20`
+                    ? `bg-slate-900/95 border-emerald-500 ring-2 ring-emerald-500/30 shadow-lg shadow-emerald-950/20`
                     : `bg-slate-900/50 border-slate-800 hover:border-slate-700 hover:bg-slate-900/80`
                 }`}
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xl">{meta.icon}</span>
                   <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${meta.badgeColor}`}>
-                    {meta.range}
+                    {meta.priority}
                   </span>
                 </div>
-                <h4 className="font-bold text-slate-100 text-sm group-hover:text-rose-300 transition-colors">
+                <h4 className="font-bold text-slate-100 text-sm group-hover:text-emerald-300 transition-colors">
                   {meta.name}
                 </h4>
                 <p className="text-xs text-slate-400 mb-3">{meta.sub}</p>
@@ -525,15 +514,15 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Gösterim & Geriletme Telemetrisi */}
+                    {/* Gösterim & Halka Durumu */}
                     <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between">
                       <span>👁️ {entry.shownCount || 0} gösterim</span>
-                      {entry.skippedCount > 0 ? (
-                        <span className="text-amber-400 font-medium">
-                          ⏭️ {entry.skippedCount} atlandı {entry.demotionPenalty ? `(-${entry.demotionPenalty})` : ''}
-                        </span>
+                      {normalizeTasteRing(entry.ring) === 'ring0' ? (
+                        <span className="text-emerald-400 font-medium">🌟 Yeni</span>
+                      ) : normalizeTasteRing(entry.ring) === 'ring1' ? (
+                        <span className="text-amber-400 font-medium">⏳ Dinleniyor</span>
                       ) : (
-                        <span className="text-emerald-400">Taze</span>
+                        <span className="text-sky-400 font-medium">🔄 Yedek ({entry.skippedCount || 1}x)</span>
                       )}
                     </div>
                   </div>
@@ -547,24 +536,20 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
       {/* Mimari Açıklama Kartı */}
       <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 text-xs text-slate-400 space-y-2">
         <h4 className="font-bold text-slate-200 text-sm flex items-center gap-2">
-          <span>ℹ️ Zevk Haritası Mimarisi Nasıl Çalışır?</span>
+          <span>ℹ️ Halka Sistemi ve Zevk Haritası Mimarisi Nasıl Çalışır?</span>
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
           <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-            <strong className="text-slate-200 block mb-1">1. Kullanıcı Zevk Profili</strong>
-            İzlenen ve puanlanan içeriklerden 15 sinyal (tür, hikâye, kadro, kalite, keşif) çıkarılır.
+            <strong className="text-emerald-300 block mb-1">🌟 Halka 0 — Yeni Eşleşme</strong>
+            Bu profil için henüz vitrinde gösterilmemiş taze adaylar. Normal öneri sıralamasında 1. önceliktedir.
           </div>
           <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-            <strong className="text-slate-200 block mb-1">2. 500+500 Aday Havuzu</strong>
-            Film ve dizi havuzları bağımsız yenilenir ve TMDB metaverisi kalıcı saklanır.
+            <strong className="text-amber-300 block mb-1">⏳ Halka 1 — Yakın Zamanda Gösterildi</strong>
+            Önceki grupta gösterilmiş içerikler dinlendirilir. Aynı önerilerin art arda çıkmaması için bir sonraki grupta gösterilmez.
           </div>
           <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-            <strong className="text-slate-200 block mb-1">3. Kalıcı Eşleşme Haritası</strong>
-            Profil sürümü değişmedikçe adaylar tekrar puanlanmaz; atlananlar halka geriletmesine uğrar.
-          </div>
-          <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
-            <strong className="text-slate-200 block mb-1">4. Dengeli Öneri Listesi</strong>
-            Tüm içerikler modunda kesinlikle 10 film + 10 dizi garantisi verilir; sessiz doldurma yapılmaz.
+            <strong className="text-sky-300 block mb-1">🔄 Halka 2 — Daha Önce Atlandı</strong>
+            Gerçek eşleşme puanı (%91 gibi) korunur. Yeni adaylar (Halka 0) 10+10 kotasını dolduramazsa devreye girer.
           </div>
         </div>
       </div>
