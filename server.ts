@@ -449,8 +449,33 @@ function getMockTmdbResponse(endpoint: string, queryParams: Record<string, strin
 }
 
 const tmdbCacheMaxEntries = 500;
-const tmdbCacheTtlMs = 5 * 60_000;
-const tmdbCache = new Map<string, { at: number; body: string; contentType: string }>();
+const tmdbCache = new Map<string, { at: number; body: string; contentType: string; ttl: number }>();
+const inFlightServerTmdbRequests = new Map<
+  string,
+  Promise<{ status: number; body: string; contentType: string; ok: boolean }>
+>();
+
+function getTmdbEndpointTtl(endpoint: string): number {
+  if (endpoint.includes('/person/') && endpoint.includes('/combined_credits')) {
+    return 2 * 60 * 60_000; // 2 saat: Oyuncu filmografisi
+  }
+  if (endpoint.startsWith('/person/')) {
+    return 2 * 60 * 60_000; // 2 saat: Oyuncu detayları
+  }
+  if (endpoint.includes('/watch/providers')) {
+    return 60 * 60_000; // 1 saat: Yayın sağlayıcıları
+  }
+  if (/^\/(movie|tv)\/\d+/.test(endpoint)) {
+    return 60 * 60_000; // 1 saat: Film/Dizi detayları
+  }
+  if (endpoint.startsWith('/discover/')) {
+    return 15 * 60_000; // 15 dakika: Keşif havuzu
+  }
+  if (endpoint.startsWith('/trending/')) {
+    return 10 * 60_000; // 10 dakika: Trendler
+  }
+  return 5 * 60_000;
+}
 
 function tmdbCacheKey(endpoint: string, queryParams: Record<string, string>) {
   const entries = Object.entries(queryParams)
@@ -530,8 +555,9 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
   }
 
   const cacheKey = tmdbCacheKey(endpoint, queryParams);
+  const ttl = getTmdbEndpointTtl(endpoint);
   const cached = tmdbCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < tmdbCacheTtlMs) {
+  if (cached && Date.now() - cached.at < (cached.ttl || ttl)) {
     res.setHeader('Content-Type', cached.contentType);
     res.setHeader('Cache-Control', 'public, max-age=180');
     res.setHeader('X-CineTrack-Cache', 'hit');
@@ -540,20 +566,31 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
   }
 
   try {
-    const upstream = await fetch(target.toString(), { signal: AbortSignal.timeout(10_000) });
-    const body = await upstream.text();
-    const contentType = upstream.headers.get('Content-Type') || 'application/json; charset=utf-8';
-    if (upstream.ok) {
-      tmdbCache.set(cacheKey, { at: Date.now(), body, contentType });
-      while (tmdbCache.size > tmdbCacheMaxEntries) {
-        tmdbCache.delete(tmdbCache.keys().next().value!);
-      }
+    let fetchPromise = inFlightServerTmdbRequests.get(cacheKey);
+    if (!fetchPromise) {
+      fetchPromise = (async () => {
+        const upstream = await fetch(target.toString(), { signal: AbortSignal.timeout(10_000) });
+        const body = await upstream.text();
+        const contentType = upstream.headers.get('Content-Type') || 'application/json; charset=utf-8';
+        if (upstream.ok) {
+          tmdbCache.set(cacheKey, { at: Date.now(), body, contentType, ttl });
+          while (tmdbCache.size > tmdbCacheMaxEntries) {
+            tmdbCache.delete(tmdbCache.keys().next().value!);
+          }
+        }
+        return { status: upstream.status, body, contentType, ok: upstream.ok };
+      })().finally(() => {
+        inFlightServerTmdbRequests.delete(cacheKey);
+      });
+      inFlightServerTmdbRequests.set(cacheKey, fetchPromise);
     }
-    res.status(upstream.status);
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', upstream.ok ? 'public, max-age=180' : 'no-store');
+
+    const result = await fetchPromise;
+    res.status(result.status);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Cache-Control', result.ok ? 'public, max-age=180' : 'no-store');
     res.setHeader('X-CineTrack-Cache', 'miss');
-    res.send(body);
+    res.send(result.body);
   } catch (error: any) {
     console.error('TMDB request failed:', error.message);
     const fallback = getMockTmdbResponse(endpoint, queryParams);

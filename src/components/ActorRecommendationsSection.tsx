@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   FavoriteActorInfo,
   ActorRecommendationItem,
@@ -7,6 +7,9 @@ import {
   SavedItem,
   findSavedItem,
   makeMediaKey,
+  createRequestGate,
+  fetchActorCreditsBatch,
+  ActorFetchStatus,
 } from '../core/cinetrack-core';
 import { fetchTmdbCached } from '../services/api';
 import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
@@ -39,6 +42,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   onOpenPerson,
 }) => {
   const [actorCreditsMap, setActorCreditsMap] = useState<Record<number, any[]>>({});
+  const [actorStatuses, setActorStatuses] = useState<Record<number, ActorFetchStatus>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [sortMode, setSortMode] = useState<'best_match' | 'newest' | 'hidden_gems'>('best_match');
   const [typeFilter, setTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
@@ -47,52 +51,52 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   const [inspectedCardKeys, setInspectedCardKeys] = useState<Set<string>>(new Set());
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Favori oyuncuların combined_credits verilerini çek
+  // Eski yanıtları engelleme kapısı (RequestGate)
+  const requestGateRef = useRef(createRequestGate());
+
+  // Favori oyuncuların combined_credits verilerini sınırlı kuyruk ve in-flight korumasıyla çek
   const loadCredits = useCallback(
     async (force = false) => {
       if (!favoriteActors || favoriteActors.length === 0) {
         setActorCreditsMap({});
+        setActorStatuses({});
         return;
       }
 
+      const ticket = requestGateRef.current.begin();
       setIsLoading(true);
       setFetchError(null);
-      const newMap: Record<number, any[]> = {};
 
       try {
-        await Promise.all(
-          favoriteActors.map(async (actor) => {
-            if (!actor || !actor.id) return;
-            try {
-              // Önce Türkçe ardından İngilizce yedek
-              let data: any = null;
-              if (!force) {
-                data = await fetchTmdbCached(`/person/${actor.id}/combined_credits`, {
-                  language: 'tr-TR',
-                }).catch(() => null);
-              }
-              if (!data || !Array.isArray(data.cast) || data.cast.length === 0) {
-                data = await fetchTmdbCached(`/person/${actor.id}/combined_credits`, {
-                  language: 'en-US',
-                }).catch(() => null);
-              }
-              if (data && Array.isArray(data.cast)) {
-                newMap[actor.id] = data.cast;
-              } else {
-                newMap[actor.id] = [];
-              }
-            } catch (err) {
-              console.warn(`Actor credits fetch error (${actor.id}):`, err);
-              newMap[actor.id] = [];
-            }
-          })
-        );
-        setActorCreditsMap(newMap);
+        const result = await fetchActorCreditsBatch(favoriteActors, {
+          concurrency: 3, // Sınırlı kuyruk (max 3 eşzamanlı istek)
+          signal: ticket.signal,
+          ticketId: ticket.id,
+          isCurrentTicket: (id) => requestGateRef.current.isCurrent(id),
+          force,
+          fetchTmdbFn: fetchTmdbCached,
+          onActorStatusChange: (status) => {
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+            setActorStatuses((prev) => ({ ...prev, [status.actorId]: status }));
+          },
+        });
+
+        // Eski yanıtları engelleme: Eğer bilet eskimişse sonucu yut
+        if (!requestGateRef.current.isCurrent(ticket.id)) return;
+
+        setActorCreditsMap(result.creditsMap);
+        setActorStatuses(result.statuses);
+        if (result.errorCount > 0 && result.completedCount === 0) {
+          setFetchError('Favori oyuncuların içerikleri yüklenirken bir sorun oluştu.');
+        }
       } catch (err: any) {
+        if (!requestGateRef.current.isCurrent(ticket.id)) return;
         console.error('Failed to load actor recommendations:', err);
         setFetchError('Öneriler yüklenirken bir sorun oluştu.');
       } finally {
-        setIsLoading(false);
+        if (requestGateRef.current.isCurrent(ticket.id)) {
+          setIsLoading(false);
+        }
       }
     },
     [favoriteActors]
@@ -238,6 +242,61 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             <span>Yenile</span>
           </button>
         </div>
+      </div>
+
+      {/* Oyuncu Bazında İstek Durumu & Kuyruk Bilgisi */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 pt-1">
+        <span className="text-xs text-slate-400 font-medium flex items-center gap-1.5 mr-1">
+          <span>👥 Oyuncu İstekleri</span>
+          <span className="text-[10px] text-slate-500 font-mono">(Eşzamanlı limit: 3 · TTL: 2 saat)</span>
+          <span>:</span>
+        </span>
+        {favoriteActors.map((actor) => {
+          const st = actorStatuses[actor.id];
+          const isCurrentLoading = isLoading && (!st || st.status === 'loading');
+          const isError = st?.status === 'error';
+          const isEmpty = st?.status === 'empty';
+          const isSuccess = st?.status === 'success';
+
+          return (
+            <span
+              key={actor.id}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium transition-all ${
+                isCurrentLoading
+                  ? 'bg-amber-500/15 border-amber-500/30 text-amber-300 shadow-sm shadow-amber-950/20'
+                  : isError
+                  ? 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                  : isEmpty
+                  ? 'bg-slate-800/80 border-slate-700/80 text-slate-400'
+                  : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+              }`}
+              title={
+                isCurrentLoading
+                  ? `${actor.name}: Kuyrukta yükleniyor...`
+                  : isError
+                  ? `${actor.name}: ${st?.error || 'Hata'}`
+                  : isEmpty
+                  ? `${actor.name}: Filmografide uygun içerik bulunamadı`
+                  : `${actor.name}: ${st.creditsCount} yapım yüklendi`
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isCurrentLoading
+                    ? 'bg-amber-400 animate-pulse'
+                    : isError
+                    ? 'bg-rose-400'
+                    : isEmpty
+                    ? 'bg-slate-500'
+                    : 'bg-emerald-400'
+                }`}
+              ></span>
+              <span className="truncate max-w-[130px]">{actor.name}</span>
+              {isSuccess && <span className="opacity-70 font-mono text-[10px]">({st.creditsCount})</span>}
+              {isCurrentLoading && <span className="opacity-70 text-[10px]">...</span>}
+            </span>
+          );
+        })}
       </div>
 
       {fetchError && (

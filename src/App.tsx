@@ -62,6 +62,7 @@ import {
   TasteProfileSummary,
   computeTasteProfileSignature,
   buildTasteProfileSummary,
+  isTasteMapCacheValid,
 } from './core/cinetrack-core';
 import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
@@ -484,13 +485,17 @@ export function App() {
           // Ana ilke: Kullanıcının zevk profili ve adaylarla eşleşme haritası, yalnızca gerektiğinde güncellensin.
           // Öneri kartları her render olduğunda veya kullanıcı uygulamada başka bir alana geçtiğinde tüm adaylar yeniden puanlanmasın.
           if (
-            !forceRefresh &&
-            storedTasteMap.profileSignature === currentSig &&
-            storedTasteMap.lastTargetType === targetType &&
-            Array.isArray(storedTasteMap.cachedBalancedItems) &&
-            storedTasteMap.cachedBalancedItems.length > 0
+            isTasteMapCacheValid({
+              tasteMap: storedTasteMap,
+              currentSig,
+              targetType,
+              savedItems: rawSaved,
+              preferences: currentPrefs,
+              favoriteActors: favoriteActorsRef.current,
+              forceRefresh,
+            })
           ) {
-            const restored = storedTasteMap.cachedBalancedItems.filter((item: any) =>
+            const restored = (storedTasteMap.cachedBalancedItems || []).filter((item: any) =>
               isCandidateEligibleInPool(item.candidate || item, rawSaved, currentPrefs)
             );
             if (restored.length > 0) {
@@ -797,17 +802,24 @@ export function App() {
           const explanationText = balancedResult.explanation;
           setForYouExplanation(explanationText);
 
-          // Sorun D & Zevk Haritası: Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion) güncellemesi
+          // Sorun D & Zevk Haritası: Kalıcı Zevk Haritası ve Tam Aday Haritası güncellemesi
+          // 500 film + 500 dizi havuzundaki tüm adaylar haritaya kaydedilir;
+          // gösterim geçmişi (shownCount, lastShownAt, impressionHistory) yalnızca seçilen 20 içerik için güncellenir.
           const tasteSummary = buildTasteProfileSummary(tasteProfile, tasteMap, currentGenres);
+          const allPoolCandidates = [...movieScored, ...tvScored];
           const updatedTasteMap = updateTasteMapWithBatch({
             tasteMap,
             newRecommendedItems: picked,
+            allPoolCandidates,
             savedItems: rawSaved,
             preferences: currentPrefs,
+            favoriteActors: favoriteActorsRef.current,
             profileSignature: currentSig,
             targetType,
             explanation: explanationText,
             summary: tasteSummary,
+            isFilterChange: false,
+            normalizeLegacyRings: true,
           });
           savePersistentTasteMap(activeProfileId, updatedTasteMap);
           setTasteMap(updatedTasteMap);

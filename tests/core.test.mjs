@@ -20,11 +20,15 @@ import {
   loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
   replenishCandidatePool, selectBalancedRecommendations,
   assignTasteRing, demoteTasteRing, getTasteRingLabel, normalizeTasteRing,
+  normalizeTasteMapEntries, normalizeTasteMapRings,
   loadPersistentTasteMap, savePersistentTasteMap, updateTasteMapWithBatch,
+  recordTasteMapPoolScores, isTasteMapCacheValid,
   markTasteMapItemStatus, syncPoolCandidatesWithTasteMap,
   createDefaultTasteMapData, getTasteMapStorageKey,
-  calculateTastePillars, computeTasteProfileSignature, buildTasteProfileSummary
+  calculateTastePillars, computeTasteProfileSignature, buildTasteProfileSummary,
+  fetchActorCreditsBatch, getInFlightActorCreditsCount, clearInFlightActorCredits
 } from "../src/core/cinetrack-core.ts";
+import { TMDB_CACHE_TTLS, resolveTmdbCacheTtl, clearTmdbClientCache } from "../src/services/api.ts";
 
 const baseItem = (overrides = {}) => ({
   id: 123,
@@ -3187,6 +3191,499 @@ describe("Doğruluk ve Veri Kaybı Riskleri — Profil İmzası, Favori Oyuncu S
     const deduped = dedupeItems([olderDemo, userUpdate]);
     assert.equal(deduped.length, 1);
     assert.equal(deduped[0].isDemo, false, "Kullanıcı etkileşimi demo içeriği canlı veriye terfi ettirir");
+  });
+});
+
+describe("Zevk Haritası — Tam Aday Haritası, Gösterim Geçmişi Ayrımı, Filtre Değişikliği ve Derin Önbellek Doğrulaması", () => {
+  it("Tam Aday Haritası: Havuzdaki tüm adayların (500 film + 500 dizi) son profil sürümüne ait puanını kaydeder", () => {
+    const tasteMap = createDefaultTasteMapData("profile_full_map_test");
+
+    // Simüle edilmiş 100 adaylık havuz (hem film hem dizi)
+    const poolCandidates = [
+      { candidate: { id: 1001, media_type: "movie", title: "Havuz Filmi A" }, score: 92, rawScore: 92, parts: { genre: 0.9 }, tags: ["Aksiyon"] },
+      { candidate: { id: 1002, media_type: "movie", title: "Havuz Filmi B" }, score: 85, rawScore: 85, parts: { genre: 0.8 }, tags: ["Gerilim"] },
+      { candidate: { id: 2001, media_type: "tv", name: "Havuz Dizisi A" }, score: 89, rawScore: 89, parts: { quality: 0.85 }, tags: ["Dram"] },
+      { candidate: { id: 2002, media_type: "tv", name: "Havuz Dizisi B" }, score: 78, rawScore: 78, parts: { quality: 0.7 }, tags: ["Gizem"] },
+    ];
+
+    // Vitrine seçilen sadece 1 film ve 1 dizi
+    const pickedShowcase = [
+      { candidate: { id: 1001, media_type: "movie", title: "Havuz Filmi A" }, score: 92 },
+      { candidate: { id: 2001, media_type: "tv", name: "Havuz Dizisi A" }, score: 89 },
+    ];
+
+    const updated = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: pickedShowcase,
+      allPoolCandidates: poolCandidates,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T12:00:00.000Z",
+      targetType: "all",
+      normalizeLegacyRings: true,
+    });
+
+    // 1. Sadece seçilen 2 değil, havuzdaki tüm adaylar (4 aday) haritada yer almalı!
+    assert.equal(Object.keys(updated.entries).length, 4, "Havuzdaki tüm adaylar zevk haritasına kaydedilmeli");
+    assert.ok(updated.entries["movie:1001"], "movie:1001 haritada mevcut olmalı");
+    assert.ok(updated.entries["movie:1002"], "movie:1002 (seçilmemiş olsa da) haritada mevcut olmalı");
+    assert.ok(updated.entries["tv:2001"], "tv:2001 haritada mevcut olmalı");
+    assert.ok(updated.entries["tv:2002"], "tv:2002 (seçilmemiş olsa da) haritada mevcut olmalı");
+
+    // Puanlar, parçalar ve etiketler havuz adayı için de doğru yazılmış olmalı
+    assert.equal(updated.entries["movie:1002"].matchScore, 85);
+    assert.equal(updated.entries["movie:1002"].parts.genre, 0.8);
+    assert.deepEqual(updated.entries["movie:1002"].tags, ["Gerilim"]);
+    assert.equal(updated.entries["movie:1002"].lastScoredAt, "2026-10-23T12:00:00.000Z");
+  });
+
+  it("Gösterim Geçmişi Ayrımı: Yalnızca vitrine çıkan içerikler impressionHistory ve shownCount alır, havuz adayları gösterildi sayılmaz", () => {
+    const tasteMap = createDefaultTasteMapData("profile_impression_test");
+
+    const candidateUnshown = {
+      candidate: { id: 3001, media_type: "movie", title: "Gösterilmemiş Aday" },
+      score: 87,
+      rawScore: 87,
+    };
+    const candidateShown = {
+      candidate: { id: 3002, media_type: "movie", title: "Gösterilen Aday" },
+      score: 95,
+      rawScore: 95,
+    };
+
+    const updated = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [candidateShown],
+      allPoolCandidates: [candidateUnshown, candidateShown],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T12:00:00.000Z",
+      targetType: "all",
+    });
+
+    const unshownEntry = updated.entries["movie:3001"];
+    assert.ok(unshownEntry);
+    assert.equal(unshownEntry.shownCount, 0, "Havuzda puanlanan ama vitrinde yer almayan adayın shownCount değeri 0 olmalı");
+    assert.equal(unshownEntry.lastShownAt, null, "Gösterilmemiş adayın lastShownAt değeri null olmalı");
+    assert.deepEqual(unshownEntry.impressionHistory, [], "Gösterilmemiş adayın impressionHistory dizisi boş olmalı");
+
+    const shownEntry = updated.entries["movie:3002"];
+    assert.ok(shownEntry);
+    assert.equal(shownEntry.shownCount, 1, "Vitrinde yer alan adayın shownCount değeri 1 olmalı");
+    assert.equal(shownEntry.lastShownAt, "2026-10-23T12:00:00.000Z");
+    assert.equal(shownEntry.impressionHistory.length, 1, "Gösterim geçmişinde 1 kayıt olmalı");
+    assert.equal(shownEntry.impressionHistory[0].targetType, "all");
+    assert.equal(shownEntry.impressionHistory[0].rank, 1);
+  });
+
+  it("Filtre Değişikliği: Tür (all -> tv) veya mod değişikliğinde önceki vitrin adayları atlandı (skipped) sayılmaz", () => {
+    let tasteMap = createDefaultTasteMapData("profile_filter_test");
+
+    // 1. Kullanıcı 'all' modundayken bir film ve bir dizi gösterildi
+    const movieItem = { candidate: { id: 4001, media_type: "movie", title: "Film 4001" }, score: 90, rawScore: 90 };
+    const tvItem = { candidate: { id: 5001, media_type: "tv", name: "Dizi 5001" }, score: 90, rawScore: 90 };
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [movieItem, tvItem],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      targetType: "all",
+      now: "2026-10-23T12:00:00.000Z",
+    });
+
+    assert.equal(tasteMap.entries["movie:4001"].skippedCount, 0);
+    assert.equal(tasteMap.entries["movie:4001"].demotionPenalty, 0);
+
+    // 2. Kullanıcı sadece 'tv' görmek istedi (Tür Filtresi Değişikliği: 'all' -> 'tv')
+    const nextTvItem = { candidate: { id: 5002, media_type: "tv", name: "Dizi 5002" }, score: 88, rawScore: 88 };
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [nextTvItem],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      targetType: "tv", // Hedef tür değişti!
+      now: "2026-10-23T12:05:00.000Z",
+    });
+
+    // movie:4001 bir film olduğu ve kullanıcı 'tv' filtresine geçtiği için "atlandı" sayılamaz!
+    const movieEntryAfterFilter = tasteMap.entries["movie:4001"];
+    assert.equal(movieEntryAfterFilter.skippedCount, 0, "Filtre değişikliğinde tür uyuşmazlığı nedeniyle gösterilemeyen film atlandı sayılmamalı");
+    assert.equal(movieEntryAfterFilter.demotionPenalty, 0, "Filtre değişikliğinde ceza puanı uygulanmamalı");
+
+    // 3. isFilterChange: true açıkça belirtildiğinde de atlandı sayılmaz
+    const nextTvItem2 = { candidate: { id: 5003, media_type: "tv", name: "Dizi 5003" }, score: 87, rawScore: 87 };
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [nextTvItem2],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "dark" }, // mood değişti
+      targetType: "tv",
+      isFilterChange: true, // Açık filtre değişikliği bildirimi
+      now: "2026-10-23T12:10:00.000Z",
+    });
+
+    const tv5002 = tasteMap.entries["tv:5002"];
+    assert.equal(tv5002.skippedCount, 0, "isFilterChange açıkça belirtildiğinde önceki vitrin adayı atlandı sayılmamalı");
+    assert.equal(tv5002.demotionPenalty, 0);
+  });
+
+  it("Eski Halka Verisini Normalleştirme: normalizeTasteMapEntries ve normalizeTasteMapRings 'core','inner','outer','orbit' değerlerini canonical 'ring0','ring1','ring2' formatına normalleştirir", () => {
+    const rawEntries = {
+      "movie:1": { ring: "core", initialRing: "core", matchScore: 90 },
+      "movie:2": { ring: "inner", initialRing: "core", matchScore: 80 },
+      "movie:3": { ring: "outer", initialRing: "inner", matchScore: 65 },
+      "movie:4": { ring: "orbit", initialRing: "outer", matchScore: 40 },
+      "movie:5": { ring: "ring0", initialRing: "ring0", matchScore: 92 },
+      "movie:6": { ring: "ring1", initialRing: "ring0", matchScore: 84 },
+      "movie:7": { ring: "ring2", initialRing: "ring1", matchScore: 70 },
+    };
+
+    const normalized = normalizeTasteMapEntries(rawEntries);
+
+    assert.equal(normalized["movie:1"].ring, "ring0");
+    assert.equal(normalized["movie:1"].initialRing, "ring0");
+
+    assert.equal(normalized["movie:2"].ring, "ring1");
+    assert.equal(normalized["movie:2"].initialRing, "ring0");
+
+    assert.equal(normalized["movie:3"].ring, "ring2");
+    assert.equal(normalized["movie:3"].initialRing, "ring1");
+
+    assert.equal(normalized["movie:4"].ring, "ring2");
+    assert.equal(normalized["movie:4"].initialRing, "ring2");
+
+    assert.equal(normalized["movie:5"].ring, "ring0");
+    assert.equal(normalized["movie:6"].ring, "ring1");
+    assert.equal(normalized["movie:7"].ring, "ring2");
+
+    // normalizeTasteMapRings tam veri yapısı üzerinde çalışır
+    const tasteMap = {
+      profileId: "test-norm",
+      updatedAt: "2026-10-23T00:00:00Z",
+      entries: rawEntries,
+      lastRecommendedKeys: [],
+      lastBatchTimestamp: null,
+    };
+    const normalizedMap = normalizeTasteMapRings(tasteMap);
+    assert.equal(normalizedMap.entries["movie:1"].ring, "ring0");
+    assert.equal(normalizedMap.entries["movie:2"].ring, "ring1");
+  });
+
+  it("isTasteMapCacheValid: Aynı imzaya sahip görünse bile önemli profil alanları değiştiğinde önbelleği geçersizleştirir", () => {
+    const baseSaved = [
+      { id: 101, media_type: "movie", title: "Film A", personal_rating: 9, status: "completed", isDemo: false },
+      { id: 102, media_type: "movie", title: "Film B", personal_rating: 8, status: "completed", isDemo: false },
+    ];
+    const basePrefs = { disliked: ["movie:999"], providers: ["8"], mood: "cozy" };
+    const baseActors = [{ id: 50, name: "Aktör A" }];
+    const currentSig = computeTasteProfileSignature(baseSaved, basePrefs, baseActors);
+
+    const cachedItems = [
+      { candidate: { id: 701, media_type: "movie", title: "Öneri 1" }, score: 92 },
+      { candidate: { id: 702, media_type: "movie", title: "Öneri 2" }, score: 88 },
+    ];
+
+    // Güncel harita oluştur (içinde profileSnapshot ve profileSignature bulunur)
+    const initialTasteMap = updateTasteMapWithBatch({
+      tasteMap: createDefaultTasteMapData("profile-cache-test"),
+      newRecommendedItems: cachedItems,
+      savedItems: baseSaved,
+      preferences: basePrefs,
+      favoriteActors: baseActors,
+      profileSignature: currentSig,
+      targetType: "all",
+    });
+
+    // 1. Her şey aynıyken önbellek geçerlidir
+    const valid = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: baseSaved,
+      preferences: basePrefs,
+      favoriteActors: baseActors,
+    });
+    assert.equal(valid, true, "Tüm profil alanları eşleştiğinde önbellek geçerli olmalı");
+
+    // 2. targetType değiştiğinde ('all' -> 'tv') önbellek geçersizleşir
+    const invalidType = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "tv",
+      savedItems: baseSaved,
+      preferences: basePrefs,
+      favoriteActors: baseActors,
+    });
+    assert.equal(invalidType, false, "targetType değiştiğinde önbellek geçersizleşmeli");
+
+    // 3. forceRefresh: true olduğunda önbellek geçersizleşir
+    const forced = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: baseSaved,
+      preferences: basePrefs,
+      favoriteActors: baseActors,
+      forceRefresh: true,
+    });
+    assert.equal(forced, false, "forceRefresh istendiğinde önbellek geçersizleşmeli");
+
+    // 4. Puan toplamı / değerlendirmeler değiştiğinde (aynı imza verilse dahi derin kontrol yakalar)
+    const savedWithModifiedRating = [
+      { id: 101, media_type: "movie", title: "Film A", personal_rating: 10, status: "completed", isDemo: false },
+      { id: 102, media_type: "movie", title: "Film B", personal_rating: 8, status: "completed", isDemo: false },
+    ];
+    const invalidRatings = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig, // Sahte/aynı imza verilse dahi
+      targetType: "all",
+      savedItems: savedWithModifiedRating,
+      preferences: basePrefs,
+      favoriteActors: baseActors,
+    });
+    assert.equal(invalidRatings, false, "Puan toplamı değiştiğinde önbellek geçersizleşmeli");
+
+    // 5. Yayın sağlayıcısı tercihi değiştiğinde (ör. Netflix -> Prime Video)
+    const prefsWithModifiedProvider = { ...basePrefs, providers: ["119"] };
+    const invalidProvider = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: baseSaved,
+      preferences: prefsWithModifiedProvider,
+      favoriteActors: baseActors,
+    });
+    assert.equal(invalidProvider, false, "Yayın platformu tercihi değiştiğinde önbellek geçersizleşmeli");
+
+    // 6. Mod (mood) tercihi değiştiğinde
+    const prefsWithModifiedMood = { ...basePrefs, mood: "dark" };
+    const invalidMood = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: baseSaved,
+      preferences: prefsWithModifiedMood,
+      favoriteActors: baseActors,
+    });
+    assert.equal(invalidMood, false, "Mod (mood) tercihi değiştiğinde önbellek geçersizleşmeli");
+
+    // 7. Favori oyuncular değiştiğinde
+    const modifiedActors = [{ id: 51, name: "Aktör B" }];
+    const invalidActors = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: baseSaved,
+      preferences: basePrefs,
+      favoriteActors: modifiedActors,
+    });
+    assert.equal(invalidActors, false, "Favori oyuncular değiştiğinde önbellek geçersizleşmeli");
+
+    // 8. İlgilenmiyorum listesi değiştiğinde
+    const modifiedDisliked = { ...basePrefs, disliked: ["movie:999", "movie:888"] };
+    const invalidDisliked = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: baseSaved,
+      preferences: modifiedDisliked,
+      favoriteActors: baseActors,
+    });
+    assert.equal(invalidDisliked, false, "İlgilenmiyorum listesi değiştiğinde önbellek geçersizleşmeli");
+
+    // 9. Önbellekteki bir yapımı kullanıcı kaydettiğinde (ör. movie:701 artık saved)
+    const savedWithCachedItem = [
+      ...baseSaved,
+      { id: 701, media_type: "movie", title: "Öneri 1", status: "watchlist", isDemo: false },
+    ];
+    const invalidSavedItem = isTasteMapCacheValid({
+      tasteMap: initialTasteMap,
+      currentSig,
+      targetType: "all",
+      savedItems: savedWithCachedItem,
+      preferences: basePrefs,
+      favoriteActors: baseActors,
+    });
+    assert.equal(invalidSavedItem, false, "Önbellekteki bir içerik kaydedildiğinde önbellek geçersizleşmeli");
+  });
+});
+
+describe("Favori Oyuncu İsteklerini Sağlamlaştırma — Sınırlı Kuyruk, Oyuncu Durumu, In-Flight Paylaşımı ve Veri Türüne Göre TTL", () => {
+  it("Veri Türüne Göre Önbellek TTL'leri: resolveTmdbCacheTtl uç nokta türüne göre doğru TTL sürelerini belirler", () => {
+    // 1. Oyuncu filmografisi (combined_credits) -> 2 saat (7,200,000 ms)
+    assert.equal(resolveTmdbCacheTtl("/person/101/combined_credits"), 2 * 60 * 60_000);
+    assert.equal(resolveTmdbCacheTtl("/person/934/combined_credits"), TMDB_CACHE_TTLS.ACTOR_CREDITS);
+
+    // 2. Oyuncu profili / detayları -> 2 saat
+    assert.equal(resolveTmdbCacheTtl("/person/101"), TMDB_CACHE_TTLS.PERSON_DETAILS);
+
+    // 3. Film/Dizi detayları -> 1 saat (3,600,000 ms)
+    assert.equal(resolveTmdbCacheTtl("/movie/550"), TMDB_CACHE_TTLS.MEDIA_DETAILS);
+    assert.equal(resolveTmdbCacheTtl("/tv/1399"), TMDB_CACHE_TTLS.MEDIA_DETAILS);
+
+    // 4. Yayın sağlayıcıları -> 1 saat
+    assert.equal(resolveTmdbCacheTtl("/movie/550/watch/providers"), TMDB_CACHE_TTLS.WATCH_PROVIDERS);
+    assert.equal(resolveTmdbCacheTtl("/tv/1399/watch/providers"), TMDB_CACHE_TTLS.WATCH_PROVIDERS);
+
+    // 5. Katalog keşif havuzu -> 15 dakika (900,000 ms)
+    assert.equal(resolveTmdbCacheTtl("/discover/movie"), TMDB_CACHE_TTLS.DISCOVER_CATALOG);
+    assert.equal(resolveTmdbCacheTtl("/discover/tv"), TMDB_CACHE_TTLS.DISCOVER_CATALOG);
+
+    // 6. Çoklu arama -> 15 dakika
+    assert.equal(resolveTmdbCacheTtl("/search/multi"), TMDB_CACHE_TTLS.SEARCH_RESULTS);
+
+    // 7. Trendler -> 10 dakika (600,000 ms)
+    assert.equal(resolveTmdbCacheTtl("/trending/movie/day"), TMDB_CACHE_TTLS.TRENDING);
+    assert.equal(resolveTmdbCacheTtl("/trending/all/week"), TMDB_CACHE_TTLS.TRENDING);
+
+    // 8. Diğer/varsayılan uç noktalar -> 30 dakika
+    assert.equal(resolveTmdbCacheTtl("/genre/movie/list"), TMDB_CACHE_TTLS.DEFAULT);
+  });
+
+  it("Sınırlı Kuyruk (Bounded Queue): Concurrency limitine uyar ve eşzamanlı istek sayısını aşmaz", async () => {
+    let currentInFlight = 0;
+    let maxInFlightObserved = 0;
+
+    const mockFetch = async (path, params) => {
+      currentInFlight++;
+      maxInFlightObserved = Math.max(maxInFlightObserved, currentInFlight);
+      // Kısa bir bekleme simüle et
+      await new Promise((r) => setTimeout(r, 20));
+      currentInFlight--;
+      return { cast: [{ id: 999, title: "Mock Movie" }] };
+    };
+
+    const actors = [
+      { id: 1, name: "Oyuncu 1" },
+      { id: 2, name: "Oyuncu 2" },
+      { id: 3, name: "Oyuncu 3" },
+      { id: 4, name: "Oyuncu 4" },
+      { id: 5, name: "Oyuncu 5" },
+      { id: 6, name: "Oyuncu 6" },
+    ];
+
+    const result = await fetchActorCreditsBatch(actors, {
+      concurrency: 2, // Azami 2 eşzamanlı istek
+      fetchTmdbFn: mockFetch,
+    });
+
+    assert.equal(result.completedCount, 6);
+    assert.ok(maxInFlightObserved <= 2, `Maksimum eşzamanlı istek 2 olmalıydı, ancak ${maxInFlightObserved} oldu`);
+    assert.ok(maxInFlightObserved >= 1);
+  });
+
+  it("Oyuncu Bazında Durum: Başarılı, boş ve hatalı oyuncuların durumlarını ayrı ayrı takip eder ve bir hata diğerlerini etkilemez", async () => {
+    const statusTransitions = [];
+
+    const mockFetch = async (path, params) => {
+      if (path.includes("/person/10/")) {
+        // 10: Başarılı, dolu cast
+        return { cast: [{ id: 101, title: "Film 10" }, { id: 102, title: "Film 10-2" }] };
+      }
+      if (path.includes("/person/20/")) {
+        // 20: Boş filmografi
+        return { cast: [] };
+      }
+      if (path.includes("/person/30/")) {
+        // 30: Hata fırlatan istek
+        throw new Error("TMDB sunucusuna ulaşılamadı");
+      }
+      return { cast: [{ id: 401, title: "Film 40" }] };
+    };
+
+    const actors = [
+      { id: 10, name: "Başarılı Oyuncu" },
+      { id: 20, name: "Boş Oyuncu" },
+      { id: 30, name: "Hatalı Oyuncu" },
+      { id: 40, name: "Diğer Başarılı Oyuncu" },
+    ];
+
+    const result = await fetchActorCreditsBatch(actors, {
+      concurrency: 3,
+      fetchTmdbFn: mockFetch,
+      onActorStatusChange: (st) => statusTransitions.push({ ...st }),
+    });
+
+    // 10 numaralı oyuncu success olmalı
+    assert.equal(result.statuses[10].status, "success");
+    assert.equal(result.statuses[10].creditsCount, 2);
+    assert.equal(result.creditsMap[10].length, 2);
+
+    // 20 numaralı oyuncu empty olmalı
+    assert.equal(result.statuses[20].status, "empty");
+    assert.equal(result.statuses[20].creditsCount, 0);
+    assert.deepEqual(result.creditsMap[20], []);
+
+    // 30 numaralı oyuncu error olmalı ancak diğerlerini patlatmamalı
+    assert.equal(result.statuses[30].status, "error");
+    assert.ok(result.statuses[30].error.includes("TMDB"));
+    assert.deepEqual(result.creditsMap[30], []);
+
+    // 40 numaralı oyuncu success olarak tamamlanmalı (Hata izolasyonu)
+    assert.equal(result.statuses[40].status, "success");
+    assert.equal(result.statuses[40].creditsCount, 1);
+
+    // Toplam sayaçlar
+    assert.equal(result.completedCount, 2);
+    assert.equal(result.emptyCount, 1);
+    assert.equal(result.errorCount, 1);
+
+    // Callback bildirimleri
+    assert.ok(statusTransitions.some((s) => s.actorId === 10 && s.status === "success"));
+    assert.ok(statusTransitions.some((s) => s.actorId === 30 && s.status === "error"));
+  });
+
+  it("In-flight İstek Paylaşımı: Aynı oyuncu için eşzamanlı paralel çağrılar tek bir istek paylaşır", async () => {
+    clearInFlightActorCredits();
+    let networkCalls = 0;
+
+    const mockFetch = async () => {
+      networkCalls++;
+      await new Promise((r) => setTimeout(r, 40));
+      return { cast: [{ id: 555, title: "In Flight Movie" }] };
+    };
+
+    const actor = [{ id: 777, name: "Ortak Oyuncu" }];
+
+    // Aynı anda iki ayrı bileşenden veya işlemden istek tetiklendiğini simüle et
+    const [p1, p2] = await Promise.all([
+      fetchActorCreditsBatch(actor, { fetchTmdbFn: mockFetch }),
+      fetchActorCreditsBatch(actor, { fetchTmdbFn: mockFetch }),
+    ]);
+
+    assert.equal(p1.creditsMap[777].length, 1);
+    assert.equal(p2.creditsMap[777].length, 1);
+    // İki paralel çağrı tek bir ağ isteği yapmalıdır!
+    assert.equal(networkCalls, 1, "Eşzamanlı in-flight istekler tek bir ağ isteğinde birleştirilmeli");
+  });
+
+  it("Eski Yanıtları Engelleme (Stale Response Guard): Ticket geçersizleştiğinde eski istek sonucu sisteme yazılmaz", async () => {
+    let activeTicket = 1;
+
+    const mockFetch = async (path) => {
+      // İstek sürerken kullanıcı yeni bir işlem başlattı (bilet 2'ye geçti)
+      await new Promise((r) => setTimeout(r, 30));
+      return { cast: [{ id: 888, title: "Eski İstek Yanıtı" }] };
+    };
+
+    const actor = [{ id: 888, name: "Geciken Oyuncu" }];
+
+    // Eski istek (ticketId: 1)
+    const stalePromise = fetchActorCreditsBatch(actor, {
+      ticketId: 1,
+      isCurrentTicket: (id) => id === activeTicket,
+      fetchTmdbFn: mockFetch,
+    });
+
+    // Kullanıcı hemen yeni bir arama/sayfalama yaptı
+    activeTicket = 2;
+
+    const staleResult = await stalePromise;
+    // Bilet geçersizleştiği için sonuç boş dönmeli veya eski veri işlenmemelidir
+    assert.equal(staleResult.completedCount, 0, "Eski bilet yanıtı tamamlanmış sayılmamalı");
+    assert.equal(staleResult.creditsMap[888], undefined, "Eski yanıt creditsMap üzerine yazılmamalı");
   });
 });
 

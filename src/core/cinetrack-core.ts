@@ -1741,12 +1741,27 @@ export interface TasteMapEntry {
   demotionPenalty: number;
   lastShownAt: string | null;
   lastScoredAt: string;
+  impressionHistory?: Array<{ shownAt: string; targetType: string; rank?: number }>;
   status: 'active' | 'saved' | 'disliked' | 'hidden';
+}
+
+export interface TasteProfileSnapshot {
+  savedItemCount: number;
+  ratingsSum: number;
+  dislikedCount: number;
+  dislikedHash?: string;
+  providerHash?: string;
+  mood: string;
+  favActorCount: number;
+  favActorIds?: number[];
+  targetType: string;
+  hasLiveItems: boolean;
 }
 
 export interface PersistentTasteMapData {
   profileId: string;
   profileSignature?: string;
+  profileSnapshot?: TasteProfileSnapshot;
   updatedAt: string;
   entries: Record<string, TasteMapEntry>;
   lastRecommendedKeys: string[];
@@ -1762,6 +1777,29 @@ export function normalizeTasteRing(ring?: TasteRing | null): 'ring0' | 'ring1' |
   if (ring === 'ring0' || ring === 'core') return 'ring0';
   if (ring === 'ring1' || ring === 'inner') return 'ring1';
   return 'ring2';
+}
+
+export function normalizeTasteMapEntries(
+  entries: Record<string, TasteMapEntry>
+): Record<string, TasteMapEntry> {
+  if (!entries) return {};
+  const normalized: Record<string, TasteMapEntry> = {};
+  for (const [key, entry] of Object.entries(entries)) {
+    normalized[key] = {
+      ...entry,
+      ring: normalizeTasteRing(entry.ring),
+      initialRing: normalizeTasteRing(entry.initialRing),
+    };
+  }
+  return normalized;
+}
+
+export function normalizeTasteMapRings(tasteMap: PersistentTasteMapData): PersistentTasteMapData {
+  if (!tasteMap || !tasteMap.entries) return tasteMap;
+  return {
+    ...tasteMap,
+    entries: normalizeTasteMapEntries(tasteMap.entries),
+  };
 }
 
 export function assignTasteRing(
@@ -1838,6 +1876,7 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
           return {
             profileId,
             profileSignature: parsed.profileSignature || '',
+            profileSnapshot: parsed.profileSnapshot || undefined,
             updatedAt: parsed.updatedAt || new Date().toISOString(),
             entries: parsed.entries || {},
             lastRecommendedKeys: Array.isArray(parsed.lastRecommendedKeys) ? parsed.lastRecommendedKeys : [],
@@ -1881,39 +1920,60 @@ export function markTasteMapItemStatus(
 export interface UpdateTasteMapWithBatchParams {
   tasteMap: PersistentTasteMapData;
   newRecommendedItems: any[];
+  allPoolCandidates?: any[];
   savedItems: SavedItem[];
   preferences: Preferences;
+  favoriteActors?: FavoriteActorInfo[];
   now?: string;
   profileSignature?: string;
   targetType?: string;
   explanation?: string;
   summary?: TasteProfileSummary;
+  isFilterChange?: boolean;
+  reason?: 'filter_change' | 'refresh' | 'navigation' | 'initial';
+  normalizeLegacyRings?: boolean;
 }
 
 export function updateTasteMapWithBatch({
   tasteMap,
   newRecommendedItems,
+  allPoolCandidates,
   savedItems,
   preferences,
+  favoriteActors = [],
   now = new Date().toISOString(),
   profileSignature,
   targetType,
   explanation,
   summary,
+  isFilterChange = false,
+  reason,
+  normalizeLegacyRings = false,
 }: UpdateTasteMapWithBatchParams): PersistentTasteMapData {
-  const updatedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.entries || {}) };
+  let updatedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.entries || {}) };
+  if (normalizeLegacyRings) {
+    updatedEntries = normalizeTasteMapEntries(updatedEntries);
+  }
   const newKeys = new Set<string>();
 
-  for (const item of newRecommendedItems) {
+  for (const item of newRecommendedItems || []) {
     const cand = item.candidate || item;
-    const key = makeMediaKey(cand);
-    newKeys.add(key);
+    if (cand && cand.id) {
+      const key = makeMediaKey(cand);
+      newKeys.add(key);
+    }
   }
 
   // 1. Önceki vitrinde (lastRecommendedKeys) gösterilmiş olan yapımları değerlendir:
-  // Eğer kullanıcı bunları kaydetmediyse (savedItems'ta yok) ve beğenmeyip gizlemediyse
-  // ve yeni vitrinde de yer almıyorsa, bu yapımlar kullanıcı tarafından "atlandı / pas geçildi" (skipped) sayılır.
+  // Filtre değişikliğini “atlandı” sayma kuralı:
+  // - Hedef tür değişmişse (ör. 'all' -> 'tv', 'movie' -> 'tv')
+  // - Açıkça isFilterChange veya reason === 'filter_change' bayrağı varsa
+  // - Adayın türü mevcut targetType filtre kapsamına uymuyorsa (ör. kullanıcı sadece film filtrelediğinde önceki diziler)
+  // Bu yapımlar kullanıcı tarafından "atlanmış" (skipped) sayılmaz; sayaç ve ceza artırılmaz!
   const prevKeys = Array.isArray(tasteMap.lastRecommendedKeys) ? tasteMap.lastRecommendedKeys : [];
+  const isTargetTypeChanged = Boolean(targetType && tasteMap.lastTargetType && targetType !== tasteMap.lastTargetType);
+  const isFilterTriggered = Boolean(isFilterChange || reason === 'filter_change' || isTargetTypeChanged);
+
   for (const prevKey of prevKeys) {
     const entry = updatedEntries[prevKey];
     if (!entry) continue;
@@ -1932,14 +1992,20 @@ export function updateTasteMapWithBatch({
       continue;
     }
 
+    const isTypeMismatch = (targetType === 'movie' && mediaType === 'tv') || (targetType === 'tv' && mediaType === 'movie');
+    if (isFilterTriggered || isTypeMismatch) {
+      // Filtre değişikliğinde veya tür uyuşmazlığında önceki içerikler atlandı sayılmaz
+      continue;
+    }
+
     // Yeni listede yer almadıysa atlandı sayacı artır ve halka geriletmesi uygula
     if (!newKeys.has(prevKey)) {
       entry.skippedCount = (entry.skippedCount || 0) + 1;
 
       // Halka Geriletmesi (Ring Demotion) kuralı:
-      // Her 2 atlamada bir halka bir basamak dışarı geriletilir (core -> inner -> outer -> orbit).
+      // Her 2 atlamada bir halka bir basamak dışarı geriletilir (core -> inner -> outer -> orbit veya ring0 -> ring1 -> ring2).
       const expectedDemotions = Math.floor(entry.skippedCount / 2);
-      if (expectedDemotions > (entry.ringDemotions || 0) && entry.ring !== 'orbit') {
+      if (expectedDemotions > (entry.ringDemotions || 0) && entry.ring !== 'orbit' && entry.ring !== 'ring2') {
         const demoteSteps = expectedDemotions - (entry.ringDemotions || 0);
         entry.ring = demoteTasteRing(entry.ring, demoteSteps);
         entry.ringDemotions = expectedDemotions;
@@ -1952,9 +2018,85 @@ export function updateTasteMapWithBatch({
     }
   }
 
-  // 2. Yeni vitrindeki adayı kaydet / güncelle
-  for (const item of newRecommendedItems) {
+  // 2. Havuzdaki her adayın (500 film + 500 dizi) son profil sürümüne ait puanını haritaya kaydet
+  // Gösterim geçmişi (shownCount, lastShownAt, impressionHistory) AYRI TUTULUR;
+  // yalnızca havuzda bulunup puanlanmış olması kullanıcıya vitrinde gösterildiği anlamına gelmez!
+  if (Array.isArray(allPoolCandidates) && allPoolCandidates.length > 0) {
+    for (const poolItem of allPoolCandidates) {
+      const cand = poolItem.candidate || poolItem;
+      if (!cand || !cand.id) continue;
+      const key = makeMediaKey(cand);
+      const mediaType: 'movie' | 'tv' = cand.media_type === 'tv' ? 'tv' : 'movie';
+      const id = Number(cand.id);
+      const title = String(cand.title || cand.name || '');
+      const rawScore = Number(poolItem.rawScore ?? poolItem.score ?? cand.score ?? 75);
+      const existing = updatedEntries[key];
+
+      const demotionPenalty = existing?.demotionPenalty || poolItem.demotionPenalty || 0;
+      const ringDemotions = existing?.ringDemotions || poolItem.ringDemotions || 0;
+      const skippedCount = existing?.skippedCount || poolItem.skippedCount || 0;
+      const shownCount = existing?.shownCount || 0;
+      const lastShownAt = existing?.lastShownAt || null;
+      const impressionHistory = existing?.impressionHistory ? [...existing.impressionHistory] : [];
+
+      let ring: TasteRing = existing?.ring || poolItem.ring || assignTasteRing(rawScore);
+      if (normalizeLegacyRings) ring = normalizeTasteRing(ring);
+
+      let initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
+      if (normalizeLegacyRings) initialRing = normalizeTasteRing(initialRing);
+
+      const netMatchScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+      const parts = poolItem.parts || poolItem.signalBreakdown || existing?.parts || {};
+      const pillars = calculateTastePillars(parts);
+      const tags = Array.isArray(poolItem.tags) ? poolItem.tags : existing?.tags || [];
+
+      let status: 'active' | 'saved' | 'disliked' | 'hidden' = existing?.status || 'active';
+      const isSaved = isItemSaved(savedItems, { id, media_type: mediaType }, mediaType);
+      if (isSaved) {
+        status = 'saved';
+      } else if (preferences.disliked?.includes(key)) {
+        status = 'disliked';
+      } else if (preferences.hidden?.includes(key)) {
+        status = 'hidden';
+      }
+
+      updatedEntries[key] = {
+        mediaKey: key,
+        mediaType,
+        id,
+        title,
+        poster_path: cand.poster_path || existing?.poster_path || null,
+        backdrop_path: cand.backdrop_path || existing?.backdrop_path || null,
+        vote_average: Number(cand.vote_average ?? existing?.vote_average ?? 0),
+        popularity: Number(cand.popularity ?? existing?.popularity ?? 0),
+        genre_ids: Array.isArray(cand.genre_ids) ? cand.genre_ids : existing?.genre_ids || [],
+        release_date: cand.release_date || existing?.release_date,
+        first_air_date: cand.first_air_date || existing?.first_air_date,
+        overview: cand.overview || existing?.overview || '',
+        matchScore: netMatchScore,
+        rawScore,
+        ring,
+        initialRing,
+        pillars,
+        parts,
+        tags,
+        shownCount,
+        skippedCount,
+        ringDemotions,
+        demotionPenalty,
+        lastShownAt,
+        lastScoredAt: now,
+        impressionHistory,
+        status,
+      };
+    }
+  }
+
+  // 3. Yeni vitrindeki adayı kaydet / güncelle (Vitrinde gösterilen adaylar: shownCount artar ve impressionHistory eklenir)
+  for (let i = 0; i < (newRecommendedItems || []).length; i++) {
+    const item = newRecommendedItems[i];
     const cand = item.candidate || item;
+    if (!cand || !cand.id) continue;
     const key = makeMediaKey(cand);
     const mediaType: 'movie' | 'tv' = cand.media_type === 'tv' ? 'tv' : 'movie';
     const id = Number(cand.id);
@@ -1966,9 +2108,17 @@ export function updateTasteMapWithBatch({
     const ringDemotions = existing?.ringDemotions || item.ringDemotions || 0;
     const skippedCount = existing?.skippedCount || item.skippedCount || 0;
     const shownCount = (existing?.shownCount || 0) + 1;
+    const impressionHistory = [
+      ...(existing?.impressionHistory || []),
+      { shownAt: now, targetType: targetType || 'all', rank: i + 1 },
+    ];
 
     let ring: TasteRing = existing?.ring || item.ring || assignTasteRing(rawScore);
-    const initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
+    if (normalizeLegacyRings) ring = normalizeTasteRing(ring);
+
+    let initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
+    if (normalizeLegacyRings) initialRing = normalizeTasteRing(initialRing);
+
     const netMatchScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
 
     const parts = item.parts || existing?.parts || {};
@@ -2000,13 +2150,40 @@ export function updateTasteMapWithBatch({
       demotionPenalty,
       lastShownAt: now,
       lastScoredAt: now,
+      impressionHistory,
       status: 'active',
     };
   }
 
+  // 4. Önemli Profil Alanları Anlık Görüntüsü (Snapshot)
+  const hasLiveItems = (savedItems || []).some(
+    (it) => it && it.isDemo !== true && (it.personal_rating || it.status)
+  );
+  const effectiveItems = hasLiveItems
+    ? (savedItems || []).filter((it) => it && it.isDemo !== true)
+    : (savedItems || []);
+  const ratingsSum = effectiveItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+  const dislikedList = [...(preferences?.disliked || [])].sort();
+  const providersList = [...(preferences?.providers || [])].sort();
+  const favActorIds = (favoriteActors || []).map((a) => a.id).sort((a, b) => a - b);
+
+  const profileSnapshot: TasteProfileSnapshot = {
+    savedItemCount: effectiveItems.length,
+    ratingsSum,
+    dislikedCount: dislikedList.length,
+    dislikedHash: dislikedList.join(','),
+    providerHash: providersList.join(','),
+    mood: preferences?.mood || '',
+    favActorCount: favActorIds.length,
+    favActorIds,
+    targetType: targetType || 'all',
+    hasLiveItems,
+  };
+
   return {
     profileId: tasteMap.profileId,
     profileSignature: profileSignature ?? tasteMap.profileSignature ?? '',
+    profileSnapshot,
     updatedAt: now,
     entries: updatedEntries,
     lastRecommendedKeys: Array.from(newKeys),
@@ -2016,6 +2193,110 @@ export function updateTasteMapWithBatch({
     lastExplanation: explanation || tasteMap.lastExplanation || '',
     summary: summary || tasteMap.summary,
   };
+}
+
+export function recordTasteMapPoolScores({
+  tasteMap,
+  poolCandidates,
+  savedItems,
+  preferences,
+  favoriteActors = [],
+  profileSignature,
+  targetType = 'all',
+  now = new Date().toISOString(),
+  normalizeLegacyRings = false,
+}: {
+  tasteMap: PersistentTasteMapData;
+  poolCandidates: any[];
+  savedItems: SavedItem[];
+  preferences: Preferences;
+  favoriteActors?: FavoriteActorInfo[];
+  profileSignature?: string;
+  targetType?: string;
+  now?: string;
+  normalizeLegacyRings?: boolean;
+}): PersistentTasteMapData {
+  return updateTasteMapWithBatch({
+    tasteMap,
+    newRecommendedItems: [],
+    allPoolCandidates: poolCandidates,
+    savedItems,
+    preferences,
+    favoriteActors,
+    now,
+    profileSignature,
+    targetType,
+    normalizeLegacyRings,
+  });
+}
+
+export interface TasteMapCacheValidParams {
+  tasteMap: PersistentTasteMapData | null | undefined;
+  currentSig: string;
+  targetType: string;
+  savedItems: SavedItem[];
+  preferences: Preferences;
+  favoriteActors?: FavoriteActorInfo[];
+  forceRefresh?: boolean;
+}
+
+export function isTasteMapCacheValid({
+  tasteMap,
+  currentSig,
+  targetType,
+  savedItems,
+  preferences,
+  favoriteActors = [],
+  forceRefresh = false,
+}: TasteMapCacheValidParams): boolean {
+  if (forceRefresh) return false;
+  if (!tasteMap || !tasteMap.entries) return false;
+  if (!Array.isArray(tasteMap.cachedBalancedItems) || tasteMap.cachedBalancedItems.length === 0) return false;
+  if (tasteMap.profileSignature !== currentSig) return false;
+  if (tasteMap.lastTargetType !== targetType) return false;
+
+  // Önemli Profil Alanları Derin Doğrulaması (Deep Field Validation)
+  // Aynı imzaya sahip görünse bile önemli profil alanları değişmişse önbelleği kesinlikle geçersizleştir.
+  const hasLiveItems = (savedItems || []).some(
+    (it) => it && it.isDemo !== true && (it.personal_rating || it.status)
+  );
+  const effectiveItems = hasLiveItems
+    ? (savedItems || []).filter((it) => it && it.isDemo !== true)
+    : (savedItems || []);
+  const currentRatingsSum = effectiveItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+  const currentDislikedList = [...(preferences?.disliked || [])].sort();
+  const currentProvidersList = [...(preferences?.providers || [])].sort();
+  const currentFavActorIds = (favoriteActors || []).map((a) => a.id).sort((a, b) => a - b);
+  const currentMood = preferences?.mood || '';
+
+  const snap = tasteMap.profileSnapshot;
+  if (snap) {
+    if (snap.targetType !== targetType) return false;
+    if (snap.hasLiveItems !== hasLiveItems) return false;
+    if (snap.savedItemCount !== effectiveItems.length) return false;
+    if (snap.ratingsSum !== currentRatingsSum) return false;
+    if (snap.dislikedCount !== currentDislikedList.length) return false;
+    if (snap.dislikedHash && snap.dislikedHash !== currentDislikedList.join(',')) return false;
+    if (snap.providerHash && snap.providerHash !== currentProvidersList.join(',')) return false;
+    if (snap.mood !== currentMood) return false;
+    if (snap.favActorCount !== currentFavActorIds.length) return false;
+    if (snap.favActorIds && JSON.stringify(snap.favActorIds) !== JSON.stringify(currentFavActorIds)) return false;
+  }
+
+  // Önbellekteki yapımlardan herhangi biri kaydedilmiş, beğenilmemiş veya gizlenmiş mi?
+  for (const item of tasteMap.cachedBalancedItems) {
+    const cand = item.candidate || item;
+    const key = makeMediaKey(cand);
+    if (preferences?.disliked?.includes(key) || preferences?.hidden?.includes(key)) {
+      return false;
+    }
+    const [mediaType, rawId] = key.split(':');
+    if (isItemSaved(savedItems, { id: rawId, media_type: mediaType }, mediaType as any)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function syncPoolCandidatesWithTasteMap(
@@ -2474,6 +2755,196 @@ export function diversifyActorRecommendations(
   }
 
   return [...picked, ...deferred].slice(0, limit);
+}
+
+export type ActorFetchStatusCode = 'idle' | 'loading' | 'success' | 'error' | 'empty';
+
+export interface ActorFetchStatus {
+  actorId: number;
+  actorName: string;
+  status: ActorFetchStatusCode;
+  creditsCount: number;
+  error?: string;
+  updatedAt: number;
+}
+
+export interface FetchActorCreditsBatchOptions {
+  concurrency?: number;
+  signal?: AbortSignal;
+  ticketId?: number;
+  isCurrentTicket?: (ticketId: number) => boolean;
+  force?: boolean;
+  onActorStatusChange?: (status: ActorFetchStatus) => void;
+  fetchTmdbFn?: (path: string, params?: Record<string, string>, signal?: AbortSignal, ttl?: number) => Promise<any>;
+}
+
+export interface FetchActorCreditsBatchResult {
+  creditsMap: Record<number, any[]>;
+  statuses: Record<number, ActorFetchStatus>;
+  completedCount: number;
+  errorCount: number;
+  emptyCount: number;
+}
+
+// In-flight istek paylaşımı haritası: Aynı oyuncu için eşzamanlı istekleri tek Promise altında birleştirir
+const inFlightActorCredits = new Map<number, Promise<{ cast: any[]; error?: string }>>();
+
+export function getInFlightActorCreditsCount(): number {
+  return inFlightActorCredits.size;
+}
+
+export function clearInFlightActorCredits(): void {
+  inFlightActorCredits.clear();
+}
+
+/**
+ * Favori oyuncuların filmografilerini (combined_credits) sınırlı kuyruk (bounded queue),
+ * oyuncu bazında durum takibi, in-flight istek paylaşımı ve eski yanıt korumasıyla çeker.
+ */
+export async function fetchActorCreditsBatch(
+  favoriteActors: FavoriteActorInfo[],
+  options: FetchActorCreditsBatchOptions = {}
+): Promise<FetchActorCreditsBatchResult> {
+  const {
+    concurrency = 3,
+    signal,
+    ticketId,
+    isCurrentTicket,
+    force = false,
+    onActorStatusChange,
+    fetchTmdbFn,
+  } = options;
+
+  const creditsMap: Record<number, any[]> = {};
+  const statuses: Record<number, ActorFetchStatus> = {};
+  let completedCount = 0;
+  let errorCount = 0;
+  let emptyCount = 0;
+
+  if (!Array.isArray(favoriteActors) || favoriteActors.length === 0) {
+    return { creditsMap, statuses, completedCount: 0, errorCount: 0, emptyCount: 0 };
+  }
+
+  // 1. Oyuncu bazında başlangıç durumlarını (loading) oluştur ve bildir
+  const now = Date.now();
+  for (const actor of favoriteActors) {
+    if (!actor || !actor.id) continue;
+    statuses[actor.id] = {
+      actorId: actor.id,
+      actorName: actor.name || `Oyuncu #${actor.id}`,
+      status: 'loading',
+      creditsCount: 0,
+      updatedAt: now,
+    };
+    onActorStatusChange?.(statuses[actor.id]);
+  }
+
+  // Eski yanıtları engelleme kontrolü (Ticket Gate)
+  if (ticketId != null && isCurrentTicket && !isCurrentTicket(ticketId)) {
+    return { creditsMap, statuses, completedCount: 0, errorCount: 0, emptyCount: 0 };
+  }
+
+  // 2. Sınırlı Kuyruk (Bounded Concurrency Queue): Eşzamanlı istek sayısını sınırla (varsayılan: 3)
+  const validActors = favoriteActors.filter((a) => a && a.id);
+  const queueLimit = Math.max(1, Math.min(concurrency, 6));
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < validActors.length) {
+      if (signal?.aborted) break;
+      if (ticketId != null && isCurrentTicket && !isCurrentTicket(ticketId)) break;
+
+      const actor = validActors[cursor++];
+      const actorId = actor.id;
+
+      // 3. In-flight istek paylaşımı: Aynı oyuncu için halihazırda süren istek varsa mükerrer tetikleme
+      let creditPromise = inFlightActorCredits.get(actorId);
+      if (!creditPromise) {
+        creditPromise = (async () => {
+          let lastError: any = null;
+          try {
+            // Önce Türkçe ardından İngilizce yedek (Language fallback)
+            let data: any = null;
+            const fetcher = fetchTmdbFn || (async (p: string, params?: Record<string, string>) => {
+              const res = await fetch(`/api/tmdb?path=${encodeURIComponent(p)}&${new URLSearchParams(params || {}).toString()}`);
+              return res.json();
+            });
+
+            if (!force) {
+              try {
+                data = await fetcher(`/person/${actorId}/combined_credits`, { language: 'tr-TR' }, signal);
+              } catch (e) {
+                lastError = e;
+              }
+            }
+            if (!data || !Array.isArray(data.cast) || data.cast.length === 0) {
+              try {
+                data = await fetcher(`/person/${actorId}/combined_credits`, { language: 'en-US' }, signal);
+              } catch (e) {
+                lastError = e;
+              }
+            }
+
+            if (data && Array.isArray(data.cast)) {
+              return { cast: data.cast };
+            }
+            if (lastError && (!data || !Array.isArray(data.cast))) {
+              return { cast: [], error: lastError?.message || 'Bağlantı hatası' };
+            }
+            return { cast: [] };
+          } catch (err: any) {
+            return { cast: [], error: err?.message || 'Bağlantı hatası' };
+          }
+        })().finally(() => {
+          inFlightActorCredits.delete(actorId);
+        });
+
+        inFlightActorCredits.set(actorId, creditPromise);
+      }
+
+      const res = await creditPromise;
+
+      // 4. Eski yanıtları engelleme: Eğer yeni bir ticket başlatıldıysa veya iptal edildiyse sonucu yut
+      if (ticketId != null && isCurrentTicket && !isCurrentTicket(ticketId)) {
+        return;
+      }
+      if (signal?.aborted) {
+        return;
+      }
+
+      // 5. Oyuncu bazında durum güncellemesi
+      const cast = Array.isArray(res.cast) ? res.cast : [];
+      creditsMap[actorId] = cast;
+
+      let status: ActorFetchStatusCode = 'success';
+      if (res.error) {
+        status = 'error';
+        errorCount++;
+      } else if (cast.length === 0) {
+        status = 'empty';
+        emptyCount++;
+      } else {
+        status = 'success';
+        completedCount++;
+      }
+
+      statuses[actorId] = {
+        actorId,
+        actorName: actor.name || `Oyuncu #${actorId}`,
+        status,
+        creditsCount: cast.length,
+        error: res.error,
+        updatedAt: Date.now(),
+      };
+
+      onActorStatusChange?.(statuses[actorId]);
+    }
+  };
+
+  const runners = Array.from({ length: Math.min(queueLimit, validActors.length) }, () => worker());
+  await Promise.all(runners);
+
+  return { creditsMap, statuses, completedCount, errorCount, emptyCount };
 }
 
 /**
