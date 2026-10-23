@@ -449,7 +449,10 @@ function getMockTmdbResponse(endpoint: string, queryParams: Record<string, strin
 }
 
 const tmdbCacheMaxEntries = 500;
-const tmdbCache = new Map<string, { at: number; body: string; contentType: string; ttl: number }>();
+const tmdbCache = new Map<
+  string,
+  { at: number; body: string; contentType: string; ttl: number; source: 'live' | 'demo' }
+>();
 const inFlightServerTmdbRequests = new Map<
   string,
   Promise<{ status: number; body: string; contentType: string; ok: boolean }>
@@ -487,6 +490,18 @@ function tmdbCacheKey(endpoint: string, queryParams: Record<string, string>) {
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// /api/tmdb-status route: provides backend data source state
+app.get('/api/tmdb-status', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const source = tmdbApiKey ? 'live' : 'demo';
+  res.setHeader('X-CineTrack-Source', source);
+  res.json({
+    configured: Boolean(tmdbApiKey),
+    source,
+    cacheEntries: tmdbCache.size,
+  });
+});
+
 // /api/data routes
 app.get('/api/data', (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -517,6 +532,7 @@ app.put('/api/data', (req: Request, res: Response) => {
 app.get('/api/tmdb', async (req: Request, res: Response) => {
   const endpoint = String(req.query.path || '');
   if (!allowedPath.test(endpoint)) {
+    res.setHeader('X-CineTrack-Source', 'error');
     res.status(400).json({ status_message: 'TMDB uç noktası izinli değil.' });
     return;
   }
@@ -530,11 +546,16 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
   if (!tmdbApiKey) {
     const mockResult = getMockTmdbResponse(endpoint, queryParams);
     if (mockResult) {
-      res.json(mockResult);
+      res.setHeader('X-CineTrack-Source', 'demo');
+      res.setHeader('X-CineTrack-Cache', 'miss');
+      res.setHeader('Cache-Control', 'public, max-age=180');
+      res.json({ ...mockResult, _source: 'demo' });
       return;
     }
+    res.setHeader('X-CineTrack-Source', 'demo');
     res.status(503).json({
       status_message: 'TMDB_API_KEY eksik. Canlı katalog için .env dosyasına anahtarınızı ekleyin.',
+      source: 'demo',
     });
     return;
   }
@@ -543,11 +564,13 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
   target.searchParams.set('api_key', tmdbApiKey);
   for (const [key, value] of Object.entries(queryParams)) {
     if (!allowedQueryKeys.has(key)) {
+      res.setHeader('X-CineTrack-Source', 'error');
       res.status(400).json({ status_message: `Sorgu parametresi '${key}' izinli değil.` });
       return;
     }
     const invalid = validateParam(key, value);
     if (invalid) {
+      res.setHeader('X-CineTrack-Source', 'error');
       res.status(400).json({ status_message: invalid });
       return;
     }
@@ -560,6 +583,7 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
   if (cached && Date.now() - cached.at < (cached.ttl || ttl)) {
     res.setHeader('Content-Type', cached.contentType);
     res.setHeader('Cache-Control', 'public, max-age=180');
+    res.setHeader('X-CineTrack-Source', cached.source || 'live');
     res.setHeader('X-CineTrack-Cache', 'hit');
     res.send(cached.body);
     return;
@@ -573,7 +597,7 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
         const body = await upstream.text();
         const contentType = upstream.headers.get('Content-Type') || 'application/json; charset=utf-8';
         if (upstream.ok) {
-          tmdbCache.set(cacheKey, { at: Date.now(), body, contentType, ttl });
+          tmdbCache.set(cacheKey, { at: Date.now(), body, contentType, ttl, source: 'live' });
           while (tmdbCache.size > tmdbCacheMaxEntries) {
             tmdbCache.delete(tmdbCache.keys().next().value!);
           }
@@ -589,16 +613,31 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
     res.status(result.status);
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Cache-Control', result.ok ? 'public, max-age=180' : 'no-store');
+    res.setHeader('X-CineTrack-Source', result.ok ? 'live' : 'error');
     res.setHeader('X-CineTrack-Cache', 'miss');
     res.send(result.body);
   } catch (error: any) {
     console.error('TMDB request failed:', error.message);
-    const fallback = getMockTmdbResponse(endpoint, queryParams);
-    if (fallback) {
-      res.json(fallback);
+    const staleEntry = tmdbCache.get(cacheKey);
+    if (staleEntry) {
+      // Upstream başarısız olduysa sessizce demo verisine düşmek yerine son geçerli önbellek verisi sunulur
+      res.status(200);
+      res.setHeader('Content-Type', staleEntry.contentType);
+      res.setHeader('Cache-Control', 'no-cache, no-store');
+      res.setHeader('X-CineTrack-Source', 'stale-cache');
+      res.setHeader('X-CineTrack-Cache', 'stale');
+      res.setHeader('X-CineTrack-Stale-Reason', error.message || 'upstream_unreachable');
+      res.setHeader('X-CineTrack-Stale-Age-Seconds', Math.round((Date.now() - staleEntry.at) / 1000).toString());
+      res.send(staleEntry.body);
       return;
     }
-    res.status(502).json({ status_message: 'TMDB servisine ulaşılamadı veya istek zaman aşımına uğradı.' });
+    // Canlı API hatasında önbellek yoksa sessizce demo uydurmak yerine gerçek hatayı döndür
+    res.setHeader('X-CineTrack-Source', 'error');
+    res.status(502).json({
+      status_message: 'TMDB servisine ulaşılamadı ve geçerli bir önbellek kaydı bulunamadı.',
+      source: 'error',
+      upstream_error: error.message || 'network_error',
+    });
   }
 });
 

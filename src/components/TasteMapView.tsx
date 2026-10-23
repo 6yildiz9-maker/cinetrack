@@ -21,6 +21,8 @@ interface TasteMapViewProps {
   onRefreshTasteMap: () => void;
   isLoading?: boolean;
   isDemo?: boolean;
+  tmdbSource?: string;
+  tmdbStaleReason?: string;
 }
 
 export const TasteMapView: React.FC<TasteMapViewProps> = ({
@@ -34,6 +36,8 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   onRefreshTasteMap,
   isLoading = false,
   isDemo = false,
+  tmdbSource = 'live',
+  tmdbStaleReason,
 }) => {
   const [selectedRing, setSelectedRing] = useState<TasteRing>('ring0');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'movie' | 'tv'>('all');
@@ -109,6 +113,28 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
 
   return (
     <div className="shell py-6 space-y-8 animate-fadeIn">
+      {/* TMDB Veri Kaynağı Durum Bildirimi (Eski Önbellek veya Demo) */}
+      {tmdbSource === 'stale-cache' && (
+        <div className="p-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs sm:text-sm flex items-start gap-3 shadow-lg">
+          <span className="text-xl leading-none">⚠️</span>
+          <div>
+            <strong className="text-white block font-semibold mb-0.5">Çevrimdışı / Eski Önbellek Modu Devrede</strong>
+            TMDB canlı servisi anlık yanıt vermediği için bu zevk haritasındaki yapımlar ve eşleşme puanları son geçerli önbellek verisinden hesaplanmıştır.
+            {tmdbStaleReason ? ` (${tmdbStaleReason})` : ''}
+          </div>
+        </div>
+      )}
+
+      {tmdbSource === 'demo' && (
+        <div className="p-4 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs sm:text-sm flex items-start gap-3 shadow-lg">
+          <span className="text-xl leading-none">🟡</span>
+          <div>
+            <strong className="text-white block font-semibold mb-0.5">Örnek Katalog Modu</strong>
+            Sunucu ortamında TMDB_API_KEY tanımlanmadığından zevk haritası CineTrack'in yerleşik çevrimdışı örnek film ve dizi havuzuyla çalışmaktadır.
+          </div>
+        </div>
+      )}
+
       {/* Banner & Control Header */}
       <div className="bg-gradient-to-r from-slate-900 via-rose-950/40 to-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl relative overflow-hidden">
         <div className="absolute top-0 right-0 w-96 h-96 bg-rose-500/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20"></div>
@@ -128,14 +154,56 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               yapımlar halka geriletmesi ile yörüngeye taşınır.
             </p>
             <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 pt-2">
-              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                isDemo
-                  ? 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
-                  : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
-              }`}>
+              {/* 1. Profil Modu */}
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                  isDemo
+                    ? 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
+                    : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                }`}
+                title={isDemo ? 'Profil modu: Örnek demo kayıtları içeriyor' : 'Profil modu: Kişisel listenizdeki gerçek kayıtlara dayanıyor'}
+              >
                 <span className={`w-2 h-2 rounded-full ${isDemo ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
-                <span>{isDemo ? '🟡 Demo Modu (Örnek Havuz)' : '🟢 Canlı Profil (Kişisel Veri)'}</span>
+                <span>{isDemo ? '🟡 Demo Profil' : '🟢 Kişisel Profil'}</span>
               </span>
+
+              <span>·</span>
+
+              {/* 2. Gerçek TMDB Kaynağı */}
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                  tmdbSource === 'live'
+                    ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                    : tmdbSource === 'stale-cache'
+                    ? 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                    : 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
+                }`}
+                title={
+                  tmdbSource === 'live'
+                    ? 'TMDB API canlı ve güncel'
+                    : tmdbSource === 'stale-cache'
+                    ? `TMDB canlı servisi kapalı; son geçerli önbellek sunuluyor${tmdbStaleReason ? ` (${tmdbStaleReason})` : ''}`
+                    : 'TMDB API anahtarı girilmediğinden çevrimdışı örnek katalog kullanılıyor'
+                }
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    tmdbSource === 'live'
+                      ? 'bg-emerald-400'
+                      : tmdbSource === 'stale-cache'
+                      ? 'bg-rose-400'
+                      : 'bg-amber-400'
+                  }`}
+                ></span>
+                <span>
+                  {tmdbSource === 'live'
+                    ? '🟢 Canlı TMDB Kataloğu'
+                    : tmdbSource === 'stale-cache'
+                    ? '⚠️ Eski Önbellek (Offline)'
+                    : '🟡 Örnek TMDB Kataloğu'}
+                </span>
+              </span>
+
               <span>·</span>
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400"></span>

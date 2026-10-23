@@ -34,6 +34,8 @@ interface MediaGridProps {
   onOpenPerson?: (id: number, name: string) => void;
   onToggleFavoriteActor?: (actor: any) => void;
   onRefreshForYou?: () => void;
+  tmdbSource?: string;
+  tmdbStaleReason?: string;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -66,6 +68,8 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onOpenPerson,
   onToggleFavoriteActor,
   onRefreshForYou,
+  tmdbSource = 'live',
+  tmdbStaleReason,
 }) => {
   const getSaved = (item: any) => findSavedItem(savedItems, item);
 
@@ -93,10 +97,35 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           )}
           <div className={`loading ${isLoading || loadingMore ? 'visible' : ''}`} aria-live="polite">
             <span className="spinner"></span>
-            <span>Canlı veri yükleniyor...</span>
+            <span>
+              {tmdbSource === 'demo'
+                ? 'Örnek katalog yükleniyor...'
+                : tmdbSource === 'stale-cache'
+                ? 'Önbellek verisi yükleniyor...'
+                : 'Canlı veri yükleniyor...'}
+            </span>
           </div>
         </div>
       </div>
+
+      {tab === 'discover' && tmdbSource === 'stale-cache' && (
+        <div className="catalog-source-banner banner-stale" role="status">
+          <span className="catalog-source-banner-icon">⚠️</span>
+          <div>
+            <strong>Eski Önbellek Modu:</strong> TMDB canlı servisine anlık ulaşılamadığı için ekrandaki yapımlar ve öneriler son kaydedilen önbellek verisinden sunuluyor.
+            {tmdbStaleReason ? ` (${tmdbStaleReason})` : ''}
+          </div>
+        </div>
+      )}
+
+      {tab === 'discover' && tmdbSource === 'demo' && (
+        <div className="catalog-source-banner banner-demo" role="status">
+          <span className="catalog-source-banner-icon">🟡</span>
+          <div>
+            <strong>Örnek Katalog Modu:</strong> TMDB_API_KEY tanımlanmadığından içerikler CineTrack örnek katalog verisiyle sunulmaktadır.
+          </div>
+        </div>
+      )}
 
       <div id="catalogGrid" className="grid">
         {isLoading ? (

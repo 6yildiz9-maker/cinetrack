@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
 import { SavedItem, makeMediaKey } from '../core/cinetrack-core';
+import { fetchTmdb } from '../services/api';
 
 interface HeaderProps {
   profileName: string;
@@ -12,6 +13,8 @@ interface HeaderProps {
   onOpenAdd: () => void;
   onSelectItem: (item: any) => void;
   getSaved: (item: any) => SavedItem | undefined;
+  tmdbSource?: string;
+  tmdbStaleReason?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -24,6 +27,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAdd,
   onSelectItem,
   getSaved,
+  tmdbSource = 'live',
+  tmdbStaleReason,
 }) => {
   const [dropdownItems, setDropdownItems] = useState<any[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -80,22 +85,17 @@ export const Header: React.FC<HeaderProps> = ({
       requestControllerRef.current = controller;
       setDropdownLoading(true);
       try {
-        const queryParams = new URLSearchParams({
-          path: '/search/multi',
-          language: 'tr-TR',
-          query: val.trim(),
-          page: '1',
-        });
-        const res = await fetch(`/api/tmdb?${queryParams.toString()}`, { signal: controller.signal });
-        if (res.ok) {
-          const data = await res.json();
-          if (requestId !== requestIdRef.current) return;
-          const items = (data.results || [])
-            .filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv')
-            .slice(0, 6);
-          setDropdownItems(items);
-          setDropdownOpen(true);
-        }
+        const data = await fetchTmdb(
+          '/search/multi',
+          { query: val.trim(), page: '1' },
+          controller.signal
+        );
+        if (requestId !== requestIdRef.current) return;
+        const items = (data.results || [])
+          .filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv')
+          .slice(0, 6);
+        setDropdownItems(items);
+        setDropdownOpen(true);
       } catch (err) {
         if (!controller.signal.aborted) console.warn('Typeahead error:', err);
       } finally {
@@ -253,6 +253,57 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         <div className="actions">
+          {tmdbSource && (
+            <span
+              className={`topbar-source-badge ${
+                tmdbSource === 'live'
+                  ? 'source-live'
+                  : tmdbSource === 'stale-cache'
+                  ? 'source-stale'
+                  : tmdbSource === 'demo'
+                  ? 'source-demo'
+                  : 'source-error'
+              }`}
+              title={
+                tmdbSource === 'live'
+                  ? 'TMDB Canlı API servisine doğrudan ve güncel bağlanılıyor.'
+                  : tmdbSource === 'stale-cache'
+                  ? `TMDB canlı servisi anlık yanıt vermedi${
+                      tmdbStaleReason ? ` (${tmdbStaleReason})` : ''
+                    }; son kaydedilen önbellek verisi sunuluyor.`
+                  : tmdbSource === 'demo'
+                  ? 'TMDB_API_KEY tanımlanmadığından örnek çevrimdışı katalog kullanılıyor.'
+                  : 'TMDB servisine bağlanılamadı.'
+              }
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  display: 'inline-block',
+                  background:
+                    tmdbSource === 'live'
+                      ? '#10b981'
+                      : tmdbSource === 'stale-cache'
+                      ? '#ef4444'
+                      : tmdbSource === 'demo'
+                      ? '#f59e0b'
+                      : '#ef4444',
+                }}
+              ></span>
+              <span>
+                {tmdbSource === 'live'
+                  ? 'Canlı TMDB'
+                  : tmdbSource === 'stale-cache'
+                  ? 'Eski Önbellek'
+                  : tmdbSource === 'demo'
+                  ? 'Demo Katalog'
+                  : 'Bağlantı Yok'}
+              </span>
+            </span>
+          )}
+
           <button
             id="profileButton"
             className="btn profile-btn"

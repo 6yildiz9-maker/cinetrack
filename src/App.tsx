@@ -64,7 +64,15 @@ import {
   buildTasteProfileSummary,
   isTasteMapCacheValid,
 } from './core/cinetrack-core';
-import { fetchTmdb, fetchTmdbCached, fetchServerData, pushServerData } from './services/api';
+import {
+  fetchTmdb,
+  fetchTmdbCached,
+  fetchServerData,
+  pushServerData,
+  subscribeTmdbSource,
+  checkServerTmdbStatus,
+  TmdbSourceMeta,
+} from './services/api';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
@@ -207,6 +215,11 @@ export function App() {
   const [forYouReasons, setForYouReasons] = useState<Map<string, string>>(new Map());
   const [forYouExplanation, setForYouExplanation] = useState<string>('');
   const [serverSyncReady, setServerSyncReady] = useState(false);
+  const [tmdbSourceMeta, setTmdbSourceMeta] = useState<TmdbSourceMeta>({
+    source: 'unknown',
+    cacheStatus: 'none',
+    timestamp: Date.now(),
+  });
 
   const [detailItem, setDetailItem] = useState<any | null>(null);
   const [quickSaveItem, setQuickSaveItem] = useState<any | null>(null);
@@ -358,6 +371,13 @@ export function App() {
         setGenresMap(map);
       })
       .catch((err) => console.warn('Genres fetch error:', err));
+
+    const unsubSource = subscribeTmdbSource(setTmdbSourceMeta);
+    checkServerTmdbStatus();
+
+    return () => {
+      unsubSource();
+    };
   }, []);
 
   // Release Reminders check
@@ -1643,6 +1663,8 @@ export function App() {
         onOpenAdd={() => setAddCustomOpen(true)}
         onSelectItem={(item) => setDetailItem(item)}
         getSaved={(item) => findSavedItem(savedItems, item)}
+        tmdbSource={tmdbSourceMeta.source}
+        tmdbStaleReason={tmdbSourceMeta.staleReason}
       />
 
       <main className="shell">
@@ -1692,6 +1714,8 @@ export function App() {
             onRefreshTasteMap={handleRefreshTasteMap}
             isLoading={isLoading}
             isDemo={Boolean(activeProfile?.isDemo)}
+            tmdbSource={tmdbSourceMeta.source}
+            tmdbStaleReason={tmdbSourceMeta.staleReason}
           />
         ) : (
           <MediaGrid
@@ -1726,22 +1750,38 @@ export function App() {
             }}
             onToggleFavoriteActor={handleToggleFavoriteActor}
             onRefreshForYou={handleRefreshForYou}
+            tmdbSource={tmdbSourceMeta.source}
+            tmdbStaleReason={tmdbSourceMeta.staleReason}
           />
         )}
       </main>
 
       <footer>
-        <div className="shell">
-          CineTrack | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
-          <a
-            href="https://www.themoviedb.org/"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: '#94a3b8' }}
-          >
-            The Movie Database (TMDB)
-          </a>
-          .
+        <div className="shell flex flex-wrap items-center justify-between gap-2">
+          <div>
+            CineTrack | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
+            <a
+              href="https://www.themoviedb.org/"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#94a3b8' }}
+            >
+              The Movie Database (TMDB)
+            </a>
+            .
+          </div>
+          <div className="text-xs text-slate-400 flex items-center gap-2">
+            <span>Veri Durumu:</span>
+            <span className="font-semibold text-slate-300">
+              {tmdbSourceMeta.source === 'live'
+                ? '🟢 Canlı TMDB API'
+                : tmdbSourceMeta.source === 'stale-cache'
+                ? '⚠️ Eski Önbellek (Offline)'
+                : tmdbSourceMeta.source === 'demo'
+                ? '🟡 Örnek Katalog'
+                : '🔴 Bağlantı Hatası'}
+            </span>
+          </div>
         </div>
       </footer>
 

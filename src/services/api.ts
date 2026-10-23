@@ -1,5 +1,76 @@
 import { DataDocument } from '../core/cinetrack-core';
 
+export type TmdbDataSource = 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
+
+export interface TmdbSourceMeta {
+  source: TmdbDataSource;
+  cacheStatus: 'hit' | 'miss' | 'stale' | 'none';
+  staleReason?: string;
+  staleAgeSeconds?: number;
+  timestamp: number;
+}
+
+let currentTmdbSourceState: TmdbSourceMeta = {
+  source: 'unknown',
+  cacheStatus: 'none',
+  timestamp: Date.now(),
+};
+
+type TmdbSourceListener = (state: TmdbSourceMeta) => void;
+const tmdbSourceListeners = new Set<TmdbSourceListener>();
+
+export function getTmdbSourceState(): TmdbSourceMeta {
+  return currentTmdbSourceState;
+}
+
+export function subscribeTmdbSource(listener: TmdbSourceListener): () => void {
+  tmdbSourceListeners.add(listener);
+  listener(currentTmdbSourceState);
+  return () => {
+    tmdbSourceListeners.delete(listener);
+  };
+}
+
+export function setTmdbSourceState(state: Partial<TmdbSourceMeta>): void {
+  currentTmdbSourceState = {
+    ...currentTmdbSourceState,
+    ...state,
+    timestamp: Date.now(),
+  };
+  tmdbSourceListeners.forEach((fn) => {
+    try {
+      fn(currentTmdbSourceState);
+    } catch (e) {
+      console.warn('TmdbSource listener error:', e);
+    }
+  });
+}
+
+export function parseTmdbSourceFromHeaders(headers: Headers): {
+  source: TmdbDataSource;
+  cacheStatus: 'hit' | 'miss' | 'stale' | 'none';
+  staleReason?: string;
+  staleAgeSeconds?: number;
+} {
+  const rawSource = headers.get('X-CineTrack-Source') as TmdbDataSource | null;
+  const rawCache = headers.get('X-CineTrack-Cache') as 'hit' | 'miss' | 'stale' | null;
+  const staleReason = headers.get('X-CineTrack-Stale-Reason') || undefined;
+  const rawAge = headers.get('X-CineTrack-Stale-Age-Seconds');
+  const staleAgeSeconds = rawAge ? Number(rawAge) : undefined;
+
+  const source: TmdbDataSource =
+    rawSource === 'live' || rawSource === 'demo' || rawSource === 'stale-cache' || rawSource === 'error'
+      ? rawSource
+      : 'unknown';
+
+  return {
+    source,
+    cacheStatus: rawCache || 'none',
+    staleReason,
+    staleAgeSeconds,
+  };
+}
+
 export async function fetchTmdb(path: string, params: Record<string, string> = {}, signal?: AbortSignal) {
   const query = new URLSearchParams({ path, language: 'tr-TR', ...params });
   const controller = new AbortController();
@@ -11,6 +82,7 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
     response = await fetch(`/api/tmdb?${query.toString()}`, { signal: signals });
   } catch (error: any) {
     if (signal?.aborted) throw error;
+    setTmdbSourceState({ source: 'error', cacheStatus: 'none', staleReason: error.message });
     if (error.name === 'AbortError') {
       throw new Error('TMDB isteği zaman aşımına uğradı. Biraz sonra tekrar deneyin.');
     }
@@ -19,7 +91,14 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
     clearTimeout(timeout);
   }
 
+  const { source, cacheStatus, staleReason, staleAgeSeconds } = parseTmdbSourceFromHeaders(response.headers);
+
   if (!response.ok) {
+    setTmdbSourceState({
+      source: source === 'unknown' ? 'error' : source,
+      cacheStatus,
+      staleReason,
+    });
     let detail = '';
     try {
       detail = (await response.json()).status_message || '';
@@ -35,7 +114,37 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
     throw new Error(detail || `TMDB isteği başarısız oldu (${response.status}).`);
   }
 
-  return response.json();
+  setTmdbSourceState({
+    source,
+    cacheStatus,
+    staleReason,
+    staleAgeSeconds,
+  });
+
+  const data = await response.json();
+  if (data && typeof data === 'object') {
+    data._source = source;
+    data._cacheStatus = cacheStatus;
+    if (staleReason) data._staleReason = staleReason;
+    if (staleAgeSeconds != null) data._staleAgeSeconds = staleAgeSeconds;
+
+    if (Array.isArray(data.results)) {
+      data.results.forEach((item: any) => {
+        if (item && typeof item === 'object') {
+          item._source = source;
+        }
+      });
+    }
+    if (Array.isArray(data.cast)) {
+      data.cast.forEach((item: any) => {
+        if (item && typeof item === 'object') {
+          item._source = source;
+        }
+      });
+    }
+  }
+
+  return data;
 }
 
 // Cache TTL'leri veri türüne göre ayrılmıştır
@@ -159,3 +268,52 @@ export async function pushServerData(payload: DataDocument): Promise<boolean> {
     return false;
   }
 }
+
+export async function checkServerTmdbStatus(): Promise<{
+  configured: boolean;
+  source: TmdbDataSource;
+  cacheEntries: number;
+} | null> {
+  try {
+    const res = await fetch('/api/tmdb-status', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const json = await res.json();
+    setTmdbSourceState({ source: json.source as TmdbDataSource });
+    return json;
+  } catch {
+    return null;
+  }
+}
+
+export function getTmdbSourceLabel(source: TmdbDataSource): string {
+  switch (source) {
+    case 'live':
+      return 'Canlı TMDB';
+    case 'stale-cache':
+      return 'Eski Önbellek (Offline)';
+    case 'demo':
+      return 'Örnek Katalog (Demo)';
+    case 'error':
+      return 'Bağlantı Hatası';
+    default:
+      return 'Bilinmiyor';
+  }
+}
+
+export function getTmdbSourceDescription(source: TmdbDataSource, staleReason?: string): string {
+  switch (source) {
+    case 'live':
+      return 'TMDB API servisine doğrudan ve canlı bağlanılıyor.';
+    case 'stale-cache':
+      return `TMDB canlı servisi anlık yanıt vermedi${
+        staleReason ? ` (${staleReason})` : ''
+      }; son kaydedilen önbellek verisi sunuluyor.`;
+    case 'demo':
+      return 'Sunucuda TMDB_API_KEY tanımlanmadığından örnek çevrimdışı katalog kullanılıyor.';
+    case 'error':
+      return 'TMDB servisine bağlanılamadı ve önbellekte veri bulunamadı.';
+    default:
+      return 'Veri kaynağı henüz belirlenmedi.';
+  }
+}
+

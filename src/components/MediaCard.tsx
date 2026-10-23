@@ -151,6 +151,17 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           </span>
         )}
 
+        {(item._source === 'stale-cache' || item.stale) && (
+          <span className="source-tag source-stale" title="Canlı TMDB'ye anlık erişilemediği için bu yapım önceki önbellekten sunuldu">
+            ⚠️ Önbellek
+          </span>
+        )}
+        {item._source === 'demo' && (
+          <span className="source-tag source-demo" title="TMDB API anahtarı girilmediğinden bu yapım örnek katalogdan listelendi">
+            🟡 Demo
+          </span>
+        )}
+
         {/* Top-right stacked quick action buttons: Watchlist, Watching, Completed, Dislike */}
         <div className="poster-actions-stack" onClick={(e) => e.stopPropagation()}>
           {/* 1. İzlenecek listesine ekle */}

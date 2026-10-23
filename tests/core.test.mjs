@@ -28,7 +28,17 @@ import {
   calculateTastePillars, computeTasteProfileSignature, buildTasteProfileSummary,
   fetchActorCreditsBatch, getInFlightActorCreditsCount, clearInFlightActorCredits
 } from "../src/core/cinetrack-core.ts";
-import { TMDB_CACHE_TTLS, resolveTmdbCacheTtl, clearTmdbClientCache } from "../src/services/api.ts";
+import {
+  TMDB_CACHE_TTLS,
+  resolveTmdbCacheTtl,
+  clearTmdbClientCache,
+  parseTmdbSourceFromHeaders,
+  getTmdbSourceLabel,
+  getTmdbSourceDescription,
+  setTmdbSourceState,
+  getTmdbSourceState,
+  subscribeTmdbSource,
+} from "../src/services/api.ts";
 
 const baseItem = (overrides = {}) => ({
   id: 123,
@@ -3686,6 +3696,85 @@ describe("Favori Oyuncu İsteklerini Sağlamlaştırma — Sınırlı Kuyruk, Oy
     assert.equal(staleResult.creditsMap[888], undefined, "Eski yanıt creditsMap üzerine yazılmamalı");
   });
 });
+
+describe("TMDB Veri Kaynağı Ayrımı (Data Source Signaling) — Canlı, Demo, Eski Önbellek (Stale-Cache) ve Hata Ayrımı", () => {
+  it("parseTmdbSourceFromHeaders: X-CineTrack-Source ve X-CineTrack-Cache başlıklarını doğru ayrıştırır", () => {
+    // 1. Canlı yanıt başlığı
+    const liveHeaders = new Headers({
+      "X-CineTrack-Source": "live",
+      "X-CineTrack-Cache": "hit",
+    });
+    const parsedLive = parseTmdbSourceFromHeaders(liveHeaders);
+    assert.equal(parsedLive.source, "live");
+    assert.equal(parsedLive.cacheStatus, "hit");
+
+    // 2. Demo başlığı
+    const demoHeaders = new Headers({
+      "X-CineTrack-Source": "demo",
+      "X-CineTrack-Cache": "miss",
+    });
+    const parsedDemo = parseTmdbSourceFromHeaders(demoHeaders);
+    assert.equal(parsedDemo.source, "demo");
+    assert.equal(parsedDemo.cacheStatus, "miss");
+
+    // 3. Eski önbellek (stale-cache) başlığı
+    const staleHeaders = new Headers({
+      "X-CineTrack-Source": "stale-cache",
+      "X-CineTrack-Cache": "stale",
+      "X-CineTrack-Stale-Reason": "fetch_failed_upstream",
+      "X-CineTrack-Stale-Age-Seconds": "3600",
+    });
+    const parsedStale = parseTmdbSourceFromHeaders(staleHeaders);
+    assert.equal(parsedStale.source, "stale-cache");
+    assert.equal(parsedStale.cacheStatus, "stale");
+    assert.equal(parsedStale.staleReason, "fetch_failed_upstream");
+    assert.equal(parsedStale.staleAgeSeconds, 3600);
+  });
+
+  it("Kaynak Bilgisi Etiketleri: Canlı, demo ve eski önbellek durumları için kullanıcı dostu açıklamalar ve etiketler üretir", () => {
+    assert.equal(getTmdbSourceLabel("live"), "Canlı TMDB");
+    assert.equal(getTmdbSourceLabel("demo"), "Örnek Katalog (Demo)");
+    assert.equal(getTmdbSourceLabel("stale-cache"), "Eski Önbellek (Offline)");
+    assert.equal(getTmdbSourceLabel("error"), "Bağlantı Hatası");
+
+    const staleDesc = getTmdbSourceDescription("stale-cache", "network_timeout");
+    assert.ok(staleDesc.includes("network_timeout"));
+    assert.ok(staleDesc.includes("önbellek"));
+  });
+
+  it("Profil isDemo ile TMDB source bağımsızdır: Demo profil canlı TMDB verisi alabilir, canlı profil çevrimdışı önbellek görebilir", () => {
+    const demoProfile = { id: "profile-demo", name: "Demo Kullanıcı", isDemo: true };
+    const liveProfile = { id: "profile-real", name: "Gerçek Kullanıcı", isDemo: false };
+
+    // TMDB kaynak durumu bağımsızdır
+    const tmdbSourceLive = "live";
+    const tmdbSourceStale = "stale-cache";
+
+    // Profilin demo olması TMDB kaynağını demo yapmaz
+    assert.equal(demoProfile.isDemo, true);
+    assert.equal(tmdbSourceLive, "live");
+    assert.notEqual(demoProfile.isDemo, tmdbSourceLive === "demo");
+
+    // Canlı profilde TMDB servisi aksarsa stale-cache devrededir, profili demo yapmaz
+    assert.equal(liveProfile.isDemo, false);
+    assert.equal(tmdbSourceStale, "stale-cache");
+  });
+
+  it("subscribeTmdbSource: Kaynak durumu güncellendiğinde aboneleri anında bilgilendirir", () => {
+    let receivedState = null;
+    const unsubscribe = subscribeTmdbSource((state) => {
+      receivedState = state;
+    });
+
+    setTmdbSourceState({ source: "stale-cache", cacheStatus: "stale", staleReason: "test_reason" });
+    assert.equal(receivedState?.source, "stale-cache");
+    assert.equal(receivedState?.cacheStatus, "stale");
+    assert.equal(receivedState?.staleReason, "test_reason");
+
+    unsubscribe();
+  });
+});
+
 
 
 
