@@ -39,6 +39,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   tmdbSource = 'live',
   tmdbStaleReason,
 }) => {
+  const [activeViewTab, setActiveViewTab] = useState<'active' | 'archived'>('active');
   const [selectedRing, setSelectedRing] = useState<TasteRing>('ring0');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'movie' | 'tv'>('all');
 
@@ -46,7 +47,19 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
     return Object.values(tasteMap?.entries || {});
   }, [tasteMap]);
 
-  // Ring counts
+  const archivedList = useMemo(() => {
+    return Object.values(tasteMap?.archivedEntries || {});
+  }, [tasteMap]);
+
+  const activeMoviesCount = useMemo(() => {
+    return entriesList.filter((e) => e.mediaType === 'movie').length;
+  }, [entriesList]);
+
+  const activeTvCount = useMemo(() => {
+    return entriesList.filter((e) => e.mediaType === 'tv').length;
+  }, [entriesList]);
+
+  // Ring counts for active entries
   const ringCounts = useMemo(() => {
     const counts: Record<string, number> = { ring0: 0, ring1: 0, ring2: 0 };
     for (const e of entriesList) {
@@ -68,6 +81,21 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
       })
       .sort((a, b) => b.matchScore - a.matchScore);
   }, [entriesList, selectedRing, mediaFilter]);
+
+  // Filtered archived entries
+  const filteredArchivedEntries = useMemo(() => {
+    return archivedList
+      .filter((e) => {
+        if (mediaFilter === 'all') return true;
+        return e.mediaType === mediaFilter;
+      })
+      .sort((a, b) => {
+        if ((b.shownCount || 0) !== (a.shownCount || 0)) {
+          return (b.shownCount || 0) - (a.shownCount || 0);
+        }
+        return b.matchScore - a.matchScore;
+      });
+  }, [archivedList, mediaFilter]);
 
   const ringsMeta: Array<{
     id: TasteRing;
@@ -205,10 +233,19 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               </span>
 
               <span>·</span>
-              <span className="flex items-center gap-1.5">
+              <span className="flex items-center gap-1.5" title="Öneri motorunun doğrudan seçim yaptığı güncel aday havuzu">
                 <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                <span>Haritalanan Aday: <strong className="text-slate-200">{entriesList.length}</strong> (500 Film + 500 Dizi)</span>
+                <span>Aktif Havuz: <strong className="text-slate-200">{entriesList.length}</strong> ({activeMoviesCount} Film + {activeTvCount} Dizi)</span>
               </span>
+              {archivedList.length > 0 && (
+                <>
+                  <span>·</span>
+                  <span className="flex items-center gap-1.5" title="Havuz rotasyonu ile arşive alınan, gösterim ve ceza geçmişi profilde korunan içerikler">
+                    <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                    <span>Arşivlenen Geçmiş: <strong className="text-slate-200">{archivedList.length}</strong> (Havuz dışı)</span>
+                  </span>
+                </>
+              )}
               <span>·</span>
               <span>Son Senkronizasyon: <strong className="text-slate-200">{tasteMap?.updatedAt ? new Date(tasteMap.updatedAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : 'Şimdi'}</strong></span>
               {tasteMap?.profileSignature && (
@@ -358,259 +395,445 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
         </div>
       </div>
 
-      {/* 4 Konsantrik Halka Seçici */}
-      <div className="space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <span>Konsantrik Zevk Halkaları</span>
-            </h2>
-            <p className="text-xs text-slate-400">
-              Yapımlar zevk uyumluluğuna ve atlanma geçmişine göre halkalara yerleşir
-            </p>
-          </div>
+      {/* Aktif Havuz vs Arşivlenen Geçmiş Görünüm Seçici Sekmeleri */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveViewTab('active')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
+              activeViewTab === 'active'
+                ? 'bg-rose-600 text-white shadow-lg shadow-rose-950/40 ring-1 ring-rose-500'
+                : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800/80 border border-slate-800'
+            }`}
+          >
+            <span>🌟 Aktif Aday Havuzu</span>
+            <span className="bg-slate-950/60 px-2 py-0.5 rounded-full text-xs font-mono font-bold">
+              {entriesList.length}
+            </span>
+          </button>
 
-          {/* Film / Dizi filtresi */}
-          <div className="inline-flex p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs">
-            <button
-              type="button"
-              className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                mediaFilter === 'all' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-              }`}
-              onClick={() => setMediaFilter('all')}
-            >
-              Tümü
-            </button>
-            <button
-              type="button"
-              className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                mediaFilter === 'movie' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-              }`}
-              onClick={() => setMediaFilter('movie')}
-            >
-              Filmler
-            </button>
-            <button
-              type="button"
-              className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-                mediaFilter === 'tv' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-              }`}
-              onClick={() => setMediaFilter('tv')}
-            >
-              Diziler
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setActiveViewTab('archived')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 ${
+              activeViewTab === 'archived'
+                ? 'bg-slate-700 text-white shadow-lg ring-1 ring-slate-500'
+                : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800/80 border border-slate-800'
+            }`}
+          >
+            <span>📦 Arşivlenen Havuz Geçmişi</span>
+            <span className="bg-slate-950/60 px-2 py-0.5 rounded-full text-xs font-mono font-bold">
+              {archivedList.length}
+            </span>
+          </button>
         </div>
 
-        {/* 3 Halka Kartları */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {ringsMeta.map((meta) => {
-            const count = ringCounts[meta.id] || 0;
-            const isSelected = normalizeTasteRing(selectedRing) === normalizeTasteRing(meta.id);
-            return (
-              <button
-                key={meta.id}
-                type="button"
-                onClick={() => setSelectedRing(meta.id)}
-                className={`text-left p-4 rounded-xl border transition-all relative overflow-hidden group ${
-                  isSelected
-                    ? `bg-slate-900/95 border-emerald-500 ring-2 ring-emerald-500/30 shadow-lg shadow-emerald-950/20`
-                    : `bg-slate-900/50 border-slate-800 hover:border-slate-700 hover:bg-slate-900/80`
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xl">{meta.icon}</span>
-                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${meta.badgeColor}`}>
-                    {meta.priority}
-                  </span>
-                </div>
-                <h4 className="font-bold text-slate-100 text-sm group-hover:text-emerald-300 transition-colors">
-                  {meta.name}
-                </h4>
-                <p className="text-xs text-slate-400 mb-3">{meta.sub}</p>
-                <div className="flex items-center justify-between text-xs font-semibold pt-2 border-t border-slate-800/80">
-                  <span className="text-slate-400">Haritadaki Yapım:</span>
-                  <span className="text-white bg-slate-800 px-2 py-0.5 rounded font-mono">
-                    {count}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+        {/* Film / Dizi filtresi */}
+        <div className="inline-flex p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+          <button
+            type="button"
+            className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
+              mediaFilter === 'all' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+            }`}
+            onClick={() => setMediaFilter('all')}
+          >
+            Tümü
+          </button>
+          <button
+            type="button"
+            className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
+              mediaFilter === 'movie' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+            }`}
+            onClick={() => setMediaFilter('movie')}
+          >
+            Filmler
+          </button>
+          <button
+            type="button"
+            className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
+              mediaFilter === 'tv' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+            }`}
+            onClick={() => setMediaFilter('tv')}
+          >
+            Diziler
+          </button>
         </div>
       </div>
 
-      {/* Seçilen Halkadaki Yapımlar Grid */}
-      <div className="space-y-4 pt-2">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div className="flex items-center gap-3">
-            <span className="text-lg">
-              {ringsMeta.find((r) => r.id === selectedRing)?.icon}
-            </span>
+      {activeViewTab === 'active' ? (
+        <>
+          {/* 4 Konsantrik Halka Seçici */}
+          <div className="space-y-4">
             <div>
-              <h3 className="font-bold text-white text-base">
-                {ringsMeta.find((r) => r.id === selectedRing)?.name} İçerikleri
-              </h3>
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <span>Konsantrik Zevk Halkaları</span>
+              </h2>
               <p className="text-xs text-slate-400">
-                {ringsMeta.find((r) => r.id === selectedRing)?.desc}
+                Aktif havuzdaki yapımlar zevk uyumluluğuna ve atlanma geçmişine göre halkalara yerleşir
               </p>
             </div>
-          </div>
-          <span className="text-xs text-slate-400 font-mono bg-slate-900 px-3 py-1 rounded-full border border-slate-800">
-            {activeRingEntries.length} Yapım
-          </span>
-        </div>
 
-        {activeRingEntries.length === 0 ? (
-          <div className="text-center py-12 bg-slate-900/40 border border-slate-800/80 rounded-2xl">
-            <span className="text-4xl block mb-2">🔭</span>
-            <p className="text-sm text-slate-300 font-medium">Bu halkada henüz aday bulunmuyor.</p>
-            <p className="text-xs text-slate-500 mt-1">
-              "Zevk Haritasını Yenile" butonuna tıklayarak havuzdaki adayları haritaya işleyebilirsiniz.
+            {/* 3 Halka Kartları */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {ringsMeta.map((meta) => {
+                const count = ringCounts[meta.id] || 0;
+                const isSelected = normalizeTasteRing(selectedRing) === normalizeTasteRing(meta.id);
+                return (
+                  <button
+                    key={meta.id}
+                    type="button"
+                    onClick={() => setSelectedRing(meta.id)}
+                    className={`text-left p-4 rounded-xl border transition-all relative overflow-hidden group ${
+                      isSelected
+                        ? `bg-slate-900/95 border-emerald-500 ring-2 ring-emerald-500/30 shadow-lg shadow-emerald-950/20`
+                        : `bg-slate-900/50 border-slate-800 hover:border-slate-700 hover:bg-slate-900/80`
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xl">{meta.icon}</span>
+                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border ${meta.badgeColor}`}>
+                        {meta.priority}
+                      </span>
+                    </div>
+                    <h4 className="font-bold text-slate-100 text-sm group-hover:text-emerald-300 transition-colors">
+                      {meta.name}
+                    </h4>
+                    <p className="text-xs text-slate-400 mb-3">{meta.sub}</p>
+                    <div className="flex items-center justify-between text-xs font-semibold pt-2 border-t border-slate-800/80">
+                      <span className="text-slate-400">Haritadaki Yapım:</span>
+                      <span className="text-white bg-slate-800 px-2 py-0.5 rounded font-mono">
+                        {count}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Seçilen Halkadaki Yapımlar Grid */}
+          <div className="space-y-4 pt-2">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <span className="text-lg">
+                  {ringsMeta.find((r) => r.id === selectedRing)?.icon}
+                </span>
+                <div>
+                  <h3 className="font-bold text-white text-base">
+                    {ringsMeta.find((r) => r.id === selectedRing)?.name} İçerikleri
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    {ringsMeta.find((r) => r.id === selectedRing)?.desc}
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs text-slate-400 font-mono bg-slate-900 px-3 py-1 rounded-full border border-slate-800">
+                {activeRingEntries.length} Yapım
+              </span>
+            </div>
+
+            {activeRingEntries.length === 0 ? (
+              <div className="text-center py-12 bg-slate-900/40 border border-slate-800/80 rounded-2xl">
+                <span className="text-4xl block mb-2">🔭</span>
+                <p className="text-sm text-slate-300 font-medium">Bu halkada henüz aktif aday bulunmuyor.</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  "Zevk Haritasını Yenile" butonuna tıklayarak havuzdaki adayları haritaya işleyebilirsiniz.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                {activeRingEntries.slice(0, 30).map((entry) => {
+                  const poster = getPoster(entry);
+                  const year = releaseYear(entry);
+                  const pillars = entry.pillars || { genreStoryScore: 75, castCreatorsScore: 70, discoveryQualityScore: 75 };
+                  const key = entry.mediaKey || makeMediaKey(entry);
+
+                  return (
+                    <article
+                      key={key}
+                      className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl overflow-hidden shadow-md flex flex-col group transition-all"
+                    >
+                      {/* Poster Area */}
+                      <div
+                        className="aspect-[2/3] relative bg-slate-950 cursor-pointer overflow-hidden"
+                        onClick={() => onOpenDetails(entry)}
+                      >
+                        {poster ? (
+                          <img
+                            src={poster}
+                            alt={entry.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center text-slate-500">
+                            <span className="text-2xl mb-1">🎬</span>
+                            <span className="text-xs line-clamp-2">{entry.title}</span>
+                          </div>
+                        )}
+
+                        {/* Uyum Rozeti */}
+                        <div className="absolute top-2 left-2 z-10">
+                          <span className="bg-rose-600/90 backdrop-blur-md text-white text-[11px] font-bold px-2 py-0.5 rounded shadow">
+                            🎯 %{entry.matchScore}
+                          </span>
+                        </div>
+
+                        {/* Tür / Format */}
+                        <div className="absolute top-2 right-2 z-10">
+                          <span className="bg-slate-900/80 backdrop-blur-md text-slate-200 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase">
+                            {entry.mediaType === 'tv' ? 'Dizi' : 'Film'}
+                          </span>
+                        </div>
+
+                        {/* Quick status button stack */}
+                        <div
+                          className="absolute bottom-2 right-2 flex gap-1 z-10"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            className="w-7 h-7 rounded-full bg-slate-900/90 hover:bg-rose-600 text-white flex items-center justify-center shadow text-xs transition-colors"
+                            title="İzleneceklere ekle"
+                            onClick={() => onSetStatus(entry, 'watchlist')}
+                          >
+                            +
+                          </button>
+                          <button
+                            type="button"
+                            className="w-7 h-7 rounded-full bg-slate-900/90 hover:bg-emerald-600 text-white flex items-center justify-center shadow text-xs transition-colors"
+                            title="İzlendi olarak işaretle"
+                            onClick={() => onSetStatus(entry, 'completed')}
+                          >
+                            ✓
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Info Area */}
+                      <div className="p-3 flex-1 flex flex-col justify-between space-y-2">
+                        <div>
+                          <h4
+                            className="text-xs font-bold text-white line-clamp-1 hover:text-rose-400 cursor-pointer transition-colors"
+                            onClick={() => onOpenDetails(entry)}
+                            title={entry.title}
+                          >
+                            {entry.title}
+                          </h4>
+                          <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
+                            <span>{year}</span>
+                            {entry.vote_average ? (
+                              <span>⭐ {entry.vote_average.toFixed(1)}</span>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {/* 3 Sütun Mini Barları */}
+                        <div className="space-y-1 pt-1 border-t border-slate-800/80 text-[10px]">
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>📖 Tür/Hikâye</span>
+                            <span className="font-mono text-slate-300">%{pillars.genreStoryScore}</span>
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-1">
+                            <div
+                              className="bg-rose-500 h-1 rounded-full"
+                              style={{ width: `${pillars.genreStoryScore}%` }}
+                            ></div>
+                          </div>
+
+                          <div className="flex items-center justify-between text-slate-400 pt-0.5">
+                            <span>🎭 Kadro</span>
+                            <span className="font-mono text-slate-300">%{pillars.castCreatorsScore}</span>
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-1">
+                            <div
+                              className="bg-amber-500 h-1 rounded-full"
+                              style={{ width: `${pillars.castCreatorsScore}%` }}
+                            ></div>
+                          </div>
+
+                          <div className="flex items-center justify-between text-slate-400 pt-0.5">
+                            <span>⭐ Keşif/Kalite</span>
+                            <span className="font-mono text-slate-300">%{pillars.discoveryQualityScore}</span>
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-1">
+                            <div
+                              className="bg-sky-500 h-1 rounded-full"
+                              style={{ width: `${pillars.discoveryQualityScore}%` }}
+                            ></div>
+                          </div>
+                        </div>
+
+                        {/* Gösterim & Halka Durumu */}
+                        <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between">
+                          <span
+                            title={
+                              entry.firstShownAt
+                                ? `Toplam ${entry.shownCount || 0} gösterim (İlk: ${new Date(entry.firstShownAt).toLocaleDateString('tr-TR')} · Son: ${entry.lastShownAt ? new Date(entry.lastShownAt).toLocaleDateString('tr-TR') : '-'}${entry.archivedImpressionCount ? ` · Arşivlenen: ${entry.archivedImpressionCount}` : ''})`
+                                : `Toplam ${entry.shownCount || 0} gösterim`
+                            }
+                          >
+                            👁️ {entry.shownCount || 0} gösterim
+                          </span>
+                          {normalizeTasteRing(entry.ring) === 'ring0' ? (
+                            <span className="text-emerald-400 font-medium">🌟 Yeni</span>
+                          ) : normalizeTasteRing(entry.ring) === 'ring1' ? (
+                            <span className="text-amber-400 font-medium">⏳ Dinleniyor</span>
+                          ) : (
+                            <span className="text-sky-400 font-medium">🔄 Yedek ({entry.skippedCount || 1}x)</span>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        /* Arşivlenen Havuz Geçmişi Görünümü */
+        <div className="space-y-6">
+          <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 text-xs text-slate-300 space-y-2.5 shadow-lg">
+            <div className="flex items-center gap-2.5 text-amber-300 font-bold text-sm">
+              <span className="text-xl">📦</span>
+              <span>Havuz Dışı Kalan İçerikler ve Korunan Gösterim Geçmişi</span>
+            </div>
+            <p className="leading-relaxed">
+              TMDB katalog havuzu güncellendikçe veya kullanıcı zevk profili değiştikçe bazı yapımlar aktif 500 Film + 500 Dizi havuzunun dışına çıkabilir. 
+              CineTrack, bu yapımların geçmişte kaç kez gösterildiğini ({filteredArchivedEntries.reduce((sum, e) => sum + (e.shownCount || 0), 0)} toplam gösterim), halka geriletmelerini ve ceza puanlarını unutmaz; arşive taşıyarak aktif öneri sayacının (1000 aday) her zaman doğru kalmasını sağlar.
+            </p>
+            <p className="text-slate-400">
+              Bu yapımlar havuz yeniden yenilendiğinde tekrar aday listesine girerse, önceki gösterim geçmişleri ve halka durumları eksiksiz korunarak kaldığı yerden devam eder.
             </p>
           </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            {activeRingEntries.slice(0, 30).map((entry) => {
-              const poster = getPoster(entry);
-              const year = releaseYear(entry);
-              const pillars = entry.pillars || { genreStoryScore: 75, castCreatorsScore: 70, discoveryQualityScore: 75 };
-              const key = entry.mediaKey || makeMediaKey(entry);
 
-              return (
-                <article
-                  key={key}
-                  className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl overflow-hidden shadow-md flex flex-col group transition-all"
-                >
-                  {/* Poster Area */}
-                  <div
-                    className="aspect-[2/3] relative bg-slate-950 cursor-pointer overflow-hidden"
-                    onClick={() => onOpenDetails(entry)}
-                  >
-                    {poster ? (
-                      <img
-                        src={poster}
-                        alt={entry.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        loading="lazy"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center text-slate-500">
-                        <span className="text-2xl mb-1">🎬</span>
-                        <span className="text-xs line-clamp-2">{entry.title}</span>
-                      </div>
-                    )}
-
-                    {/* Uyum Rozeti */}
-                    <div className="absolute top-2 left-2 z-10">
-                      <span className="bg-rose-600/90 backdrop-blur-md text-white text-[11px] font-bold px-2 py-0.5 rounded shadow">
-                        🎯 %{entry.matchScore}
-                      </span>
-                    </div>
-
-                    {/* Tür / Format */}
-                    <div className="absolute top-2 right-2 z-10">
-                      <span className="bg-slate-900/80 backdrop-blur-md text-slate-200 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase">
-                        {entry.mediaType === 'tv' ? 'Dizi' : 'Film'}
-                      </span>
-                    </div>
-
-                    {/* Quick status button stack */}
-                    <div
-                      className="absolute bottom-2 right-2 flex gap-1 z-10"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        className="w-7 h-7 rounded-full bg-slate-900/90 hover:bg-rose-600 text-white flex items-center justify-center shadow text-xs transition-colors"
-                        title="İzleneceklere ekle"
-                        onClick={() => onSetStatus(entry, 'watchlist')}
-                      >
-                        +
-                      </button>
-                      <button
-                        type="button"
-                        className="w-7 h-7 rounded-full bg-slate-900/90 hover:bg-emerald-600 text-white flex items-center justify-center shadow text-xs transition-colors"
-                        title="İzlendi olarak işaretle"
-                        onClick={() => onSetStatus(entry, 'completed')}
-                      >
-                        ✓
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Info Area */}
-                  <div className="p-3 flex-1 flex flex-col justify-between space-y-2">
-                    <div>
-                      <h4
-                        className="text-xs font-bold text-white line-clamp-1 hover:text-rose-400 cursor-pointer transition-colors"
-                        onClick={() => onOpenDetails(entry)}
-                        title={entry.title}
-                      >
-                        {entry.title}
-                      </h4>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
-                        <span>{year}</span>
-                        {entry.vote_average ? (
-                          <span>⭐ {entry.vote_average.toFixed(1)}</span>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    {/* 3 Sütun Mini Barları */}
-                    <div className="space-y-1 pt-1 border-t border-slate-800/80 text-[10px]">
-                      <div className="flex items-center justify-between text-slate-400">
-                        <span>📖 Tür/Hikâye</span>
-                        <span className="font-mono text-slate-300">%{pillars.genreStoryScore}</span>
-                      </div>
-                      <div className="w-full bg-slate-800 rounded-full h-1">
-                        <div
-                          className="bg-rose-500 h-1 rounded-full"
-                          style={{ width: `${pillars.genreStoryScore}%` }}
-                        ></div>
-                      </div>
-
-                      <div className="flex items-center justify-between text-slate-400 pt-0.5">
-                        <span>🎭 Kadro</span>
-                        <span className="font-mono text-slate-300">%{pillars.castCreatorsScore}</span>
-                      </div>
-                      <div className="w-full bg-slate-800 rounded-full h-1">
-                        <div
-                          className="bg-amber-500 h-1 rounded-full"
-                          style={{ width: `${pillars.castCreatorsScore}%` }}
-                        ></div>
-                      </div>
-
-                      <div className="flex items-center justify-between text-slate-400 pt-0.5">
-                        <span>⭐ Keşif/Kalite</span>
-                        <span className="font-mono text-slate-300">%{pillars.discoveryQualityScore}</span>
-                      </div>
-                      <div className="w-full bg-slate-800 rounded-full h-1">
-                        <div
-                          className="bg-sky-500 h-1 rounded-full"
-                          style={{ width: `${pillars.discoveryQualityScore}%` }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    {/* Gösterim & Halka Durumu */}
-                    <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between">
-                      <span>👁️ {entry.shownCount || 0} gösterim</span>
-                      {normalizeTasteRing(entry.ring) === 'ring0' ? (
-                        <span className="text-emerald-400 font-medium">🌟 Yeni</span>
-                      ) : normalizeTasteRing(entry.ring) === 'ring1' ? (
-                        <span className="text-amber-400 font-medium">⏳ Dinleniyor</span>
-                      ) : (
-                        <span className="text-sky-400 font-medium">🔄 Yedek ({entry.skippedCount || 1}x)</span>
-                      )}
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 className="font-bold text-white text-base flex items-center gap-2">
+              <span>Arşivdeki Yapımlar ({filteredArchivedEntries.length})</span>
+            </h3>
+            <span className="text-xs text-slate-400 font-mono bg-slate-900 px-3 py-1 rounded-full border border-slate-800">
+              {filteredArchivedEntries.length} İçerik
+            </span>
           </div>
-        )}
-      </div>
+
+          {filteredArchivedEntries.length === 0 ? (
+            <div className="text-center py-12 bg-slate-900/40 border border-slate-800/80 rounded-2xl">
+              <span className="text-4xl block mb-2">✨</span>
+              <p className="text-sm text-slate-300 font-medium">Henüz arşivlenmiş havuz dışı içerik bulunmuyor.</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Katalog adayları yenilendiğinde aktif havuzdan çıkan içerikler geçmişleriyle birlikte burada listelenecektir.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {filteredArchivedEntries.slice(0, 30).map((entry) => {
+                const poster = getPoster(entry);
+                const year = releaseYear(entry);
+                const key = entry.mediaKey || makeMediaKey(entry);
+
+                return (
+                  <article
+                    key={key}
+                    className="bg-slate-900/70 border border-slate-800/80 hover:border-slate-700 rounded-xl overflow-hidden shadow flex flex-col group transition-all opacity-85 hover:opacity-100"
+                  >
+                    <div
+                      className="aspect-[2/3] relative bg-slate-950 cursor-pointer overflow-hidden"
+                      onClick={() => onOpenDetails(entry)}
+                    >
+                      {poster ? (
+                        <img
+                          src={poster}
+                          alt={entry.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center text-slate-500">
+                          <span className="text-2xl mb-1">🎬</span>
+                          <span className="text-xs line-clamp-2">{entry.title}</span>
+                        </div>
+                      )}
+
+                      <div className="absolute top-2 left-2 z-10">
+                        <span className="bg-slate-800/90 backdrop-blur-md text-slate-200 text-[10px] font-semibold px-2 py-0.5 rounded shadow border border-slate-700">
+                          📦 Havuz Dışı
+                        </span>
+                      </div>
+
+                      <div className="absolute top-2 right-2 z-10">
+                        <span className="bg-slate-900/80 backdrop-blur-md text-slate-300 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase">
+                          {entry.mediaType === 'tv' ? 'Dizi' : 'Film'}
+                        </span>
+                      </div>
+
+                      <div
+                        className="absolute bottom-2 right-2 flex gap-1 z-10"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          className="w-7 h-7 rounded-full bg-slate-900/90 hover:bg-rose-600 text-white flex items-center justify-center shadow text-xs transition-colors"
+                          title="İzleneceklere ekle"
+                          onClick={() => onSetStatus(entry, 'watchlist')}
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          className="w-7 h-7 rounded-full bg-slate-900/90 hover:bg-emerald-600 text-white flex items-center justify-center shadow text-xs transition-colors"
+                          title="İzlendi olarak işaretle"
+                          onClick={() => onSetStatus(entry, 'completed')}
+                        >
+                          ✓
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-3 flex-1 flex flex-col justify-between space-y-2">
+                      <div>
+                        <h4
+                          className="text-xs font-bold text-slate-200 line-clamp-1 hover:text-rose-400 cursor-pointer transition-colors"
+                          onClick={() => onOpenDetails(entry)}
+                          title={entry.title}
+                        >
+                          {entry.title}
+                        </h4>
+                        <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
+                          <span>{year}</span>
+                          <span>🎯 %{entry.matchScore}</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[10px] bg-slate-950/60 p-2 rounded border border-slate-800 text-slate-400 space-y-1">
+                        <div className="flex justify-between">
+                          <span>Kayıt Nedeni:</span>
+                          <span className="text-slate-300 font-medium">Havuz Rotasyonu</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Geçmiş Gösterim:</span>
+                          <span className="text-amber-400 font-mono font-medium">{entry.shownCount || 0} kez</span>
+                        </div>
+                        {entry.firstShownAt && (
+                          <div className="flex justify-between text-[9px] text-slate-500">
+                            <span>İlk / Son:</span>
+                            <span>{new Date(entry.firstShownAt).toLocaleDateString('tr-TR')} — {entry.lastShownAt ? new Date(entry.lastShownAt).toLocaleDateString('tr-TR') : '-'}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span>Son Halka Durumu:</span>
+                          <span className="text-slate-300">{normalizeTasteRing(entry.ring)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Mimari Açıklama Kartı */}
       <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 text-xs text-slate-400 space-y-2">

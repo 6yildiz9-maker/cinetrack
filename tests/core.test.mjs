@@ -26,7 +26,11 @@ import {
   markTasteMapItemStatus, syncPoolCandidatesWithTasteMap,
   createDefaultTasteMapData, getTasteMapStorageKey,
   calculateTastePillars, computeTasteProfileSignature, buildTasteProfileSummary,
-  fetchActorCreditsBatch, getInFlightActorCreditsCount, clearInFlightActorCredits
+  fetchActorCreditsBatch, getInFlightActorCreditsCount, clearInFlightActorCredits,
+  getTasteMapEntries, getTasteMapArchivedEntries, getTasteMapActiveAndArchivedCounts,
+  archiveTasteMapEntry, restoreTasteMapEntry,
+  MAX_IMPRESSION_HISTORY_PER_ENTRY, appendBoundedImpression,
+  sanitizeTasteMapEntryImpressions, getImpressionSummary
 } from "../src/core/cinetrack-core.ts";
 import {
   TMDB_CACHE_TTLS,
@@ -3775,9 +3779,311 @@ describe("TMDB Veri Kaynağı Ayrımı (Data Source Signaling) — Canlı, Demo,
   });
 });
 
+describe("Zevk Haritası Arşivleme ve Aktif Havuz Ayrımı — Eski Kayıtların Temizlenmesi, Gösterim Geçmişinin Korunması ve Havuz Sayaçlarının İzolasyonu", () => {
+  it("Havuz Rotasyonu ve Arşivleme: Aktif havuzdan çıkan adaylar entries'den archivedEntries'e taşınır", () => {
+    const tasteMap = createDefaultTasteMapData("profile_archive_test");
 
+    // 1. Döngü: Havuzda 3 aday var (A, B, C)
+    const poolBatch1 = [
+      { candidate: { id: 101, media_type: "movie", title: "Aday A" }, score: 90, rawScore: 90 },
+      { candidate: { id: 102, media_type: "movie", title: "Aday B" }, score: 85, rawScore: 85 },
+      { candidate: { id: 201, media_type: "tv", name: "Aday C" }, score: 88, rawScore: 88 },
+    ];
 
+    // Aday A vitrinde gösterilsin (shownCount = 1)
+    const picked1 = [
+      { candidate: { id: 101, media_type: "movie", title: "Aday A" }, score: 90 },
+    ];
 
+    const map1 = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: picked1,
+      allPoolCandidates: poolBatch1,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T10:00:00.000Z",
+    });
 
+    assert.equal(Object.keys(map1.entries).length, 3, "İlk havuzda 3 aktif aday olmalı");
+    assert.equal(Object.keys(map1.archivedEntries || {}).length, 0, "Henüz arşivde aday olmamalı");
+    assert.equal(map1.entries["movie:101"].shownCount, 1);
 
+    // 2. Döngü: Havuz güncellendi. Aday B ve C havuzdan çıktı; yerlerine D ve E geldi (Aktif Havuz: A, D, E)
+    const poolBatch2 = [
+      { candidate: { id: 101, media_type: "movie", title: "Aday A" }, score: 92, rawScore: 92 },
+      { candidate: { id: 103, media_type: "movie", title: "Aday D" }, score: 82, rawScore: 82 },
+      { candidate: { id: 202, media_type: "tv", name: "Aday E" }, score: 84, rawScore: 84 },
+    ];
+
+    const map2 = updateTasteMapWithBatch({
+      tasteMap: map1,
+      newRecommendedItems: [],
+      allPoolCandidates: poolBatch2,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T11:00:00.000Z",
+    });
+
+    // Aktif entries sayısı tam olarak güncel havuzdaki 3 adaya eşit olmalı (eski adaylar birikmemeli!)
+    assert.equal(Object.keys(map2.entries).length, 3, "Aktif havuzda tam olarak 3 aday bulunmalı");
+    assert.ok(map2.entries["movie:101"], "Aday A aktif havuzda kalmalı");
+    assert.ok(map2.entries["movie:103"], "Aday D aktif havuzda olmalı");
+    assert.ok(map2.entries["tv:202"], "Aday E aktif havuzda olmalı");
+
+    // Havuzdan çıkan B ve C arşivlenmiş olmalı
+    assert.equal(map2.entries["movie:102"], undefined, "Aday B aktif entries içinde yer almamalı");
+    assert.equal(map2.entries["tv:201"], undefined, "Aday C aktif entries içinde yer almamalı");
+
+    assert.equal(Object.keys(map2.archivedEntries).length, 2, "Arşivde 2 içerik yer almalı");
+    assert.ok(map2.archivedEntries["movie:102"], "Aday B arşivde yer almalı");
+    assert.ok(map2.archivedEntries["tv:201"], "Aday C arşivde yer almalı");
+    assert.equal(map2.archivedEntries["movie:102"].isArchived, true);
+    assert.equal(map2.archivedEntries["movie:102"].archiveReason, "evicted_from_pool");
+  });
+
+  it("Gösterim ve Ceza Geçmişinin Korunması: Arşive alınan adayın gösterim sayısı ve ceza puanları silinmez", () => {
+    let tasteMap = createDefaultTasteMapData("profile_history_preserve_test");
+
+    const candidateX = { candidate: { id: 999, media_type: "movie", title: "Aday X" }, score: 95, rawScore: 95 };
+
+    // Aday vitrinde gösterildi (shownCount = 1)
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [candidateX],
+      allPoolCandidates: [candidateX],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T10:00:00.000Z",
+    });
+
+    assert.equal(tasteMap.entries["movie:999"].shownCount, 1);
+    assert.equal(tasteMap.entries["movie:999"].impressionHistory.length, 1);
+
+    // Bir sonraki yenilemede atlandı (skippedCount = 1, ceza puanı uygulandı)
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [{ candidate: { id: 888, media_type: "movie", title: "Aday Y" }, score: 90 }],
+      allPoolCandidates: [candidateX, { candidate: { id: 888, media_type: "movie", title: "Aday Y" }, score: 90 }],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T10:05:00.000Z",
+    });
+
+    assert.equal(tasteMap.entries["movie:999"].skippedCount, 1);
+    assert.equal(tasteMap.entries["movie:999"].demotionPenalty, 5);
+
+    // Şimdi havuz güncellensin ve Aday X havuz dışına çıksın
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [],
+      allPoolCandidates: [{ candidate: { id: 888, media_type: "movie", title: "Aday Y" }, score: 90 }],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T11:00:00.000Z",
+    });
+
+    assert.equal(tasteMap.entries["movie:999"], undefined);
+    const archivedX = tasteMap.archivedEntries["movie:999"];
+    assert.ok(archivedX, "Aday X arşive taşınmış olmalı");
+    assert.equal(archivedX.shownCount, 1, "Arşivdeki adayın geçmiş gösterim sayısı 1 olarak korunmalı");
+    assert.equal(archivedX.skippedCount, 1, "Arşivdeki adayın atlanma sayısı korunmalı");
+    assert.equal(archivedX.demotionPenalty, 5, "Arşivdeki adayın ceza puanı korunmalı");
+    assert.equal(archivedX.impressionHistory.length, 1, "Arşivdeki adayın gösterim tarihi kayıtları korunmalı");
+  });
+
+  it("Havuza Geri Dönüş (Restoration): Arşivdeki aday yeni bir katalog yenilemesinde havuza geri girerse geçmişiyle terfi eder", () => {
+    let tasteMap = createDefaultTasteMapData("profile_restore_test");
+
+    const itemZ = { candidate: { id: 777, media_type: "movie", title: "Aday Z" }, score: 88, rawScore: 88 };
+
+    // 1. Gösterim yap
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [itemZ],
+      allPoolCandidates: [itemZ],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T08:00:00.000Z",
+    });
+
+    // 2. Havuz dışına çıkar (arşivle)
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [],
+      allPoolCandidates: [{ candidate: { id: 555, media_type: "movie", title: "Diğer" }, score: 80 }],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T09:00:00.000Z",
+    });
+
+    assert.ok(tasteMap.archivedEntries["movie:777"]);
+    assert.equal(tasteMap.entries["movie:777"], undefined);
+
+    // 3. Aday Z yeniden havuza girdi!
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [],
+      allPoolCandidates: [itemZ],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-23T10:00:00.000Z",
+    });
+
+    // Arşivden silinmeli ve aktif entries içine taşınmalı
+    assert.equal(tasteMap.archivedEntries["movie:777"], undefined, "Havuza geri dönen aday arşivden kaldırılmalı");
+    const restored = tasteMap.entries["movie:777"];
+    assert.ok(restored, "Havuza dönen aday entries içinde yer almalı");
+    assert.equal(restored.isArchived, false);
+    assert.equal(restored.shownCount, 1, "Önceki gösterim geçmişi eksiksiz korunmalı");
+    assert.equal(restored.impressionHistory.length, 1);
+  });
+
+  it("Yardımcı Fonksiyonlar ve Sayaçlar: getTasteMapActiveAndArchivedCounts, archiveTasteMapEntry ve buildTasteProfileSummary doğru çalışır", () => {
+    let tasteMap = createDefaultTasteMapData("profile_helpers_test");
+
+    const pool = [
+      { candidate: { id: 1, media_type: "movie", title: "Film 1" }, score: 85 },
+      { candidate: { id: 2, media_type: "movie", title: "Film 2" }, score: 80 },
+    ];
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [],
+      allPoolCandidates: pool,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+    });
+
+    let counts = getTasteMapActiveAndArchivedCounts(tasteMap);
+    assert.equal(counts.activeCount, 2);
+    assert.equal(counts.archivedCount, 0);
+    assert.equal(counts.totalEvaluated, 2);
+
+    // Manuel arşivleme
+    tasteMap = archiveTasteMapEntry(tasteMap, "movie:1", "manual");
+    counts = getTasteMapActiveAndArchivedCounts(tasteMap);
+    assert.equal(counts.activeCount, 1);
+    assert.equal(counts.archivedCount, 1);
+    assert.equal(counts.totalEvaluated, 2);
+
+    // Manuel geri alma
+    tasteMap = restoreTasteMapEntry(tasteMap, "movie:1");
+    counts = getTasteMapActiveAndArchivedCounts(tasteMap);
+    assert.equal(counts.activeCount, 2);
+    assert.equal(counts.archivedCount, 0);
+
+    // markTasteMapItemStatus arşivdeki yapımı da günceller
+    tasteMap = archiveTasteMapEntry(tasteMap, "movie:2", "manual");
+    markTasteMapItemStatus(tasteMap, "movie:2", "disliked");
+    assert.equal(tasteMap.archivedEntries["movie:2"].status, "disliked");
+
+    // buildTasteProfileSummary arşiv ve aktif sayıları doğru döner
+    const summary = buildTasteProfileSummary(
+      { positiveGenres: [], actors: {}, directors: {}, lovedOverviewTokens: new Set() },
+      tasteMap
+    );
+    assert.equal(summary.totalEvaluatedCandidates, 1, "Aktif aday sayısı 1 olmalı");
+    assert.equal(summary.archivedCandidatesCount, 1, "Arşivlenen aday sayısı 1 olmalı");
+  });
+});
+
+describe("Sınırlı Gösterim Geçmişi ve Depolama Optimizasyonu — Bounded Impression History (20–50 Sınırı) ve Özetleme", () => {
+  it("Sabit ve Sınırlandırılmış Dizi: Gösterimler arttığında impressionHistory azami 30 kayıtla sınırlandırılır", () => {
+    let tasteMap = createDefaultTasteMapData("profile_bounded_history_test");
+    const candidate = { id: 501, media_type: "movie", title: "Popüler Film" };
+
+    // 45 kez vitrine çıktığını simüle et
+    for (let i = 1; i <= 45; i++) {
+      const now = new Date(Date.UTC(2026, 0, 1, 0, i, 0)).toISOString();
+      tasteMap = updateTasteMapWithBatch({
+        tasteMap,
+        newRecommendedItems: [{ candidate, score: 90 }],
+        allPoolCandidates: [candidate],
+        savedItems: [],
+        preferences: { disliked: [], hidden: [], mood: "" },
+        now,
+      });
+    }
+
+    const entry = tasteMap.entries["movie:501"];
+    assert.ok(entry);
+    // 1. Toplam gösterim sayısı (lifetime counter) eksiksiz 45 olmalı
+    assert.equal(entry.shownCount, 45, "Toplam gösterim sayısı 45 olmalı");
+
+    // 2. impressionHistory dizisi sınırsız büyümemeli, tam olarak MAX_IMPRESSION_HISTORY_PER_ENTRY (30) ile sınırlandırılmalı
+    assert.equal(entry.impressionHistory.length, MAX_IMPRESSION_HISTORY_PER_ENTRY, `impressionHistory en fazla ${MAX_IMPRESSION_HISTORY_PER_ENTRY} olmalı`);
+
+    // 3. Taşma sayısı (archivedImpressionCount) 45 - 30 = 15 olmalı
+    assert.equal(entry.archivedImpressionCount, 15, "Özetlenen/arşivlenen gösterim sayısı 15 olmalı");
+
+    // 4. İlk gösterim tarihi (firstShownAt) 1. gösterimin zaman damgasını korumalı
+    const expectedFirst = new Date(Date.UTC(2026, 0, 1, 0, 1, 0)).toISOString();
+    assert.equal(entry.firstShownAt, expectedFirst, "İlk gösterim zamanı 1. gösterime ait olmalı");
+
+    // 5. Son gösterim tarihi (lastShownAt) 45. gösterimin zaman damgasını taşımalı
+    const expectedLast = new Date(Date.UTC(2026, 0, 1, 0, 45, 0)).toISOString();
+    assert.equal(entry.lastShownAt, expectedLast, "Son gösterim zamanı 45. gösterime ait olmalı");
+  });
+
+  it("sanitizeTasteMapEntryImpressions: Şişmiş eski veriyi 30 kayda indirir ve özet alanları hesaplar", () => {
+    // 60 gösterim içeren eski bir kayıt simülasyonu
+    const bloatedHistory = [];
+    for (let i = 1; i <= 60; i++) {
+      bloatedHistory.push({
+        shownAt: new Date(Date.UTC(2026, 1, 1, 0, i, 0)).toISOString(),
+        targetType: "all",
+        rank: 1,
+      });
+    }
+
+    const bloatedEntry = {
+      mediaKey: "movie:800",
+      mediaType: "movie",
+      id: 800,
+      title: "Eski Kayıt",
+      matchScore: 85,
+      rawScore: 85,
+      ring: "ring0",
+      initialRing: "ring0",
+      parts: {},
+      tags: [],
+      shownCount: 60,
+      skippedCount: 0,
+      ringDemotions: 0,
+      demotionPenalty: 0,
+      lastShownAt: bloatedHistory[59].shownAt,
+      lastScoredAt: bloatedHistory[59].shownAt,
+      impressionHistory: bloatedHistory,
+      status: "active",
+    };
+
+    const sanitized = sanitizeTasteMapEntryImpressions(bloatedEntry, 30);
+    assert.equal(sanitized.impressionHistory.length, 30, "Sanitize işlemi geçmişi 30 ile sınırlandırmalı");
+    assert.equal(sanitized.archivedImpressionCount, 30, "Taşan 30 kayıt archivedImpressionCount alanına aktarılmalı");
+    assert.equal(sanitized.firstShownAt, bloatedHistory[0].shownAt, "İlk gösterim tarihi korunmalı");
+    assert.equal(sanitized.lastShownAt, bloatedHistory[59].shownAt, "Son gösterim tarihi korunmalı");
+  });
+
+  it("getImpressionSummary: Gösterim toplamını, aktif pencereyi ve arşiv sayısını tutarlı döner", () => {
+    const entry = {
+      shownCount: 50,
+      archivedImpressionCount: 20,
+      impressionHistory: new Array(30).fill({ shownAt: "2026-10-23T12:00:00Z", targetType: "all" }),
+      firstShownAt: "2026-10-01T10:00:00Z",
+      lastShownAt: "2026-10-23T12:00:00Z",
+    };
+
+    const summary = getImpressionSummary(entry);
+    assert.equal(summary.totalShown, 50);
+    assert.equal(summary.recentCount, 30);
+    assert.equal(summary.archivedCount, 20);
+    assert.equal(summary.firstShownAt, "2026-10-01T10:00:00Z");
+    assert.equal(summary.lastShownAt, "2026-10-23T12:00:00Z");
+
+    // Boş girdi koruması
+    const emptySummary = getImpressionSummary(null);
+    assert.equal(emptySummary.totalShown, 0);
+    assert.equal(emptySummary.recentCount, 0);
+  });
+});
 

@@ -1629,6 +1629,7 @@ export interface TasteProfileSummary {
   topDirectors: Array<{ id: string; name: string; score: number }>;
   storyKeywords: string[];
   totalEvaluatedCandidates: number;
+  archivedCandidatesCount?: number;
   ringCounts: {
     core: number;
     inner: number;
@@ -1705,14 +1706,25 @@ export function buildTasteProfileSummary(
     }
   }
 
+  const archivedEntries = Object.values(tasteMap?.archivedEntries || {});
+
   return {
     topGenres,
     topActors,
     topDirectors,
     storyKeywords,
     totalEvaluatedCandidates: entries.length,
+    archivedCandidatesCount: archivedEntries.length,
     ringCounts,
   };
+}
+
+export const MAX_IMPRESSION_HISTORY_PER_ENTRY = 30;
+
+export interface TasteMapImpression {
+  shownAt: string;
+  targetType: string;
+  rank?: number;
 }
 
 export interface TasteMapEntry {
@@ -1739,10 +1751,89 @@ export interface TasteMapEntry {
   skippedCount: number;
   ringDemotions: number;
   demotionPenalty: number;
+  firstShownAt?: string | null;
   lastShownAt: string | null;
   lastScoredAt: string;
-  impressionHistory?: Array<{ shownAt: string; targetType: string; rank?: number }>;
+  archivedImpressionCount?: number;
+  impressionHistory?: TasteMapImpression[];
   status: 'active' | 'saved' | 'disliked' | 'hidden';
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  archiveReason?: 'evicted_from_pool' | 'status_change' | 'manual';
+}
+
+export function appendBoundedImpression(
+  existingHistory: TasteMapImpression[] = [],
+  newImpression: TasteMapImpression,
+  existingArchivedCount = 0,
+  maxLimit = MAX_IMPRESSION_HISTORY_PER_ENTRY
+): {
+  history: TasteMapImpression[];
+  archivedCount: number;
+} {
+  const combined = [...existingHistory, newImpression];
+  if (combined.length <= maxLimit) {
+    return {
+      history: combined,
+      archivedCount: existingArchivedCount,
+    };
+  }
+  const overflow = combined.length - maxLimit;
+  return {
+    history: combined.slice(-maxLimit),
+    archivedCount: existingArchivedCount + overflow,
+  };
+}
+
+export function sanitizeTasteMapEntryImpressions(
+  entry: TasteMapEntry,
+  maxLimit = MAX_IMPRESSION_HISTORY_PER_ENTRY
+): TasteMapEntry {
+  if (!entry) return entry;
+  const history = Array.isArray(entry.impressionHistory) ? entry.impressionHistory : [];
+  const firstShownAt = entry.firstShownAt || (history.length > 0 ? history[0].shownAt : null);
+  const lastShownAt = entry.lastShownAt || (history.length > 0 ? history[history.length - 1].shownAt : null);
+  let archivedImpressionCount = entry.archivedImpressionCount || 0;
+  let trimmedHistory = history;
+
+  if (history.length > maxLimit) {
+    const overflow = history.length - maxLimit;
+    archivedImpressionCount += overflow;
+    trimmedHistory = history.slice(-maxLimit);
+  }
+
+  return {
+    ...entry,
+    firstShownAt,
+    lastShownAt,
+    archivedImpressionCount,
+    impressionHistory: trimmedHistory,
+  };
+}
+
+export function getImpressionSummary(entry?: TasteMapEntry | null): {
+  totalShown: number;
+  recentCount: number;
+  archivedCount: number;
+  firstShownAt: string | null;
+  lastShownAt: string | null;
+} {
+  if (!entry) {
+    return { totalShown: 0, recentCount: 0, archivedCount: 0, firstShownAt: null, lastShownAt: null };
+  }
+  const history = Array.isArray(entry.impressionHistory) ? entry.impressionHistory : [];
+  const archivedCount = entry.archivedImpressionCount || 0;
+  const totalShown = Math.max(entry.shownCount || 0, history.length + archivedCount);
+  const firstShownAt = entry.firstShownAt || (history.length > 0 ? history[0].shownAt : null);
+  const lastShownAt = entry.lastShownAt || (history.length > 0 ? history[history.length - 1].shownAt : null);
+
+  return {
+    totalShown,
+    recentCount: history.length,
+    archivedCount,
+    firstShownAt,
+    lastShownAt,
+  };
 }
 
 export interface TasteProfileSnapshot {
@@ -1764,6 +1855,7 @@ export interface PersistentTasteMapData {
   profileSnapshot?: TasteProfileSnapshot;
   updatedAt: string;
   entries: Record<string, TasteMapEntry>;
+  archivedEntries?: Record<string, TasteMapEntry>;
   lastRecommendedKeys: string[];
   lastBatchTimestamp: string | null;
   cachedBalancedItems?: any[];
@@ -1795,10 +1887,11 @@ export function normalizeTasteMapEntries(
 }
 
 export function normalizeTasteMapRings(tasteMap: PersistentTasteMapData): PersistentTasteMapData {
-  if (!tasteMap || !tasteMap.entries) return tasteMap;
+  if (!tasteMap) return tasteMap;
   return {
     ...tasteMap,
-    entries: normalizeTasteMapEntries(tasteMap.entries),
+    entries: tasteMap.entries ? normalizeTasteMapEntries(tasteMap.entries) : {},
+    archivedEntries: tasteMap.archivedEntries ? normalizeTasteMapEntries(tasteMap.archivedEntries) : {},
   };
 }
 
@@ -1860,6 +1953,7 @@ export function createDefaultTasteMapData(profileId: string): PersistentTasteMap
     profileSignature: '',
     updatedAt: new Date().toISOString(),
     entries: {},
+    archivedEntries: {},
     lastRecommendedKeys: [],
     lastBatchTimestamp: null,
   };
@@ -1873,12 +1967,23 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed.entries === 'object') {
+          const sanitizedEntries: Record<string, TasteMapEntry> = {};
+          for (const [k, v] of Object.entries(parsed.entries || {})) {
+            sanitizedEntries[k] = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+          }
+          const sanitizedArchived: Record<string, TasteMapEntry> = {};
+          if (parsed.archivedEntries && typeof parsed.archivedEntries === 'object') {
+            for (const [k, v] of Object.entries(parsed.archivedEntries)) {
+              sanitizedArchived[k] = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+            }
+          }
           return {
             profileId,
             profileSignature: parsed.profileSignature || '',
             profileSnapshot: parsed.profileSnapshot || undefined,
             updatedAt: parsed.updatedAt || new Date().toISOString(),
-            entries: parsed.entries || {},
+            entries: sanitizedEntries,
+            archivedEntries: sanitizedArchived,
             lastRecommendedKeys: Array.isArray(parsed.lastRecommendedKeys) ? parsed.lastRecommendedKeys : [],
             lastBatchTimestamp: parsed.lastBatchTimestamp || null,
             cachedBalancedItems: Array.isArray(parsed.cachedBalancedItems) ? parsed.cachedBalancedItems : undefined,
@@ -1907,11 +2012,18 @@ export function markTasteMapItemStatus(
   itemOrKey: any,
   status: 'saved' | 'disliked' | 'hidden' | 'active'
 ): PersistentTasteMapData {
-  if (!tasteMap || !tasteMap.entries) return tasteMap;
+  if (!tasteMap) return tasteMap;
   const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
-  const entry = tasteMap.entries[key];
-  if (entry) {
-    entry.status = status;
+  let changed = false;
+  if (tasteMap.entries && tasteMap.entries[key]) {
+    tasteMap.entries[key].status = status;
+    changed = true;
+  }
+  if (tasteMap.archivedEntries && tasteMap.archivedEntries[key]) {
+    tasteMap.archivedEntries[key].status = status;
+    changed = true;
+  }
+  if (changed) {
     tasteMap.updatedAt = new Date().toISOString();
   }
   return tasteMap;
@@ -1932,6 +2044,7 @@ export interface UpdateTasteMapWithBatchParams {
   isFilterChange?: boolean;
   reason?: 'filter_change' | 'refresh' | 'navigation' | 'initial';
   normalizeLegacyRings?: boolean;
+  pruneInactiveCandidates?: boolean;
 }
 
 export function updateTasteMapWithBatch({
@@ -1949,10 +2062,14 @@ export function updateTasteMapWithBatch({
   isFilterChange = false,
   reason,
   normalizeLegacyRings = false,
+  pruneInactiveCandidates = true,
 }: UpdateTasteMapWithBatchParams): PersistentTasteMapData {
   let updatedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.entries || {}) };
+  let updatedArchivedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.archivedEntries || {}) };
+
   if (normalizeLegacyRings) {
     updatedEntries = normalizeTasteMapEntries(updatedEntries);
+    updatedArchivedEntries = normalizeTasteMapEntries(updatedArchivedEntries);
   }
   const newKeys = new Set<string>();
 
@@ -1975,7 +2092,7 @@ export function updateTasteMapWithBatch({
   const isFilterTriggered = Boolean(isFilterChange || reason === 'filter_change' || isTargetTypeChanged);
 
   for (const prevKey of prevKeys) {
-    const entry = updatedEntries[prevKey];
+    const entry = updatedEntries[prevKey] || updatedArchivedEntries[prevKey];
     if (!entry) continue;
 
     // Durum 1,2,3: Kaydedildiyse
@@ -2018,7 +2135,39 @@ export function updateTasteMapWithBatch({
     }
   }
 
-  // 2. Havuzdaki her adayın (500 film + 500 dizi) son profil sürümüne ait puanını haritaya kaydet
+  // 2. Havuz Senkronizasyonu ve Eski Adayları Arşive Taşıma (Pruning):
+  // allPoolCandidates sağlandığında, aktif 500 Film + 500 Dizi havuzu kesin olarak tanımlıdır.
+  // Güncel havuzda artık yer almayan eski içerikler 'entries' nesnesinden 'archivedEntries' nesnesine taşınır.
+  // Böylece:
+  // - Aktif harita tam olarak güncel havuzdaki aday sayısıyla (500 Film + 500 Dizi) birebir eşleşir.
+  // - Eski içeriklerin gösterim geçmişi (shownCount, impressionHistory, halka geriletmeleri) kaybolmaz, arşivde korunur.
+  if (Array.isArray(allPoolCandidates) && pruneInactiveCandidates) {
+    const activePoolKeys = new Set<string>();
+    for (const poolItem of allPoolCandidates) {
+      const cand = poolItem?.candidate || poolItem;
+      if (cand && cand.id) {
+        activePoolKeys.add(makeMediaKey(cand));
+      }
+    }
+    for (const k of newKeys) {
+      activePoolKeys.add(k);
+    }
+
+    for (const key of Object.keys(updatedEntries)) {
+      if (!activePoolKeys.has(key)) {
+        const staleEntry = updatedEntries[key];
+        updatedArchivedEntries[key] = {
+          ...staleEntry,
+          isArchived: true,
+          archivedAt: staleEntry.archivedAt || now,
+          archiveReason: 'evicted_from_pool',
+        };
+        delete updatedEntries[key];
+      }
+    }
+  }
+
+  // 3. Havuzdaki her adayın (500 film + 500 dizi) son profil sürümüne ait puanını haritaya kaydet
   // Gösterim geçmişi (shownCount, lastShownAt, impressionHistory) AYRI TUTULUR;
   // yalnızca havuzda bulunup puanlanmış olması kullanıcıya vitrinde gösterildiği anlamına gelmez!
   if (Array.isArray(allPoolCandidates) && allPoolCandidates.length > 0) {
@@ -2030,13 +2179,21 @@ export function updateTasteMapWithBatch({
       const id = Number(cand.id);
       const title = String(cand.title || cand.name || '');
       const rawScore = Number(poolItem.rawScore ?? poolItem.score ?? cand.score ?? 75);
-      const existing = updatedEntries[key];
+
+      // Daha önceden entries veya archivedEntries'de varsa geçmişini koru
+      const existing = updatedEntries[key] || updatedArchivedEntries[key];
+      // Eğer daha önce arşivlenmiş bir içerik havuza geri girdiyse arşivden sil
+      if (updatedArchivedEntries[key]) {
+        delete updatedArchivedEntries[key];
+      }
 
       const demotionPenalty = existing?.demotionPenalty || poolItem.demotionPenalty || 0;
       const ringDemotions = existing?.ringDemotions || poolItem.ringDemotions || 0;
       const skippedCount = existing?.skippedCount || poolItem.skippedCount || 0;
       const shownCount = existing?.shownCount || 0;
+      const firstShownAt = existing?.firstShownAt || existing?.impressionHistory?.[0]?.shownAt || null;
       const lastShownAt = existing?.lastShownAt || null;
+      const archivedImpressionCount = existing?.archivedImpressionCount || 0;
       const impressionHistory = existing?.impressionHistory ? [...existing.impressionHistory] : [];
 
       let ring: TasteRing = existing?.ring || poolItem.ring || assignTasteRing(rawScore);
@@ -2084,15 +2241,21 @@ export function updateTasteMapWithBatch({
         skippedCount,
         ringDemotions,
         demotionPenalty,
+        firstShownAt,
         lastShownAt,
         lastScoredAt: now,
+        archivedImpressionCount,
         impressionHistory,
         status,
+        isArchived: false,
+        archivedAt: null,
       };
     }
   }
 
-  // 3. Yeni vitrindeki adayı kaydet / güncelle (Vitrinde gösterilen adaylar: shownCount artar ve impressionHistory eklenir)
+  // 4. Yeni vitrindeki adayı kaydet / güncelle (Vitrinde gösterilen adaylar: shownCount artar ve impressionHistory eklenir)
+  // Depolama güvenliği: impressionHistory dizisi sınırsız büyümez, son MAX_IMPRESSION_HISTORY_PER_ENTRY (30) gösterimle sınırlandırılır.
+  // Daha eski gösterimler toplam sayaç (shownCount), ilk/son gösterim tarihleri ve archivedImpressionCount alanında korunur.
   for (let i = 0; i < (newRecommendedItems || []).length; i++) {
     const item = newRecommendedItems[i];
     const cand = item.candidate || item;
@@ -2102,16 +2265,23 @@ export function updateTasteMapWithBatch({
     const id = Number(cand.id);
     const title = String(cand.title || cand.name || '');
     const rawScore = Number(item.rawScore ?? item.score ?? cand.score ?? 75);
-    const existing = updatedEntries[key];
+    const existing = updatedEntries[key] || updatedArchivedEntries[key];
+    if (updatedArchivedEntries[key]) {
+      delete updatedArchivedEntries[key];
+    }
 
     const demotionPenalty = existing?.demotionPenalty || item.demotionPenalty || 0;
     const ringDemotions = existing?.ringDemotions || item.ringDemotions || 0;
     const skippedCount = existing?.skippedCount || item.skippedCount || 0;
     const shownCount = (existing?.shownCount || 0) + 1;
-    const impressionHistory = [
-      ...(existing?.impressionHistory || []),
+    const firstShownAt = existing?.firstShownAt || existing?.impressionHistory?.[0]?.shownAt || now;
+
+    const { history: impressionHistory, archivedCount: archivedImpressionCount } = appendBoundedImpression(
+      existing?.impressionHistory,
       { shownAt: now, targetType: targetType || 'all', rank: i + 1 },
-    ];
+      existing?.archivedImpressionCount || 0,
+      MAX_IMPRESSION_HISTORY_PER_ENTRY
+    );
 
     let ring: TasteRing = existing?.ring || item.ring || assignTasteRing(rawScore);
     if (normalizeLegacyRings) ring = normalizeTasteRing(ring);
@@ -2148,14 +2318,18 @@ export function updateTasteMapWithBatch({
       skippedCount,
       ringDemotions,
       demotionPenalty,
+      firstShownAt,
       lastShownAt: now,
       lastScoredAt: now,
+      archivedImpressionCount,
       impressionHistory,
       status: 'active',
+      isArchived: false,
+      archivedAt: null,
     };
   }
 
-  // 4. Önemli Profil Alanları Anlık Görüntüsü (Snapshot)
+  // 5. Önemli Profil Alanları Anlık Görüntüsü (Snapshot)
   const hasLiveItems = (savedItems || []).some(
     (it) => it && it.isDemo !== true && (it.personal_rating || it.status)
   );
@@ -2186,12 +2360,98 @@ export function updateTasteMapWithBatch({
     profileSnapshot,
     updatedAt: now,
     entries: updatedEntries,
+    archivedEntries: updatedArchivedEntries,
     lastRecommendedKeys: Array.from(newKeys),
     lastBatchTimestamp: now,
     cachedBalancedItems: newRecommendedItems,
     lastTargetType: targetType || tasteMap.lastTargetType || 'all',
     lastExplanation: explanation || tasteMap.lastExplanation || '',
     summary: summary || tasteMap.summary,
+  };
+}
+
+export function getTasteMapEntries(tasteMap?: PersistentTasteMapData | null): TasteMapEntry[] {
+  return Object.values(tasteMap?.entries || {});
+}
+
+export function getTasteMapArchivedEntries(tasteMap?: PersistentTasteMapData | null): TasteMapEntry[] {
+  return Object.values(tasteMap?.archivedEntries || {});
+}
+
+export function getTasteMapActiveAndArchivedCounts(tasteMap?: PersistentTasteMapData | null): {
+  activeCount: number;
+  archivedCount: number;
+  totalEvaluated: number;
+} {
+  const activeCount = Object.keys(tasteMap?.entries || {}).length;
+  const archivedCount = Object.keys(tasteMap?.archivedEntries || {}).length;
+  return {
+    activeCount,
+    archivedCount,
+    totalEvaluated: activeCount + archivedCount,
+  };
+}
+
+export function archiveTasteMapEntry(
+  tasteMap: PersistentTasteMapData,
+  itemOrKey: any,
+  reason: 'evicted_from_pool' | 'status_change' | 'manual' = 'manual'
+): PersistentTasteMapData {
+  if (!tasteMap) return tasteMap;
+  const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
+  if (!tasteMap.entries?.[key]) return tasteMap;
+
+  const now = new Date().toISOString();
+  const entry = tasteMap.entries[key];
+  const newEntries = { ...tasteMap.entries };
+  delete newEntries[key];
+
+  const newArchived = {
+    ...(tasteMap.archivedEntries || {}),
+    [key]: {
+      ...entry,
+      isArchived: true,
+      archivedAt: now,
+      archiveReason: reason,
+    },
+  };
+
+  return {
+    ...tasteMap,
+    updatedAt: now,
+    entries: newEntries,
+    archivedEntries: newArchived,
+  };
+}
+
+export function restoreTasteMapEntry(
+  tasteMap: PersistentTasteMapData,
+  itemOrKey: any
+): PersistentTasteMapData {
+  if (!tasteMap) return tasteMap;
+  const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
+  if (!tasteMap.archivedEntries?.[key]) return tasteMap;
+
+  const now = new Date().toISOString();
+  const entry = tasteMap.archivedEntries[key];
+  const newArchived = { ...tasteMap.archivedEntries };
+  delete newArchived[key];
+
+  const newEntries = {
+    ...(tasteMap.entries || {}),
+    [key]: {
+      ...entry,
+      isArchived: false,
+      archivedAt: null,
+      archiveReason: undefined,
+    },
+  };
+
+  return {
+    ...tasteMap,
+    updatedAt: now,
+    entries: newEntries,
+    archivedEntries: newArchived,
   };
 }
 
@@ -2303,10 +2563,10 @@ export function syncPoolCandidatesWithTasteMap(
   poolItems: PoolCandidateItem[],
   tasteMap: PersistentTasteMapData
 ): PoolCandidateItem[] {
-  if (!Array.isArray(poolItems) || !tasteMap?.entries) return poolItems;
+  if (!Array.isArray(poolItems) || !tasteMap) return poolItems;
   return poolItems.map((item) => {
     const key = makeMediaKey(item);
-    const entry = tasteMap.entries[key];
+    const entry = tasteMap.entries?.[key] || tasteMap.archivedEntries?.[key];
     if (!entry) return item;
     return {
       ...item,
