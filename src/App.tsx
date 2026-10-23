@@ -41,6 +41,7 @@ import {
   filterDislikedByType,
   TARGET_RECOMMENDATION_COUNT,
   FavoriteActorInfo,
+  normalizeFavoriteActors,
   replenishCandidatePool,
   isCandidateEligibleInPool,
   loadPersistentPoolData,
@@ -294,6 +295,11 @@ export function App() {
         createdAt: p.createdAt || '',
         preferences: p.id === activeProfileId ? preferences : loadProfilePreferences(p.id),
         items: p.id === activeProfileId ? savedItems : loadProfileItems(p.id),
+        favoriteActors:
+          p.id === activeProfileId
+            ? (favoriteActorsRef.current || [])
+            : (p.favoriteActors || loadFavoriteActors(p.id)),
+        isDemo: p.id === activeProfileId ? Boolean(activeProfile?.isDemo) : Boolean(p.isDemo),
       })),
     };
     const ok = await pushServerData(payload);
@@ -303,7 +309,7 @@ export function App() {
     } else {
       setSyncStatus('Değişiklikler yerel veri dosyasına yazılamadı; şimdilik yalnızca bu tarayıcıda.');
     }
-  }, [profiles, activeProfileId, profileName, preferences, savedItems]);
+  }, [profiles, activeProfileId, profileName, preferences, savedItems, activeProfile?.isDemo]);
 
   useEffect(() => {
     if (!serverSyncReady) return;
@@ -311,7 +317,7 @@ export function App() {
       pushToServer();
     }, 500);
     return () => clearTimeout(timer);
-  }, [pushToServer, serverSyncReady]);
+  }, [pushToServer, serverSyncReady, favoriteActors]);
 
   // Initial startup sync with server & load genres
   useEffect(() => {
@@ -329,6 +335,11 @@ export function App() {
               setProfileName(active.name);
               setPreferences(active.preferences);
               setSavedItems(active.items);
+              const activeFavs = active.favoriteActors || [];
+              setFavoriteActors(activeFavs);
+              try {
+                localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
+              } catch {}
             }
           }
         }
@@ -998,8 +1009,15 @@ export function App() {
       personal_rating_cleared: Boolean(existing && !personalRating && existing.personal_rating !== ''),
       addedAt: existing ? existing.addedAt : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      isDemo: false, // Kullanıcının bizzat kaydettiği veya güncellediği içerik her zaman canlıdır
     });
     if (!normalized) return;
+
+    if (activeProfile?.isDemo) {
+      setProfiles((prev) =>
+        prev.map((p) => (p.id === activeProfileId ? { ...p, isDemo: false } : p))
+      );
+    }
 
     const itemKey = makeMediaKey(mediaType, targetId);
     setSavedItems((currentSaved) => {
@@ -1430,9 +1448,11 @@ export function App() {
     setActiveProfileId(newId);
     const target = profiles.find((p) => p.id === newId);
     setProfileName(target?.name || 'Profilim');
-    setSavedItems(loadProfileItems(newId));
-    setPreferences(loadProfilePreferences(newId));
-    setFavoriteActors(loadFavoriteActors(newId));
+    const items = target?.items?.length ? target.items : loadProfileItems(newId);
+    setSavedItems(items);
+    setPreferences(target?.preferences || loadProfilePreferences(newId));
+    const favs = target?.favoriteActors?.length ? target.favoriteActors : loadFavoriteActors(newId);
+    setFavoriteActors(favs);
     setTasteMap(loadPersistentTasteMap(newId));
     setForYouItems([]);
     setForYouReasons(new Map());
@@ -1440,7 +1460,7 @@ export function App() {
     setProfileOpen(false);
   };
 
-  const handleCreateProfile = (name: string) => {
+  const handleCreateProfile = (name: string, isDemo = false) => {
     const newId = `profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newProf: Profile = {
       id: newId,
@@ -1448,6 +1468,8 @@ export function App() {
       createdAt: new Date().toISOString(),
       preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
       items: [],
+      favoriteActors: [],
+      isDemo,
     };
     setProfiles((prev) => [...prev, newProf]);
     setActiveProfileId(newId);
@@ -1495,14 +1517,30 @@ export function App() {
     }
   };
 
+  const handleToggleDemoMode = () => {
+    const nextState = !activeProfile?.isDemo;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === activeProfileId ? { ...p, isDemo: nextState } : p))
+    );
+    showToast(
+      nextState
+        ? 'Profil Demo moduna alındı (Örnek havuz kullanılır).'
+        : 'Profil Canlı moda alındı (Kişisel verileriniz kullanılır).'
+    );
+  };
+
   // Export / Import
   const handleExportBackup = () => {
     const backup = {
-      version: 2,
+      version: 3,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       profileId: activeProfileId,
       profileName,
       items: savedItems,
       preferences,
+      favoriteActors: favoriteActorsRef.current,
+      isDemo: Boolean(activeProfile?.isDemo),
+      exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1539,6 +1577,21 @@ export function App() {
         notified: [],
       }));
     }
+    const importedActors =
+      mode === 'merge'
+        ? normalizeFavoriteActors([...favoriteActors, ...(pendingBackup.favoriteActors || [])])
+        : normalizeFavoriteActors(pendingBackup.favoriteActors || []);
+    setFavoriteActors(importedActors);
+    try {
+      localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(importedActors));
+    } catch {}
+
+    if (pendingBackup.isDemo !== undefined) {
+      setProfiles((prev) =>
+        prev.map((p) => (p.id === activeProfileId ? { ...p, isDemo: pendingBackup.isDemo } : p))
+      );
+    }
+
     setPendingBackup(null);
     setProfileOpen(false);
     showToast('Yedek başarıyla içe aktarıldı!');
@@ -1626,6 +1679,7 @@ export function App() {
             onToggleDislike={(key) => handleToggleDislike(key)}
             onRefreshTasteMap={handleRefreshTasteMap}
             isLoading={isLoading}
+            isDemo={Boolean(activeProfile?.isDemo)}
           />
         ) : (
           <MediaGrid
@@ -1756,6 +1810,8 @@ export function App() {
         onToggleReminders={handleToggleReminders}
         onExportBackup={handleExportBackup}
         onImportBackupFile={handleImportBackupFile}
+        isDemo={Boolean(activeProfile?.isDemo)}
+        onToggleDemoMode={handleToggleDemoMode}
       />
 
       <ImportChoiceModal

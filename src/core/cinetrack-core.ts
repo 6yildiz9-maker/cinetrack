@@ -46,6 +46,7 @@ export interface SavedItem {
   poolSource?: string;
   poolReason?: string;
   poolSources?: number;
+  isDemo?: boolean;
 }
 
 export interface Preferences {
@@ -72,6 +73,7 @@ export interface Profile {
   preferences: Preferences;
   items: SavedItem[];
   favoriteActors?: FavoriteActorInfo[];
+  isDemo?: boolean;
 }
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -344,6 +346,7 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     addedAt: typeof item.addedAt === 'string' ? item.addedAt : '',
     updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : '',
     custom: Boolean(item.custom || String(item.id).startsWith('custom-')),
+    isDemo: item.isDemo === true,
   };
 }
 
@@ -447,8 +450,10 @@ export function dedupeItems(items: SavedItem[]): SavedItem[] {
       rating = older.personal_rating;
     }
     if (rating) ratingCleared = false;
+    const isDemo = newest.isDemo === true && older.isDemo === true;
     const normalized = normalizeSavedItem({
       ...newest,
+      isDemo,
       status: newest.status,
       personal_rating: rating || '',
       personal_rating_cleared: ratingCleared,
@@ -471,17 +476,45 @@ export function parseBackupText(text: string): {
   profileName: string;
   preferences: any;
   favoriteActors: FavoriteActorInfo[];
+  isDemo?: boolean;
   schemaVersion: number;
 } {
   const backup = JSON.parse(text);
   if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
     throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
   }
-  if (![1, 2, 3].includes(backup.version) || !Array.isArray(backup.items)) {
+  if (![1, 2, 3].includes(backup.version)) {
     throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
   }
+
+  let rawItems: any[] = [];
+  let rawProfileName = '';
+  let rawPreferences: any = null;
+  let rawFavoriteActors: any[] = [];
+  let isDemo = false;
+
+  if (Array.isArray(backup.profiles) && backup.profiles.length > 0) {
+    const active =
+      backup.profiles.find((p: any) => p && p.id === backup.activeProfileId) || backup.profiles[0];
+    if (active) {
+      rawItems = Array.isArray(active.items) ? active.items : [];
+      rawProfileName = typeof active.name === 'string' ? active.name : '';
+      rawPreferences = active.preferences || null;
+      rawFavoriteActors = Array.isArray(active.favoriteActors) ? active.favoriteActors : [];
+      isDemo = active.isDemo === true;
+    }
+  } else if (Array.isArray(backup.items)) {
+    rawItems = backup.items;
+    rawProfileName = typeof backup.profileName === 'string' ? backup.profileName : '';
+    rawPreferences = backup.preferences || null;
+    rawFavoriteActors = Array.isArray(backup.favoriteActors) ? backup.favoriteActors : [];
+    isDemo = backup.isDemo === true;
+  } else {
+    throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
+  }
+
   if (
-    backup.items.some(
+    rawItems.some(
       (item: any) =>
         !item ||
         typeof item !== 'object' ||
@@ -491,17 +524,19 @@ export function parseBackupText(text: string): {
   ) {
     throw new Error('Yedekte geçersiz içerik kimliği veya türü var. Güvenlik nedeniyle içe aktarma durduruldu.');
   }
+
   const rawSchemaVer = Number(backup.schemaVersion || backup.version);
   const schemaVersion =
     Number.isSafeInteger(rawSchemaVer) && rawSchemaVer > 0 ? rawSchemaVer : CURRENT_SCHEMA_VERSION;
   return {
-    items: dedupeItems(backup.items.map(normalizeSavedItem).filter(Boolean) as SavedItem[]),
-    profileName: typeof backup.profileName === 'string' ? backup.profileName.trim().slice(0, 40) : '',
+    items: dedupeItems(rawItems.map(normalizeSavedItem).filter(Boolean) as SavedItem[]),
+    profileName: rawProfileName.trim().slice(0, 40),
     preferences:
-      backup.preferences && typeof backup.preferences === 'object' && !Array.isArray(backup.preferences)
-        ? backup.preferences
+      rawPreferences && typeof rawPreferences === 'object' && !Array.isArray(rawPreferences)
+        ? rawPreferences
         : null,
-    favoriteActors: normalizeFavoriteActors(backup.favoriteActors),
+    favoriteActors: normalizeFavoriteActors(rawFavoriteActors),
+    isDemo,
     schemaVersion,
   };
 }
@@ -576,6 +611,7 @@ export function normalizeProfile(
     preferences: normalizePreferences(raw.preferences, { knownMoods }),
     items: dedupeItems(items).slice(0, maxItems),
     favoriteActors: normalizeFavoriteActors(raw.favoriteActors),
+    isDemo: raw.isDemo === true,
   };
 }
 
@@ -601,6 +637,7 @@ export function normalizeDataDocument(
         preferences: raw.preferences,
         items: raw.items,
         favoriteActors: raw.favoriteActors,
+        isDemo: raw.isDemo === true,
       },
     ];
     activeCandidate = candidates[0].id;
@@ -1189,10 +1226,12 @@ export function buildTasteProfileV3(
     lambda = 1,
     now = Date.now(),
     dislikedKeys = [] as string[],
+    filterDemoIfLiveExists = true,
   }: {
     lambda?: number;
     now?: number;
     dislikedKeys?: string[];
+    filterDemoIfLiveExists?: boolean;
   } = {}
 ): TasteProfileV3 {
   const genresAcc: Record<string, { num: number; den: number }> = {};
@@ -1225,7 +1264,18 @@ export function buildTasteProfileV3(
   const lovedOverviewTokens = new Set<string>();
   const coOccurredPairs = new Set<string>();
 
-  const rawItems: any[] = [...(Array.isArray(items) ? items : [])];
+  let rawItems: any[] = [...(Array.isArray(items) ? items : [])];
+
+  // Demo vs live ayrımı: Kullanıcı gerçek (canlı) kayıtlı içeriklere sahip olduğunda
+  // demo seed içeriklerini profil zevk hesabından tamamen filtrele.
+  if (filterDemoIfLiveExists) {
+    const hasLiveItems = rawItems.some(
+      (it) => it && it.isDemo !== true && !it.isDisliked && (it.personal_rating || it.status)
+    );
+    if (hasLiveItems) {
+      rawItems = rawItems.filter((it) => it && it.isDemo !== true);
+    }
+  }
 
   // Incorporate explicit disliked signals if provided as keys
   for (const key of dislikedKeys) {
@@ -1529,12 +1579,48 @@ export function computeTasteProfileSignature(
   preferences: Preferences = { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
   favoriteActors: FavoriteActorInfo[] = []
 ): string {
-  const ratingsSum = (savedItems || []).reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+  // Demo / Live ayrımı: Kullanıcı gerçek (canlı) içeriklere sahipse, imza canlı içeriklere göre üretilir
+  const hasLiveItems = (savedItems || []).some(
+    (it) => it && it.isDemo !== true && (it.personal_rating || it.status)
+  );
+  const effectiveItems = hasLiveItems
+    ? (savedItems || []).filter((it) => it && it.isDemo !== true)
+    : (savedItems || []);
+
+  const sortedItemTokens = effectiveItems
+    .map((it) => {
+      const key = makeMediaKey(it);
+      const rating = it.personal_rating !== '' && it.personal_rating != null ? String(it.personal_rating) : '0';
+      const status = it.status || 'watchlist';
+      const updated = it.updatedAt || it.addedAt || '';
+      const demoFlag = it.isDemo ? '1' : '0';
+      return `${key}:${status}:${rating}:${updated}:${demoFlag}`;
+    })
+    .sort();
+
+  const sortedDisliked = [...(preferences?.disliked || [])].sort();
+  const sortedProviders = [...(preferences?.providers || [])].sort();
   const mood = preferences?.mood || '';
-  const dislikedCount = (preferences?.disliked || []).length;
-  const favActorsCount = (favoriteActors || []).length;
-  const lastSavedAt = savedItems[0]?.updatedAt || savedItems[0]?.addedAt || '';
-  return `sig_${savedItems.length}_${ratingsSum}_${mood}_${dislikedCount}_${favActorsCount}_${lastSavedAt.slice(0, 19)}`;
+  const sortedFavActors = (favoriteActors || []).map((a) => a.id).sort((a, b) => a - b);
+
+  const fullPayload = [
+    `items:${sortedItemTokens.join(';')}`,
+    `disliked:${sortedDisliked.join(',')}`,
+    `providers:${sortedProviders.join(',')}`,
+    `mood:${mood}`,
+    `favActors:${sortedFavActors.join(',')}`,
+  ].join('|');
+
+  // 32-bit FNV-1a hash
+  let h = 0x811c9dc5;
+  for (let i = 0; i < fullPayload.length; i++) {
+    h ^= fullPayload.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  const hash32 = (h >>> 0).toString(16).padStart(8, '0');
+
+  const ratingsSum = effectiveItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+  return `sig_${effectiveItems.length}_${ratingsSum}_${mood || 'nomood'}_${sortedDisliked.length}_${sortedFavActors.length}_${hash32}`;
 }
 
 export interface TasteProfileSummary {

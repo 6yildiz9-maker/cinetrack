@@ -20,6 +20,7 @@ interface TasteMapViewProps {
   onToggleDislike: (key: string) => void;
   onRefreshTasteMap: () => void;
   isLoading?: boolean;
+  isDemo?: boolean;
 }
 
 export const TasteMapView: React.FC<TasteMapViewProps> = ({
@@ -32,6 +33,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   onToggleDislike,
   onRefreshTasteMap,
   isLoading = false,
+  isDemo = false,
 }) => {
   const [selectedRing, setSelectedRing] = useState<TasteRing>('ring0');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'movie' | 'tv'>('all');
@@ -125,7 +127,16 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               sayfa değişiminde baştan hesaplanmaz; profilin değiştikçe güncellenir ve atlanan
               yapımlar halka geriletmesi ile yörüngeye taşınır.
             </p>
-            <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400 pt-2">
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 pt-2">
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                isDemo
+                  ? 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
+                  : 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${isDemo ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
+                <span>{isDemo ? '🟡 Demo Modu (Örnek Havuz)' : '🟢 Canlı Profil (Kişisel Veri)'}</span>
+              </span>
+              <span>·</span>
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
                 <span>Haritalanan Aday: <strong className="text-slate-200">{entriesList.length}</strong> (500 Film + 500 Dizi)</span>
@@ -135,8 +146,8 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               {tasteMap?.profileSignature && (
                 <>
                   <span>·</span>
-                  <span className="font-mono bg-slate-800/80 px-2 py-0.5 rounded text-[10px] text-slate-300">
-                    İmza: {tasteMap.profileSignature.slice(0, 16)}...
+                  <span className="font-mono bg-slate-800/80 px-2 py-0.5 rounded text-[10px] text-slate-300" title={tasteMap.profileSignature}>
+                    İmza: {tasteMap.profileSignature.slice(0, 18)}...
                   </span>
                 </>
               )}

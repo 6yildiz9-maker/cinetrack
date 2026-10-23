@@ -20,6 +20,8 @@ interface ProfileModalProps {
   onToggleReminders: () => void;
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
+  isDemo?: boolean;
+  onToggleDemoMode?: () => void;
 }
 
 function formatMinutes(totalMinutes: number): { primary: string; secondary: string; days: number; hours: number; mins: number } {
@@ -51,6 +53,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onToggleReminders,
   onExportBackup,
   onImportBackupFile,
+  isDemo = false,
+  onToggleDemoMode,
 }) => {
   const [activeTab, setActiveTab] = useState<'stats' | 'settings'>('stats');
   const [genreMediaTypeFilter, setGenreMediaTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
@@ -462,6 +466,36 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 />
               </label>
 
+              {/* Data Mode Indicator & Toggle */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(51, 65, 85, 0.6)', borderRadius: '12px', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '12px', color: '#94a3b8' }}>Veri Kaynağı:</span>
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: '999px',
+                      background: isDemo ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                      color: isDemo ? '#fcd34d' : '#6ee7b7',
+                      border: isDemo ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid rgba(16, 185, 129, 0.3)',
+                    }}
+                  >
+                    {isDemo ? '🟡 Demo Modu (Örnek Yapımlar)' : '🟢 Canlı Veri (Kişisel Profil)'}
+                  </span>
+                </div>
+                {onToggleDemoMode && (
+                  <button
+                    type="button"
+                    onClick={onToggleDemoMode}
+                    className="btn"
+                    style={{ fontSize: '11px', padding: '4px 10px' }}
+                  >
+                    {isDemo ? 'Canlı Moda Geç' : 'Demo Moduna Al'}
+                  </button>
+                )}
+              </div>
+
               <div className="profile-manage">
                 <label htmlFor="switchProfile">
                   Profili değiştir
@@ -472,7 +506,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   >
                     {profiles.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} {p.id === activeProfileId ? '(Geçerli)' : ''}
+                        {p.name} {p.isDemo ? '(Demo)' : ''} {p.id === activeProfileId ? '(Geçerli)' : ''}
                       </option>
                     ))}
                   </select>

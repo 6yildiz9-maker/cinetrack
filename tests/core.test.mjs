@@ -3038,6 +3038,159 @@ describe("Halka Sistemi — Halka 0 (Yeni Eşleşme), Halka 1 (Yakın Zamanda G�
   });
 });
 
+describe("Doğruluk ve Veri Kaybı Riskleri — Profil İmzası, Favori Oyuncu Senkronizasyonu ve Demo/Live Ayrımı", () => {
+  it("computeTasteProfileSignature: eşit toplamlı puan takasında ve durum/sağlayıcı değişikliklerinde çarpışma (collision) üretmez", () => {
+    const itemA = { id: 1, media_type: "movie", status: "completed", personal_rating: 9, updatedAt: "2026-10-22T08:00:00Z" };
+    const itemB = { id: 2, media_type: "tv", status: "watching", personal_rating: 7, updatedAt: "2026-10-22T08:00:00Z" };
+    const prefs = { disliked: [], providers: ["8"], mood: "mind-bending", reminders: false, notified: [] };
+    const actors = [{ id: 101, name: "Aktör A" }];
+
+    const sigInitial = computeTasteProfileSignature([itemA, itemB], prefs, actors);
+
+    // 1. Toplam puan aynı kalsa dahi (9+7=16 ve 8+8=16), imza kesinlikle değişmeli (Eski toplam-puan zafiyetini çözer)
+    const itemA2 = { ...itemA, personal_rating: 8 };
+    const itemB2 = { ...itemB, personal_rating: 8 };
+    const sigRatingSwapped = computeTasteProfileSignature([itemA2, itemB2], prefs, actors);
+    assert.notEqual(sigInitial, sigRatingSwapped, "Puan toplamı eşit kalsa dahi münferit puanlar değiştiğinde imza değişmeli");
+
+    // 2. İzleme durumu değiştiğinde ('watching' -> 'completed', puanlar aynı), imza kesinlikle güncellenmeli
+    const itemBCompleted = { ...itemB, status: "completed" };
+    const sigStatusChanged = computeTasteProfileSignature([itemA, itemBCompleted], prefs, actors);
+    assert.notEqual(sigInitial, sigStatusChanged, "İçerik izleme durumu değiştiğinde imza değişmeli");
+
+    // 3. Sağlayıcı (provider) filtresi değiştiğinde (ör. Netflix -> Prime Video), imza kesinlikle güncellenmeli
+    const prefsProviderChanged = { ...prefs, providers: ["119"] };
+    const sigProviderChanged = computeTasteProfileSignature([itemA, itemB], prefsProviderChanged, actors);
+    assert.notEqual(sigInitial, sigProviderChanged, "Yayın platformu tercihi değiştiğinde imza güncellenmeli");
+
+    // 4. Favori oyuncu sayısı aynı kalsa da oyuncu kimliği değiştiğinde imza güncellenmeli
+    const actorsSwapped = [{ id: 102, name: "Aktör B" }];
+    const sigActorsSwapped = computeTasteProfileSignature([itemA, itemB], prefs, actorsSwapped);
+    assert.notEqual(sigInitial, sigActorsSwapped, "Favori oyuncu kimliği değiştiğinde imza güncellenmeli");
+  });
+
+  it("Favori Oyuncular: normalizeProfile ve normalizeDataDocument sunucu senkronizasyonunda favori oyuncuları eksiksiz korur", () => {
+    const rawProfile = {
+      id: "profile-test-1",
+      name: "Sinema Sever",
+      createdAt: "2026-10-22T08:00:00Z",
+      preferences: { disliked: [], providers: [], mood: "", reminders: false, notified: [] },
+      items: [{ id: 10, media_type: "movie", title: "Film A", status: "completed" }],
+      favoriteActors: [
+        { id: 101, name: "Leonardo DiCaprio", profile_path: "/leo.jpg" },
+        { id: 102, name: "Joseph Gordon-Levitt" },
+      ],
+      isDemo: false,
+    };
+
+    const normalized = normalizeProfile(rawProfile);
+    assert.ok(normalized);
+    assert.equal(normalized.favoriteActors.length, 2);
+    assert.equal(normalized.favoriteActors[0].name, "Leonardo DiCaprio");
+    assert.equal(normalized.favoriteActors[1].id, 102);
+    assert.equal(normalized.isDemo, false);
+
+    // Çoklu profilli DataDocument normalizasyonu
+    const rawDoc = {
+      version: 3,
+      schemaVersion: 3,
+      activeProfileId: "profile-test-1",
+      profiles: [rawProfile],
+    };
+    const normalizedDoc = normalizeDataDocument(rawDoc);
+    assert.ok(normalizedDoc);
+    assert.equal(normalizedDoc.profiles[0].favoriteActors.length, 2);
+    assert.equal(normalizedDoc.profiles[0].favoriteActors[0].id, 101);
+  });
+
+  it("JSON Yedeği: parseBackupText hem tekil profil hem tam sunucu yedeğinde favori oyuncuları ve demo bayrağını eksiksiz ayrıştırır", () => {
+    // 1. Tekil profil yedek JSON'u
+    const singleBackup = JSON.stringify({
+      version: 3,
+      schemaVersion: 3,
+      profileId: "profile-single",
+      profileName: "Özel Profil",
+      items: [{ id: 50, media_type: "movie", title: "Film 50", status: "watchlist" }],
+      preferences: { disliked: [], providers: ["8"], mood: "dark" },
+      favoriteActors: [{ id: 201, name: "Christian Bale" }],
+      isDemo: false,
+    });
+
+    const parsedSingle = parseBackupText(singleBackup);
+    assert.equal(parsedSingle.profileName, "Özel Profil");
+    assert.equal(parsedSingle.items.length, 1);
+    assert.equal(parsedSingle.favoriteActors.length, 1);
+    assert.equal(parsedSingle.favoriteActors[0].id, 201);
+    assert.equal(parsedSingle.isDemo, false);
+
+    // 2. Çok profilli / sunucu cinetrack-data.json belgesi
+    const documentBackup = JSON.stringify({
+      version: 3,
+      schemaVersion: 3,
+      activeProfileId: "profile-main",
+      profiles: [
+        {
+          id: "profile-main",
+          name: "Ana Profil",
+          createdAt: "2026-10-23T00:00:00Z",
+          preferences: { disliked: [], providers: [], mood: "" },
+          items: [{ id: 99, media_type: "tv", title: "Dizi 99", status: "watching" }],
+          favoriteActors: [{ id: 301, name: "Bryan Cranston" }],
+          isDemo: false,
+        },
+      ],
+    });
+
+    const parsedDoc = parseBackupText(documentBackup);
+    assert.equal(parsedDoc.profileName, "Ana Profil");
+    assert.equal(parsedDoc.items.length, 1);
+    assert.equal(parsedDoc.favoriteActors.length, 1);
+    assert.equal(parsedDoc.favoriteActors[0].name, "Bryan Cranston");
+    assert.equal(parsedDoc.isDemo, false);
+  });
+
+  it("Demo/Live Ayrımı: Canlı kullanıcı verisi varken demo seed içerikleri zevk profili hesabından izole edilir", () => {
+    // Demo seed yapımı: Tür 878 (Bilim Kurgu)
+    const demoItem = {
+      id: 901,
+      media_type: "movie",
+      title: "Demo Bilim Kurgu",
+      genre_ids: [878],
+      status: "completed",
+      personal_rating: 9,
+      isDemo: true,
+    };
+
+    // Canlı kullanıcı yapımı: Tür 28 (Aksiyon), Tür 80 (Suç)
+    const liveItem = {
+      id: 902,
+      media_type: "movie",
+      title: "Canlı Aksiyon",
+      genre_ids: [28, 80],
+      status: "completed",
+      personal_rating: 10,
+      isDemo: false,
+    };
+
+    // Kullanıcı henüz hiçbir canlı içerik eklememişken demo seed kullanılır (fallback)
+    const demoOnlyProfile = buildTasteProfileV3([demoItem]);
+    assert.ok(demoOnlyProfile.positiveGenres.includes("878"), "Yalnızca demo varken fallback olarak demo türü profilde yer alır");
+
+    // Kullanıcı ilk canlı içeriğini eklediğinde: Demo içerik otomatik olarak zevk hesabından dışlanır!
+    const mixedProfile = buildTasteProfileV3([demoItem, liveItem]);
+    assert.ok(mixedProfile.positiveGenres.includes("28"), "Canlı eklenen içerik türü profilde yer alır");
+    assert.ok(!mixedProfile.positiveGenres.includes("878"), "Canlı veri varken demo içerik türü profili kirletmez");
+
+    // dedupeItems: Kullanıcı demo içeriğiyle etkileşime girip kaydettiğinde isDemo false'a yükseltilir
+    const olderDemo = { id: 901, media_type: "movie", title: "Demo", status: "watchlist", isDemo: true, addedAt: "2026-10-20" };
+    const userUpdate = { id: 901, media_type: "movie", title: "Demo", status: "completed", personal_rating: 9, isDemo: false, updatedAt: "2026-10-23" };
+    const deduped = dedupeItems([olderDemo, userUpdate]);
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].isDemo, false, "Kullanıcı etkileşimi demo içeriği canlı veriye terfi ettirir");
+  });
+});
+
+
 
 
 
