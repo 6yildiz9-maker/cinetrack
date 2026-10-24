@@ -5,6 +5,7 @@ import {
   TasteMapEntry,
   TasteProfileSummary,
   getTasteRingLabel,
+  inferLifecycleRing,
   normalizeTasteRing,
   makeMediaKey,
 } from '../core/cinetrack-core';
@@ -59,28 +60,32 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
     return entriesList.filter((e) => e.mediaType === 'tv').length;
   }, [entriesList]);
 
+  const lastKeys = useMemo(() => tasteMap?.lastRecommendedKeys || [], [tasteMap]);
+
   // Ring counts for active entries
   const ringCounts = useMemo(() => {
     const counts: Record<string, number> = { ring0: 0, ring1: 0, ring2: 0 };
     for (const e of entriesList) {
-      const norm = normalizeTasteRing(e.ring);
+      const key = e.mediaKey || makeMediaKey(e);
+      const norm = inferLifecycleRing(key, e, lastKeys);
       counts[norm] = (counts[norm] || 0) + 1;
     }
     return counts;
-  }, [entriesList]);
+  }, [entriesList, lastKeys]);
 
   // Filtered entries for selected ring
   const activeRingEntries = useMemo(() => {
+    const targetNorm = normalizeTasteRing(selectedRing);
     return entriesList
       .filter((e) => {
-        const norm = normalizeTasteRing(e.ring);
-        const targetNorm = normalizeTasteRing(selectedRing);
+        const key = e.mediaKey || makeMediaKey(e);
+        const norm = inferLifecycleRing(key, e, lastKeys);
         if (norm !== targetNorm) return false;
         if (mediaFilter === 'all') return true;
         return e.mediaType === mediaFilter;
       })
       .sort((a, b) => b.matchScore - a.matchScore);
-  }, [entriesList, selectedRing, mediaFilter]);
+  }, [entriesList, selectedRing, mediaFilter, lastKeys]);
 
   // Filtered archived entries
   const filteredArchivedEntries = useMemo(() => {
@@ -388,7 +393,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Geriletme Kuralı:</span>
-                <span className="font-semibold text-rose-300">2 Atlamada 1 Halka Gerileme</span>
+                <span className="font-semibold text-rose-300">Her Atlamada Halka 2 + Ceza</span>
               </div>
             </div>
           </div>
@@ -716,9 +721,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                             >
                               👁️ {entry.shownCount || 0} gösterim
                             </span>
-                            {normalizeTasteRing(entry.ring) === 'ring0' ? (
+                            {inferLifecycleRing(key, entry, lastKeys) === 'ring0' ? (
                               <span className="text-emerald-400 font-medium">🌟 Yeni</span>
-                            ) : normalizeTasteRing(entry.ring) === 'ring1' ? (
+                            ) : inferLifecycleRing(key, entry, lastKeys) === 'ring1' ? (
                               <span className="text-amber-400 font-medium">⏳ Dinleniyor</span>
                             ) : (
                               <span className="text-sky-400 font-medium">🔄 Yedek ({entry.skippedCount || 1}x)</span>
@@ -873,7 +878,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                         </div>
                         <div className="flex justify-between">
                           <span>Son Halka Durumu:</span>
-                          <span className="text-slate-300">{normalizeTasteRing(entry.ring)}</span>
+                          <span className="text-slate-300">{inferLifecycleRing(key, entry, lastKeys)}</span>
                         </div>
                       </div>
                     </div>

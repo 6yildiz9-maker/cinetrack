@@ -1532,7 +1532,8 @@ export function buildTasteProfileV3(
  * Aşama 3: Kalıcı Zevk Haritası (Taste Map) ve Konsantrik Halka Takibi (Sorun D & Zevk Haritası)
  * ============================================================================ */
 
-export type TasteRing = 'ring0' | 'ring1' | 'ring2' | 'core' | 'inner' | 'outer' | 'orbit';
+export type LifecycleRing = 'ring0' | 'ring1' | 'ring2';
+export type TasteRing = LifecycleRing | 'core' | 'inner' | 'outer' | 'orbit';
 
 export interface TastePillarsSummary {
   genreStoryScore: number;       // 0-100 (Tür ve hikâye: tür, anahtar kelime, özet)
@@ -1923,23 +1924,61 @@ export interface PersistentTasteMapData {
   summary?: TasteProfileSummary;
 }
 
-export function normalizeTasteRing(ring?: TasteRing | null): 'ring0' | 'ring1' | 'ring2' {
-  if (!ring) return 'ring0';
-  if (ring === 'ring0' || ring === 'core') return 'ring0';
-  if (ring === 'ring1' || ring === 'inner') return 'ring1';
-  return 'ring2';
+export function inferLifecycleRing(
+  mediaKey: string,
+  entry:
+    | {
+        shownCount?: number;
+        skippedCount?: number;
+        lastShownAt?: string | null;
+      }
+    | undefined
+    | null,
+  lastRecommendedKeys: string[] = []
+): LifecycleRing {
+  if (Array.isArray(lastRecommendedKeys) && lastRecommendedKeys.includes(mediaKey)) {
+    return 'ring1';
+  }
+
+  const hasBeenShown =
+    (entry?.shownCount ?? 0) > 0 ||
+    (entry?.skippedCount ?? 0) > 0 ||
+    Boolean(entry?.lastShownAt);
+
+  return hasBeenShown ? 'ring2' : 'ring0';
+}
+
+export function normalizeTasteRing(
+  ring?: TasteRing | null,
+  entry?: { shownCount?: number; skippedCount?: number; lastShownAt?: string | null } | null,
+  inLastBatch?: boolean
+): LifecycleRing {
+  if (inLastBatch) return 'ring1';
+  if (entry != null) {
+    const hasBeenShown =
+      (entry.shownCount ?? 0) > 0 ||
+      (entry.skippedCount ?? 0) > 0 ||
+      Boolean(entry.lastShownAt);
+    return hasBeenShown ? 'ring2' : 'ring0';
+  }
+  if (ring === 'ring1') return 'ring1';
+  if (ring === 'ring2') return 'ring2';
+  return 'ring0';
 }
 
 export function normalizeTasteMapEntries(
-  entries: Record<string, TasteMapEntry>
+  entries: Record<string, TasteMapEntry>,
+  lastRecommendedKeys: string[] = []
 ): Record<string, TasteMapEntry> {
   if (!entries) return {};
   const normalized: Record<string, TasteMapEntry> = {};
   for (const [key, entry] of Object.entries(entries)) {
+    if (!entry) continue;
+    const mediaKey = entry.mediaKey || key;
     normalized[key] = {
       ...entry,
-      ring: normalizeTasteRing(entry.ring),
-      initialRing: normalizeTasteRing(entry.initialRing),
+      ring: inferLifecycleRing(mediaKey, entry, lastRecommendedKeys),
+      initialRing: 'ring0',
     };
   }
   return normalized;
@@ -1947,38 +1986,39 @@ export function normalizeTasteMapEntries(
 
 export function normalizeTasteMapRings(tasteMap: PersistentTasteMapData): PersistentTasteMapData {
   if (!tasteMap) return tasteMap;
+  const lastKeys = Array.isArray(tasteMap.lastRecommendedKeys) ? tasteMap.lastRecommendedKeys : [];
   return {
     ...tasteMap,
-    entries: tasteMap.entries ? normalizeTasteMapEntries(tasteMap.entries) : {},
-    archivedEntries: tasteMap.archivedEntries ? normalizeTasteMapEntries(tasteMap.archivedEntries) : {},
+    entries: tasteMap.entries ? normalizeTasteMapEntries(tasteMap.entries, lastKeys) : {},
+    archivedEntries: tasteMap.archivedEntries ? normalizeTasteMapEntries(tasteMap.archivedEntries, lastKeys) : {},
   };
 }
 
 export function assignTasteRing(
-  score: number,
-  context?: { inLastBatch?: boolean; shownCount?: number; skippedCount?: number }
-): TasteRing {
+  _score?: number,
+  context?: { inLastBatch?: boolean; shownCount?: number; skippedCount?: number; lastShownAt?: string | null }
+): LifecycleRing {
   if (context?.inLastBatch) return 'ring1';
-  if ((context?.skippedCount || 0) > 0 || (context?.shownCount || 0) > 0) return 'ring2';
-  if (context !== undefined) return 'ring0';
-
-  const s = Number(score) || 0;
-  if (s >= 85) return 'core';
-  if (s >= 70) return 'inner';
-  if (s >= 55) return 'outer';
-  return 'orbit';
+  if (
+    (context?.skippedCount || 0) > 0 ||
+    (context?.shownCount || 0) > 0 ||
+    Boolean(context?.lastShownAt)
+  ) {
+    return 'ring2';
+  }
+  return 'ring0';
 }
 
-export function demoteTasteRing(currentRing: TasteRing, steps: number = 1): TasteRing {
-  if (currentRing === 'ring0') return steps >= 2 ? 'ring2' : 'ring1';
-  if (currentRing === 'ring1') return 'ring2';
-  if (currentRing === 'ring2') return 'ring2';
-
-  const ringOrder: TasteRing[] = ['core', 'inner', 'outer', 'orbit'];
-  const currentIndex = ringOrder.indexOf(currentRing);
-  if (currentIndex === -1) return 'orbit';
-  const targetIndex = Math.min(ringOrder.length - 1, currentIndex + Math.max(1, steps));
-  return ringOrder[targetIndex];
+export function demoteTasteRing(currentRing: TasteRing, steps: number = 1): LifecycleRing {
+  if (steps <= 0) {
+    if (currentRing === 'ring1') return 'ring1';
+    if (currentRing === 'ring2' || currentRing === 'outer' || currentRing === 'orbit') return 'ring2';
+    return 'ring0';
+  }
+  if (currentRing === 'ring0' || currentRing === 'core') {
+    return steps >= 2 ? 'ring2' : 'ring1';
+  }
+  return 'ring2';
 }
 
 export function getTasteRingLabel(ring?: TasteRing | null): string {
@@ -2028,17 +2068,44 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed.entries === 'object') {
+          const lastRecommendedKeys: string[] = Array.isArray(parsed.lastRecommendedKeys)
+            ? parsed.lastRecommendedKeys
+            : [];
+          let needsMigrationWrite = false;
+
           const sanitizedEntries: Record<string, TasteMapEntry> = {};
           for (const [k, v] of Object.entries(parsed.entries || {})) {
-            sanitizedEntries[k] = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+            const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+            const mediaKey = sanitized.mediaKey || k;
+            const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
+            if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0') {
+              needsMigrationWrite = true;
+            }
+            sanitizedEntries[k] = {
+              ...sanitized,
+              ring: inferredRing,
+              initialRing: 'ring0',
+            };
           }
+
           const sanitizedArchived: Record<string, TasteMapEntry> = {};
           if (parsed.archivedEntries && typeof parsed.archivedEntries === 'object') {
             for (const [k, v] of Object.entries(parsed.archivedEntries)) {
-              sanitizedArchived[k] = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+              const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+              const mediaKey = sanitized.mediaKey || k;
+              const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
+              if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0') {
+                needsMigrationWrite = true;
+              }
+              sanitizedArchived[k] = {
+                ...sanitized,
+                ring: inferredRing,
+                initialRing: 'ring0',
+              };
             }
           }
-          return {
+
+          const loadedData: PersistentTasteMapData = {
             profileId,
             profileSignature: parsed.profileSignature || '',
             profileSnapshot: parsed.profileSnapshot || undefined,
@@ -2047,13 +2114,21 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
             updatedAt: parsed.updatedAt || new Date().toISOString(),
             entries: sanitizedEntries,
             archivedEntries: sanitizedArchived,
-            lastRecommendedKeys: Array.isArray(parsed.lastRecommendedKeys) ? parsed.lastRecommendedKeys : [],
+            lastRecommendedKeys,
             lastBatchTimestamp: parsed.lastBatchTimestamp || null,
             cachedBalancedItems: Array.isArray(parsed.cachedBalancedItems) ? parsed.cachedBalancedItems : undefined,
             lastTargetType: parsed.lastTargetType || undefined,
             lastExplanation: parsed.lastExplanation || undefined,
             summary: parsed.summary || undefined,
           };
+
+          if (needsMigrationWrite) {
+            try {
+              localStorage.setItem(key, JSON.stringify(loadedData));
+            } catch {}
+          }
+
+          return loadedData;
         }
       }
     }
@@ -2127,12 +2202,19 @@ export function updateTasteMapWithBatch({
   normalizeLegacyRings = false,
   pruneInactiveCandidates = true,
 }: UpdateTasteMapWithBatchParams): PersistentTasteMapData {
-  let updatedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.entries || {}) };
-  let updatedArchivedEntries: Record<string, TasteMapEntry> = { ...(tasteMap.archivedEntries || {}) };
+  const prevKeys = Array.isArray(tasteMap.lastRecommendedKeys) ? tasteMap.lastRecommendedKeys : [];
+  let updatedEntries: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(tasteMap.entries || {})) {
+    if (v) updatedEntries[k] = { ...v };
+  }
+  let updatedArchivedEntries: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(tasteMap.archivedEntries || {})) {
+    if (v) updatedArchivedEntries[k] = { ...v };
+  }
 
   if (normalizeLegacyRings) {
-    updatedEntries = normalizeTasteMapEntries(updatedEntries);
-    updatedArchivedEntries = normalizeTasteMapEntries(updatedArchivedEntries);
+    updatedEntries = normalizeTasteMapEntries(updatedEntries, prevKeys);
+    updatedArchivedEntries = normalizeTasteMapEntries(updatedArchivedEntries, prevKeys);
   }
   const newKeys = new Set<string>();
 
@@ -2143,6 +2225,7 @@ export function updateTasteMapWithBatch({
       newKeys.add(key);
     }
   }
+  const newKeysArray = Array.from(newKeys);
 
   // 1. Önceki vitrinde (lastRecommendedKeys) gösterilmiş olan yapımları değerlendir:
   // Filtre değişikliğini “atlandı” sayma kuralı:
@@ -2150,7 +2233,6 @@ export function updateTasteMapWithBatch({
   // - Açıkça isFilterChange veya reason === 'filter_change' bayrağı varsa
   // - Adayın türü mevcut targetType filtre kapsamına uymuyorsa (ör. kullanıcı sadece film filtrelediğinde önceki diziler)
   // Bu yapımlar kullanıcı tarafından "atlanmış" (skipped) sayılmaz; sayaç ve ceza artırılmaz!
-  const prevKeys = Array.isArray(tasteMap.lastRecommendedKeys) ? tasteMap.lastRecommendedKeys : [];
   const isTargetTypeChanged = Boolean(targetType && tasteMap.lastTargetType && targetType !== tasteMap.lastTargetType);
   const isFilterTriggered = Boolean(isFilterChange || reason === 'filter_change' || isTargetTypeChanged);
 
@@ -2163,41 +2245,41 @@ export function updateTasteMapWithBatch({
     const isSaved = isItemSaved(savedItems, { id: rawId, media_type: mediaType }, mediaType as any);
     if (isSaved) {
       entry.status = 'saved';
+      entry.ring = inferLifecycleRing(prevKey, entry, newKeysArray);
+      entry.initialRing = 'ring0';
       continue;
     }
 
     // Durum 4,5: Beğenilmedi / gizlendiyse
     if (preferences.disliked?.includes(prevKey) || preferences.hidden?.includes(prevKey)) {
       entry.status = preferences.disliked?.includes(prevKey) ? 'disliked' : 'hidden';
+      entry.ring = inferLifecycleRing(prevKey, entry, newKeysArray);
+      entry.initialRing = 'ring0';
       continue;
     }
 
     const isTypeMismatch = (targetType === 'movie' && mediaType === 'tv') || (targetType === 'tv' && mediaType === 'movie');
     if (isFilterTriggered || isTypeMismatch) {
       // Filtre değişikliğinde veya tür uyuşmazlığında önceki içerikler atlandı sayılmaz
+      entry.ring = inferLifecycleRing(prevKey, entry, newKeysArray);
+      entry.initialRing = 'ring0';
       continue;
     }
 
-    // Yeni listede yer almadıysa atlandı sayacı artır ve halka geriletmesi uygula
+    // Yeni listede yer almadıysa atlandı sayacı artır, doğrudan ring2 olarak işaretle ve ceza uygula
     if (!newKeys.has(prevKey)) {
       entry.skippedCount = (entry.skippedCount || 0) + 1;
+      entry.ringDemotions = (entry.ringDemotions || 0) + 1;
+      entry.ring = 'ring2';
+      entry.initialRing = 'ring0';
 
-      // Halka Geriletmesi (Ring Demotion) kuralı:
-      // Her 2 atlamada bir halka bir basamak dışarı geriletilir (core -> inner -> outer -> orbit veya ring0 -> ring1 -> ring2).
-      const expectedDemotions = Math.floor(entry.skippedCount / 2);
-      if (expectedDemotions > (entry.ringDemotions || 0) && entry.ring !== 'orbit' && entry.ring !== 'ring2') {
-        const demoteSteps = expectedDemotions - (entry.ringDemotions || 0);
-        entry.ring = demoteTasteRing(entry.ring, demoteSteps);
-        entry.ringDemotions = expectedDemotions;
-      }
-
-      // Demotion ceza puanı: her atlama için 5 puan, her halka düşüşü için ek 5 puan (maks 35 puan)
-      entry.demotionPenalty = Math.min(35, entry.skippedCount * 5 + (entry.ringDemotions || 0) * 5);
+      // Demotion ceza puanı: her atlama için 5 puan (maks 35 puan)
+      entry.demotionPenalty = Math.min(35, entry.skippedCount * 5);
       // Kural: Zevk Uyumu ile Gösterim Önceliği ayrımı!
       // Gerçek zevk uyumu (tasteScore / matchScore) içeriğin profille olan sabit uyumunu gösterir (örn. %92).
-      // Demotion cezası zevk uyumunu düşürmez; yalnızca seçim/gösterim öncelik puanını (priorityScore) düşürür (örn. %82).
+      // Demotion cezası zevk uyumunu düşürmez; yalnızca seçim/gösterim öncelik puanını (priorityScore) düşürür (örn. %87).
       entry.tasteScore = Math.max(1, Math.min(100, Math.round(entry.rawScore)));
-      entry.priorityScore = Math.max(1, Math.min(100, Math.round(entry.rawScore - entry.demotionPenalty)));
+      entry.priorityScore = Math.max(1, Math.min(100, Math.round(entry.tasteScore - entry.demotionPenalty)));
       entry.matchScore = entry.tasteScore;
       entry.lastScoredAt = now;
     }
@@ -2206,9 +2288,6 @@ export function updateTasteMapWithBatch({
   // 2. Havuz Senkronizasyonu ve Eski Adayları Arşive Taşıma (Pruning):
   // allPoolCandidates sağlandığında, aktif 500 Film + 500 Dizi havuzu kesin olarak tanımlıdır.
   // Güncel havuzda artık yer almayan eski içerikler 'entries' nesnesinden 'archivedEntries' nesnesine taşınır.
-  // Böylece:
-  // - Aktif harita tam olarak güncel havuzdaki aday sayısıyla (500 Film + 500 Dizi) birebir eşleşir.
-  // - Eski içeriklerin gösterim geçmişi (shownCount, impressionHistory, halka geriletmeleri) kaybolmaz, arşivde korunur.
   if (Array.isArray(allPoolCandidates) && pruneInactiveCandidates) {
     const activePoolKeys = new Set<string>();
     for (const poolItem of allPoolCandidates) {
@@ -2226,6 +2305,8 @@ export function updateTasteMapWithBatch({
         const staleEntry = updatedEntries[key];
         updatedArchivedEntries[key] = {
           ...staleEntry,
+          ring: inferLifecycleRing(key, staleEntry, newKeysArray),
+          initialRing: 'ring0',
           isArchived: true,
           archivedAt: staleEntry.archivedAt || now,
           archiveReason: 'evicted_from_pool',
@@ -2254,26 +2335,27 @@ export function updateTasteMapWithBatch({
         delete updatedArchivedEntries[key];
       }
 
-      const rawScore = Number(poolItem.rawScore ?? poolItem.score ?? cand.score ?? cand.rawScore ?? existing?.rawScore ?? 75);
+      const rawScore = Number(poolItem.rawScore ?? poolItem.tasteScore ?? poolItem.score ?? cand.tasteScore ?? cand.rawScore ?? cand.score ?? existing?.rawScore ?? 75);
 
-      const demotionPenalty = existing?.demotionPenalty || poolItem.demotionPenalty || 0;
-      const ringDemotions = existing?.ringDemotions || poolItem.ringDemotions || 0;
-      const skippedCount = existing?.skippedCount || poolItem.skippedCount || 0;
-      const shownCount = existing?.shownCount || 0;
+      const demotionPenalty = existing ? Math.max(0, Number(existing.demotionPenalty) || 0) : Math.max(0, Number(poolItem.demotionPenalty) || 0);
+      const ringDemotions = existing ? Math.max(0, Number(existing.ringDemotions) || 0) : Math.max(0, Number(poolItem.ringDemotions) || 0);
+      const skippedCount = existing ? Math.max(0, Number(existing.skippedCount) || 0) : Math.max(0, Number(poolItem.skippedCount) || 0);
+      const shownCount = existing ? Math.max(0, Number(existing.shownCount) || 0) : 0;
       const firstShownAt = existing?.firstShownAt || existing?.impressionHistory?.[0]?.shownAt || null;
       const lastShownAt = existing?.lastShownAt || null;
       const archivedImpressionCount = existing?.archivedImpressionCount || 0;
       const impressionHistory = existing?.impressionHistory ? [...existing.impressionHistory] : [];
 
-      let ring: TasteRing = existing?.ring || poolItem.ring || assignTasteRing(rawScore);
-      if (normalizeLegacyRings) ring = normalizeTasteRing(ring);
-
-      let initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
-      if (normalizeLegacyRings) initialRing = normalizeTasteRing(initialRing);
+      const ring: LifecycleRing = inferLifecycleRing(
+        key,
+        { shownCount, skippedCount, lastShownAt },
+        newKeysArray
+      );
+      const initialRing: LifecycleRing = 'ring0';
 
       // Puan Ayrımı: Zevk Uyumu (tasteScore) vs Gösterim/Seçim Önceliği (priorityScore)
       const tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
-      const priorityScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+      const priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
       const netMatchScore = tasteScore;
 
       // Puan Derinliği (Score Coverage): Adayın kadro kredisi var mı?
@@ -2341,9 +2423,8 @@ export function updateTasteMapWithBatch({
     }
   }
 
-  // 4. Yeni vitrindeki adayı kaydet / güncelle (Vitrinde gösterilen adaylar: shownCount artar ve impressionHistory eklenir)
+  // 4. Yeni vitrindeki adayı kaydet / güncelle (Vitrinde gösterilen adaylar: shownCount artar, impressionHistory eklenir ve ring1 olur)
   // Depolama güvenliği: impressionHistory dizisi sınırsız büyümez, son MAX_IMPRESSION_HISTORY_PER_ENTRY (30) gösterimle sınırlandırılır.
-  // Daha eski gösterimler toplam sayaç (shownCount), ilk/son gösterim tarihleri ve archivedImpressionCount alanında korunur.
   for (let i = 0; i < (newRecommendedItems || []).length; i++) {
     const item = newRecommendedItems[i];
     const cand = item.candidate || item;
@@ -2356,11 +2437,11 @@ export function updateTasteMapWithBatch({
     if (updatedArchivedEntries[key]) {
       delete updatedArchivedEntries[key];
     }
-    const rawScore = Number(item.rawScore ?? item.score ?? cand.score ?? cand.rawScore ?? existing?.rawScore ?? 75);
+    const rawScore = Number(item.rawScore ?? item.tasteScore ?? item.score ?? cand.tasteScore ?? cand.rawScore ?? cand.score ?? existing?.rawScore ?? 75);
 
-    const demotionPenalty = existing?.demotionPenalty || item.demotionPenalty || 0;
-    const ringDemotions = existing?.ringDemotions || item.ringDemotions || 0;
-    const skippedCount = existing?.skippedCount || item.skippedCount || 0;
+    const demotionPenalty = existing ? Math.max(0, Number(existing.demotionPenalty) || 0) : Math.max(0, Number(item.demotionPenalty) || 0);
+    const ringDemotions = existing ? Math.max(0, Number(existing.ringDemotions) || 0) : Math.max(0, Number(item.ringDemotions) || 0);
+    const skippedCount = existing ? Math.max(0, Number(existing.skippedCount) || 0) : Math.max(0, Number(item.skippedCount) || 0);
     const shownCount = (existing?.shownCount || 0) + 1;
     const firstShownAt = existing?.firstShownAt || existing?.impressionHistory?.[0]?.shownAt || now;
 
@@ -2371,14 +2452,11 @@ export function updateTasteMapWithBatch({
       MAX_IMPRESSION_HISTORY_PER_ENTRY
     );
 
-    let ring: TasteRing = existing?.ring || item.ring || assignTasteRing(rawScore);
-    if (normalizeLegacyRings) ring = normalizeTasteRing(ring);
-
-    let initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
-    if (normalizeLegacyRings) initialRing = normalizeTasteRing(initialRing);
+    const ring: LifecycleRing = 'ring1';
+    const initialRing: LifecycleRing = 'ring0';
 
     const tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
-    const priorityScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+    const priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
     const netMatchScore = tasteScore;
 
     const candHasCredits = Boolean(
@@ -2431,6 +2509,16 @@ export function updateTasteMapWithBatch({
       scoreCoverage,
       confidenceLevel,
     };
+  }
+
+  // Tüm aktif ve arşiv kayıtlarının yaşam döngüsü halkasını güncel lastRecommendedKeys (newKeysArray) ile tutarlı tut
+  for (const [k, entry] of Object.entries(updatedEntries)) {
+    entry.ring = inferLifecycleRing(entry.mediaKey || k, entry, newKeysArray);
+    entry.initialRing = 'ring0';
+  }
+  for (const [k, entry] of Object.entries(updatedArchivedEntries)) {
+    entry.ring = inferLifecycleRing(entry.mediaKey || k, entry, newKeysArray);
+    entry.initialRing = 'ring0';
   }
 
   // 5. Önemli Profil Alanları Anlık Görüntüsü (Snapshot)
@@ -3008,42 +3096,23 @@ export function scoreCandidatesV3(
       tags.push('Yeni keşif için');
     }
 
-    // Sorun D & Zevk Haritası: Halka 0, 1, 2 ve Kalıcı Zevk Haritası Entegrasyonu
+    // Sorun D & Zevk Haritası: Yaşam Döngüsü Halkaları (ring0 / ring1 / ring2) ve Geriletme Cezası Entegrasyonu
     const key = makeMediaKey(candidate);
-    const tasteEntry = tasteMap?.entries ? tasteMap.entries[key] : null;
+    const tasteEntry =
+      (tasteMap?.entries ? tasteMap.entries[key] : undefined) ??
+      (tasteMap?.archivedEntries ? tasteMap.archivedEntries[key] : undefined);
 
-    let demotionPenalty = 0;
-    let ring: TasteRing;
-    let shownCount = 0;
-    let skippedCount = 0;
-    let ringDemotions = 0;
-    let lastShownAt: string | null = null;
+    const lastRecommendedKeys = tasteMap?.lastRecommendedKeys ?? [];
+    const inLastBatch = Boolean(lastRecommendedKeys.includes(key));
+    const shownCount = tasteEntry?.shownCount || 0;
+    const skippedCount = tasteEntry?.skippedCount || 0;
+    const ringDemotions = tasteEntry?.ringDemotions || 0;
+    const lastShownAt = tasteEntry?.lastShownAt || null;
 
-    if (tasteMap) {
-      const inLastBatch = Boolean(tasteMap.lastRecommendedKeys && tasteMap.lastRecommendedKeys.includes(key));
-      shownCount = tasteEntry?.shownCount || 0;
-      skippedCount = tasteEntry?.skippedCount || 0;
-      ringDemotions = tasteEntry?.ringDemotions || 0;
-      lastShownAt = tasteEntry?.lastShownAt || null;
-
-      if (inLastBatch) {
-        ring = 'ring1';
-      } else if (tasteEntry?.ring && ['core', 'inner', 'outer', 'orbit'].includes(tasteEntry.ring)) {
-        ring = tasteEntry.ring;
-      } else if (tasteEntry?.ring === 'ring2' || skippedCount > 0 || (shownCount > 0 && !inLastBatch)) {
-        ring = 'ring2';
-      } else {
-        ring = tasteEntry?.ring || 'ring0';
-      }
-
-      if (['core', 'inner', 'outer', 'orbit'].includes(ring)) {
-        demotionPenalty = tasteEntry?.demotionPenalty || 0;
-      } else {
-        demotionPenalty = 0;
-      }
-    } else {
-      ring = assignTasteRing(rawScore);
-    }
+    const ring: LifecycleRing = inferLifecycleRing(key, tasteEntry, lastRecommendedKeys);
+    const demotionPenalty = inLastBatch
+      ? 0
+      : Math.max(0, Number(tasteEntry?.demotionPenalty) || 0);
 
     // Puan Derinliği (Score Coverage): Adayın kadro kredisi var mı?
     const hasCredits = Boolean(
@@ -3055,23 +3124,8 @@ export function scoreCandidatesV3(
     const scoreCoverage: 'basic' | 'enriched' = hasCredits ? 'enriched' : 'basic';
     const confidenceLevel: 'standard' | 'high' = scoreCoverage === 'enriched' ? 'high' : 'standard';
 
-    let finalRawScore: number;
-    let tasteScore: number;
-    let priorityScore: number;
-
-    if (tasteEntry && typeof tasteEntry.matchScore === 'number' && !['inner', 'outer', 'orbit'].includes(ring)) {
-      tasteScore = tasteEntry.tasteScore ?? tasteEntry.rawScore ?? tasteEntry.matchScore;
-      finalRawScore = tasteEntry.rawScore ?? tasteScore;
-      priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
-    } else if (tasteEntry) {
-      tasteScore = tasteEntry.tasteScore ?? Math.max(1, Math.min(100, Math.round(rawScore)));
-      finalRawScore = rawScore;
-      priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
-    } else {
-      finalRawScore = rawScore;
-      tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
-      priorityScore = tasteScore;
-    }
+    const tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
+    const priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
 
     // Sinyalleri ve kalıcı zevk alanlarını doğrudan aday nesnesi üzerine de yaz
     candidate.matchScore = tasteScore; // Rozet ve kartlar saf zevk uyumunu (%92) gösterir!
@@ -3079,7 +3133,7 @@ export function scoreCandidatesV3(
     candidate.priorityScore = priorityScore;
     candidate.scoreCoverage = scoreCoverage;
     candidate.confidenceLevel = confidenceLevel;
-    candidate.rawScore = finalRawScore;
+    candidate.rawScore = rawScore;
     candidate.ring = ring;
     candidate.demotionPenalty = demotionPenalty;
     candidate.shownCount = shownCount;
@@ -4246,109 +4300,156 @@ export function selectBalancedRecommendations({
 }: SelectBalancedRecommendationsOptions): BalancedRecommendationResult {
   const normTarget = targetType === 'movie' || targetType === 'tv' ? targetType : 'all';
 
-  // Halka 1 (Yakın zamanda gösterildi) adayları bir sonraki öneri grubunda kesinlikle gösterilmez (dinlendirilir).
-  const isResting = (e: any) => {
-    const ring = e?.ring || e?.candidate?.ring;
-    return ring === 'ring1';
+  const resolveCandidateLifecycleRing = (e: any): LifecycleRing => {
+    const rawRing = e?.ring ?? e?.candidate?.ring;
+    if (rawRing === 'ring1') return 'ring1';
+    if (rawRing === 'ring2') return 'ring2';
+    const cand = e?.candidate || e;
+    const shownCount = Number(e?.shownCount ?? cand?.shownCount ?? 0);
+    const skippedCount = Number(e?.skippedCount ?? cand?.skippedCount ?? 0);
+    const lastShownAt = e?.lastShownAt ?? cand?.lastShownAt ?? null;
+    if (shownCount > 0 || skippedCount > 0 || Boolean(lastShownAt)) {
+      return 'ring2';
+    }
+    return 'ring0';
   };
-  const isRing2 = (e: any) => {
-    const ring = e?.ring || e?.candidate?.ring;
-    return ring === 'ring2' || ring === 'outer' || ring === 'orbit';
+
+  const resolvePriorityScore = (e: any): number => {
+    const cand = e?.candidate || e;
+    const val = e?.priorityScore ?? e?.score ?? cand?.priorityScore ?? cand?.score ?? 0;
+    return Number(val) || 0;
+  };
+
+  const selectWithLifecycleOrder = (
+    primaryScored: any[],
+    remainingPool: any[],
+    limit: number,
+    diversifyCaps: { maxPerGenre: number; maxPerEra: number; maxPerTier: number }
+  ): any[] => {
+    const primaryRing0: any[] = [];
+    const primarySeen = new Set<string>();
+    const ring2Map = new Map<string, any>();
+
+    // 1 & 2: Ana adaylardan ring1 olanları kesinlikle ele; ring0 ve ring2 adaylarını ayır
+    for (const item of primaryScored || []) {
+      if (!item) continue;
+      const cand = item.candidate || item;
+      const key = makeMediaKey(cand);
+      const r = resolveCandidateLifecycleRing(item);
+      if (r === 'ring1') continue;
+      if (r === 'ring0') {
+        if (!primarySeen.has(key)) {
+          primarySeen.add(key);
+          primaryRing0.push(item);
+        }
+      } else {
+        if (!ring2Map.has(key)) {
+          ring2Map.set(key, item);
+        }
+      }
+    }
+
+    // Kalan havuzdan da ring1 olanları ele; ring0 ve ring2 adaylarını birbirine karıştırmadan ayır
+    const remainingRing0: any[] = [];
+    for (const rem of remainingPool || []) {
+      if (!rem) continue;
+      const cand = rem.candidate || rem;
+      const key = makeMediaKey(cand);
+      const r = resolveCandidateLifecycleRing(rem);
+      if (r === 'ring1') continue;
+      if (r === 'ring0') {
+        if (!primarySeen.has(key)) {
+          primarySeen.add(key);
+          remainingRing0.push(rem);
+        }
+      } else {
+        if (!ring2Map.has(key) && !primarySeen.has(key)) {
+          ring2Map.set(key, rem);
+        }
+      }
+    }
+
+    // Aşama 1A: Önce zenginleştirilmiş ring0 adaylarından çok boyutlu çeşitlendirme ile seç
+    const picked = multiDimensionalDiversify(primaryRing0, {
+      limit,
+      maxPerGenre: diversifyCaps.maxPerGenre,
+      maxPerEra: diversifyCaps.maxPerEra,
+      maxPerTier: diversifyCaps.maxPerTier,
+    });
+    const pickedKeys = new Set(picked.map((e) => makeMediaKey(e.candidate || e)));
+
+    // Aşama 1B: Hedef dolmadıysa ring2'ye geçmeden ÖNCE kalan havuzdaki taze ring0 adaylarını kullan
+    if (picked.length < limit && remainingRing0.length > 0) {
+      const sortedRemainingRing0 = [...remainingRing0].sort(
+        (a, b) => resolvePriorityScore(b) - resolvePriorityScore(a)
+      );
+      const diversifiedRemainingRing0 = multiDimensionalDiversify(sortedRemainingRing0, {
+        limit: limit - picked.length,
+        maxPerGenre: diversifyCaps.maxPerGenre,
+        maxPerEra: diversifyCaps.maxPerEra,
+        maxPerTier: diversifyCaps.maxPerTier,
+      });
+      for (const rem of diversifiedRemainingRing0) {
+        if (picked.length >= limit) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          picked.push(rem);
+        }
+      }
+      for (const rem of sortedRemainingRing0) {
+        if (picked.length >= limit) break;
+        const key = makeMediaKey(rem.candidate || rem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          picked.push(rem);
+        }
+      }
+    }
+
+    // Aşama 2 (Yedek): Yalnızca tüm ring0 adayları hedefi dolduramadıysa ring2 adaylarına geç
+    // ring2 adayları kendi priorityScore değerine göre azalan sırada değerlendirilir
+    if (picked.length < limit && ring2Map.size > 0) {
+      const sortedRing2 = Array.from(ring2Map.values()).sort(
+        (a, b) => resolvePriorityScore(b) - resolvePriorityScore(a)
+      );
+      for (const fallbackItem of sortedRing2) {
+        if (picked.length >= limit) break;
+        const key = makeMediaKey(fallbackItem.candidate || fallbackItem);
+        if (!pickedKeys.has(key)) {
+          pickedKeys.add(key);
+          picked.push(fallbackItem);
+        }
+      }
+    }
+
+    return picked;
   };
 
   if (normTarget === 'all') {
     const movieLimit = Math.max(1, minPerTypeInAll);
     const tvLimit = Math.max(1, minPerTypeInAll);
 
-    // Halka 1 (Yakın zamanda gösterilenler) hariç tutulur
-    const eligibleMovies = scoredMovies.filter((e) => !isResting(e));
-    const eligibleTv = scoredTv.filter((e) => !isResting(e));
-
-    // Öncelik 1: Halka 0 (Yeni eşleşmeler) vs Öncelik 2: Halka 2 (Daha önce atlananlar)
-    const moviesRing0 = eligibleMovies.filter((e) => !isRing2(e));
-    const moviesRing2 = eligibleMovies.filter((e) => isRing2(e));
-
-    const tvRing0 = eligibleTv.filter((e) => !isRing2(e));
-    const tvRing2 = eligibleTv.filter((e) => isRing2(e));
-
-    // 1. Filmleri Halka 0 üzerinden bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
-    let pickedMovies = multiDimensionalDiversify(moviesRing0, {
-      limit: movieLimit,
+    const pickedMovies = selectWithLifecycleOrder(scoredMovies, remainingMovies, movieLimit, {
       maxPerGenre: maxPerGenre ?? 3,
       maxPerEra: maxPerEra ?? 4,
       maxPerTier: maxPerTier ?? 5,
     });
 
-    // 10'un altındaysa Halka 2 (daha önce atlanan, gerçek matchScore'u korunan adaylar) ile tamamla
-    if (pickedMovies.length < movieLimit && moviesRing2.length > 0) {
-      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of moviesRing2) {
-        if (pickedMovies.length >= movieLimit) break;
-        const key = makeMediaKey(rem.candidate || rem);
-        if (!pickedKeys.has(key)) {
-          pickedKeys.add(key);
-          pickedMovies.push(rem);
-        }
-      }
-    }
-
-    // Hâlâ 10'un altındaysa havuzun kalan uygun adaylarından tamamla (dinlendirilenler hariç)
-    if (pickedMovies.length < movieLimit && remainingMovies.length > 0) {
-      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of remainingMovies) {
-        if (pickedMovies.length >= movieLimit) break;
-        if (isResting(rem)) continue;
-        const key = makeMediaKey(rem.candidate || rem);
-        if (!pickedKeys.has(key)) {
-          pickedKeys.add(key);
-          pickedMovies.push(rem);
-        }
-      }
-    }
-
-    // 2. Dizileri Halka 0 üzerinden bağımsız çok boyutlu çeşitlendirme ile seç (limit 10)
-    let pickedTv = multiDimensionalDiversify(tvRing0, {
-      limit: tvLimit,
+    const pickedTv = selectWithLifecycleOrder(scoredTv, remainingTv, tvLimit, {
       maxPerGenre: maxPerGenre ?? 3,
       maxPerEra: maxPerEra ?? 4,
       maxPerTier: maxPerTier ?? 5,
     });
-
-    // 10'un altındaysa Halka 2 (daha önce atlanan, gerçek matchScore'u korunan adaylar) ile tamamla
-    if (pickedTv.length < tvLimit && tvRing2.length > 0) {
-      const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of tvRing2) {
-        if (pickedTv.length >= tvLimit) break;
-        const key = makeMediaKey(rem.candidate || rem);
-        if (!pickedKeys.has(key)) {
-          pickedKeys.add(key);
-          pickedTv.push(rem);
-        }
-      }
-    }
-
-    // Hâlâ 10'un altındaysa havuzun kalan uygun adaylarından tamamla (dinlendirilenler hariç)
-    if (pickedTv.length < tvLimit && remainingTv.length > 0) {
-      const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of remainingTv) {
-        if (pickedTv.length >= tvLimit) break;
-        if (isResting(rem)) continue;
-        const key = makeMediaKey(rem.candidate || rem);
-        if (!pickedKeys.has(key)) {
-          pickedKeys.add(key);
-          pickedTv.push(rem);
-        }
-      }
-    }
 
     // KESİN KURAL: Bir türden 10 uygun aday çıkmıyorsa diğer türden fazladan adaylarla sessizce doldurma!
     const movieCount = pickedMovies.length;
     const tvCount = pickedTv.length;
     const totalCount = movieCount + tvCount;
 
-    // Her iki gruptan seçilen tüm adayları (10 film + 10 dizi) nihai listede birleştir ve puana göre sırala
+    // Her iki gruptan seçilen tüm adayları (10 film + 10 dizi) nihai listede birleştir ve öncelik puanına göre sırala
     const items = [...pickedMovies, ...pickedTv].sort(
-      (a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)
+      (a, b) => resolvePriorityScore(b) - resolvePriorityScore(a)
     );
 
     const movieShortfall = movieCount < movieLimit;
@@ -4382,41 +4483,11 @@ export function selectBalancedRecommendations({
   }
 
   if (normTarget === 'movie') {
-    const eligibleMovies = scoredMovies.filter((e) => !isResting(e));
-    const moviesRing0 = eligibleMovies.filter((e) => !isRing2(e));
-    const moviesRing2 = eligibleMovies.filter((e) => isRing2(e));
-
-    let pickedMovies = multiDimensionalDiversify(moviesRing0, {
-      limit: targetTotal,
+    const pickedMovies = selectWithLifecycleOrder(scoredMovies, remainingMovies, targetTotal, {
       maxPerGenre: maxPerGenre ?? 5,
       maxPerEra: maxPerEra ?? 8,
       maxPerTier: maxPerTier ?? 10,
     });
-
-    if (pickedMovies.length < targetTotal && moviesRing2.length > 0) {
-      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of moviesRing2) {
-        if (pickedMovies.length >= targetTotal) break;
-        const key = makeMediaKey(rem.candidate || rem);
-        if (!pickedKeys.has(key)) {
-          pickedKeys.add(key);
-          pickedMovies.push(rem);
-        }
-      }
-    }
-
-    if (pickedMovies.length < targetTotal && remainingMovies.length > 0) {
-      const pickedKeys = new Set(pickedMovies.map((e) => makeMediaKey(e.candidate || e)));
-      for (const rem of remainingMovies) {
-        if (pickedMovies.length >= targetTotal) break;
-        if (isResting(rem)) continue;
-        const key = makeMediaKey(rem.candidate || rem);
-        if (!pickedKeys.has(key)) {
-          pickedKeys.add(key);
-          pickedMovies.push(rem);
-        }
-      }
-    }
 
     const movieCount = pickedMovies.length;
     const hasShortfall = movieCount < targetTotal;
@@ -4441,41 +4512,11 @@ export function selectBalancedRecommendations({
   }
 
   // normTarget === 'tv'
-  const eligibleTv = scoredTv.filter((e) => !isResting(e));
-  const tvRing0 = eligibleTv.filter((e) => !isRing2(e));
-  const tvRing2 = eligibleTv.filter((e) => isRing2(e));
-
-  let pickedTv = multiDimensionalDiversify(tvRing0, {
-    limit: targetTotal,
+  const pickedTv = selectWithLifecycleOrder(scoredTv, remainingTv, targetTotal, {
     maxPerGenre: maxPerGenre ?? 5,
     maxPerEra: maxPerEra ?? 8,
     maxPerTier: maxPerTier ?? 10,
   });
-
-  if (pickedTv.length < targetTotal && tvRing2.length > 0) {
-    const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
-    for (const rem of tvRing2) {
-      if (pickedTv.length >= targetTotal) break;
-      const key = makeMediaKey(rem.candidate || rem);
-      if (!pickedKeys.has(key)) {
-        pickedKeys.add(key);
-        pickedTv.push(rem);
-      }
-    }
-  }
-
-  if (pickedTv.length < targetTotal && remainingTv.length > 0) {
-    const pickedKeys = new Set(pickedTv.map((e) => makeMediaKey(e.candidate || e)));
-    for (const rem of remainingTv) {
-      if (pickedTv.length >= targetTotal) break;
-      if (isResting(rem)) continue;
-      const key = makeMediaKey(rem.candidate || rem);
-      if (!pickedKeys.has(key)) {
-        pickedKeys.add(key);
-        pickedTv.push(rem);
-      }
-    }
-  }
 
   const tvCount = pickedTv.length;
   const hasShortfall = tvCount < targetTotal;

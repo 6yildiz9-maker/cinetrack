@@ -19,7 +19,7 @@ import {
   multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
   loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
   replenishCandidatePool, selectBalancedRecommendations,
-  assignTasteRing, demoteTasteRing, getTasteRingLabel, normalizeTasteRing,
+  assignTasteRing, demoteTasteRing, getTasteRingLabel, inferLifecycleRing, normalizeTasteRing,
   normalizeTasteMapEntries, normalizeTasteMapRings,
   loadPersistentTasteMap, savePersistentTasteMap, updateTasteMapWithBatch,
   recordTasteMapPoolScores, isTasteMapCacheValid,
@@ -2455,32 +2455,39 @@ describe("Sorun C — Havuz Yenileme İsteği Yönetimi, Sınırlı İş Kuyruğ
 });
 
 describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Geriletmesi (Ring Demotion)", () => {
-  it("assignTasteRing ve demoteTasteRing puan aralıklarına göre doğru halka atar ve basamak basamak geriletir", () => {
-    assert.equal(assignTasteRing(95), "core");
-    assert.equal(assignTasteRing(85), "core");
-    assert.equal(assignTasteRing(84), "inner");
-    assert.equal(assignTasteRing(70), "inner");
-    assert.equal(assignTasteRing(69), "outer");
-    assert.equal(assignTasteRing(55), "outer");
-    assert.equal(assignTasteRing(54), "orbit");
-    assert.equal(assignTasteRing(20), "orbit");
+  it("assignTasteRing, inferLifecycleRing ve demoteTasteRing puandan bağımsız olarak gösterim geçmişine göre halka atar", () => {
+    // İlk kez karşılaşılan adaylar puanları 95, 75, 60 veya 20 olsa dahi ring0 olur
+    assert.equal(assignTasteRing(95), "ring0");
+    assert.equal(assignTasteRing(75), "ring0");
+    assert.equal(assignTasteRing(60), "ring0");
+    assert.equal(assignTasteRing(20), "ring0");
 
-    // Geriletme adımları
-    assert.equal(demoteTasteRing("core", 1), "inner");
-    assert.equal(demoteTasteRing("core", 2), "outer");
-    assert.equal(demoteTasteRing("core", 3), "orbit");
-    assert.equal(demoteTasteRing("inner", 1), "outer");
-    assert.equal(demoteTasteRing("outer", 1), "orbit");
-    assert.equal(demoteTasteRing("orbit", 1), "orbit"); // En dış halkada kalır
+    assert.equal(assignTasteRing(75, { inLastBatch: true }), "ring1");
+    assert.equal(assignTasteRing(75, { shownCount: 1 }), "ring2");
+    assert.equal(assignTasteRing(60, { skippedCount: 1 }), "ring2");
 
-    // getTasteRingLabel Türkçe etiketleri
+    assert.equal(inferLifecycleRing("movie:1", undefined, []), "ring0");
+    assert.equal(inferLifecycleRing("movie:1", { shownCount: 0, skippedCount: 0 }, []), "ring0");
+    assert.equal(inferLifecycleRing("movie:1", { shownCount: 1 }, ["movie:1"]), "ring1");
+    assert.equal(inferLifecycleRing("movie:1", { shownCount: 1, skippedCount: 0 }, []), "ring2");
+
+    // Geriletme adımları (yaşam döngüsü halkalarında)
+    assert.equal(demoteTasteRing("ring0", 1), "ring1");
+    assert.equal(demoteTasteRing("ring0", 2), "ring2");
+    assert.equal(demoteTasteRing("ring1", 1), "ring2");
+    assert.equal(demoteTasteRing("ring2", 1), "ring2");
+
+    // getTasteRingLabel Türkçe etiketleri (yeni ve eski değerler için)
+    assert.equal(getTasteRingLabel("ring0"), "Halka 0 — Yeni Eşleşme");
+    assert.equal(getTasteRingLabel("ring1"), "Halka 1 — Yakın Zamanda Gösterildi");
+    assert.equal(getTasteRingLabel("ring2"), "Halka 2 — Daha Önce Atlandı");
     assert.equal(getTasteRingLabel("core"), "Çekirdek Halka (1. Halka)");
     assert.equal(getTasteRingLabel("inner"), "Yakın Halka (2. Halka)");
     assert.equal(getTasteRingLabel("outer"), "Dış Halka (3. Halka)");
     assert.equal(getTasteRingLabel("orbit"), "Yörünge (4. Halka)");
   });
 
-  it("loadPersistentTasteMap ve savePersistentTasteMap profil bazlı localStorage ile güvenle saklar ve okur", () => {
+  it("loadPersistentTasteMap ve savePersistentTasteMap profil bazlı localStorage ile güvenle saklar ve eski halka kayıtlarını gösterim geçmişine göre dönüştürür", () => {
     const memory = new Map();
     globalThis.localStorage = {
       getItem: (k) => memory.get(k) || null,
@@ -2495,7 +2502,7 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     assert.deepEqual(initialMap.entries, {});
     assert.deepEqual(initialMap.lastRecommendedKeys, []);
 
-    // Veri kaydet
+    // Veri kaydet (eski 'core' halkası ile kaydedilmiş, lastRecommendedKeys içinde bulunan öğe)
     initialMap.entries["movie:101"] = {
       mediaKey: "movie:101",
       mediaType: "movie",
@@ -2520,11 +2527,12 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
 
     const loaded = loadPersistentTasteMap(profileId);
     assert.equal(loaded.entries["movie:101"].title, "Interstellar");
-    assert.equal(loaded.entries["movie:101"].ring, "core");
+    assert.equal(loaded.entries["movie:101"].ring, "ring1", "Son öneri grubundaki kayıt yüklenirken ring1'e dönüştürülmeli");
+    assert.equal(loaded.entries["movie:101"].initialRing, "ring0");
     assert.equal(loaded.lastRecommendedKeys[0], "movie:101");
   });
 
-  it("updateTasteMapWithBatch: ilk gösterimde (shownCount: 1, skippedCount: 0) kaydı oluşturur", () => {
+  it("updateTasteMapWithBatch: ilk gösterimde puandan bağımsız olarak (shownCount: 1, skippedCount: 0, ring: ring1) kaydı oluşturur", () => {
     const tasteMap = createDefaultTasteMapData("profile_test");
     const candidates = [
       {
@@ -2555,7 +2563,8 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     assert.ok(m501, "movie:501 haritada bulunmalı");
     assert.equal(m501.shownCount, 1);
     assert.equal(m501.skippedCount, 0);
-    assert.equal(m501.ring, "core");
+    assert.equal(m501.ring, "ring1");
+    assert.equal(m501.initialRing, "ring0");
     assert.equal(m501.matchScore, 88);
     assert.equal(m501.demotionPenalty, 0);
 
@@ -2563,11 +2572,12 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     assert.ok(t601, "tv:601 haritada bulunmalı");
     assert.equal(t601.shownCount, 1);
     assert.equal(t601.skippedCount, 0);
-    assert.equal(t601.ring, "inner");
+    assert.equal(t601.ring, "ring1");
+    assert.equal(t601.initialRing, "ring0");
     assert.equal(t601.matchScore, 72);
   });
 
-  it("updateTasteMapWithBatch: pas geçilen (kaydedilmeyen) yapımlarda skippedCount artar ve halka geriletmesi uygulanır", () => {
+  it("updateTasteMapWithBatch: pas geçilen (kaydedilmeyen) yapımlarda ilk atlamada doğrudan ring2'ye geçer ve ceza artar", () => {
     let tasteMap = createDefaultTasteMapData("profile_demote_test");
     const itemA = {
       candidate: { id: 701, media_type: "movie", title: "Aday A" },
@@ -2584,7 +2594,7 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
       tags: ["Güzel"],
     };
 
-    // 1. Gösterim: itemA ve itemB gösterildi
+    // 1. Gösterim: itemA ve itemB gösterildi -> son öneri grubu olduğu için ring1
     tasteMap = updateTasteMapWithBatch({
       tasteMap,
       newRecommendedItems: [itemA, itemB],
@@ -2592,7 +2602,7 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
       preferences: { disliked: [], hidden: [], mood: "balanced" },
       now: "2026-10-22T12:00:00.000Z",
     });
-    assert.equal(tasteMap.entries["movie:701"].ring, "core");
+    assert.equal(tasteMap.entries["movie:701"].ring, "ring1");
     assert.equal(tasteMap.entries["movie:701"].skippedCount, 0);
 
     // 2. Yenileme: Kullanıcı hiçbirini kaydetmedi, yeni adaylar (itemC, itemD) gösterildi
@@ -2607,18 +2617,18 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
       now: "2026-10-22T12:05:00.000Z",
     });
 
-    // 1. Atlamada skippedCount=1 olur, hafif ceza uygulanır (5 puan)
+    // İlk atlamada doğrudan ring2 olur, skippedCount=1 ve 5 ceza puanı uygulanır
     assert.equal(tasteMap.entries["movie:701"].skippedCount, 1);
+    assert.equal(tasteMap.entries["movie:701"].ringDemotions, 1);
     assert.equal(tasteMap.entries["movie:701"].demotionPenalty, 5);
     assert.equal(tasteMap.entries["movie:701"].matchScore, 90); // Saf zevk uyumu 90 korunur
     assert.equal(tasteMap.entries["movie:701"].tasteScore, 90);
     assert.equal(tasteMap.entries["movie:701"].priorityScore, 85); // 90 - 5 = 85 seçim önceliği
-    assert.equal(tasteMap.entries["movie:701"].ring, "core"); // 2. atlamaya kadar ring henüz düşmez
+    assert.equal(tasteMap.entries["movie:701"].ring, "ring2");
 
-    // 3. Yenileme: itemE ve itemF gösterildi, itemA ve itemB hâlâ seçilmedi
-    // 2. Atlamada (skippedCount=2) Halka Geriletmesi TETİKLENİR! ('core' -> 'inner')
+    // 3. Yedekten tekrar gösterilip bir kez daha atlandığında ceza birikerek artar
     const itemE = { candidate: { id: 705, media_type: "movie", title: "Aday E" }, score: 82 };
-    tasteMap.lastRecommendedKeys = ["movie:701", "movie:702"]; // Simüle edilmiş önceki vitrin
+    tasteMap.lastRecommendedKeys = ["movie:701", "movie:702"];
 
     tasteMap = updateTasteMapWithBatch({
       tasteMap,
@@ -2630,11 +2640,12 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
 
     const demotedEntry = tasteMap.entries["movie:701"];
     assert.equal(demotedEntry.skippedCount, 2);
-    assert.equal(demotedEntry.ringDemotions, 1, "Halka geriletmesi 1 kez gerçekleşmiş olmalı");
-    assert.equal(demotedEntry.ring, "inner", "Çekirdek halkadan yakın halkaya (core -> inner) geriletilmeli");
+    assert.equal(demotedEntry.ringDemotions, 2);
+    assert.equal(demotedEntry.ring, "ring2");
+    assert.equal(demotedEntry.demotionPenalty, 10);
     assert.equal(demotedEntry.matchScore, 90); // Saf zevk uyumu 90 korunur
     assert.equal(demotedEntry.tasteScore, 90);
-    assert.equal(demotedEntry.priorityScore, 75); // 90 - 15 = 75 seçim önceliği
+    assert.equal(demotedEntry.priorityScore, 80); // 90 - 10 = 80 seçim önceliği
   });
 
   it("updateTasteMapWithBatch: kaydedilen (saved) yapımlarda atlandı sayacı ve ceza artırılmaz", () => {
@@ -2763,7 +2774,7 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
 
     assert.ok(freshScored.score > demotedScored.score, "Taze adayın net puanı atlanan adaydan yüksek olmalı");
     assert.equal(demotedScored.demotionPenalty, 20, "Atlanan adaya 20 puanlık geriletme cezası yansıtılmalı");
-    assert.equal(demotedScored.ring, "inner", "Geriletilmiş halka durumu ('inner') korunmalı");
+    assert.equal(demotedScored.ring, "ring2", "Daha önce atlanan içerik yaşam döngüsü halkasında 'ring2' olmalı");
     assert.equal(demotedScored.candidate.matchScore, demotedScored.tasteScore, "Aday nesnesi üzerine saf zevk uyumu matchScore yazılmalı");
     assert.equal(demotedScored.candidate.priorityScore, demotedScored.score, "Aday nesnesi üzerine seçim önceliği priorityScore yazılmalı");
   });
@@ -3017,9 +3028,9 @@ describe("Halka Sistemi — Halka 0 (Yeni Eşleşme), Halka 1 (Yakın Zamanda G�
       parts: { genre: 0.9 },
       tags: [],
       shownCount: 2,
-      skippedCount: 1,
-      ringDemotions: 0,
-      demotionPenalty: 0,
+      skippedCount: 2,
+      ringDemotions: 2,
+      demotionPenalty: 10,
       lastShownAt: "2026-10-22T08:00:00.000Z",
       lastScoredAt: "2026-10-22T08:00:00.000Z",
       status: "active",
@@ -3035,11 +3046,13 @@ describe("Halka Sistemi — Halka 0 (Yeni Eşleşme), Halka 1 (Yakın Zamanda G�
       popularity: 70,
     };
 
+    const [baseline] = scoreCandidatesV3([{ ...candidateSkipped }], tasteProfile);
     const [scored] = scoreCandidatesV3([candidateSkipped], tasteProfile, { tasteMap });
     assert.equal(scored.ring, "ring2", "Daha önce atlanan içerik Halka 2 olmalı");
     assert.equal(getTasteRingLabel(scored.ring), "Halka 2 — Daha Önce Atlandı");
-    // Önemli kural: Gerçek matchScore puanı düşürülmez!
-    assert.ok(scored.score >= 80, `Gerçek eşleşme skoru düşürülmeden korunmalı (alınan: ${scored.score})`);
+    // Önemli kural: Gerçek matchScore puanı düşürülmez; yalnızca priorityScore cezayı yansıtır!
+    assert.equal(scored.matchScore, baseline.matchScore, "Gerçek eşleşme skoru (matchScore) ceza ile düşürülmeden korunmalı");
+    assert.equal(scored.priorityScore, baseline.matchScore - 10, "Seçim önceliği (priorityScore) kayıtlı 10 ceza puanını yansıtmalı");
 
     // Halka 0 adayları yetersiz olduğunda (örneğin sadece 2 taze aday varken), Halka 2 devreye girip listeyi tamamlamalı
     const twoFreshMovies = [
@@ -3346,33 +3359,29 @@ describe("Zevk Haritası — Tam Aday Haritası, Gösterim Geçmişi Ayrımı, F
     assert.equal(tv5002.demotionPenalty, 0);
   });
 
-  it("Eski Halka Verisini Normalleştirme: normalizeTasteMapEntries ve normalizeTasteMapRings 'core','inner','outer','orbit' değerlerini canonical 'ring0','ring1','ring2' formatına normalleştirir", () => {
+  it("Eski Halka Verisini Normalleştirme: normalizeTasteMapEntries ve normalizeTasteMapRings puan bandına göre değil gösterim geçmişine göre 'ring0','ring1','ring2' üretir", () => {
     const rawEntries = {
-      "movie:1": { ring: "core", initialRing: "core", matchScore: 90 },
-      "movie:2": { ring: "inner", initialRing: "core", matchScore: 80 },
-      "movie:3": { ring: "outer", initialRing: "inner", matchScore: 65 },
-      "movie:4": { ring: "orbit", initialRing: "outer", matchScore: 40 },
-      "movie:5": { ring: "ring0", initialRing: "ring0", matchScore: 92 },
-      "movie:6": { ring: "ring1", initialRing: "ring0", matchScore: 84 },
-      "movie:7": { ring: "ring2", initialRing: "ring1", matchScore: 70 },
+      // Hiç gösterilmemiş adaylar eski halkası 'core', 'inner', 'outer' veya 'orbit' olsa bile 'ring0' olmalı
+      "movie:1": { ring: "core", initialRing: "core", matchScore: 90, shownCount: 0, skippedCount: 0, lastShownAt: null },
+      "movie:2": { ring: "inner", initialRing: "core", matchScore: 75, shownCount: 0, skippedCount: 0, lastShownAt: null },
+      "movie:3": { ring: "outer", initialRing: "inner", matchScore: 60, shownCount: 0, skippedCount: 0, lastShownAt: null },
+      "movie:4": { ring: "orbit", initialRing: "outer", matchScore: 40, shownCount: 0, skippedCount: 0, lastShownAt: null },
+      // Son öneri grubunda olan aday 'ring1' olmalı
+      "movie:5": { ring: "inner", initialRing: "inner", matchScore: 78, shownCount: 1, skippedCount: 0, lastShownAt: "2026-10-23T00:00:00Z" },
+      // Daha önce gösterilmiş / atlanmış ancak son grupta olmayan adaylar 'ring2' olmalı
+      "movie:6": { ring: "core", initialRing: "core", matchScore: 92, shownCount: 2, skippedCount: 1, lastShownAt: "2026-10-22T00:00:00Z" },
+      "movie:7": { ring: "outer", initialRing: "outer", matchScore: 65, shownCount: 1, skippedCount: 1, lastShownAt: "2026-10-21T00:00:00Z" },
     };
 
-    const normalized = normalizeTasteMapEntries(rawEntries);
+    const lastRecommendedKeys = ["movie:5"];
+    const normalized = normalizeTasteMapEntries(rawEntries, lastRecommendedKeys);
 
     assert.equal(normalized["movie:1"].ring, "ring0");
-    assert.equal(normalized["movie:1"].initialRing, "ring0");
-
-    assert.equal(normalized["movie:2"].ring, "ring1");
-    assert.equal(normalized["movie:2"].initialRing, "ring0");
-
-    assert.equal(normalized["movie:3"].ring, "ring2");
-    assert.equal(normalized["movie:3"].initialRing, "ring1");
-
-    assert.equal(normalized["movie:4"].ring, "ring2");
-    assert.equal(normalized["movie:4"].initialRing, "ring2");
-
-    assert.equal(normalized["movie:5"].ring, "ring0");
-    assert.equal(normalized["movie:6"].ring, "ring1");
+    assert.equal(normalized["movie:2"].ring, "ring0", "75 puanlı ama hiç gösterilmemiş 'inner' kayıt ring1 değil ring0 olmalı");
+    assert.equal(normalized["movie:3"].ring, "ring0", "60 puanlı ama hiç gösterilmemiş 'outer' kayıt ring2 değil ring0 olmalı");
+    assert.equal(normalized["movie:4"].ring, "ring0");
+    assert.equal(normalized["movie:5"].ring, "ring1", "Son öneri grubundaki kayıt ring1 olmalı");
+    assert.equal(normalized["movie:6"].ring, "ring2", "Daha önce gösterilip atlanmış 'core' kayıt ring2 olmalı");
     assert.equal(normalized["movie:7"].ring, "ring2");
 
     // normalizeTasteMapRings tam veri yapısı üzerinde çalışır
@@ -3380,12 +3389,13 @@ describe("Zevk Haritası — Tam Aday Haritası, Gösterim Geçmişi Ayrımı, F
       profileId: "test-norm",
       updatedAt: "2026-10-23T00:00:00Z",
       entries: rawEntries,
-      lastRecommendedKeys: [],
+      lastRecommendedKeys,
       lastBatchTimestamp: null,
     };
     const normalizedMap = normalizeTasteMapRings(tasteMap);
-    assert.equal(normalizedMap.entries["movie:1"].ring, "ring0");
-    assert.equal(normalizedMap.entries["movie:2"].ring, "ring1");
+    assert.equal(normalizedMap.entries["movie:2"].ring, "ring0");
+    assert.equal(normalizedMap.entries["movie:5"].ring, "ring1");
+    assert.equal(normalizedMap.entries["movie:6"].ring, "ring2");
   });
 
   it("isTasteMapCacheValid: Aynı imzaya sahip görünse bile önemli profil alanları değiştiğinde önbelleği geçersizleştirir", () => {
@@ -4134,10 +4144,15 @@ describe("Zevk Haritası Mimari İyileştirmeleri — Puan Ayrımı, Algoritma S
     // GÖSTERİM / SEÇİM ÖNCELİĞİ DÜŞMELİ
     assert.equal(entry2.priorityScore, 87, "Seçim önceliği 92 - 5 = 87 olmalı");
 
-    // 3. scoreCandidatesV3 içinde sıralama/seçim puanı (score) priorityScore (87) iken tasteScore ve matchScore 92 olmalı
+    // 3. scoreCandidatesV3 içinde ring2 durumundaki adayın saf zevk uyumu (tasteScore/matchScore) düşmez,
+    // ancak demotionPenalty (5) korunarak priorityScore ve sıralama puanı (score) 5 puan düşer!
+    const profile = buildTasteProfileV3([]);
+    const [baselineScored] = scoreCandidatesV3([{ ...candidate }], profile, {
+      weights: RECOMMENDATION_WEIGHTS_V3,
+    });
     const scoredList = scoreCandidatesV3(
-      [candidate],
-      buildTasteProfileV3([]),
+      [{ ...candidate }],
+      profile,
       {
         weights: RECOMMENDATION_WEIGHTS_V3,
         tasteMap: batch2,
@@ -4145,10 +4160,12 @@ describe("Zevk Haritası Mimari İyileştirmeleri — Puan Ayrımı, Algoritma S
     );
     assert.equal(scoredList.length, 1);
     const scoredItem = scoredList[0];
-    assert.equal(scoredItem.matchScore, 92, "Adayın saf zevk uyumu 92 korunmalı");
-    assert.equal(scoredItem.tasteScore, 92, "Adayın tasteScore değeri 92 olmalı");
-    assert.equal(scoredItem.score, 87, "Algoritma sıralama ve seçim puanı (score) öncelik puanı (87) olmalı");
-    assert.equal(scoredItem.priorityScore, 87, "Adayın priorityScore değeri 87 olmalı");
+    assert.equal(scoredItem.ring, "ring2", "Atlanan aday ring2 durumunda olmalı");
+    assert.equal(scoredItem.demotionPenalty, 5, "ring2 durumunda kayıtlı 5 ceza puanı sıfırlanmamalı");
+    assert.equal(scoredItem.tasteScore, baselineScored.tasteScore, "Adayın saf zevk uyumu ceza nedeniyle düşmemeli");
+    assert.equal(scoredItem.matchScore, baselineScored.tasteScore, "Adayın matchScore değeri saf zevk uyumunu korumalı");
+    assert.equal(scoredItem.priorityScore, baselineScored.tasteScore - 5, "priorityScore ceza puanını (5) yansıtmalı");
+    assert.equal(scoredItem.score, scoredItem.priorityScore, "Algoritma sıralama ve seçim puanı (score) priorityScore olmalı");
   });
 
   it("P1 — Profil İmzasına Algoritma Sürümü ve Ağırlık İmzası: Sürüm veya ağırlık değiştiğinde önbellek geçersizleşir", () => {
@@ -4308,4 +4325,469 @@ describe("Zevk Haritası Mimari İyileştirmeleri — Puan Ayrımı, Algoritma S
     assert.equal(updated.entries["movie:202"].confidenceLevel, "high");
   });
 });
+
+describe("Yaşam Döngüsü Halkaları (ring0 / ring1 / ring2) — Puan Bağımsızlığı, Ceza Korunumu, Seçici Sıralaması ve Çoklu Güncelleme Testleri", () => {
+  it("1. İlk defa karşılaşılan 60 puanlı ve 75 puanlı adaylar ring0 olarak sınıflandırılır ve havuz kaydında ring0 kalır", () => {
+    const profile = buildTasteProfileV3([
+      baseItem({ id: 1, media_type: "movie", genre_ids: [28], status: "completed", personal_rating: 9 }),
+    ]);
+    const tasteMap = createDefaultTasteMapData("lifecycle_unseen_scores");
+
+    // Farklı puan bantlarına düşen (yaklaşık ~55-65 ve ~70-80) daha önce hiç gösterilmemiş adaylar
+    const candLow = {
+      id: 600,
+      media_type: "movie",
+      title: "60 Bandı Yeni Film",
+      genre_ids: [99],
+      vote_average: 5.8,
+      vote_count: 400,
+      popularity: 12,
+    };
+    const candMid = {
+      id: 750,
+      media_type: "movie",
+      title: "75 Bandı Yeni Film",
+      genre_ids: [28],
+      vote_average: 8.2,
+      vote_count: 1500,
+      popularity: 90,
+      seedSourceType: "completed",
+    };
+
+    const scored = scoreCandidatesV3([candLow, candMid], profile, { tasteMap });
+    const sLow = scored.find((s) => s.candidate.id === 600);
+    const sMid = scored.find((s) => s.candidate.id === 750);
+
+    assert.equal(sLow.ring, "ring0", `Düşük/orta puanlı (${sLow.tasteScore}) ilk kez görülen aday ring0 olmalı`);
+    assert.equal(sMid.ring, "ring0", `75 bandındaki (${sMid.tasteScore}) ilk kez görülen aday ring0 olmalı`);
+
+    // Havuzda 60 ve 75 puanla bulunup vitrine seçilmeyen adaylar updateTasteMapWithBatch(normalizeLegacyRings: true) sonrasında da ring0 kalmalı!
+    const pickedOther = { candidate: { id: 900, media_type: "movie", title: "Vitrin Filmi" }, score: 92, rawScore: 92 };
+    const updatedMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [pickedOther],
+      allPoolCandidates: [
+        { candidate: candLow, score: 60, rawScore: 60 },
+        { candidate: candMid, score: 75, rawScore: 75 },
+        pickedOther,
+      ],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      normalizeLegacyRings: true,
+    });
+
+    assert.equal(updatedMap.entries["movie:600"].ring, "ring0", "60 puanlı gösterilmemiş havuz adayı ring2'ye düşürülmemeli, ring0 olmalı");
+    assert.equal(updatedMap.entries["movie:750"].ring, "ring0", "75 puanlı gösterilmemiş havuz adayı ring1'e alınmamalı, ring0 olmalı");
+    assert.equal(updatedMap.entries["movie:900"].ring, "ring1", "Vitrinde gösterilen aday ring1 olmalı");
+  });
+
+  it("2 & 3. Son öneri grubundaki içerikler bir sonraki seçimde bulunmaz; kaydedilmeyen önceki grup içerikleri ring2 durumuna geçer", () => {
+    const profile = buildTasteProfileV3([
+      baseItem({ id: 10, media_type: "movie", genre_ids: [28], status: "completed", personal_rating: 9 }),
+    ]);
+    let tasteMap = createDefaultTasteMapData("lifecycle_batch_transition");
+
+    const pool = Array.from({ length: 12 }, (_, idx) => ({
+      id: 1000 + idx,
+      media_type: "movie",
+      title: `Film ${idx + 1}`,
+      genre_ids: [28],
+      vote_average: 8.5 - idx * 0.1,
+      vote_count: 800,
+      popularity: 60 - idx,
+    }));
+
+    // 1. Grup: İlk 4 film seçilsin
+    const scored1 = scoreCandidatesV3(pool.map((c) => ({ ...c })), profile, { tasteMap });
+    const res1 = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: scored1,
+      targetTotal: 4,
+    });
+    assert.equal(res1.items.length, 4);
+    const batch1Ids = new Set(res1.items.map((x) => x.candidate.id));
+
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: res1.items,
+      allPoolCandidates: scored1,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      normalizeLegacyRings: true,
+    });
+
+    // 2. Grup: Önerileri Güncelle -> Batch 1'deki 4 film ring1 olduğu için kesinlikle seçilmemeli
+    const scored2 = scoreCandidatesV3(pool.map((c) => ({ ...c })), profile, { tasteMap });
+    for (const s of scored2) {
+      if (batch1Ids.has(s.candidate.id)) {
+        assert.equal(s.ring, "ring1", "Son gruptaki içerik ring1 olmalı");
+      } else {
+        assert.equal(s.ring, "ring0", "Henüz gösterilmemiş içerik ring0 olmalı");
+      }
+    }
+
+    const res2 = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: scored2,
+      targetTotal: 4,
+    });
+    assert.equal(res2.items.length, 4);
+    for (const picked of res2.items) {
+      assert.equal(batch1Ids.has(picked.candidate.id), false, "Son öneri grubundaki film bir sonraki seçimde yer almamalı");
+    }
+
+    // Batch 2 kaydedildiğinde, Batch 1'de olup kaydedilmeyen içerikler doğrudan ring2 olmalı
+    tasteMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: res2.items,
+      allPoolCandidates: scored2,
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      normalizeLegacyRings: true,
+    });
+
+    for (const id of batch1Ids) {
+      const entry = tasteMap.entries[`movie:${id}`];
+      assert.equal(entry.ring, "ring2", "Önceki grupta olup kaydedilmeyen içerik doğrudan ring2 durumuna geçmeli");
+      assert.equal(entry.skippedCount, 1, "Atlanma sayacı 1 olmalı");
+      assert.equal(entry.demotionPenalty, 5, "Ceza puanı kaydedilmeli");
+    }
+  });
+
+  it("4. Yeterli ring0 adayı varken (remainingMovies içinde yer alsalar dahi) yüksek puanlı ring2 içerikler seçilmez", () => {
+    // Kısa listede (scoredMovies) 2 adet ring0 ve 3 adet çok yüksek puanlı ring2 bulunsun;
+    // kalan 3 adet orta puanlı ring0 ise remainingMovies havuzunda yer alsın.
+    const scoredMovies = [
+      { candidate: { id: 1, media_type: "movie", title: "Eski Favori 1", genre_ids: [28] }, score: 94, priorityScore: 94, tasteScore: 99, ring: "ring2", shownCount: 1, skippedCount: 1 },
+      { candidate: { id: 2, media_type: "movie", title: "Eski Favori 2", genre_ids: [18] }, score: 92, priorityScore: 92, tasteScore: 97, ring: "ring2", shownCount: 1, skippedCount: 1 },
+      { candidate: { id: 3, media_type: "movie", title: "Yeni Kısa Liste 1", genre_ids: [28] }, score: 78, priorityScore: 78, tasteScore: 78, ring: "ring0", shownCount: 0, skippedCount: 0 },
+      { candidate: { id: 4, media_type: "movie", title: "Yeni Kısa Liste 2", genre_ids: [12] }, score: 74, priorityScore: 74, tasteScore: 74, ring: "ring0", shownCount: 0, skippedCount: 0 },
+    ];
+    const remainingMovies = [
+      { candidate: { id: 5, media_type: "movie", title: "Kalan Havuz Yeni 3", genre_ids: [35] }, score: 68, priorityScore: 68, tasteScore: 68, ring: "ring0" },
+      { candidate: { id: 6, media_type: "movie", title: "Kalan Havuz Yeni 4", genre_ids: [80] }, score: 64, priorityScore: 64, tasteScore: 64, ring: "ring0" },
+      { candidate: { id: 7, media_type: "movie", title: "Kalan Havuz Yeni 5", genre_ids: [53] }, score: 60, priorityScore: 60, tasteScore: 60, ring: "ring0" },
+      { candidate: { id: 8, media_type: "movie", title: "Son Gösterilen (Dinlenen)", genre_ids: [28] }, score: 98, priorityScore: 98, tasteScore: 98, ring: "ring1" },
+    ];
+
+    const res = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies,
+      remainingMovies,
+      targetTotal: 5,
+    });
+
+    assert.equal(res.items.length, 5);
+    const selectedIds = res.items.map((x) => x.candidate.id);
+    assert.equal(selectedIds.includes(1), false, "Yeterli ring0 varken 94 puanlı ring2 seçilmemeli");
+    assert.equal(selectedIds.includes(2), false, "Yeterli ring0 varken 92 puanlı ring2 seçilmemeli");
+    assert.equal(selectedIds.includes(8), false, "ring1 kesinlikle seçilmemeli");
+    assert.deepEqual(new Set(selectedIds), new Set([3, 4, 5, 6, 7]), "Tüm kontenjan önce ring0 adaylarıyla (kısa liste + kalan havuz) doldurulmalı");
+  });
+
+  it("5 & 6. ring0 sayısı hedefi dolduramazsa ring2 ancak yedek aşamada ve ceza düşülmüş priorityScore sırasıyla seçilir", () => {
+    const profile = buildTasteProfileV3([
+      baseItem({ id: 50, media_type: "movie", genre_ids: [28], status: "completed", personal_rating: 9 }),
+    ]);
+
+    const tasteMap = createDefaultTasteMapData("lifecycle_ring2_fallback_order");
+    tasteMap.lastRecommendedKeys = ["movie:400"]; // Dinlenen aday
+
+    // İki ring2 adayı:
+    // movie:201 çok kez atlanmış (demotionPenalty: 25) -> yüksek ham puana rağmen priorityScore düşük olmalı
+    // movie:202 sadece 1 kez atlanmış (demotionPenalty: 5) -> priorityScore daha yüksek olmalı
+    tasteMap.entries["movie:201"] = {
+      mediaKey: "movie:201",
+      mediaType: "movie",
+      id: 201,
+      title: "5 Kez Atlanan Aday",
+      matchScore: 80,
+      tasteScore: 80,
+      priorityScore: 55,
+      rawScore: 80,
+      ring: "ring2",
+      initialRing: "ring0",
+      parts: {},
+      tags: [],
+      shownCount: 5,
+      skippedCount: 5,
+      ringDemotions: 5,
+      demotionPenalty: 25,
+      lastShownAt: "2026-10-20T00:00:00Z",
+      lastScoredAt: "2026-10-20T00:00:00Z",
+      status: "active",
+    };
+    tasteMap.entries["movie:202"] = {
+      mediaKey: "movie:202",
+      mediaType: "movie",
+      id: 202,
+      title: "1 Kez Atlanan Aday",
+      matchScore: 78,
+      tasteScore: 78,
+      priorityScore: 73,
+      rawScore: 78,
+      ring: "ring2",
+      initialRing: "ring0",
+      parts: {},
+      tags: [],
+      shownCount: 1,
+      skippedCount: 1,
+      ringDemotions: 1,
+      demotionPenalty: 5,
+      lastShownAt: "2026-10-22T00:00:00Z",
+      lastScoredAt: "2026-10-22T00:00:00Z",
+      status: "active",
+    };
+
+    const candidates = [
+      // Sadece 2 adet taze ring0 adayı
+      { id: 101, media_type: "movie", title: "Taze 1", genre_ids: [28], vote_average: 7.0, vote_count: 500, popularity: 25 },
+      { id: 102, media_type: "movie", title: "Taze 2", genre_ids: [18], vote_average: 6.8, vote_count: 500, popularity: 20 },
+      // 2 adet ring2 adayı (benzer temel özelliklerde, ancak farklı demotionPenalty geçmişine sahip)
+      { id: 201, media_type: "movie", title: "5 Kez Atlanan Aday", genre_ids: [28], vote_average: 8.4, vote_count: 900, popularity: 50 },
+      { id: 202, media_type: "movie", title: "1 Kez Atlanan Aday", genre_ids: [28], vote_average: 8.2, vote_count: 900, popularity: 48 },
+      // 1 adet ring1 (son grupta gösterilmiş)
+      { id: 400, media_type: "movie", title: "Dinlenen Aday", genre_ids: [28], vote_average: 9.2, vote_count: 2000, popularity: 95 },
+    ];
+
+    const scored = scoreCandidatesV3(candidates, profile, { tasteMap });
+    const s201 = scored.find((s) => s.candidate.id === 201);
+    const s202 = scored.find((s) => s.candidate.id === 202);
+
+    assert.equal(s201.ring, "ring2");
+    assert.equal(s202.ring, "ring2");
+    assert.equal(s201.demotionPenalty, 25, "ring2 adayın 25 puanlık cezası korunmalı");
+    assert.equal(s202.demotionPenalty, 5, "ring2 adayın 5 puanlık cezası korunmalı");
+    assert.equal(s201.priorityScore, s201.tasteScore - 25);
+    assert.equal(s202.priorityScore, s202.tasteScore - 5);
+    assert.ok(s202.priorityScore > s201.priorityScore, "Az ceza alan ring2 adayın priorityScore değeri çok ceza alandan yüksek olmalı");
+
+    // Hedef 3 olduğunda: önce 2 taze ring0 (101, 102) alınmalı, 3. kontenjan için ring2'den priorityScore'u yüksek olan 202 seçilmeli!
+    // 201 kısa listede, 202 remainingMovies içinde olsa bile priorityScore sıralaması bozulmamalı.
+    const res = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: scored.filter((s) => [101, 201, 400].includes(s.candidate.id)),
+      remainingMovies: scored.filter((s) => [102, 202].includes(s.candidate.id)),
+      targetTotal: 3,
+    });
+
+    assert.equal(res.items.length, 3);
+    const pickedIds = res.items.map((x) => x.candidate.id);
+    assert.deepEqual(pickedIds.slice(0, 2).sort((a, b) => a - b), [101, 102], "İlk 2 seçim ring0 adaylarından gelmeli");
+    assert.equal(pickedIds[2], 202, "Yedek aşamada daha yüksek priorityScore'a sahip olan movie:202 seçilmeli");
+  });
+
+  it("7. Depodaki eski halka kayıtları (core/inner/outer/orbit ve yanlış yazılmış gösterimsiz ring1/ring2) yüklenirken gösterim geçmişine göre dönüştürülür", () => {
+    const memory = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => memory.get(k) || null,
+      setItem: (k, v) => memory.set(k, String(v)),
+      removeItem: (k) => memory.delete(k),
+      clear: () => memory.clear(),
+    };
+
+    const profileId = "prof_legacy_migration";
+    const storageKey = getTasteMapStorageKey(profileId);
+
+    const legacyStoredPayload = {
+      profileId,
+      updatedAt: "2026-10-23T00:00:00.000Z",
+      lastRecommendedKeys: ["movie:20"],
+      lastBatchTimestamp: "2026-10-23T00:00:00.000Z",
+      entries: {
+        // Hiç gösterilmemiş 75 puanlı eski 'inner' kaydı -> ring0 olmalı (eski hatada ring1 oluyordu)
+        "movie:10": {
+          mediaKey: "movie:10",
+          mediaType: "movie",
+          id: 10,
+          title: "75 Puanlı Gösterilmemiş Film",
+          matchScore: 75,
+          rawScore: 75,
+          ring: "inner",
+          initialRing: "inner",
+          parts: {},
+          tags: [],
+          shownCount: 0,
+          skippedCount: 0,
+          ringDemotions: 0,
+          demotionPenalty: 0,
+          lastShownAt: null,
+          lastScoredAt: "2026-10-23T00:00:00.000Z",
+          status: "active",
+        },
+        // Hiç gösterilmemiş ama depoya yanlışlıkla 'ring2' yazılmış 60 puanlı kayıt -> ring0 olmalı!
+        "movie:11": {
+          mediaKey: "movie:11",
+          mediaType: "movie",
+          id: 11,
+          title: "60 Puanlı Yanlış Etiketlenmiş Yeni Film",
+          matchScore: 60,
+          rawScore: 60,
+          ring: "ring2",
+          initialRing: "outer",
+          parts: {},
+          tags: [],
+          shownCount: 0,
+          skippedCount: 0,
+          ringDemotions: 0,
+          demotionPenalty: 0,
+          lastShownAt: null,
+          lastScoredAt: "2026-10-23T00:00:00.000Z",
+          status: "active",
+        },
+        // Son öneri grubundaki eski 'core' kaydı -> ring1 olmalı
+        "movie:20": {
+          mediaKey: "movie:20",
+          mediaType: "movie",
+          id: 20,
+          title: "Son Vitrindeki Film",
+          matchScore: 92,
+          rawScore: 92,
+          ring: "core",
+          initialRing: "core",
+          parts: {},
+          tags: [],
+          shownCount: 1,
+          skippedCount: 0,
+          ringDemotions: 0,
+          demotionPenalty: 0,
+          lastShownAt: "2026-10-23T00:00:00.000Z",
+          lastScoredAt: "2026-10-23T00:00:00.000Z",
+          status: "active",
+        },
+        // Daha önce gösterilmiş ve atlanmış eski 'core' kaydı -> ring2 olmalı
+        "movie:30": {
+          mediaKey: "movie:30",
+          mediaType: "movie",
+          id: 30,
+          title: "Daha Önce Gösterilip Atlanan Film",
+          matchScore: 91,
+          rawScore: 91,
+          ring: "core",
+          initialRing: "core",
+          parts: {},
+          tags: [],
+          shownCount: 2,
+          skippedCount: 2,
+          ringDemotions: 1,
+          demotionPenalty: 15,
+          lastShownAt: "2026-10-21T00:00:00.000Z",
+          lastScoredAt: "2026-10-21T00:00:00.000Z",
+          status: "active",
+        },
+      },
+    };
+
+    globalThis.localStorage.setItem(storageKey, JSON.stringify(legacyStoredPayload));
+
+    const migrated = loadPersistentTasteMap(profileId);
+    assert.equal(migrated.entries["movie:10"].ring, "ring0", "Gösterilmemiş 'inner' kayıt ring0 olmalı");
+    assert.equal(migrated.entries["movie:11"].ring, "ring0", "Gösterilmemiş bozuk 'ring2' kayıt ring0'a iyileştirilmeli");
+    assert.equal(migrated.entries["movie:20"].ring, "ring1", "lastRecommendedKeys içindeki kayıt ring1 olmalı");
+    assert.equal(migrated.entries["movie:30"].ring, "ring2", "Önceki gruplarda gösterilmiş kayıt ring2 olmalı");
+    assert.equal(migrated.entries["movie:30"].demotionPenalty, 15, "Mevcut geriletme cezası korunmalı");
+
+    // Depodaki JSON verisinin de iyileştirilmiş olarak kaydedildiğini doğrula
+    const persistedRaw = JSON.parse(globalThis.localStorage.getItem(storageKey));
+    assert.equal(persistedRaw.entries["movie:10"].ring, "ring0");
+    assert.equal(persistedRaw.entries["movie:11"].ring, "ring0");
+    assert.equal(persistedRaw.entries["movie:20"].ring, "ring1");
+    assert.equal(persistedRaw.entries["movie:30"].ring, "ring2");
+  });
+
+  it("8. Çoklu 'Önerileri Güncelle' Döngüsü: Taze havuz tükenene kadar önceki hiçbir öneri tekrar gelmez", () => {
+    const profile = buildTasteProfileV3([
+      baseItem({ id: 1, media_type: "movie", genre_ids: [28, 878], status: "completed", personal_rating: 10 }),
+    ]);
+    let tasteMap = createDefaultTasteMapData("lifecycle_multi_refresh");
+
+    // 25 filmlik havuz: puanları 55 ile 95 arasına yayılacak şekilde çeşitli tür ve oylara sahip
+    const genresCycle = [[28], [878], [18], [35], [53]];
+    const fullPool = Array.from({ length: 25 }, (_, i) => ({
+      id: 3000 + i,
+      media_type: "movie",
+      title: `Havuz Filmi #${i + 1}`,
+      genre_ids: genresCycle[i % genresCycle.length],
+      vote_average: 9.0 - (i % 10) * 0.35,
+      vote_count: 400 + i * 50,
+      popularity: 80 - i * 2,
+    }));
+
+    const seenAcrossFirstThreeBatches = new Set();
+
+    // 1., 2. ve 3. güncellemelerde 8'er film seçelim (toplam 24 taze film; havuzda 25 film var!)
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      const scored = scoreCandidatesV3(
+        fullPool.map((c) => ({ ...c })),
+        profile,
+        { tasteMap }
+      ).sort((a, b) => b.score - a.score);
+
+      const shortlist = scored.filter((e) => e.ring === "ring0" || e.ring === "ring2").slice(0, 12);
+      const shortlistKeys = new Set(shortlist.map((e) => makeMediaKey(e.candidate)));
+      const remaining = scored.filter((e) => !shortlistKeys.has(makeMediaKey(e.candidate)));
+
+      const balanced = selectBalancedRecommendations({
+        targetType: "movie",
+        scoredMovies: shortlist,
+        remainingMovies: remaining,
+        targetTotal: 8,
+      });
+
+      assert.equal(balanced.items.length, 8, `${cycle}. döngüde 8 film seçilmeli`);
+      for (const item of balanced.items) {
+        const id = item.candidate.id;
+        assert.equal(
+          seenAcrossFirstThreeBatches.has(id),
+          false,
+          `${cycle}. döngüde daha önce gösterilmiş film (${id}) taze adaylar bitmeden tekrar seçilmemeli!`
+        );
+        seenAcrossFirstThreeBatches.add(id);
+      }
+
+      tasteMap = updateTasteMapWithBatch({
+        tasteMap,
+        newRecommendedItems: balanced.items,
+        allPoolCandidates: scored,
+        savedItems: [],
+        preferences: { disliked: [], hidden: [], mood: "" },
+        normalizeLegacyRings: true,
+      });
+    }
+
+    assert.equal(seenAcrossFirstThreeBatches.size, 24, "3 döngü sonunda 24 benzersiz film gösterilmiş olmalı");
+
+    // 4. Güncelleme: Havuzda yalnızca 1 adet taze (ring0) film kaldı!
+    // 8'lik listeyi tamamlamak için: önce o 1 son ring0 film alınmalı, son gruptaki 8 film (ring1) hiç alınmamalı,
+    // kalan 7 kontenjan ise 1. ve 2. gruptan ring2'ye düşmüş adaylardan priorityScore sırasına göre doldurulmalı!
+    const lastBatchSet = new Set(tasteMap.lastRecommendedKeys);
+    const scoredCycle4 = scoreCandidatesV3(
+      fullPool.map((c) => ({ ...c })),
+      profile,
+      { tasteMap }
+    ).sort((a, b) => b.score - a.score);
+
+    const balancedCycle4 = selectBalancedRecommendations({
+      targetType: "movie",
+      scoredMovies: scoredCycle4.slice(0, 12),
+      remainingMovies: scoredCycle4.slice(12),
+      targetTotal: 8,
+    });
+
+    assert.equal(balancedCycle4.items.length, 8);
+    // Son kalan 25. taze film kesinlikle bu grupta yer almalı
+    const remainingFreshId = fullPool.find((m) => !seenAcrossFirstThreeBatches.has(m.id)).id;
+    assert.equal(
+      balancedCycle4.items.some((x) => x.candidate.id === remainingFreshId),
+      true,
+      "Son kalan taze ring0 adayı kesinlikle öncelikli seçilmeli"
+    );
+    // 3. döngüde gösterilen (ring1) hiçbir film 4. döngüde bulunmamalı
+    for (const item of balancedCycle4.items) {
+      const key = makeMediaKey(item.candidate);
+      assert.equal(lastBatchSet.has(key), false, "Bir önceki gruptaki (ring1) hiçbir içerik 4. döngüde yer almamalı");
+    }
+  });
+});
+
 

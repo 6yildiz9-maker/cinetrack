@@ -139,7 +139,20 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             🎯 %{Math.round(Number(item.matchScore) || 82)} Uyum
             {item.ring && (
               <span className="opacity-90 ml-1 text-[10px]">
-                · {item.ring === 'core' ? '1. Halka' : item.ring === 'inner' ? '2. Halka' : item.ring === 'outer' ? '3. Halka' : 'Yörünge'}
+                ·{' '}
+                {item.ring === 'ring0'
+                  ? 'Yeni Eşleşme'
+                  : item.ring === 'ring1'
+                  ? 'Son Öneri'
+                  : item.ring === 'ring2'
+                  ? 'Yedek Halka'
+                  : item.ring === 'core'
+                  ? '1. Halka'
+                  : item.ring === 'inner'
+                  ? '2. Halka'
+                  : item.ring === 'outer'
+                  ? '3. Halka'
+                  : 'Yörünge'}
               </span>
             )}
           </span>

@@ -544,7 +544,7 @@ export function App() {
                     priorityScore,
                     scoreCoverage: mapEntry?.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
                     confidenceLevel: mapEntry?.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
-                    ring: mapEntry?.ring ?? e.ring ?? assignTasteRing(Number(e.score) || 75),
+                    ring: e.ring === 'ring2' ? 'ring2' : 'ring0',
                     tasteMapEntry: mapEntry,
                   };
                 })
@@ -736,21 +736,26 @@ export function App() {
           }
 
           // Adayları ayrıntılı bilgilerle zenginleştirme:
-          // 'all' modunda hem filmlerden (en iyi 20) hem dizilerden (en iyi 20) aday seçilir
-          // Tekil modda ise o türün en iyi 40 adayı zenginleştirilir
+          // Halka 1 (dinlendirilen son öneriler) hariç tutulur; önce taze Halka 0 adayları, yetersizse Halka 2 adayları zenginleştirilir
+          const buildEnrichmentShortlist = (scoredList: any[], count: number) => {
+            const ring0Items = scoredList.filter((e) => e.ring === 'ring0');
+            const ring2Items = scoredList.filter((e) => e.ring === 'ring2');
+            return [...ring0Items, ...ring2Items].slice(0, count);
+          };
+
           let shortlist: any[] = [];
           let movieShortlist: any[] = [];
           let tvShortlist: any[] = [];
 
           if (targetType === 'all') {
-            movieShortlist = movieScored.slice(0, 20);
-            tvShortlist = tvScored.slice(0, 20);
+            movieShortlist = buildEnrichmentShortlist(movieScored, 20);
+            tvShortlist = buildEnrichmentShortlist(tvScored, 20);
             shortlist = [...movieShortlist, ...tvShortlist];
           } else if (targetType === 'movie') {
-            movieShortlist = movieScored.slice(0, 40);
+            movieShortlist = buildEnrichmentShortlist(movieScored, 40);
             shortlist = movieShortlist;
           } else {
-            tvShortlist = tvScored.slice(0, 40);
+            tvShortlist = buildEnrichmentShortlist(tvScored, 40);
             shortlist = tvShortlist;
           }
 
@@ -809,12 +814,18 @@ export function App() {
           }
 
           // Kalan havuz adayları (kısa listeye girmeyen ancak havuzda bulunan yedek adaylar)
-          const remainingMovieScored = movieScored
-            .slice(movieShortlist.length)
-            .filter((entry) => isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs));
-          const remainingTvScored = tvScored
-            .slice(tvShortlist.length)
-            .filter((entry) => isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs));
+          const movieShortlistKeys = new Set(movieShortlist.map((e) => makeMediaKey(e.candidate)));
+          const tvShortlistKeys = new Set(tvShortlist.map((e) => makeMediaKey(e.candidate)));
+          const remainingMovieScored = movieScored.filter(
+            (entry) =>
+              !movieShortlistKeys.has(makeMediaKey(entry.candidate)) &&
+              isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs)
+          );
+          const remainingTvScored = tvScored.filter(
+            (entry) =>
+              !tvShortlistKeys.has(makeMediaKey(entry.candidate)) &&
+              isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs)
+          );
 
           // Dengeli nihai seçim: 10 film + 10 dizi garantisi, sessiz doldurma yok
           const balancedResult = selectBalancedRecommendations({
@@ -874,7 +885,7 @@ export function App() {
                 priorityScore,
                 scoreCoverage: mapEntry?.scoreCoverage ?? e.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
                 confidenceLevel: mapEntry?.confidenceLevel ?? e.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
-                ring: mapEntry?.ring ?? e.ring ?? assignTasteRing(Number(e.score) || 75),
+                ring: e.ring === 'ring2' ? 'ring2' : 'ring0',
                 tasteMapEntry: mapEntry,
               };
             })
