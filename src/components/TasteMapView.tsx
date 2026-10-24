@@ -917,3 +917,6 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
     </div>
   );
 };
+
+export default TasteMapView;
+

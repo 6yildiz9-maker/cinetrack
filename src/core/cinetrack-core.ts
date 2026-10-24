@@ -77,10 +77,12 @@ export interface Profile {
 }
 
 export const CURRENT_SCHEMA_VERSION = 3;
+export const ENGINE_VERSION = 'v3.2.0';
 
 export interface DataDocument {
   version: 3;
   schemaVersion: number;
+  engineVersion?: string;
   activeProfileId: string;
   profiles: Profile[];
   revision?: number;
@@ -542,7 +544,7 @@ export function parseBackupText(text: string): {
 }
 
 export const PROFILE_ID_PATTERN = /^profile-[A-Za-z0-9_-]{1,60}$/;
-export const DISLIKED_KEY_PATTERN = /^(?:movie|tv)[:\-](?:[1-9]\d{0,11}|custom-[A-Za-z0-9_-]{1,80})$/;
+export const DISLIKED_KEY_PATTERN = /^(?:movie|tv)[:-](?:[1-9]\d{0,11}|custom-[A-Za-z0-9_-]{1,80})$/;
 
 export function normalizePreferences(
   raw: any,
@@ -661,6 +663,7 @@ export function normalizeDataDocument(
   return {
     version: 3,
     schemaVersion,
+    engineVersion: ENGINE_VERSION,
     activeProfileId: seen.has(activeCandidate) ? activeCandidate : profiles[0].id,
     profiles,
     revision: Number.isSafeInteger(rawRev) && rawRev > 0 ? rawRev : 1,
@@ -707,16 +710,6 @@ export function createRequestGate() {
   };
 }
 
-export const RECOMMENDATION_WEIGHTS = Object.freeze({
-  genre: 0.25,
-  taste: 0.2,
-  actor: 0.2,
-  quality: 0.15,
-  crew: 0.08,
-  platform: 0.07,
-  exploration: 0.05,
-});
-
 export const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 export const clamp11 = (value: number) => Math.min(1, Math.max(-1, value));
 
@@ -740,353 +733,6 @@ export function billingWeight(order: number | unknown): number {
   if (index <= 5) return 0.7;
   if (index <= 9) return 0.45;
   return 0.3;
-}
-
-export function tasteValue(item: any): number | null {
-  if (!item || typeof item !== 'object') return null;
-  const rating = Number(item.personal_rating);
-  if (Number.isFinite(rating) && rating >= 1) return Math.min(1, Math.max(-1, (rating - 5) / 5));
-  if (item.status === 'completed') return 0.4;
-  if (item.status === 'watching') return 0.2;
-  return null;
-}
-
-function incrementAccumulator(
-  accumulator: Record<string, any>,
-  key: string | number,
-  value: number,
-  weight: number
-) {
-  const entry = accumulator[key] || { name: '', num: 0, den: 0 };
-  entry.num += value * weight;
-  entry.den += weight;
-  accumulator[key] = entry;
-  return entry;
-}
-
-export function buildTasteProfile(
-  items: any[],
-  {
-    includeWatchlist = false,
-    completedMultiplier = 1,
-    watchingMultiplier = 1,
-    watchlistMultiplier = 1,
-  }: {
-    includeWatchlist?: boolean;
-    completedMultiplier?: number;
-    watchingMultiplier?: number;
-    watchlistMultiplier?: number;
-  } = {}
-) {
-  const actors: Record<string, any> = {};
-  const directors: Record<string, any> = {};
-  const genres: Record<string, any> = {};
-  const typeCounts: Record<string, number> = { movie: 0, tv: 0 };
-
-  for (const item of Array.isArray(items) ? items : []) {
-    if (!item || typeof item !== 'object') continue;
-    let value = tasteValue(item);
-    if (value === null) {
-      if (includeWatchlist && item.status === 'watchlist') {
-        value = 0.2; // Gentle positive signal for items chosen in watchlist
-      } else {
-        continue;
-      }
-    }
-
-    // Watched items have much stronger influence on taste profile than watchlist items
-    let statusWeight = 1;
-    if (item.status === 'completed') {
-      statusWeight = completedMultiplier;
-    } else if (item.status === 'watching') {
-      statusWeight = watchingMultiplier;
-    } else if (item.status === 'watchlist') {
-      statusWeight = watchlistMultiplier;
-    }
-
-    typeCounts[item.media_type] = (typeCounts[item.media_type] || 0) + statusWeight;
-    for (const genreId of Array.isArray(item.genre_ids) ? item.genre_ids : []) {
-      incrementAccumulator(genres, genreId, value, statusWeight);
-    }
-    const cast = Array.isArray(item.cast) ? item.cast : [];
-    cast.forEach((person: any, order: number) => {
-      const personId = person?.id;
-      if (personId == null || !person.name) return;
-      const weight = billingWeight(order) * statusWeight;
-      incrementAccumulator(actors, personId, value, weight).name = person.name;
-      for (const genreId of Array.isArray(item.genre_ids) ? item.genre_ids : []) {
-        const genreAccumulator = actors[personId].genreAccumulator || (actors[personId].genreAccumulator = {});
-        incrementAccumulator(genreAccumulator, genreId, value, weight);
-      }
-    });
-    const crew = Array.isArray(item.crew) ? item.crew : [];
-    for (const member of crew) {
-      if (member?.id == null || !member.name) continue;
-      if (member.job !== 'Director' && member.job !== 'Creator') continue;
-      incrementAccumulator(directors, member.id, value, statusWeight).name = member.name;
-    }
-  }
-
-  const normalize = (accumulator: Record<string, any>) => {
-    const output: Record<string, any> = {};
-    for (const [key, entry] of Object.entries(accumulator)) {
-      const genreAccumulator = entry.genreAccumulator;
-      const genreScores: Record<string, number> = {};
-      if (genreAccumulator) {
-        for (const [genreKey, genreEntry] of Object.entries(genreAccumulator) as [string, any][]) {
-          if (genreEntry.den <= 0) continue;
-          genreScores[genreKey] = Math.min(1, Math.max(-1, genreEntry.num / genreEntry.den));
-        }
-      }
-      output[key] = {
-        name: entry.name,
-        personal: entry.den > 0 ? Math.min(1, Math.max(-1, entry.num / entry.den)) : 0,
-        genreScores,
-      };
-    }
-    return output;
-  };
-
-  const genreScores: Record<string, number> = {};
-  for (const [key, entry] of Object.entries(genres)) {
-    if (entry.den > 0) genreScores[key] = Math.min(1, Math.max(-1, entry.num / entry.den));
-  }
-  const total = typeCounts.movie + typeCounts.tv;
-  return {
-    actors: normalize(actors),
-    directors: normalize(directors),
-    genres: genreScores,
-    mediaPreference: total
-      ? {
-          movie: (typeCounts.movie || 0) / total,
-          tv: (typeCounts.tv || 0) / total,
-        }
-      : { movie: 0.5, tv: 0.5 },
-  };
-}
-
-export function scoreCandidates(
-  candidates: any[],
-  profile: any,
-  {
-    weights = RECOMMENDATION_WEIGHTS as any,
-    preferredProviders = [] as string[],
-    providerIndex = null as Record<string, any[]> | null,
-    genreNames = null as Record<string, string> | null,
-  } = {}
-) {
-  const preferred = new Set(preferredProviders.map(String));
-  const likedGenres = Object.entries(profile.genres || {})
-    .filter(([, score]: any) => score > 0)
-    .sort((a: any, b: any) => b[1] - a[1]);
-  const topGenreIds = new Set(likedGenres.slice(0, 3).map(([id]) => String(id)));
-  const actorOf = (personId: any) => profile.actors?.[personId] || null;
-  const directorOf = (personId: any) => profile.directors?.[personId] || null;
-
-  return (Array.isArray(candidates) ? candidates : []).map((candidate) => {
-    const genreIds = (Array.isArray(candidate.genre_ids) ? candidate.genre_ids : []).map(String);
-    const cast = (Array.isArray(candidate.cast) ? candidate.cast : []).slice(0, 8);
-    const crew = Array.isArray(candidate.crew) ? candidate.crew : [];
-
-    const knownGenreScores = genreIds
-      .map((id: string) => profile.genres?.[id])
-      .filter((score: any) => typeof score === 'number');
-    const genrePart = knownGenreScores.length
-      ? clamp01(
-          knownGenreScores.reduce((sum: number, score: number) => sum + (score + 1) / 2, 0) /
-            knownGenreScores.length
-        )
-      : 0.5;
-    const mediaPart = clamp01(profile.mediaPreference?.[candidate.media_type] ?? 0.5);
-    const genreScore = 0.75 * genrePart + 0.25 * mediaPart;
-
-    let tasteScore = genrePart;
-    let actorScore = 0.5;
-    let unknownCast = true;
-    if (cast.length) {
-      let tasteNum = 0;
-      let tasteDen = 0;
-      let actorNum = 0;
-      let actorDen = 0;
-      let unknownCount = 0;
-      for (const [index, person] of cast.entries()) {
-        if (person?.id == null) continue;
-        const weight = billingWeight(index);
-        const known = actorOf(person.id);
-        if (!known) unknownCount += 1;
-        const personal = known ? (known.personal + 1) / 2 : 0.5;
-        tasteNum += personal * weight;
-        tasteDen += weight;
-        const popularity = Number(person.popularity);
-        const general =
-          Number.isFinite(popularity) && popularity > 0 ? clamp01(popularity / (popularity + 100)) : 0.5;
-        let personalBlend = personal;
-        if (known) {
-          const sharedGenre = genreIds.find((genreId: string) => typeof known.genreScores?.[genreId] === 'number');
-          if (sharedGenre) personalBlend = 0.6 * ((known.genreScores[sharedGenre] + 1) / 2) + 0.4 * personal;
-        }
-        actorNum += (0.4 * general + 0.6 * personalBlend) * weight;
-        actorDen += weight;
-      }
-      if (tasteDen > 0) tasteScore = clamp01(tasteNum / tasteDen);
-      if (actorDen > 0) {
-        actorScore = clamp01(actorNum / actorDen);
-        unknownCast = unknownCount === cast.length;
-      }
-    }
-
-    const qualityScore = clamp01(bayesianRating(candidate.vote_average, candidate.vote_count) / 10);
-
-    const directorEntry = crew.find(
-      (member: any) => member?.id != null && (member.job === 'Director' || member.job === 'Creator')
-    );
-    const knownDirector = directorEntry ? directorOf(directorEntry.id) : null;
-    const crewScore = knownDirector ? clamp01((knownDirector.personal + 1) / 2) : 0.5;
-
-    const key = makeMediaKey(candidate);
-    const providers = providerIndex?.[key] || null;
-    let platformScore = 0.5;
-    let platformTag = '';
-    if (providers) {
-      const providerIds = providers.map((provider: any) => String(provider.id));
-      const preferredHit = providerIds
-        .filter((id: string) => preferred.has(id))
-        .map((id: string) => providers.find((provider: any) => String(provider.id) === id)?.name)
-        .filter(Boolean);
-      if (preferredHit.length) {
-        platformScore = 1;
-        platformTag = `Tercih ettiğin platformda izlenebilir: ${preferredHit.slice(0, 2).join(', ')}`;
-      } else if (providerIds.length) {
-        platformScore = 0.6;
-        platformTag = `İzlenebilir: ${providers
-          .slice(0, 2)
-          .map((provider: any) => provider.name)
-          .filter(Boolean)
-          .join(', ')}`;
-      } else {
-        platformScore = 0.25;
-      }
-    }
-
-    const overlapWithTop = genreIds.filter((id: string) => topGenreIds.has(id)).length;
-    const topGenreOverlap = genreIds.length ? overlapWithTop / genreIds.length : 0;
-    const explorationScore = unknownCast
-      ? clamp01(0.7 + 0.3 * (1 - topGenreOverlap))
-      : clamp01(
-          0.5 *
-            (cast.length ? cast.filter((person: any) => !actorOf(person?.id)).length / cast.length : 0.5) +
-            0.5 * (1 - topGenreOverlap)
-        );
-
-    const parts: Record<string, number> = {
-      genre: genreScore,
-      taste: tasteScore,
-      actor: actorScore,
-      quality: qualityScore,
-      crew: crewScore,
-      platform: platformScore,
-      exploration: explorationScore,
-    };
-    let total = Object.entries(weights).reduce(
-      (sum, [name, weight]) => sum + (parts[name] ?? 0.5) * (weight as number),
-      0
-    );
-
-    // Recommendations derived from watched items have higher contribution
-    if (candidate.seedSourceType === 'completed' || candidate.seedSourceType === 'watching') {
-      total = clamp01(total + 0.08);
-    } else if (candidate.seedSourceType === 'watchlist') {
-      total = clamp01(total + 0.02);
-    }
-
-    const tags: string[] = [];
-    if (candidate.poolReason) tags.push(candidate.poolReason);
-    const bestActor = cast
-      .map((person: any) => ({ person, known: actorOf(person?.id) }))
-      .filter((entry: any) => entry.known && entry.known.personal >= 0.3)
-      .sort((a: any, b: any) => b.known.personal - a.known.personal)[0];
-    if (bestActor) tags.push(`Sevdiğin ${bestActor.known.name} oynuyor`);
-    const bestGenre = likedGenres.find(([id]) => genreIds.includes(id));
-    const bestGenreTag =
-      bestGenre && genreNames?.[bestGenre[0]] ? `${genreNames[bestGenre[0]]} türünü sevdiğin için` : '';
-    if (bestGenreTag && bestGenreTag !== candidate.poolReason) tags.push(bestGenreTag);
-    if (knownDirector && knownDirector.personal >= 0.3) tags.push(`Sevdiğin yönetmen ${knownDirector.name}`);
-    if (platformTag) tags.push(platformTag);
-    if (qualityScore >= 0.7)
-      tags.push(`TMDB'de ${bayesianRating(candidate.vote_average, candidate.vote_count).toFixed(1)} puan`);
-    if (explorationScore >= 0.75) tags.push('Yeni keşif için');
-
-    return { candidate, score: total, parts, tags: tags.slice(0, 4) };
-  });
-}
-
-export function diversifyList(scored: any[], { limit = 24, maxPerGenre = 6 } = {}) {
-  const ordered = [...(Array.isArray(scored) ? scored : [])].sort((a, b) => b.score - a.score);
-  const dominantGenre = (entry: any) =>
-    (entry.candidate?.genre_ids || [])[0] != null ? String(entry.candidate.genre_ids[0]) : '';
-  const picked: any[] = [];
-  const counts: Record<string, number> = {};
-  for (const entry of ordered) {
-    if (picked.length >= limit) break;
-    const genre = dominantGenre(entry);
-    if (genre && (counts[genre] || 0) >= maxPerGenre) continue;
-    picked.push(entry);
-    if (genre) counts[genre] = (counts[genre] || 0) + 1;
-  }
-  return picked;
-}
-
-export function createCandidatePool({
-  maxItems = 2000,
-  allowedMediaType,
-}: { maxItems?: number; allowedMediaType?: 'movie' | 'tv' | 'all' | string } = {}) {
-  const map = new Map<string, any>();
-  return {
-    add(
-      source: string,
-      reason: string,
-      mediaTypeGuess: string,
-      items: any[],
-      seedSourceType: 'completed' | 'watching' | 'watchlist' | '' = ''
-    ) {
-      for (const item of Array.isArray(items) ? items : []) {
-        if (!item || typeof item !== 'object' || item.id == null) continue;
-        const mediaType =
-          item.media_type === 'movie' || item.media_type === 'tv'
-            ? item.media_type
-            : (item.title ? 'movie' : (item.name ? 'tv' : mediaTypeGuess));
-        if (mediaType !== 'movie' && mediaType !== 'tv') continue;
-        if (allowedMediaType && allowedMediaType !== 'all' && mediaType !== allowedMediaType) {
-          continue;
-        }
-        const key = makeMediaKey(mediaType, item.id);
-        const existing = map.get(key);
-        if (existing) {
-          existing.poolSources += 1;
-          if (seedSourceType === 'completed' || seedSourceType === 'watching') {
-            existing.seedSourceType = seedSourceType;
-            if (reason) existing.poolReason = reason;
-          }
-          continue;
-        }
-        if (map.size >= maxItems) continue;
-        map.set(key, {
-          ...item,
-          media_type: mediaType,
-          poolSource: source,
-          poolReason: reason || '',
-          seedSourceType: seedSourceType || '',
-          poolSources: 1,
-        });
-      }
-    },
-    get size() {
-      return map.size;
-    },
-    list() {
-      return [...map.values()];
-    },
-  };
 }
 
 // ---------------------------------------------------------
@@ -1577,7 +1223,7 @@ export function calculateTastePillars(parts: Record<string, number> = {}): Taste
   };
 }
 
-export const ALGORITHM_VERSION = 'v3.2.0';
+export const ALGORITHM_VERSION = ENGINE_VERSION;
 
 export function computeWeightsSignature(weights: RecommendationWeightsV3 = RECOMMENDATION_WEIGHTS_V3): string {
   const sortedPairs = Object.entries(weights || {})
@@ -1912,6 +1558,7 @@ export interface PersistentTasteMapData {
   profileSignature?: string;
   profileSnapshot?: TasteProfileSnapshot;
   algorithmVersion?: string;
+  engineVersion?: string;
   weightsSignature?: string;
   updatedAt: string;
   entries: Record<string, TasteMapEntry>;
@@ -2051,6 +1698,7 @@ export function createDefaultTasteMapData(profileId: string): PersistentTasteMap
     profileId,
     profileSignature: '',
     algorithmVersion: ALGORITHM_VERSION,
+    engineVersion: ENGINE_VERSION,
     weightsSignature: computeWeightsSignature(),
     updatedAt: new Date().toISOString(),
     entries: {},
@@ -3381,14 +3029,14 @@ export async function fetchActorCreditsBatch(
 
             if (!force) {
               try {
-                data = await fetcher(`/person/${actorId}/combined_credits`, { language: 'tr-TR' }, signal);
+                data = await fetcher(`/person/${actorId}/combined_credits`, { language: 'tr-TR' });
               } catch (e) {
                 lastError = e;
               }
             }
             if (!data || !Array.isArray(data.cast) || data.cast.length === 0) {
               try {
-                data = await fetcher(`/person/${actorId}/combined_credits`, { language: 'en-US' }, signal);
+                data = await fetcher(`/person/${actorId}/combined_credits`, { language: 'en-US' });
               } catch (e) {
                 lastError = e;
               }
@@ -3454,6 +3102,65 @@ export async function fetchActorCreditsBatch(
   await Promise.all(runners);
 
   return { creditsMap, statuses, completedCount, errorCount, emptyCount };
+}
+
+export interface ActorChipDisplayState {
+  state: 'loading' | 'pending' | 'error' | 'empty' | 'success';
+  title: string;
+  creditsCount: number;
+}
+
+export function describeActorFetchChipState(
+  actor: Partial<FavoriteActorInfo> | null | undefined,
+  status?: ActorFetchStatus | null,
+  isBatchLoading = false
+): ActorChipDisplayState {
+  const actorName = String(actor?.name || 'Oyuncu').trim() || 'Oyuncu';
+  if (!status) {
+    if (isBatchLoading) {
+      return {
+        state: 'loading',
+        title: `${actorName}: Kuyrukta yükleniyor...`,
+        creditsCount: 0,
+      };
+    }
+    return {
+      state: 'pending',
+      title: `${actorName}: Filmografi verisi hazırlanıyor...`,
+      creditsCount: 0,
+    };
+  }
+
+  if (status.status === 'loading') {
+    return {
+      state: 'loading',
+      title: `${actorName}: Kuyrukta yükleniyor...`,
+      creditsCount: 0,
+    };
+  }
+
+  if (status.status === 'error') {
+    return {
+      state: 'error',
+      title: `${actorName}: ${status.error || 'Hata'}`,
+      creditsCount: 0,
+    };
+  }
+
+  if (status.status === 'empty') {
+    return {
+      state: 'empty',
+      title: `${actorName}: Filmografide uygun içerik bulunamadı`,
+      creditsCount: 0,
+    };
+  }
+
+  const count = Math.max(0, Number(status.creditsCount) || 0);
+  return {
+    state: 'success',
+    title: `${actorName}: ${count} yapım yüklendi`,
+    creditsCount: count,
+  };
 }
 
 /**
@@ -4723,7 +4430,7 @@ export async function replenishCandidatePool({
   return poolReplenishmentLock.acquire(
     lockKey,
     async () => {
-      let poolData = loadPersistentPoolData(profileId, mediaType);
+      const poolData = loadPersistentPoolData(profileId, mediaType);
 
       // 1. Beş durum kontrolü ile mevcut havuzu temizle
       poolData.items = filterEligiblePoolItems(poolData.items, savedItems, preferences);
@@ -4910,7 +4617,7 @@ export async function replenishCandidatePool({
             break;
           }
 
-          let task = queue.shift();
+          const task = queue.shift();
 
           if (!task) {
             if (activeWorkers === 0) {

@@ -18,7 +18,7 @@ if errorlevel 1 (
 
 if not exist "node_modules\tsx\dist\cli.mjs" (
   echo Gerekli paketler yukleniyor...
-  call npm install --no-package-lock
+  call npm install
   if errorlevel 1 (
     echo Paketler yuklenemedi. Internet baglantinizi ve npm kurulumunuzu kontrol edin.
     pause

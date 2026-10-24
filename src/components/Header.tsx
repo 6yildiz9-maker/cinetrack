@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
 import { SavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
+import { TmdbItem } from '../types/tmdb';
 
 interface HeaderProps {
   profileName: string;
@@ -11,8 +12,8 @@ interface HeaderProps {
   onSearchClear: () => void;
   onOpenProfile: () => void;
   onOpenAdd: () => void;
-  onSelectItem: (item: any) => void;
-  getSaved: (item: any) => SavedItem | undefined;
+  onSelectItem: (item: TmdbItem) => void;
+  getSaved: (item: TmdbItem) => SavedItem | undefined;
   tmdbSource?: string;
   tmdbStaleReason?: string;
 }
@@ -30,10 +31,11 @@ export const Header: React.FC<HeaderProps> = ({
   tmdbSource = 'live',
   tmdbStaleReason,
 }) => {
-  const [dropdownItems, setDropdownItems] = useState<any[]>([]);
+  const [dropdownItems, setDropdownItems] = useState<TmdbItem[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [dropdownLoading, setDropdownLoading] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const searchRef = useRef<HTMLDivElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
   const requestControllerRef = useRef<AbortController | null>(null);
@@ -44,13 +46,13 @@ export const Header: React.FC<HeaderProps> = ({
     debounceRef.current = null;
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
-    setDropdownLoading(false);
   };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
         setDropdownOpen(false);
+        setActiveIndex(-1);
       }
     };
     document.addEventListener('click', handleClickOutside);
@@ -65,6 +67,12 @@ export const Header: React.FC<HeaderProps> = ({
     []
   );
 
+  useEffect(() => {
+    if (activeIndex >= 0 && optionRefs.current[activeIndex]) {
+      optionRefs.current[activeIndex]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [activeIndex]);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     onSearchChange(val);
@@ -74,16 +82,15 @@ export const Header: React.FC<HeaderProps> = ({
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
     setDropdownItems([]);
+    setActiveIndex(-1);
     if (!val.trim() || val.trim().length < 2) {
       setDropdownOpen(false);
-      setDropdownLoading(false);
       return;
     }
 
     debounceRef.current = setTimeout(async () => {
       const controller = new AbortController();
       requestControllerRef.current = controller;
-      setDropdownLoading(true);
       try {
         const data = await fetchTmdb(
           '/search/multi',
@@ -91,16 +98,16 @@ export const Header: React.FC<HeaderProps> = ({
           controller.signal
         );
         if (requestId !== requestIdRef.current) return;
-        const items = (data.results || [])
-          .filter((item: any) => item.media_type === 'movie' || item.media_type === 'tv')
+        const items: TmdbItem[] = (data.results || [])
+          .filter((item: TmdbItem) => item.media_type === 'movie' || item.media_type === 'tv')
           .slice(0, 6);
         setDropdownItems(items);
+        setActiveIndex(-1);
         setDropdownOpen(true);
       } catch (err) {
         if (!controller.signal.aborted) console.warn('Typeahead error:', err);
       } finally {
         if (requestId === requestIdRef.current) {
-          setDropdownLoading(false);
           requestControllerRef.current = null;
         }
       }
@@ -108,14 +115,40 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      if (dropdownOpen && dropdownItems.length > 0) {
+        e.preventDefault();
+        setActiveIndex((prev) => (prev + 1) % dropdownItems.length);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowUp') {
+      if (dropdownOpen && dropdownItems.length > 0) {
+        e.preventDefault();
+        setActiveIndex((prev) => (prev <= 0 ? dropdownItems.length - 1 : prev - 1));
+      }
+      return;
+    }
+
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (dropdownOpen && activeIndex >= 0 && dropdownItems[activeIndex]) {
+        const chosen = dropdownItems[activeIndex];
+        cancelTypeahead();
+        setDropdownOpen(false);
+        setActiveIndex(-1);
+        onSelectItem(chosen);
+        return;
+      }
       cancelTypeahead();
       setDropdownOpen(false);
+      setActiveIndex(-1);
       onSearchSubmit(query);
     } else if (e.key === 'Escape') {
       cancelTypeahead();
       setDropdownOpen(false);
+      setActiveIndex(-1);
     }
   };
 
@@ -123,8 +156,14 @@ export const Header: React.FC<HeaderProps> = ({
     cancelTypeahead();
     setDropdownOpen(false);
     setDropdownItems([]);
+    setActiveIndex(-1);
     onSearchClear();
   };
+
+  const activeOptionId =
+    dropdownOpen && activeIndex >= 0 && dropdownItems[activeIndex]
+      ? `search-opt-${activeIndex}`
+      : undefined;
 
   return (
     <header>
@@ -145,6 +184,11 @@ export const Header: React.FC<HeaderProps> = ({
           <input
             id="searchInput"
             type="search"
+            role="combobox"
+            aria-expanded={dropdownOpen}
+            aria-controls="searchDropdown"
+            aria-autocomplete="list"
+            aria-activedescendant={activeOptionId}
             value={query}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
@@ -167,20 +211,26 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           {dropdownOpen && (
-            <div id="searchDropdown" className="search-dropdown">
+            <div
+              id="searchDropdown"
+              className="search-dropdown"
+              role="listbox"
+              aria-label="Anlık arama önerileri"
+            >
               {dropdownItems.length === 0 ? (
-                <div className="search-dropdown-footer">
-                  "{query}" için anlık eşleşme bulunamadı
+                <div className="search-dropdown-footer" role="status">
+                  &ldquo;{query}&rdquo; için anlık eşleşme bulunamadı
                 </div>
               ) : (
                 <>
-                  {dropdownItems.map((item) => {
+                  {dropdownItems.map((item, idx) => {
                     const title = displayTitle(item);
                     const saved = getSaved(item);
                     const kind = item.media_type === 'tv' ? 'Dizi' : 'Film';
                     const poster = getPoster(item);
                     const year = releaseYear(item);
                     const rating = Number(item.vote_average || 0);
+                    const isActive = idx === activeIndex;
                     const statusText =
                       saved?.status === 'watching'
                         ? 'İzliyorum'
@@ -193,10 +243,18 @@ export const Header: React.FC<HeaderProps> = ({
                     return (
                       <button
                         key={makeMediaKey(item)}
-                        className="search-dropdown-item"
+                        id={`search-opt-${idx}`}
+                        ref={(el) => {
+                          optionRefs.current[idx] = el;
+                        }}
+                        role="option"
+                        aria-selected={isActive}
+                        className={`search-dropdown-item ${isActive ? 'is-active' : ''}`}
                         type="button"
+                        onMouseEnter={() => setActiveIndex(idx)}
                         onClick={() => {
                           setDropdownOpen(false);
+                          setActiveIndex(-1);
                           onSelectItem(item);
                         }}
                       >
@@ -208,10 +266,7 @@ export const Header: React.FC<HeaderProps> = ({
                             onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
                           />
                         ) : (
-                          <div
-                            className="search-dropdown-thumb"
-                            style={{ display: 'grid', placeItems: 'center', color: '#64748b' }}
-                          >
+                          <div className="search-dropdown-thumb search-dropdown-thumb-fallback">
                             <svg className="icon">
                               <use href="#icon-film"></use>
                             </svg>
@@ -222,12 +277,9 @@ export const Header: React.FC<HeaderProps> = ({
                           <div className="search-dropdown-meta">
                             <span className="search-dropdown-badge">{kind}</span>
                             <span>{year || ''}</span>
-                            {rating > 0 && <span>⭐ {rating.toFixed(1)}</span>}
+                            {rating > 0 && <span>★ {rating.toFixed(1)}</span>}
                             {saved && (
-                              <span
-                                className="search-dropdown-badge"
-                                style={{ background: '#0284c7', color: '#fff' }}
-                              >
+                              <span className="search-dropdown-badge search-dropdown-badge-saved">
                                 {statusText}
                               </span>
                             )}
@@ -241,10 +293,11 @@ export const Header: React.FC<HeaderProps> = ({
                     type="button"
                     onClick={() => {
                       setDropdownOpen(false);
+                      setActiveIndex(-1);
                       onSearchSubmit(query);
                     }}
                   >
-                    "{query}" için tüm sonuçları gridde gör (Enter)
+                    &ldquo;{query}&rdquo; için tüm sonuçları gridde gör (Enter)
                   </button>
                 </>
               )}
@@ -276,22 +329,7 @@ export const Header: React.FC<HeaderProps> = ({
                   : 'TMDB servisine bağlanılamadı.'
               }
             >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  display: 'inline-block',
-                  background:
-                    tmdbSource === 'live'
-                      ? '#10b981'
-                      : tmdbSource === 'stale-cache'
-                      ? '#ef4444'
-                      : tmdbSource === 'demo'
-                      ? '#f59e0b'
-                      : '#ef4444',
-                }}
-              ></span>
+              <span className="topbar-source-dot" aria-hidden="true"></span>
               <span>
                 {tmdbSource === 'live'
                   ? 'Canlı TMDB'

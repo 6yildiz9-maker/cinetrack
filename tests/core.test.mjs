@@ -6,12 +6,12 @@ import {
   normalizeSavedItem, dedupeItems, parseBackupText,
   normalizePreferences, normalizeProfile, normalizeDataDocument,
   resolveAirDate, reminderDaysUntil, createRequestGate,
-  RECOMMENDATION_WEIGHTS, bayesianRating, billingWeight, buildTasteProfile,
-  scoreCandidates, diversifyList, createCandidatePool,
+  bayesianRating, billingWeight,
   RECOMMENDATION_WEIGHTS_V3, normalizeUserRating, signalDecay, getUserSignalV3,
   buildTasteProfileV3, scoreCandidatesV3, actorFrequency, pairMatchScore, castHarmonyScore,
   findSavedItem, scoreActorRecommendations, calculateActorRoleBonus, diversifyActorRecommendations,
   makeMediaKey, parseMediaKey, normalizeFavoriteActor, normalizeFavoriteActors,
+  describeActorFetchChipState,
   isItemSaved, filterHistoryByType, filterDislikedByType, TARGET_RECOMMENDATION_COUNT,
   POOL_TARGET_CAPACITY, POOL_LOW_WATERMARK, POOL_REPLENISH_MIN_NEW,
   determineItemEra, determineItemPopularityTier, normalizePoolCandidate,
@@ -31,8 +31,9 @@ import {
   archiveTasteMapEntry, restoreTasteMapEntry,
   MAX_IMPRESSION_HISTORY_PER_ENTRY, appendBoundedImpression,
   sanitizeTasteMapEntryImpressions, getImpressionSummary,
-  ALGORITHM_VERSION, computeWeightsSignature
+  ENGINE_VERSION, ALGORITHM_VERSION, computeWeightsSignature
 } from "../src/core/cinetrack-core.ts";
+import { PROVIDER_OPTIONS, DISCOVER_PROVIDER_CHIPS } from "../src/utils/helpers.ts";
 import {
   TMDB_CACHE_TTLS,
   resolveTmdbCacheTtl,
@@ -672,14 +673,29 @@ describe("resolveAirDate ve reminderDaysUntil", () => {
   });
 });
 
-describe("RECOMMENDATION_WEIGHTS", () => {
-  it("ağırlıklar 1'e tamamlanır ve nesne donduruludur", () => {
-    assertClose(Object.values(RECOMMENDATION_WEIGHTS).reduce((sum, weight) => sum + weight, 0), 1);
-    assert.ok(Object.isFrozen(RECOMMENDATION_WEIGHTS));
-    assert.equal(RECOMMENDATION_WEIGHTS.genre, 0.25);
-    assert.equal(RECOMMENDATION_WEIGHTS.taste, 0.2);
-    assert.equal(RECOMMENDATION_WEIGHTS.actor, 0.2);
-    assert.equal(RECOMMENDATION_WEIGHTS.quality, 0.15);
+describe("ENGINE_VERSION & PROVIDER_OPTIONS tekillik kontrolü", () => {
+  it("ENGINE_VERSION v3.2.0 sabiti ALGORITHM_VERSION ile birebir aynıdır ve veri belgelerine gömülür", () => {
+    assert.equal(ENGINE_VERSION, "v3.2.0");
+    assert.equal(ALGORITHM_VERSION, ENGINE_VERSION);
+    const doc = normalizeDataDocument({
+      version: 3,
+      profiles: [{ id: "profile-a", name: "A", items: [baseItem()] }],
+    });
+    assert.equal(doc.engineVersion, ENGINE_VERSION);
+  });
+
+  it("Prime Video (119) ve BluTV (410) tüm sağlayıcı listelerinde tutarlıdır", () => {
+    const primeOpt = PROVIDER_OPTIONS.find(([id]) => id === "119");
+    const blutvOpt = PROVIDER_OPTIONS.find(([id]) => id === "410");
+    assert.ok(primeOpt, "PROVIDER_OPTIONS içinde Prime Video (119) bulunmalı");
+    assert.equal(primeOpt[1], "Prime Video");
+    assert.ok(blutvOpt, "PROVIDER_OPTIONS içinde BluTV (410) bulunmalı");
+    assert.equal(blutvOpt[1], "BluTV");
+
+    for (const chip of DISCOVER_PROVIDER_CHIPS.filter((c) => c.id !== "")) {
+      const match = PROVIDER_OPTIONS.find(([id]) => id === chip.id);
+      assert.ok(match, `Keşfet çipi ${chip.id} PROVIDER_OPTIONS içinde tanımlı olmalı`);
+    }
   });
 });
 
@@ -726,210 +742,82 @@ describe("billingWeight", () => {
   });
 });
 
-describe("buildTasteProfile", () => {
-  const history = [
-    { media_type: "movie", id: 1, personal_rating: 9, genre_ids: [878, 28], cast: [{ id: 100, name: "A" }, { id: 200, name: "B" }], crew: [{ id: 300, name: "Y", job: "Director" }] },
-    { media_type: "movie", id: 2, personal_rating: 3, genre_ids: [10749], cast: [{ id: 100, name: "A" }], crew: [{ id: 300, name: "Y", job: "Director" }] },
-    { media_type: "tv", id: 3, personal_rating: 9, genre_ids: [18], cast: [{ id: 100, name: "A" }] },
-    { media_type: "movie", id: 4, status: "watchlist", genre_ids: [27] }
-  ];
+describe("Favori Oyuncu Çökme Regresyonu — describeActorFetchChipState & StrictMode in-flight paylaşımı", () => {
+  it("ilk render anında (actorStatuses boş ve isBatchLoading=false iken) undefined status üzerinde asla çökmez", () => {
+    const actor = { id: 2037, name: "Cillian Murphy" };
+    const initialChip = describeActorFetchChipState(actor, undefined, false);
+    assert.equal(initialChip.state, "pending");
+    assert.equal(initialChip.creditsCount, 0);
+    assert.ok(initialChip.title.includes("Cillian Murphy"));
 
-  it("oyuncu, yönetmen, tür ve tür bazlı oyuncu istatistiklerini hesaplar", () => {
-    const profile = buildTasteProfile(history);
-    assert.equal(profile.actors[100].name, "A");
-    assertClose(profile.actors[100].personal, 0.4);
-    assertClose(profile.actors[100].genreScores[878], 0.8);
-    assertClose(profile.actors[100].genreScores[28], 0.8);
-    assertClose(profile.actors[100].genreScores[10749], -0.4);
-    assertClose(profile.actors[100].genreScores[18], 0.8);
-    assertClose(profile.actors[200].personal, 0.8);
-    assertClose(profile.directors[300].personal, 0.2);
-    assertClose(profile.genres[878], 0.8);
-    assertClose(profile.genres[28], 0.8);
-    assertClose(profile.genres[10749], -0.4);
-    assertClose(profile.genres[18], 0.8);
-    assert.equal(profile.genres[27], undefined);
-    assertClose(profile.mediaPreference.movie, 2 / 3);
-    assertClose(profile.mediaPreference.tv, 1 / 3);
+    const batchLoadingChip = describeActorFetchChipState(actor, undefined, true);
+    assert.equal(batchLoadingChip.state, "loading");
+
+    const successChip = describeActorFetchChipState(
+      actor,
+      { actorId: 2037, actorName: "Cillian Murphy", status: "success", creditsCount: 42, updatedAt: Date.now() },
+      false
+    );
+    assert.equal(successChip.state, "success");
+    assert.equal(successChip.creditsCount, 42);
+
+    const emptyChip = describeActorFetchChipState(
+      actor,
+      { actorId: 2037, actorName: "Cillian Murphy", status: "empty", creditsCount: 0, updatedAt: Date.now() },
+      false
+    );
+    assert.equal(emptyChip.state, "empty");
+
+    const errorChip = describeActorFetchChipState(
+      actor,
+      { actorId: 2037, actorName: "Cillian Murphy", status: "error", creditsCount: 0, error: "502", updatedAt: Date.now() },
+      false
+    );
+    assert.equal(errorChip.state, "error");
+    assert.ok(errorChip.title.includes("502"));
   });
 
-  it("izleme listesindeki puanlanmamış kayıtları yok sayar", () => {
-    const profile = buildTasteProfile([{ media_type: "movie", id: 4, status: "watchlist", genre_ids: [27], cast: [{ id: 5, name: "C" }] }]);
-    assert.equal(profile.genres[27], undefined);
-    assert.equal(profile.actors[5], undefined);
-    assertClose(profile.mediaPreference.movie, 0.5);
-    assertClose(profile.mediaPreference.tv, 0.5);
-  });
+  it("StrictMode çift mount senaryosunda ilk isteğin AbortSignal iptali paylaşılan in-flight isteği bozmaz", async () => {
+    clearInFlightActorCredits();
+    const actors = [{ id: 934, name: "Rebecca Ferguson" }];
+    let upstreamCalls = 0;
 
-  it("puansız tamamlanan ve izlenen kayıtlardan durum sinyali alır", () => {
-    const profile = buildTasteProfile([
-      { media_type: "tv", id: 9, status: "completed", genre_ids: [16], cast: [{ id: 5, name: "C" }], crew: [{ id: 8, name: "D", job: "Creator" }] },
-      { media_type: "movie", id: 10, status: "watching", genre_ids: [16] }
-    ]);
-    assertClose(profile.genres[16], (0.4 + 0.2) / 2);
-    assertClose(profile.actors[5].personal, 0.4);
-    assertClose(profile.directors[8].personal, 0.4);
-  });
+    const mockFetch = async (_path, _params, signal) => {
+      // Paylaşılan in-flight çağrıya çağıranın bireysel signal'i sızmamalı
+      assert.equal(signal, undefined);
+      upstreamCalls += 1;
+      await new Promise((r) => setTimeout(r, 25));
+      return {
+        cast: [
+          { id: 438631, media_type: "movie", title: "Dune", vote_count: 5000, vote_average: 8.0 },
+        ],
+      };
+    };
 
-  it("boş ve bozuk girdilerde nötr profil döndürür", () => {
-    for (const input of [[], null, undefined, [null, "x"]]) {
-      const profile = buildTasteProfile(input);
-      assertSame(profile.actors, {});
-      assertSame(profile.directors, {});
-      assertSame(profile.genres, {});
-      assertClose(profile.mediaPreference.movie, 0.5);
-      assertClose(profile.mediaPreference.tv, 0.5);
-    }
-  });
-});
+    const gate = createRequestGate();
+    const ticket1 = gate.begin();
+    const p1 = fetchActorCreditsBatch(actors, {
+      fetchTmdbFn: mockFetch,
+      signal: ticket1.signal,
+    });
 
-describe("scoreCandidates", () => {
-  const history = [
-    { media_type: "movie", id: 1, personal_rating: 9, genre_ids: [878, 28], cast: [{ id: 100, name: "A" }, { id: 200, name: "B" }], crew: [{ id: 300, name: "Y", job: "Director" }] },
-    { media_type: "movie", id: 2, personal_rating: 3, genre_ids: [10749], cast: [{ id: 100, name: "A" }], crew: [{ id: 300, name: "Y", job: "Director" }] },
-    { media_type: "tv", id: 3, personal_rating: 9, genre_ids: [18], cast: [{ id: 100, name: "A" }] }
-  ];
-  const profile = buildTasteProfile(history);
-  const genreNames = { 878: "Bilim Kurgu", 10749: "Romantik" };
-  const mkCandidate = (overrides = {}) => ({
-    id: 90,
-    media_type: "movie",
-    title: "Aday",
-    genre_ids: [878],
-    vote_average: 8.2,
-    vote_count: 1500,
-    cast: [],
-    crew: [],
-    ...overrides
-  });
+    // StrictMode ikinci mount: ticket1 iptal edilir ve hemen ticket2 başlar
+    const ticket2 = gate.begin();
+    assert.equal(ticket1.signal.aborted, true);
 
-  it("sevilen oyunculu aday nötr adayı geçer ve neden etiketi üretir", () => {
-    const liked = scoreCandidates(
-      [mkCandidate({ cast: [{ id: 100, name: "A", popularity: 50 }], poolReason: "\"Test\" sevdiğin için" })],
-      profile, { genreNames }
-    )[0];
-    const neutral = scoreCandidates(
-      [mkCandidate({ id: 91, cast: [{ id: 999, name: "X", popularity: 0 }] })],
-      profile, { genreNames }
-    )[0];
+    const p2 = fetchActorCreditsBatch(actors, {
+      fetchTmdbFn: mockFetch,
+      signal: ticket2.signal,
+    });
 
-    assertClose(liked.parts.taste, 0.7);
-    assertClose(liked.parts.actor, 0.4 * (50 / 150) + 0.6 * (0.6 * 0.9 + 0.4 * 0.7));
-    assertClose(liked.parts.quality, 0.82);
-    assertClose(liked.parts.genre, 0.75 * 0.9 + 0.25 * (2 / 3));
-    assert.ok(liked.score > neutral.score);
-    assert.ok(liked.parts.actor > neutral.parts.actor);
-    assertClose(neutral.parts.taste, 0.5);
-    assertClose(neutral.parts.actor, 0.5);
-    assert.equal(liked.tags.length, 4);
-    assert.equal(liked.tags[0], "\"Test\" sevdiğin için");
-    assert.ok(liked.tags.includes("Sevdiğin A oynuyor"));
-    assert.ok(liked.tags.includes("Bilim Kurgu türünü sevdiğin için"));
-    assert.ok(liked.tags.includes("TMDB'de 8.2 puan"));
-  });
-
-  it("oyuncu puanını tür bazlı ayırır: aynı oyuncu bilim kurguda yüksek romantikte düşük", () => {
-    const [sci, rom] = scoreCandidates([
-      mkCandidate({ id: 93, genre_ids: [878], cast: [{ id: 100, name: "A" }] }),
-      mkCandidate({ id: 92, genre_ids: [10749], cast: [{ id: 100, name: "A" }] })
-    ], profile, { genreNames });
-    assertClose(sci.parts.actor, 0.4 * 0.5 + 0.6 * (0.6 * 0.9 + 0.4 * 0.7));
-    assertClose(rom.parts.actor, 0.4 * 0.5 + 0.6 * (0.6 * 0.3 + 0.4 * 0.7));
-    assert.ok(sci.parts.actor > rom.parts.actor);
-  });
-
-  it("bilinmeyen kadroyu keşif sinyaline çevirir", () => {
-    const [discovery] = scoreCandidates([
-      mkCandidate({ id: 94, genre_ids: [10765], cast: [{ id: 777, name: "Yeni", popularity: 0 }] })
-    ], profile, { genreNames });
-    assertClose(discovery.parts.taste, 0.5);
-    assertClose(discovery.parts.actor, 0.5);
-    assertClose(discovery.parts.exploration, 1);
-    assert.ok(discovery.tags.includes("Yeni keşif için"));
-  });
-
-  it("kadrosuz adayda zevk puanı tür yakınlığına düşer", () => {
-    const [noCast] = scoreCandidates([mkCandidate({ id: 95, cast: [] })], profile, {});
-    assertClose(noCast.parts.taste, 0.9);
-    assertClose(noCast.parts.actor, 0.5);
-  });
-
-  it("platform puanını Türkiye sağlayıcılarına göre verir", () => {
-    const providerIndex = { "movie:90": [{ id: 8, name: "Netflix" }], "movie:91": [] };
-    const [preferred, empty, unknown] = scoreCandidates([
-      mkCandidate(),
-      mkCandidate({ id: 91 }),
-      mkCandidate({ id: 92 })
-    ], profile, { preferredProviders: ["8"], providerIndex });
-    assertClose(preferred.parts.platform, 1);
-    assert.ok(preferred.tags.some((tag) => tag.startsWith("Tercih ettiğin platformda izlenebilir: Netflix")));
-    assert.equal(preferred.tags[0], "Tercih ettiğin platformda izlenebilir: Netflix");
-    assertClose(empty.parts.platform, 0.25);
-    assertClose(unknown.parts.platform, 0.5);
-
-    const anyProvider = scoreCandidates([mkCandidate()], profile, { providerIndex })[0];
-    assertClose(anyProvider.parts.platform, 0.6);
-    assert.ok(anyProvider.tags.includes("İzlenebilir: Netflix"));
-  });
-
-  it("havuz nedeni tür etiketiyle aynıysa yinelenmez", () => {
-    const [dupe] = scoreCandidates([
-      mkCandidate({ poolReason: "Bilim Kurgu türünü sevdiğin için" })
-    ], profile, {});
-    assert.equal(dupe.tags.filter((tag) => tag === "Bilim Kurgu türünü sevdiğin için").length, 1);
+    const [, res2] = await Promise.all([p1, p2]);
+    assert.equal(upstreamCalls, 1, "Aynı oyuncu için tek upstream isteği paylaşılmalı");
+    assert.equal(res2.completedCount, 1);
+    assert.equal(res2.statuses[934].status, "success");
+    assert.equal(res2.statuses[934].creditsCount, 1);
   });
 });
 
-describe("diversifyList", () => {
-  const entry = (score, genres) => ({ candidate: { genre_ids: genres }, score, tags: [] });
-
-  it("tür üst sınırını kesin uygular", () => {
-    const sciFi = Array.from({ length: 20 }, (_, index) => entry(40 - index, [878]));
-    const drama = entry(0, [18]);
-    const picked = diversifyList([...sciFi, drama], { limit: 8, maxPerGenre: 3 });
-    assert.equal(picked.length, 4);
-    assert.equal(picked.filter((item) => item.candidate.genre_ids[0] === 878).length, 3);
-    assert.ok(picked.some((item) => item.candidate.genre_ids[0] === 18));
-  });
-
-  it("listeyi puana göre sıralar ve limiti uygular", () => {
-    const picked = diversifyList([entry(1, [878]), entry(9, [18]), entry(5, [27])], { limit: 5 });
-    assertSame(picked.map((item) => item.score), [9, 5, 1]);
-    const capped = diversifyList([entry(1, [878]), entry(9, [18])], { limit: 1 });
-    assertSame(capped.map((item) => item.score), [9]);
-  });
-});
-
-describe("createCandidatePool", () => {
-  const candidate = (id, mediaType = "movie") => ({ id, media_type: mediaType, title: `T${id}` });
-
-  it("aynı yapımları tekilleştirir ve kaynak sayısını tutar", () => {
-    const pool = createCandidatePool();
-    pool.add("recommendations", "\"X\" için", "movie", [candidate(1), candidate(2)]);
-    pool.add("similar", "\"X\" benzeri", "movie", [candidate(1), candidate(3, "tv")]);
-    assert.equal(pool.size, 3);
-    const list = pool.list();
-    const dupe = list.find((item) => item.id === 1);
-    assert.equal(dupe.poolSources, 2);
-    assert.equal(dupe.poolReason, "\"X\" için");
-    assert.equal(list.find((item) => item.id === 3).media_type, "tv");
-  });
-
-  it("tahmini türü kullanır ve geçersiz kayıtları düşer", () => {
-    const pool = createCandidatePool();
-    pool.add("discover", "keşif", "tv", [{ id: 5 }, { id: 6, media_type: "song" }, { title: "idsiz" }, null]);
-    assertSame(pool.list().map((item) => `${item.media_type}:${item.id}`), ["tv:5", "tv:6"]);
-  });
-
-  it("üst sınırı aşan eklemeleri yok sayar", () => {
-    const pool = createCandidatePool({ maxItems: 2 });
-    pool.add("a", "neden", "movie", [candidate(1), candidate(2), candidate(3)]);
-    assert.equal(pool.size, 2);
-    pool.add("b", "neden", "movie", [candidate(1)]);
-    assert.equal(pool.size, 2);
-    assert.equal(pool.list()[0].poolSources, 2);
-  });
-});
 
 describe("Sana Özel v3 — RECOMMENDATION_WEIGHTS_V3", () => {
   it("yapım şirketi ve platform kaldırılmıştır, oyuncu bileşenleri %24'tür ve ağırlıklar tam %100 (1.00) eder", () => {
@@ -1634,17 +1522,11 @@ describe("Sana Özel Aşama 1 — Tür Filtresi, makeMediaKey ve Güvenli Eşle�
     assert.deepEqual(allDisliked, disliked);
   });
 
-  it("createCandidatePool allowedMediaType filtresini aday kabulünde kesin uygular", () => {
-    const pool = createCandidatePool({ allowedMediaType: "movie" });
-    pool.add("test", "test reason", "movie", [
-      { id: 1, media_type: "movie", title: "Movie 1" },
-      { id: 2, media_type: "tv", name: "TV 2" },
-      { id: 3, media_type: "movie", title: "Movie 3" },
-    ]);
-    assert.equal(pool.size, 2);
-    const list = pool.list();
-    assert.ok(list.every((item) => item.media_type === "movie"));
-    assert.equal(list.some((item) => item.id === 2), false, "Dizi adayı havuzdan elenmiş olmalı");
+  it("normalizePoolCandidate hedef mediaType ile adayları kesin tipler", () => {
+    const m1 = normalizePoolCandidate({ id: 1, media_type: "movie", title: "Movie 1" }, "movie", "discover");
+    const m2 = normalizePoolCandidate({ id: 3, title: "Movie 3" }, "movie", "discover");
+    assert.equal(m1.media_type, "movie");
+    assert.equal(m2.media_type, "movie");
   });
 });
 

@@ -1,0 +1,56 @@
+name: CineTrack CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  verify:
+    name: Lint, Test, Build & Production Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Lint & Typecheck
+        run: npm run lint
+
+      - name: Unit Tests
+        run: npm test
+
+      - name: Production Build
+        run: npm run build
+
+      - name: Production Server Startup Smoke Test
+        run: |
+          NODE_ENV=production CINETRACK_HOST=127.0.0.1 PORT=3199 npm start > /tmp/cinetrack-prod.log 2>&1 &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID 2>/dev/null || true" EXIT
+
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:3199/api/tmdb-status > /dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+
+          curl -fsS http://127.0.0.1:3199/api/tmdb-status | grep -q '"source"'
+          curl -fsS http://127.0.0.1:3199/ | grep -q '<div id="root"></div>'
+          curl -fsS http://127.0.0.1:3199/discover/deep-link | grep -q '<div id="root"></div>'
+          echo "Production smoke test passed."

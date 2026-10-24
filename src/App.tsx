@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
 import { Stats } from './components/Stats';
@@ -11,8 +11,10 @@ import { AddCustomModal } from './components/AddCustomModal';
 import { ProfileModal } from './components/ProfileModal';
 import { ImportChoiceModal } from './components/ImportChoiceModal';
 import { Toast } from './components/Toast';
-import { TasteMapView } from './components/TasteMapView';
-import { RelationshipExplorer } from './components/RelationshipExplorer';
+import { ErrorBoundary } from './components/ErrorBoundary';
+
+const TasteMapView = lazy(() => import('./components/TasteMapView'));
+const RelationshipExplorer = lazy(() => import('./components/RelationshipExplorer'));
 
 import {
   SavedItem,
@@ -27,12 +29,7 @@ import {
   resolveAirDate,
   reminderDaysUntil,
   createRequestGate,
-  buildTasteProfile,
-  scoreCandidates,
-  diversifyList,
-  createCandidatePool,
   parseBackupText,
-  buildSeasonCounts,
   buildTasteProfileV3,
   scoreCandidatesV3,
   RECOMMENDATION_WEIGHTS_V3,
@@ -46,20 +43,13 @@ import {
   normalizeFavoriteActors,
   replenishCandidatePool,
   isCandidateEligibleInPool,
-  loadPersistentPoolData,
-  savePersistentPoolData,
-  filterEligiblePoolItems,
-  multiDimensionalDiversify,
   selectBalancedRecommendations,
-  POOL_LOW_WATERMARK,
-  POOL_TARGET_CAPACITY,
   CURRENT_SCHEMA_VERSION,
+  ENGINE_VERSION,
   loadPersistentTasteMap,
   savePersistentTasteMap,
   updateTasteMapWithBatch,
   markTasteMapItemStatus,
-  assignTasteRing,
-  getTasteRingLabel,
   PersistentTasteMapData,
   TasteProfileSummary,
   computeTasteProfileSignature,
@@ -75,13 +65,13 @@ import {
   checkServerTmdbStatus,
   TmdbSourceMeta,
 } from './services/api';
-import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES, MOOD_LABELS } from './utils/helpers';
+import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
 const ACTIVE_PROFILE_STORAGE = 'cinetrack.activeProfile.v1';
 const PROFILE_STORAGE = 'cinetrack.profile.v1';
-const LIST_STORAGE = 'cinetrack.watchlist.v1';
 const DIRTY_KEY = 'cinetrack.dirty.v2';
+const EMPTY_REASONS_MAP = new Map<string, string>();
 
 function listStorageKey(profileId: string) {
   return `cinetrack.profile.${profileId}.watchlist.v1`;
@@ -166,10 +156,10 @@ function favActorsStorageKey(profileId: string): string {
   return `cinetrack_fav_actors_${profileId}`;
 }
 
-function loadFavoriteActors(profileId: string): any[] {
+function loadFavoriteActors(profileId: string): FavoriteActorInfo[] {
   try {
     const stored = localStorage.getItem(favActorsStorageKey(profileId));
-    return stored ? JSON.parse(stored) : [];
+    return stored ? normalizeFavoriteActors(JSON.parse(stored)) : [];
   } catch {
     return [];
   }
@@ -183,7 +173,7 @@ export function App() {
   const [profileName, setProfileName] = useState<string>(activeProfile.name);
   const [preferences, setPreferences] = useState<Preferences>(() => loadProfilePreferences(activeProfileId));
   const [savedItems, setSavedItems] = useState<SavedItem[]>(() => loadProfileItems(activeProfileId));
-  const [favoriteActors, setFavoriteActors] = useState<any[]>(() => loadFavoriteActors(activeProfileId));
+  const [favoriteActors, setFavoriteActors] = useState<FavoriteActorInfo[]>(() => loadFavoriteActors(activeProfileId));
   const [dislikedItems, setDislikedItems] = useState<any[]>(() => {
     try {
       const cache = JSON.parse(localStorage.getItem('cinetrack_disliked_cache') || '{}');
@@ -213,7 +203,6 @@ export function App() {
   const [catalogTotalPages, setCatalogTotalPages] = useState<number>(1);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
-  const [recommendationReasons, setRecommendationReasons] = useState<Map<string, string>>(new Map());
   const [forYouItems, setForYouItems] = useState<any[]>([]);
   const [forYouReasons, setForYouReasons] = useState<Map<string, string>>(new Map());
   const [forYouExplanation, setForYouExplanation] = useState<string>('');
@@ -238,7 +227,8 @@ export function App() {
   const lastForYouTypeRef = useRef<string>('all');
   const selectedTypeRef = useRef<string>(selectedType);
   selectedTypeRef.current = selectedType;
-  const initialLocalSnapshotRef = useRef<string | null>(null);
+  const hasHydratedLocalEffectRef = useRef(false);
+  const applyingRemoteSnapshotRef = useRef(false);
   const localEditedDuringStartupRef = useRef(false);
   const localWasDirtyRef = useRef<boolean | null>(null);
   if (localWasDirtyRef.current === null) {
@@ -254,17 +244,6 @@ export function App() {
   dislikedItemsRef.current = dislikedItems;
   const favoriteActorsRef = useRef<FavoriteActorInfo[]>(favoriteActors);
   favoriteActorsRef.current = favoriteActors;
-  const currentLocalSnapshot = JSON.stringify({
-    profiles,
-    activeProfileId,
-    profileName,
-    preferences,
-    savedItems,
-    favoriteActors,
-  });
-  if (initialLocalSnapshotRef.current === null) {
-    initialLocalSnapshotRef.current = currentLocalSnapshot;
-  }
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -272,7 +251,7 @@ export function App() {
     toastTimerRef.current = setTimeout(() => setToastMessage(null), 7000);
   }, []);
 
-  // Sync to localStorage
+  // Sync to localStorage (only when data references actually change — no render-time JSON.stringify)
   useEffect(() => {
     try {
       localStorage.setItem(PROFILES_STORAGE, JSON.stringify(profiles));
@@ -281,9 +260,18 @@ export function App() {
       localStorage.setItem(listStorageKey(activeProfileId), JSON.stringify(savedItems));
       localStorage.setItem(preferencesStorageKey(activeProfileId), JSON.stringify(preferences));
       localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(favoriteActors));
+
+      if (!hasHydratedLocalEffectRef.current) {
+        hasHydratedLocalEffectRef.current = true;
+        return;
+      }
+      if (applyingRemoteSnapshotRef.current) {
+        applyingRemoteSnapshotRef.current = false;
+        return;
+      }
       if (serverSyncReady) {
         localStorage.setItem(DIRTY_KEY, '1');
-      } else if (currentLocalSnapshot !== initialLocalSnapshotRef.current) {
+      } else {
         localEditedDuringStartupRef.current = true;
       }
     } catch (err) {
@@ -297,7 +285,6 @@ export function App() {
     preferences,
     favoriteActors,
     serverSyncReady,
-    currentLocalSnapshot,
   ]);
 
   // Push server data on changes
@@ -305,6 +292,7 @@ export function App() {
     const payload: DataDocument = {
       version: 3,
       schemaVersion: CURRENT_SCHEMA_VERSION,
+      engineVersion: ENGINE_VERSION,
       activeProfileId,
       profiles: profiles.map((p) => ({
         id: p.id,
@@ -346,13 +334,14 @@ export function App() {
             const remoteHasData = doc.profiles.some((p) => p.items.length > 0) || doc.profiles.length > 1;
             const isDirty = localWasDirtyRef.current || localEditedDuringStartupRef.current;
             if (remoteHasData && !isDirty) {
+              applyingRemoteSnapshotRef.current = true;
               setProfiles(doc.profiles);
               setActiveProfileId(doc.activeProfileId);
               const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
               setProfileName(active.name);
               setPreferences(active.preferences);
               setSavedItems(active.items);
-              const activeFavs = active.favoriteActors || [];
+              const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
               setFavoriteActors(activeFavs);
               try {
                 localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
@@ -1195,22 +1184,25 @@ export function App() {
   };
 
   const handleToggleFavoriteActor = (actor: any) => {
+    const actorId = Number(actor?.id);
+    if (!Number.isInteger(actorId) || actorId <= 0) return;
     setFavoriteActors((prev) => {
-      const exists = prev.some((a) => a.id === actor.id);
+      const normalizedPrev = normalizeFavoriteActors(prev);
+      const exists = normalizedPrev.some((a) => a.id === actorId);
       if (exists) {
-        showToast(`"${actor.name}" favori oyuncularınızdan çıkarıldı.`);
-        return prev.filter((a) => a.id !== actor.id);
+        showToast(`"${actor.name || 'Oyuncu'}" favori oyuncularınızdan çıkarıldı.`);
+        return normalizedPrev.filter((a) => a.id !== actorId);
       } else {
-        showToast(`❤️ "${actor.name}" favori oyuncularınıza eklendi!`);
-        return [
+        showToast(`"${actor.name || 'Oyuncu'}" favori oyuncularınıza eklendi!`);
+        return normalizeFavoriteActors([
           {
-            id: actor.id,
-            name: actor.name,
+            id: actorId,
+            name: actor.name || 'Bilinmeyen Oyuncu',
             profile_path: actor.profile_path || '',
             character: actor.character || '',
           },
-          ...prev,
-        ];
+          ...normalizedPrev,
+        ]);
       }
     });
   };
@@ -1618,6 +1610,7 @@ export function App() {
     const backup = {
       version: 3,
       schemaVersion: CURRENT_SCHEMA_VERSION,
+      engineVersion: ENGINE_VERSION,
       profileId: activeProfileId,
       profileName,
       items: savedItems,
@@ -1755,22 +1748,32 @@ export function App() {
         />
 
         {tab === 'relationships' ? (
-          <RelationshipExplorer
-            key={`${activeProfileId}-relationships`}
-            mode="relationships"
-            profileId={activeProfileId}
-            savedItems={savedItems}
-            preferences={preferences}
-            candidates={[]}
-            favoriteActors={favoriteActors}
-            genreNames={genresMap}
-            onRefresh={handleLoadRelationshipCandidates}
-            onOpenDetails={(item) => setDetailItem(item as SavedItem)}
-            onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
-          />
+          <ErrorBoundary sectionName="İlişki Keşfi">
+            <Suspense
+              fallback={
+                <div className="lazy-tab-fallback" role="status">
+                  İlişki Keşfi görünümü yükleniyor…
+                </div>
+              }
+            >
+              <RelationshipExplorer
+                key={`${activeProfileId}-relationships`}
+                mode="relationships"
+                profileId={activeProfileId}
+                savedItems={savedItems}
+                preferences={preferences}
+                candidates={[]}
+                favoriteActors={favoriteActors}
+                genreNames={genresMap}
+                onRefresh={handleLoadRelationshipCandidates}
+                onOpenDetails={(item) => setDetailItem(item as SavedItem)}
+                onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
+              />
+            </Suspense>
+          </ErrorBoundary>
         ) : tab === 'taste-map' ? (
           <div className="taste-map-page">
-            <div className="taste-map-view-toggle">
+            <div className="taste-map-view-toggle" role="group" aria-label="Zevk haritası görünüm modu">
               <button
                 className={`btn ${tasteMapDisplayMode === 'graph' ? 'btn-primary' : ''}`}
                 type="button"
@@ -1789,101 +1792,113 @@ export function App() {
               </button>
             </div>
 
-            {tasteMapDisplayMode === 'graph' ? (
-              <RelationshipExplorer
-                key={`${activeProfileId}-taste-map`}
-                mode="taste-map"
-                profileId={activeProfileId}
-                savedItems={savedItems}
-                preferences={preferences}
-                candidates={[]}
-                favoriteActors={favoriteActors}
-                genreNames={genresMap}
-                onRefresh={handleLoadRelationshipCandidates}
-                onOpenDetails={(item) => setDetailItem(item as SavedItem)}
-                onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
-              />
-            ) : (
-              <TasteMapView
-                tasteMap={tasteMap}
-                summary={tasteSummary}
-                genresMap={genresMap}
-                onOpenDetails={(item) => setDetailItem(item)}
-                onQuickSave={(item) => setQuickSaveItem(item)}
-                onSetStatus={(item, status) => handleSetStatus(item, status)}
-                onToggleDislike={(key) => handleToggleDislike(key)}
-                onRefreshTasteMap={handleRefreshTasteMap}
-                isLoading={isLoading}
-                isDemo={Boolean(activeProfile?.isDemo)}
-                tmdbSource={tmdbSourceMeta.source}
-                tmdbStaleReason={tmdbSourceMeta.staleReason}
-              />
-            )}
+            <ErrorBoundary sectionName="Zevk Haritası">
+              <Suspense
+                fallback={
+                  <div className="lazy-tab-fallback" role="status">
+                    Zevk Haritası yükleniyor…
+                  </div>
+                }
+              >
+                {tasteMapDisplayMode === 'graph' ? (
+                  <RelationshipExplorer
+                    key={`${activeProfileId}-taste-map`}
+                    mode="taste-map"
+                    profileId={activeProfileId}
+                    savedItems={savedItems}
+                    preferences={preferences}
+                    candidates={[]}
+                    favoriteActors={favoriteActors}
+                    genreNames={genresMap}
+                    onRefresh={handleLoadRelationshipCandidates}
+                    onOpenDetails={(item) => setDetailItem(item as SavedItem)}
+                    onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
+                  />
+                ) : (
+                  <TasteMapView
+                    tasteMap={tasteMap}
+                    summary={tasteSummary}
+                    genresMap={genresMap}
+                    onOpenDetails={(item) => setDetailItem(item)}
+                    onQuickSave={(item) => setQuickSaveItem(item)}
+                    onSetStatus={(item, status) => handleSetStatus(item, status)}
+                    onToggleDislike={(key) => handleToggleDislike(key)}
+                    onRefreshTasteMap={handleRefreshTasteMap}
+                    isLoading={isLoading}
+                    isDemo={Boolean(activeProfile?.isDemo)}
+                    tmdbSource={tmdbSourceMeta.source}
+                    tmdbStaleReason={tmdbSourceMeta.staleReason}
+                  />
+                )}
+              </Suspense>
+            </ErrorBoundary>
           </div>
         ) : (
-          <MediaGrid
-            title={catalogTitle}
-            description={catalogDescription}
-            isLoading={isLoading}
-            loadingMore={loadingMore}
-            items={displayedItems}
-            savedItems={savedItems}
-            genres={genresMap}
-            recommendationReasons={category === 'for-you' ? forYouReasons : recommendationReasons}
-            dislikedKeys={preferences.disliked}
-            preferredProviders={preferences.providers}
-            tab={tab}
-            query={query}
-            listStatus={listStatus}
-            category={category}
-            page={catalogPage}
-            totalPages={catalogTotalPages}
-            hasMore={tab === 'discover' && category !== 'for-you' && catalogPage < catalogTotalPages}
-            favoriteActors={favoriteActors}
-            onLoadMore={handleLoadMore}
-            onOpenDetails={(item) => setDetailItem(item)}
-            onQuickAdd={handleQuickAdd}
-            onSetStatus={handleSetStatus}
-            onQuickSave={(item) => setQuickSaveItem(item)}
-            onToggleDislike={handleToggleDislike}
-            onEmptyAction={handleEmptyAction}
-            onOpenPerson={(id, name) => {
-              setPersonId(id);
-              setPersonName(name);
-            }}
-            onToggleFavoriteActor={handleToggleFavoriteActor}
-            onRefreshForYou={handleRefreshForYou}
-            tmdbSource={tmdbSourceMeta.source}
-            tmdbStaleReason={tmdbSourceMeta.staleReason}
-          />
+          <ErrorBoundary sectionName="Katalog ve Listem">
+            <MediaGrid
+              title={catalogTitle}
+              description={catalogDescription}
+              isLoading={isLoading}
+              loadingMore={loadingMore}
+              items={displayedItems}
+              savedItems={savedItems}
+              genres={genresMap}
+              recommendationReasons={category === 'for-you' ? forYouReasons : EMPTY_REASONS_MAP}
+              dislikedKeys={preferences.disliked}
+              preferredProviders={preferences.providers}
+              tab={tab}
+              query={query}
+              listStatus={listStatus}
+              category={category}
+              page={catalogPage}
+              totalPages={catalogTotalPages}
+              hasMore={tab === 'discover' && category !== 'for-you' && catalogPage < catalogTotalPages}
+              favoriteActors={favoriteActors}
+              onLoadMore={handleLoadMore}
+              onOpenDetails={(item) => setDetailItem(item)}
+              onQuickAdd={handleQuickAdd}
+              onSetStatus={handleSetStatus}
+              onQuickSave={(item) => setQuickSaveItem(item)}
+              onToggleDislike={handleToggleDislike}
+              onEmptyAction={handleEmptyAction}
+              onOpenPerson={(id, name) => {
+                setPersonId(id);
+                setPersonName(name);
+              }}
+              onToggleFavoriteActor={handleToggleFavoriteActor}
+              onRefreshForYou={handleRefreshForYou}
+              tmdbSource={tmdbSourceMeta.source}
+              tmdbStaleReason={tmdbSourceMeta.staleReason}
+            />
+          </ErrorBoundary>
         )}
       </main>
 
       <footer>
-        <div className="shell flex flex-wrap items-center justify-between gap-2">
+        <div className="shell footer-shell">
           <div>
             CineTrack | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
             <a
               href="https://www.themoviedb.org/"
               target="_blank"
               rel="noopener noreferrer"
-              style={{ color: '#94a3b8' }}
+              className="footer-link"
             >
               The Movie Database (TMDB)
             </a>
             .
           </div>
-          <div className="text-xs text-slate-400 flex items-center gap-2">
+          <div className="footer-source-status">
             <span>Veri Durumu:</span>
-            <span className="font-semibold text-slate-300">
+            <strong>
               {tmdbSourceMeta.source === 'live'
-                ? '🟢 Canlı TMDB API'
+                ? 'Canlı TMDB API'
                 : tmdbSourceMeta.source === 'stale-cache'
-                ? '⚠️ Eski Önbellek (Offline)'
+                ? 'Eski Önbellek (Offline)'
                 : tmdbSourceMeta.source === 'demo'
-                ? '🟡 Örnek Katalog'
-                : '🔴 Bağlantı Hatası'}
-            </span>
+                ? 'Örnek Katalog'
+                : 'Bağlantı Bekleniyor'}
+            </strong>
           </div>
         </div>
       </footer>

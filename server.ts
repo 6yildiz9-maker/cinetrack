@@ -7,7 +7,7 @@ import { normalizeDataDocument, DataDocument, CURRENT_SCHEMA_VERSION } from './s
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3000;
-const host = process.env.CINETRACK_HOST || '127.0.0.1';
+const host = process.env.CINETRACK_HOST || process.env.HOST || '127.0.0.1';
 
 const dataDir = path.join(root, 'data');
 const dataFile = path.join(dataDir, 'cinetrack-data.json');
@@ -37,7 +37,7 @@ for (const envFileName of ['.env.local', '.env']) {
 
 const tmdbApiKey = process.env.TMDB_API_KEY || localEnv.TMDB_API_KEY || '';
 const allowedPath =
-  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|person\/\d+(?:\/combined_credits)?|(?:movie|tv)\/(?:popular|top_rated|upcoming|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers))?))$/;
+  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|person\/\d+(?:\/combined_credits)?|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers))?))$/;
 const allowedQueryKeys = new Set([
   'language',
   'query',
@@ -54,6 +54,7 @@ const allowedQueryKeys = new Set([
   'first_air_date.gte',
   'first_air_date.lte',
   'with_people',
+  'with_cast',
   'with_watch_providers',
   'watch_region',
 ]);
@@ -122,7 +123,8 @@ function validateParam(key: string, value: string): string {
     !/^\d{4}-\d{2}-\d{2}$/.test(value)
   )
     return 'Tarih filtresi geçersiz.';
-  if (key === 'with_people' && !/^\d+(?:\|\d+)*$/.test(value)) return 'Oyuncu kimlikleri geçersiz.';
+  if ((key === 'with_people' || key === 'with_cast') && !/^\d+(?:\|\d+)*$/.test(value))
+    return 'Oyuncu kimlikleri geçersiz.';
   if (key === 'with_watch_providers' && !/^\d+(?:\|\d+)*$/.test(value))
     return 'Yayın platformu kimlikleri geçersiz.';
   if (key === 'watch_region' && !/^[A-Z]{2}$/.test(value)) return 'Bölge kodu geçersiz.';
@@ -646,7 +648,8 @@ async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     const distPath = path.join(root, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.use((req, res, next) => {
+      if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {

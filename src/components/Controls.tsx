@@ -1,4 +1,5 @@
 import React from 'react';
+import { DISCOVER_PROVIDER_CHIPS } from '../utils/helpers';
 
 interface ControlsProps {
   tab: 'discover' | 'list' | 'taste-map' | 'relationships';
@@ -80,7 +81,10 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={tab === 'taste-map'}
             onClick={() => onTabChange('taste-map')}
           >
-            🗺️ Zevk Haritası
+            <svg className="icon" aria-hidden="true">
+              <use href="#icon-star"></use>
+            </svg>{' '}
+            Zevk Haritası
           </button>
           <button
             className={`tab ${tab === 'relationships' ? 'active' : ''}`}
@@ -88,7 +92,10 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={tab === 'relationships'}
             onClick={() => onTabChange('relationships')}
           >
-            ◉ İlişki Keşfi
+            <svg className="icon" aria-hidden="true">
+              <use href="#icon-eye"></use>
+            </svg>{' '}
+            İlişki Keşfi
           </button>
         </div>
 
@@ -196,42 +203,18 @@ export const Controls: React.FC<ControlsProps> = ({
           >
             Tümü
           </button>
-          <button
-            className={`provider-chip provider-netflix ${selectedProvider === '8' ? 'active' : ''}`}
-            type="button"
-            disabled={disableProviderFilters}
-            aria-pressed={selectedProvider === '8'}
-            onClick={() => onProviderChange(selectedProvider === '8' ? '' : '8')}
-          >
-            Netflix
-          </button>
-          <button
-            className={`provider-chip provider-prime ${selectedProvider === '119' ? 'active' : ''}`}
-            type="button"
-            disabled={disableProviderFilters}
-            aria-pressed={selectedProvider === '119'}
-            onClick={() => onProviderChange(selectedProvider === '119' ? '' : '119')}
-          >
-            Prime Video
-          </button>
-          <button
-            className={`provider-chip provider-disney ${selectedProvider === '337' ? 'active' : ''}`}
-            type="button"
-            disabled={disableProviderFilters}
-            aria-pressed={selectedProvider === '337'}
-            onClick={() => onProviderChange(selectedProvider === '337' ? '' : '337')}
-          >
-            Disney+
-          </button>
-          <button
-            className={`provider-chip provider-blutv ${selectedProvider === '410' ? 'active' : ''}`}
-            type="button"
-            disabled={disableProviderFilters}
-            aria-pressed={selectedProvider === '410'}
-            onClick={() => onProviderChange(selectedProvider === '410' ? '' : '410')}
-          >
-            BluTV
-          </button>
+          {DISCOVER_PROVIDER_CHIPS.map((prov) => (
+            <button
+              key={prov.id}
+              className={`provider-chip ${prov.chipClass || ''} ${selectedProvider === prov.id ? 'active' : ''}`}
+              type="button"
+              disabled={disableProviderFilters}
+              aria-pressed={selectedProvider === prov.id}
+              onClick={() => onProviderChange(selectedProvider === prov.id ? '' : prov.id)}
+            >
+              {prov.label}
+            </button>
+          ))}
         </div>
       )}
 

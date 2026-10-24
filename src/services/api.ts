@@ -84,9 +84,9 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
     if (signal?.aborted) throw error;
     setTmdbSourceState({ source: 'error', cacheStatus: 'none', staleReason: error.message });
     if (error.name === 'AbortError') {
-      throw new Error('TMDB isteği zaman aşımına uğradı. Biraz sonra tekrar deneyin.');
+      throw new Error('TMDB isteği zaman aşımına uğradı. Biraz sonra tekrar deneyin.', { cause: error });
     }
-    throw new Error('Yerel TMDB servisine ulaşılamadı. Sunucunun çalıştığından emin olun.');
+    throw new Error('Yerel TMDB servisine ulaşılamadı. Sunucunun çalıştığından emin olun.', { cause: error });
   } finally {
     clearTimeout(timeout);
   }

@@ -1,22 +1,44 @@
 import { SavedItem } from '../core/cinetrack-core';
+import { TmdbItem } from '../types/tmdb';
 
 export const IMAGE_BASE = 'https://image.tmdb.org/t/p/';
 
-export const PROVIDER_OPTIONS: [string, string][] = [
-  ['8', 'Netflix'],
-  ['9', 'Amazon Prime Video'],
-  ['337', 'Disney+'],
-  ['1899', 'Max'],
-  ['350', 'Apple TV+'],
-  ['2', 'Apple TV'],
-  ['119', 'Amazon Prime Video Store'],
-];
+export interface StreamingProviderConfig {
+  id: string;
+  label: string;
+  chipClass?: string;
+  featuredInDiscover?: boolean;
+}
+
+/**
+ * Tek kaynaklı (Single Source of Truth) Türkiye TMDB yayın platformu yapılandırması.
+ * TMDB TR bölgesinde Amazon Prime Video = 119, BluTV = 410, Netflix = 8, Disney+ = 337'dir.
+ */
+export const STREAMING_PROVIDERS: readonly StreamingProviderConfig[] = Object.freeze([
+  { id: '8', label: 'Netflix', chipClass: 'provider-netflix', featuredInDiscover: true },
+  { id: '119', label: 'Prime Video', chipClass: 'provider-prime', featuredInDiscover: true },
+  { id: '337', label: 'Disney+', chipClass: 'provider-disney', featuredInDiscover: true },
+  { id: '410', label: 'BluTV', chipClass: 'provider-blutv', featuredInDiscover: true },
+  { id: '1899', label: 'Max', featuredInDiscover: false },
+  { id: '350', label: 'Apple TV+', featuredInDiscover: false },
+  { id: '2', label: 'Apple TV', featuredInDiscover: false },
+]);
+
+export const PROVIDER_OPTIONS: [string, string][] = STREAMING_PROVIDERS.map((p) => [p.id, p.label]);
+
+export const DISCOVER_PROVIDER_CHIPS: readonly StreamingProviderConfig[] = STREAMING_PROVIDERS.filter(
+  (p) => p.featuredInDiscover
+);
 
 export const MOOD_GENRES: Record<string, number[]> = {
   cheerful: [35, 10751, 16],
   thrilling: [53, 9648, 80],
   thoughtful: [18, 99, 36],
   energetic: [28, 12, 878],
+  'feel-good': [35, 10751, 16],
+  dark: [53, 9648, 80],
+  adrenaline: [28, 12, 878],
+  'mind-bending': [878, 9648, 53],
 };
 
 export const MOOD_LABELS: Record<string, string> = {
@@ -24,6 +46,10 @@ export const MOOD_LABELS: Record<string, string> = {
   thrilling: 'Gerilimli',
   thoughtful: 'Düşündürücü',
   energetic: 'Enerjik',
+  'feel-good': 'İyi Hissettiren',
+  dark: 'Karanlık & Gerilimli',
+  adrenaline: 'Adrenalin',
+  'mind-bending': 'Kafa Yoran',
 };
 
 export const RATING_DESCRIPTIONS: Record<number, string> = {
@@ -39,36 +65,41 @@ export const RATING_DESCRIPTIONS: Record<number, string> = {
   10: '10/10 Başyapıt',
 };
 
-export function imageUrl(path?: string, size = 'w500'): string {
+export function imageUrl(path?: string | null, size = 'w500'): string {
   return path ? `${IMAGE_BASE}${size}${path}` : '';
 }
 
-export function displayTitle(item?: any): string {
+export function displayTitle(item?: Partial<TmdbItem> | SavedItem | null): string {
   if (!item) return 'Başlıksız içerik';
   return item.title || item.name || 'Başlıksız içerik';
 }
 
-export function releaseYear(item?: any): string {
+export function releaseYear(item?: Partial<TmdbItem> | SavedItem | null): string {
   if (!item) return 'Yıl bilgisi yok';
-  const date = item.release_date || item.first_air_date || item.releaseDate || '';
+  const rawItem = item as Partial<TmdbItem>;
+  const date = rawItem.release_date || rawItem.first_air_date || rawItem.releaseDate || '';
   return date ? date.slice(0, 4) : 'Yıl bilgisi yok';
 }
 
-export function formatMediaDates(item?: any, saved?: SavedItem | null): string {
+export function formatMediaDates(
+  item?: Partial<TmdbItem> | SavedItem | null,
+  saved?: SavedItem | null
+): string {
   if (!item) return '';
-  if (item.media_type === 'movie' || (!item.media_type && item.title)) {
-    const rawDate = item.release_date || item.releaseDate || '';
+  const raw = item as Partial<TmdbItem>;
+  if (raw.media_type === 'movie' || (!raw.media_type && raw.title)) {
+    const rawDate = raw.release_date || raw.releaseDate || '';
     return rawDate ? rawDate.slice(0, 4) : 'Yıl bilgisi yok';
   }
-  if (item.media_type === 'tv' || (!item.media_type && item.name)) {
-    const firstDate = item.first_air_date || item.releaseDate || item.release_date || '';
+  if (raw.media_type === 'tv' || (!raw.media_type && raw.name)) {
+    const firstDate = raw.first_air_date || raw.releaseDate || raw.release_date || '';
     const firstYear = firstDate ? firstDate.slice(0, 4) : '';
-    const lastDate = item.last_air_date || saved?.last_air_date || '';
+    const lastDate = raw.last_air_date || saved?.last_air_date || '';
     const lastYear = lastDate ? lastDate.slice(0, 4) : '';
     const isEnded =
-      item.status === 'Ended' ||
-      item.status === 'Canceled' ||
-      (!item.in_production && lastYear && lastYear !== firstYear);
+      raw.status === 'Ended' ||
+      raw.status === 'Canceled' ||
+      (!raw.in_production && Boolean(lastYear) && lastYear !== firstYear);
 
     if (!firstYear && !lastYear) return 'Tarih bilgisi yok';
     if (firstYear && lastYear) {
@@ -83,7 +114,7 @@ export function formatMediaDates(item?: any, saved?: SavedItem | null): string {
   return releaseYear(item);
 }
 
-export function getPoster(item?: any): string {
+export function getPoster(item?: Partial<TmdbItem> | SavedItem | null): string {
   if (!item) return '';
   if (item.poster_url) {
     try {
@@ -121,7 +152,7 @@ export async function mapLimit<T, R>(
   return results;
 }
 
-export function calculateItemWatchMinutes(item: any): number {
+export function calculateItemWatchMinutes(item?: Partial<SavedItem> | null): number {
   if (!item || typeof item !== 'object') return 0;
   if (item.media_type === 'movie') {
     const runtime = Number(item.runtime) || 110;
@@ -130,11 +161,7 @@ export function calculateItemWatchMinutes(item: any): number {
     return 0;
   }
   if (item.media_type === 'tv') {
-    // TMDB episode_run_time is often an array or missing; default to 45 mins
-    const epTime =
-      Number(item.episode_run_time?.[0]) ||
-      Number(item.runtime) ||
-      45;
+    const epTime = Number(item.episode_run_time?.[0]) || Number(item.runtime) || 45;
     const explicitEpisodes = Number(item.episodes_watched) || 0;
     if (item.status === 'completed') {
       const totalShowEpisodes =
@@ -152,8 +179,8 @@ export function calculateItemWatchMinutes(item: any): number {
   return 0;
 }
 
-export function getTvShowEpisodesCount(item: any): number {
-  if (item.media_type !== 'tv') return 0;
+export function getTvShowEpisodesCount(item?: Partial<SavedItem> | null): number {
+  if (!item || item.media_type !== 'tv') return 0;
   const explicit = Number(item.episodes_watched) || 0;
   if (item.status === 'completed') {
     const total =
@@ -166,4 +193,3 @@ export function getTvShowEpisodesCount(item: any): number {
   }
   return 0;
 }
-

@@ -89,6 +89,12 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all');
   const [relationFilter, setRelationFilter] = useState<RelationFilter>('all');
   const [sourceKey, setSourceKey] = useState('');
+  const [sourceQuery, setSourceQuery] = useState('');
+  const [displayMode, setDisplayMode] = useState<'graph' | 'list'>('graph');
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  });
   const [snapshotCandidates, setSnapshotCandidates] = useState<PoolCandidateItem[]>(candidates);
   const [graphData, setGraphData] = useState<RelationshipGraphData | null>(null);
   const [selectedNode, setSelectedNode] = useState<RelationshipGraphNode | null>(null);
@@ -104,6 +110,16 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   const refreshSequenceRef = useRef(0);
   const skipNextFilterRebuildRef = useRef(false);
   const restoredGraphRef = useRef<RelationshipGraphData | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const handleMotionChange = (event: MediaQueryListEvent) => {
+      setPrefersReducedMotion(event.matches);
+    };
+    mediaQuery.addEventListener('change', handleMotionChange);
+    return () => mediaQuery.removeEventListener('change', handleMotionChange);
+  }, []);
 
   const favoriteActorIds = useMemo(
     () => favoriteActors.map((actor) => actor.id),
@@ -251,6 +267,17 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       String(a.title || a.name || '').localeCompare(String(b.title || b.name || ''), 'tr'),
     );
   }, [savedItems, snapshotCandidates, mediaFilter]);
+
+  const filteredSourceOptions = useMemo(() => {
+    const normalizedQuery = sourceQuery.trim().toLocaleLowerCase('tr');
+    if (!normalizedQuery) return sourceOptions;
+    return sourceOptions.filter((item) => {
+      const key = relationshipNodeKey(item);
+      if (key === sourceKey) return true;
+      const title = String(item.title || item.name || '').toLocaleLowerCase('tr');
+      return title.includes(normalizedQuery);
+    });
+  }, [sourceOptions, sourceQuery, sourceKey]);
 
   // Medya filtresi değiştiğinde seçili kaynak yeni filtreye uymuyorsa ilk geçerli kaynağa geçir ve seçili düğümü temizle
   useEffect(() => {
@@ -464,6 +491,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   ]);
 
   useEffect(() => {
+    if (displayMode !== 'graph') return undefined;
     if (graphData && graphRef.current) {
       if (typeof graphRef.current.d3Force === 'function') {
         const linkForce: any = graphRef.current.d3Force('link');
@@ -472,12 +500,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         }
       }
       if (typeof graphRef.current.zoomToFit === 'function') {
-        const timer = window.setTimeout(() => graphRef.current?.zoomToFit?.(350, 48), 60);
+        const duration = prefersReducedMotion ? 0 : 350;
+        const timer = window.setTimeout(() => graphRef.current?.zoomToFit?.(duration, 48), 60);
         return () => window.clearTimeout(timer);
       }
     }
     return undefined;
-  }, [graphData]);
+  }, [graphData, displayMode, prefersReducedMotion]);
 
   const nodeTitleById = useMemo(() => {
     const map = new Map<string, string>();
@@ -509,6 +538,30 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   const visibleContentNodeCount = graphData
     ? graphData.nodes.filter((node) => node.mediaType !== 'profile').length
     : 0;
+
+  const listNodes = useMemo(() => {
+    if (!graphData) return [];
+    return graphData.nodes
+      .filter((node) => node.mediaType !== 'profile')
+      .map((node) => {
+        const nodeLinks = graphData.links.filter(
+          (link) =>
+            linkEndpointId(link.source) === node.id || linkEndpointId(link.target) === node.id,
+        );
+        const topLinkScore = nodeLinks.reduce((max, l) => Math.max(max, Number(l.score || 0)), 0);
+        return { node, links: nodeLinks, topLinkScore };
+      })
+      .sort((a, b) => {
+        if (a.node.kind === 'source' && b.node.kind !== 'source') return -1;
+        if (b.node.kind === 'source' && a.node.kind !== 'source') return 1;
+        if (b.topLinkScore !== a.topLinkScore) return b.topLinkScore - a.topLinkScore;
+        return b.node.personalScore - a.node.personalScore;
+      });
+  }, [graphData]);
+
+  const liveAnnouncement = selectedNode
+    ? `Seçili düğüm: ${selectedNode.title}. Kişisel uyum yüzde ${selectedNode.personalScore}. ${selectedLinks.length} bağlantı kanıtı listeleniyor.`
+    : '';
 
   const nodeCanvasObject = (
     rawNode: any,
@@ -597,6 +650,31 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         </p>
       )}
 
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {liveAnnouncement}
+      </div>
+
+      {mode === 'relationships' && (
+        <div className="relationship-view-toggle" role="group" aria-label="İlişki keşfi görünüm modu">
+          <button
+            className={`btn ${displayMode === 'graph' ? 'btn-primary' : ''}`}
+            type="button"
+            onClick={() => setDisplayMode('graph')}
+            aria-pressed={displayMode === 'graph'}
+          >
+            Ağ haritası
+          </button>
+          <button
+            className={`btn ${displayMode === 'list' ? 'btn-primary' : ''}`}
+            type="button"
+            onClick={() => setDisplayMode('list')}
+            aria-pressed={displayMode === 'list'}
+          >
+            Liste görünümü
+          </button>
+        </div>
+      )}
+
       <div className="relationship-filters">
         <label>
           İçerik türü
@@ -614,23 +692,38 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         </label>
 
         {mode === 'relationships' && (
-          <label>
-            Kaynak yapım
-            <select
-              value={sourceKey}
-              onChange={(event) => {
-                setSelectedNode(null);
-                setSourceKey(event.target.value);
-              }}
-            >
-              <option value="">Kaynak seç…</option>
-              {sourceOptions.map((item) => (
-                <option key={relationshipNodeKey(item)} value={relationshipNodeKey(item)}>
-                  {item.title || item.name || 'Başlıksız'}
-                </option>
-              ))}
-            </select>
-          </label>
+          <>
+            {sourceOptions.length > 8 && (
+              <label>
+                Kaynak filtrele
+                <input
+                  type="search"
+                  className="relationship-source-search"
+                  value={sourceQuery}
+                  onChange={(event) => setSourceQuery(event.target.value)}
+                  placeholder="Kaynak yapım ara…"
+                  aria-label="Kaynak yapım listesini filtrele"
+                />
+              </label>
+            )}
+            <label>
+              Kaynak yapım
+              <select
+                value={sourceKey}
+                onChange={(event) => {
+                  setSelectedNode(null);
+                  setSourceKey(event.target.value);
+                }}
+              >
+                <option value="">Kaynak seç…</option>
+                {filteredSourceOptions.map((item) => (
+                  <option key={relationshipNodeKey(item)} value={relationshipNodeKey(item)}>
+                    {item.title || item.name || 'Başlıksız'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
         )}
 
         <label>
@@ -664,37 +757,127 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       )}
 
       <div className="relationship-layout">
-        <div className="relationship-graph" ref={containerRef}>
+        <div
+          className={displayMode === 'list' && mode === 'relationships' ? 'relationship-list-container' : 'relationship-graph'}
+          ref={containerRef}
+        >
           {hasUsefulGraph && graphData ? (
-            <ForceGraph2D
-              ref={graphRef}
-              graphData={graphData as any}
-              width={size.width}
-              height={size.height}
-              backgroundColor="#071321"
-              nodeRelSize={6}
-              nodeCanvasObject={nodeCanvasObject}
-              nodeLabel={(rawNode: any) => {
-                const node = rawNode as RelationshipGraphNode;
-                return `${node.title}\nKişisel uyum: ${node.personalScore}/100`;
-              }}
-              onNodeClick={(rawNode: any) => setSelectedNode(rawNode as RelationshipGraphNode)}
-              linkColor={(link: any) => getRelationshipLinkColor(link.type)}
-              linkWidth={(link: any) => Math.max(1, Number(link.score || 0) / 42)}
-              linkLabel={(rawLink: any) => {
-                const link = rawLink as RelationshipGraphLink;
-                return `${getRelationshipTypeLabel(link.type)} · ${link.score}/100 · Kanıt güveni ${link.confidence}/100\n${link.evidence.join('\n')}`;
-              }}
-              linkDirectionalParticles={1}
-              linkDirectionalParticleWidth={1.5}
-              cooldownTicks={100}
-              d3VelocityDecay={0.3}
-              onEngineStop={() => graphRef.current?.pauseAnimation?.()}
-            />
+            displayMode === 'list' && mode === 'relationships' ? (
+              <div className="relationship-list-view" role="list" aria-label="İlişkili yapımlar listesi">
+                {listNodes.map(({ node, links }) => {
+                  const isSelected = selectedNode?.id === node.id;
+                  const itemObj = [...snapshotCandidates, ...savedItems].find(
+                    (it) => relationshipNodeKey(it) === node.id,
+                  );
+                  return (
+                    <article
+                      key={node.id}
+                      role="listitem"
+                      className={`relationship-list-card ${isSelected ? 'is-selected' : ''}`}
+                    >
+                      <div className="relationship-list-card-head">
+                        <button
+                          type="button"
+                          className="relationship-list-select-btn"
+                          onClick={() => setSelectedNode(node)}
+                          aria-pressed={isSelected}
+                        >
+                          <span className="relationship-list-title">{node.title}</span>
+                          <span className="relationship-list-badges">
+                            <span className="relationship-list-badge">
+                              {node.mediaType === 'tv' ? 'Dizi' : 'Film'}
+                            </span>
+                            {node.kind === 'source' && (
+                              <span className="relationship-list-badge is-source">Kaynak Yapım</span>
+                            )}
+                            <span className="relationship-list-badge is-score">
+                              %{node.personalScore} Uyum
+                            </span>
+                          </span>
+                        </button>
+                      </div>
+
+                      {links.length > 0 && (
+                        <ul className="relationship-list-links">
+                          {links.slice(0, 3).map((lnk, idx) => {
+                            const sId = linkEndpointId(lnk.source);
+                            const tId = linkEndpointId(lnk.target);
+                            const otherTitle = nodeTitleById.get(sId === node.id ? tId : sId);
+                            return (
+                              <li key={`${node.id}-lnk-${idx}`}>
+                                <strong>{getRelationshipTypeLabel(lnk.type)}</strong> ({lnk.score}/100)
+                                {otherTitle ? ` · ${otherTitle}` : ''}
+                                {lnk.evidence[0] ? ` — ${lnk.evidence[0]}` : ''}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+
+                      <div className="relationship-list-actions">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setSelectedNode(node)}
+                        >
+                          Kanıtları İncele
+                        </button>
+                        {itemObj && onOpenDetails && (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => onOpenDetails(itemObj)}
+                          >
+                            Ayrıntılar
+                          </button>
+                        )}
+                        {itemObj && onQuickSave && node.kind === 'candidate' && (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => onQuickSave(itemObj)}
+                          >
+                            Listeye Ekle
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <ForceGraph2D
+                ref={graphRef}
+                graphData={graphData as any}
+                width={size.width}
+                height={size.height}
+                backgroundColor="#071321"
+                nodeRelSize={6}
+                nodeCanvasObject={nodeCanvasObject}
+                nodeLabel={(rawNode: any) => {
+                  const node = rawNode as RelationshipGraphNode;
+                  return `${node.title}\nKişisel uyum: ${node.personalScore}/100`;
+                }}
+                onNodeClick={(rawNode: any) => setSelectedNode(rawNode as RelationshipGraphNode)}
+                linkColor={(link: any) => getRelationshipLinkColor(link.type)}
+                linkWidth={(link: any) => Math.max(1, Number(link.score || 0) / 42)}
+                linkLabel={(rawLink: any) => {
+                  const link = rawLink as RelationshipGraphLink;
+                  return `${getRelationshipTypeLabel(link.type)} · ${link.score}/100 · Kanıt güveni ${link.confidence}/100\n${link.evidence.join('\n')}`;
+                }}
+                linkDirectionalParticles={prefersReducedMotion ? 0 : 1}
+                linkDirectionalParticleWidth={1.5}
+                cooldownTicks={prefersReducedMotion ? 1 : 100}
+                d3VelocityDecay={0.3}
+                onEngineStop={() => graphRef.current?.pauseAnimation?.()}
+              />
+            )
           ) : (
             <div className="relationship-empty">
-              <div className="relationship-empty-icon">
-                {mode === 'relationships' && !sourceKey ? '◉' : graphData ? '🔍' : '◎'}
+              <div className="relationship-empty-icon" aria-hidden="true">
+                <svg className="icon">
+                  <use href={graphData ? '#icon-search' : '#icon-network'}></use>
+                </svg>
               </div>
               {graphData && (
                 <div className="relationship-empty-badge">
@@ -869,3 +1052,6 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     </section>
   );
 };
+
+export default RelationshipExplorer;
+

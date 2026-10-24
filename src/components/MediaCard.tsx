@@ -1,18 +1,19 @@
 import React from 'react';
 import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
-import { SavedItem, reminderDaysUntil, resolveAirDate, makeMediaKey, getTasteRingLabel } from '../core/cinetrack-core';
+import { SavedItem, TasteRing, reminderDaysUntil, resolveAirDate, makeMediaKey, getTasteRingLabel } from '../core/cinetrack-core';
+import { TmdbItem } from '../types/tmdb';
 
 interface MediaCardProps {
-  item: any;
+  item: TmdbItem;
   savedItem?: SavedItem;
   genres: Record<number, string>;
   recommendationReason?: string;
   isDisliked: boolean;
   tab: 'discover' | 'list';
-  onOpenDetails: (item: any) => void;
-  onQuickAdd: (item: any) => void;
-  onSetStatus: (item: any, status: 'watching' | 'watchlist' | 'completed') => void;
-  onQuickSave: (item: any) => void;
+  onOpenDetails: (item: TmdbItem) => void;
+  onQuickAdd: (item: TmdbItem) => void;
+  onSetStatus: (item: TmdbItem, status: 'watching' | 'watchlist' | 'completed') => void;
+  onQuickSave: (item: TmdbItem) => void;
   onToggleDislike: (key: string) => void;
 }
 
@@ -130,33 +131,54 @@ export const MediaCard: React.FC<MediaCardProps> = ({
 
         <span className="badge">{kind}</span>
 
-        {(Number(item.matchScore) > 0 || (tab === 'discover' && Boolean(recommendationReason))) && (
-          <span
-            className="match-badge"
-            title={`Sana Özel zevk uyumluluğu: %${Math.round(Number(item.matchScore) || 82)}${item.ring ? ` (${getTasteRingLabel(item.ring)})` : ''}`}
-            aria-label={`Uyumluluk: %${Math.round(Number(item.matchScore) || 82)}`}
-          >
-            🎯 %{Math.round(Number(item.matchScore) || 82)} Uyum
-            {item.ring && (
-              <span className="opacity-90 ml-1 text-[10px]">
-                ·{' '}
-                {item.ring === 'ring0'
-                  ? 'Yeni Eşleşme'
-                  : item.ring === 'ring1'
-                  ? 'Son Öneri'
-                  : item.ring === 'ring2'
-                  ? 'Yedek Halka'
-                  : item.ring === 'core'
-                  ? '1. Halka'
-                  : item.ring === 'inner'
-                  ? '2. Halka'
-                  : item.ring === 'outer'
-                  ? '3. Halka'
-                  : 'Yörünge'}
+        {(() => {
+          const rawScore = Number(item.tasteScore ?? item.matchScore);
+          const hasRealScore = Number.isFinite(rawScore) && rawScore > 0;
+          const roundedScore = hasRealScore ? Math.round(rawScore) : null;
+          const ringKey = item.ring as TasteRing | undefined;
+          const ringSuffix = ringKey
+            ? ringKey === 'ring0'
+              ? 'Yeni Eşleşme'
+              : ringKey === 'ring1'
+              ? 'Son Öneri'
+              : ringKey === 'ring2'
+              ? 'Yedek Halka'
+              : ringKey === 'core'
+              ? '1. Halka'
+              : ringKey === 'inner'
+              ? '2. Halka'
+              : ringKey === 'outer'
+              ? '3. Halka'
+              : 'Yörünge'
+            : '';
+
+          if (roundedScore !== null) {
+            return (
+              <span
+                className="match-badge"
+                title={`Sana Özel zevk uyumluluğu: %${roundedScore}${ringKey ? ` (${getTasteRingLabel(ringKey)})` : ''}`}
+                aria-label={`Uyumluluk: %${roundedScore}`}
+              >
+                %{roundedScore} Uyum
+                {ringSuffix && <span className="match-badge-ring"> · {ringSuffix}</span>}
               </span>
-            )}
-          </span>
-        )}
+            );
+          }
+
+          if (tab === 'discover' && Boolean(recommendationReason)) {
+            return (
+              <span
+                className="match-badge"
+                title="Kişisel listene göre önerilen yapım"
+                aria-label="Kişiselleştirilmiş öneri"
+              >
+                Öneri
+              </span>
+            );
+          }
+
+          return null;
+        })()}
 
         {countdownText && (
           <span className="release-countdown" title={`Yayın tarihi: ${airDate}`}>

@@ -1,21 +1,29 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { MediaCard } from './MediaCard';
 import { ActorRecommendationsSection } from './ActorRecommendationsSection';
-import { SavedItem, findSavedItem, makeMediaKey } from '../core/cinetrack-core';
+import { ErrorBoundary } from './ErrorBoundary';
+import {
+  SavedItem,
+  FavoriteActorInfo,
+  findSavedItem,
+  makeMediaKey,
+  normalizeFavoriteActors,
+} from '../core/cinetrack-core';
 import { imageUrl } from '../utils/helpers';
+import { TmdbItem } from '../types/tmdb';
 
 interface MediaGridProps {
   title: string;
   description: string;
   isLoading: boolean;
   loadingMore: boolean;
-  items: any[];
+  items: TmdbItem[];
   savedItems: SavedItem[];
   genres: Record<number, string>;
   recommendationReasons: Map<string, string>;
   dislikedKeys: string[];
   preferredProviders?: string[];
-  providerIndex?: Record<string, any[]>;
+  providerIndex?: Record<string, Array<{ id: number | string; name?: string }>>;
   tab: 'discover' | 'list';
   query: string;
   listStatus: string;
@@ -23,16 +31,16 @@ interface MediaGridProps {
   page: number;
   totalPages: number;
   hasMore: boolean;
-  favoriteActors?: any[];
+  favoriteActors?: FavoriteActorInfo[];
   onLoadMore: () => void;
-  onOpenDetails: (item: any) => void;
-  onQuickAdd: (item: any) => void;
-  onSetStatus: (item: any, status: 'watching' | 'watchlist' | 'completed') => void;
-  onQuickSave: (item: any) => void;
+  onOpenDetails: (item: TmdbItem) => void;
+  onQuickAdd: (item: TmdbItem) => void;
+  onSetStatus: (item: TmdbItem, status: 'watching' | 'watchlist' | 'completed') => void;
+  onQuickSave: (item: TmdbItem) => void;
   onToggleDislike: (key: string) => void;
   onEmptyAction: (action: string) => void;
   onOpenPerson?: (id: number, name: string) => void;
-  onToggleFavoriteActor?: (actor: any) => void;
+  onToggleFavoriteActor?: (actor: FavoriteActorInfo) => void;
   onRefreshForYou?: () => void;
   tmdbSource?: string;
   tmdbStaleReason?: string;
@@ -71,7 +79,11 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   tmdbSource = 'live',
   tmdbStaleReason,
 }) => {
-  const getSaved = (item: any) => findSavedItem(savedItems, item);
+  const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
+  const safeFavoriteActors = useMemo(
+    () => normalizeFavoriteActors(favoriteActors),
+    [favoriteActors]
+  );
 
   return (
     <section aria-labelledby="catalogTitle">
@@ -133,7 +145,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             <div key={i} className="skeleton-card" aria-hidden="true"></div>
           ))
         ) : listStatus === 'actors' ? (
-          favoriteActors.length === 0 ? (
+          safeFavoriteActors.length === 0 ? (
             <div className="empty-message">
               <strong>Henüz favori oyuncu eklemediniz</strong>
               Film ve dizi detaylarındaki oyuncu fotoğraflarının üzerindeki kalp butonuna basarak oyuncuları favorilere ekleyebilirsiniz.
@@ -143,12 +155,12 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   type="button"
                   onClick={() => onEmptyAction('discover')}
                 >
-                  Keşfet'e git
+                  Keşfet&apos;e git
                 </button>
               </div>
             </div>
           ) : (
-            favoriteActors.map((actor) => {
+            safeFavoriteActors.map((actor) => {
               const photo = imageUrl(actor.profile_path, 'w185');
               return (
                 <article key={actor.id} className="card actor-card">
@@ -156,7 +168,15 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                     className="poster actor-poster"
                     role="button"
                     tabIndex={0}
+                    aria-label={`${actor.name} filmografisini gör`}
                     onClick={() => onOpenPerson?.(actor.id, actor.name)}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onOpenPerson?.(actor.id, actor.name);
+                      }
+                    }}
                   >
                     {photo ? (
                       <img src={photo} alt={actor.name} loading="lazy" />
@@ -177,7 +197,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                         onToggleFavoriteActor?.(actor);
                       }}
                     >
-                      ❤️
+                      ♥
                     </button>
                   </div>
                   <div className="card-info">
@@ -191,16 +211,13 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                     <div className="card-meta">
                       <span className="kind-tag">Oyuncu</span>
                       {actor.character && (
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {actor.character}
-                        </span>
+                        <span className="actor-card-character">{actor.character}</span>
                       )}
                     </div>
-                    <div style={{ marginTop: '8px' }}>
+                    <div className="actor-card-cta-wrap">
                       <button
                         type="button"
-                        className="btn"
-                        style={{ width: '100%', fontSize: '11px', padding: '6px 8px' }}
+                        className="btn actor-card-cta-btn"
                         onClick={() => onOpenPerson?.(actor.id, actor.name)}
                       >
                         Filmleri & Dizileri Gör
@@ -351,20 +368,22 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         )}
       </div>
 
-      {listStatus === 'actors' && favoriteActors.length > 0 && (
-        <ActorRecommendationsSection
-          favoriteActors={favoriteActors}
-          savedItems={savedItems}
-          dislikedKeys={dislikedKeys}
-          genresMap={genres}
-          preferredProviders={preferredProviders}
-          providerIndex={providerIndex}
-          onOpenDetails={onOpenDetails}
-          onQuickAdd={onQuickAdd}
-          onSetStatus={onSetStatus}
-          onQuickSave={onQuickSave}
-          onOpenPerson={onOpenPerson}
-        />
+      {listStatus === 'actors' && safeFavoriteActors.length > 0 && (
+        <ErrorBoundary sectionName="Favori Oyuncu Önerileri">
+          <ActorRecommendationsSection
+            favoriteActors={safeFavoriteActors}
+            savedItems={savedItems}
+            dislikedKeys={dislikedKeys}
+            genresMap={genres}
+            preferredProviders={preferredProviders}
+            providerIndex={providerIndex}
+            onOpenDetails={onOpenDetails}
+            onQuickAdd={onQuickAdd}
+            onSetStatus={onSetStatus}
+            onQuickSave={onQuickSave}
+            onOpenPerson={onOpenPerson}
+          />
+        </ErrorBoundary>
       )}
 
       {tab === 'discover' && category === 'for-you' && items.length > 0 && onRefreshForYou && (
