@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { displayTitle, formatMediaDates, imageUrl } from '../utils/helpers';
+import React, { useState, useEffect, useMemo } from 'react';
+import { displayTitle, imageUrl } from '../utils/helpers';
 import { SavedItem, findSavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
@@ -54,7 +54,6 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
       let prof = profileRes.status === 'fulfilled' ? profileRes.value : null;
       let cred = creditsRes.status === 'fulfilled' ? creditsRes.value : null;
 
-      // Turkish fallback to English if bio or cast is empty
       if (!prof?.biography) {
         try {
           prof = await fetchTmdb(`/person/${personId}`, { language: 'en-US' });
@@ -77,98 +76,76 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
     };
   }, [personId, isOpen]);
 
-  if (!isOpen || !personId) return null;
+  // Group filmography into:
+  // 1. Listemdekiler (Watched / Completed)
+  // 2. İzleyeceklerim (Watchlist / Watching)
+  // 3. Öneriler / Diğer Yapımları (Not yet saved)
+  const groupedCredits = useMemo(() => {
+    const unique = credits
+      .filter((c) => (c.media_type === 'movie' || c.media_type === 'tv') && (c.title || c.name))
+      .filter((item, index, list) => list.findIndex((e) => e.id === item.id) === index)
+      .sort((a, b) => Number(b.popularity || 0) - Number(a.popularity || 0));
 
-  const movies = credits
-    .filter((c) => c.media_type === 'movie' && (c.title || c.name))
-    .sort((a, b) => Number(b.popularity || 0) - Number(a.popularity || 0))
-    .filter((item, index, list) => list.findIndex((e) => e.id === item.id) === index)
-    .slice(0, 16);
+    const inListWatched: any[] = [];
+    const inListToWatch: any[] = [];
+    const discoverList: any[] = [];
 
-  const shows = credits
-    .filter((c) => c.media_type === 'tv' && (c.title || c.name))
-    .sort((a, b) => Number(b.popularity || 0) - Number(a.popularity || 0))
-    .filter((item, index, list) => list.findIndex((e) => e.id === item.id) === index)
-    .slice(0, 16);
-
-  const getSaved = (item: any) => findSavedItem(savedItems, item);
-
-  const renderCreditsList = (list: any[], mediaType: 'movie' | 'tv') => {
-    if (list.length === 0) {
-      return <p className="person-bio">Bu kategoride yapım bulunamadı.</p>;
+    for (const c of unique) {
+      const saved = findSavedItem(savedItems, c);
+      if (saved) {
+        if (saved.status === 'completed') {
+          inListWatched.push({ ...c, saved });
+        } else {
+          inListToWatch.push({ ...c, saved });
+        }
+      } else {
+        discoverList.push(c);
+      }
     }
 
-    return list.map((item) => {
-      const fullItem = { ...item, media_type: mediaType };
-      const saved = getSaved(fullItem);
-      const title = displayTitle(fullItem);
-      const dateStr = formatMediaDates(fullItem, saved);
-      const poster = imageUrl(item.poster_path, 'w185');
-      const rating = Number(item.vote_average || 0);
+    return {
+      totalCreditsCount: unique.length,
+      inListCount: inListWatched.length + inListToWatch.length,
+      inListWatched,
+      inListToWatch,
+      discoverList: discoverList.slice(0, 16),
+    };
+  }, [credits, savedItems]);
 
-      const stateLabel =
-        saved?.status === 'completed'
-          ? 'Tamamlandı'
-          : saved?.status === 'watching'
-          ? 'İzliyorum'
-          : saved?.status === 'watchlist'
-          ? 'Listemde'
-          : '';
-      const stateIcon =
-        saved?.status === 'completed' ? 'icon-check' : saved?.status === 'watching' ? 'icon-play' : 'icon-plus';
+  if (!isOpen || !personId) return null;
 
-      return (
-        <article
-          key={makeMediaKey(mediaType, item.id)}
-          className="person-credit"
-          role="button"
-          tabIndex={0}
-          title={`${title} detaylarını gör`}
-          onClick={() => {
-            onClose();
-            onOpenDetails(fullItem);
-          }}
-        >
+  const renderShelfItem = (item: any) => {
+    const title = displayTitle(item);
+    const poster = item.poster_path ? imageUrl(item.poster_path, 'w185') : '';
+    const year = (item.release_date || item.first_air_date || '').slice(0, 4);
+    const saved = findSavedItem(savedItems, item);
+    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+    const fullItem = { ...item, media_type: mediaType };
+
+    return (
+      <article
+        key={makeMediaKey(mediaType, item.id)}
+        className="person-shelf-item"
+        onClick={() => onOpenDetails(fullItem)}
+        role="button"
+        tabIndex={0}
+      >
+        <div className="person-shelf-poster">
           {poster ? (
-            <img src={poster} alt="" loading="lazy" onError={(e) => ((e.target as HTMLElement).hidden = true)} />
+            <img src={poster} alt="" loading="lazy" />
           ) : (
-            <span className="person-credit-fallback" aria-hidden="true">
+            <div className="person-shelf-fallback">
               <svg className="icon">
                 <use href="#icon-film"></use>
               </svg>
-            </span>
+            </div>
           )}
 
-          <div className="person-credit-copy">
-            <strong>{title}</strong>
-            <span>
-              {dateStr}
-              {item.character ? ` · ${item.character}` : ''}
-            </span>
-            {rating > 0 && (
-              <span className="credit-rating">
-                <svg className="icon">
-                  <use href="#icon-star"></use>
-                </svg>
-                {rating.toFixed(1)}
-              </span>
-            )}
-            {stateLabel && saved && (
-              <small className={`credit-state status-${saved.status}`}>
-                <svg className="icon" aria-hidden="true">
-                  <use href={`#${stateIcon}`}></use>
-                </svg>
-                {stateLabel}
-              </small>
-            )}
-          </div>
-
-          <div className="credit-actions" onClick={(e) => e.stopPropagation()}>
+          <div className="person-shelf-actions" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
-              className={`credit-action-btn credit-action-watchlist ${saved?.status === 'watchlist' ? 'is-active' : ''}`}
-              aria-label={saved?.status === 'watchlist' ? `${title} izlenecekler listesinde (Düzenle)` : `${title} izleneceklere ekle`}
-              title={saved?.status === 'watchlist' ? 'İzlenecekler listesinde (Düzenle)' : 'İzlenecekler listesine doğrudan ekle (+)'}
+              className={`credit-action-btn ${saved?.status === 'watchlist' ? 'is-active' : ''}`}
+              aria-label={`${title} izleneceklere ekle`}
               onClick={() => {
                 if (saved?.status === 'watchlist') {
                   onQuickSave(fullItem);
@@ -178,15 +155,13 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
               }}
             >
               <svg className="icon" aria-hidden="true">
-                <use href="#icon-plus"></use>
+                <use href={saved?.status === 'watchlist' ? '#icon-check' : '#icon-plus'}></use>
               </svg>
             </button>
-
             <button
               type="button"
               className={`credit-action-btn credit-action-completed ${saved?.status === 'completed' ? 'is-active' : ''}`}
-              aria-label={saved?.status === 'completed' ? `${title} izlendi olarak kayıtlı (Düzenle)` : `${title} izlendi olarak işaretle`}
-              title={saved?.status === 'completed' ? 'İzlendi olarak kayıtlı (Düzenle)' : 'İzlendi listesine doğrudan ekle (✓)'}
+              aria-label={`${title} izlendi olarak işaretle`}
               onClick={() => {
                 if (saved?.status === 'completed') {
                   onQuickSave(fullItem);
@@ -200,9 +175,19 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
               </svg>
             </button>
           </div>
-        </article>
-      );
-    });
+        </div>
+
+        <div className="person-shelf-meta">
+          <strong className="clamp-1" title={title}>{title}</strong>
+          <span className="tabular-nums">{year || ''}</span>
+          {saved && (
+            <span className={`person-saved-pill status-${saved.status}`}>
+              {saved.status === 'completed' ? 'İzlendi' : saved.status === 'watching' ? 'İzleniyor' : 'Listede'}
+            </span>
+          )}
+        </div>
+      </article>
+    );
   };
 
   return (
@@ -213,14 +198,14 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
         aria-hidden="true"
         tabIndex={-1}
         onClick={onClose}
-      ></button>
+      />
       <section
         ref={dialogRef}
         className="person-drawer"
         role="dialog"
         aria-modal="true"
         aria-labelledby="personPanelTitle"
-        aria-describedby="personBio"
+        aria-describedby="personSummaryText"
         tabIndex={-1}
       >
         <header className="person-drawer-head">
@@ -239,25 +224,14 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
               </div>
             )}
             <div>
-              <h2 id="personPanelTitle" style={{ margin: 0, fontSize: '18px' }}>
+              <h2 id="personPanelTitle" className="person-name-heading">
                 {profile?.name || personName}
               </h2>
-              {onToggleFavoriteActor && (
-                <button
-                  type="button"
-                  className={`person-fav-btn ${isFavoriteActor ? 'is-active' : ''}`}
-                  onClick={() =>
-                    onToggleFavoriteActor({
-                      id: personId,
-                      name: profile?.name || personName,
-                      profile_path: profile?.profile_path || '',
-                    })
-                  }
-                  title={isFavoriteActor ? 'Favorilerden çıkar' : 'Favorilere ekle'}
-                >
-                  {isFavoriteActor ? '❤️ Favorilerimde' : '🤍 Favoriye Ekle'}
-                </button>
-              )}
+              <p id="personSummaryText" className="person-count-sub tabular-nums">
+                {groupedCredits.totalCreditsCount > 0
+                  ? `${groupedCredits.totalCreditsCount} yapımda göründü (listemde ${groupedCredits.inListCount})`
+                  : 'Filmografi yükleniyor…'}
+              </p>
             </div>
           </div>
           <button id="closePersonPanel" className="modal-close" type="button" onClick={onClose} aria-label="Kapat">
@@ -268,30 +242,74 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
         </header>
 
         <div className="person-drawer-content">
-          <p id="personBio" className="person-bio" aria-live="polite">
-            {loading
-              ? 'Oyuncu bilgileri yükleniyor...'
-              : profile?.biography?.trim() || 'Bu oyuncu için biyografi bulunmuyor.'}
-          </p>
+          {profile?.biography && (
+            <p id="personBio" className="person-bio clamp-3">
+              {profile.biography.trim()}
+            </p>
+          )}
 
-          <section aria-labelledby="personMoviesTitle">
-            <h3 id="personMoviesTitle" className="person-section-title">
-              Filmler
-            </h3>
-            <div id="personMovies" className="person-credit-grid">
-              {renderCreditsList(movies, 'movie')}
-            </div>
-          </section>
+          {/* 1. Listemdekiler (İzlendi) */}
+          {groupedCredits.inListWatched.length > 0 && (
+            <section className="person-group-section">
+              <h3 className="person-section-title">
+                İzlediklerim ({groupedCredits.inListWatched.length})
+              </h3>
+              <div className="person-horizontal-shelf">
+                {groupedCredits.inListWatched.map(renderShelfItem)}
+              </div>
+            </section>
+          )}
 
-          <section aria-labelledby="personShowsTitle">
-            <h3 id="personShowsTitle" className="person-section-title">
-              Diziler
+          {/* 2. İzleyeceklerim / İzliyorum */}
+          {groupedCredits.inListToWatch.length > 0 && (
+            <section className="person-group-section">
+              <h3 className="person-section-title">
+                İzleme Listemde ({groupedCredits.inListToWatch.length})
+              </h3>
+              <div className="person-horizontal-shelf">
+                {groupedCredits.inListToWatch.map(renderShelfItem)}
+              </div>
+            </section>
+          )}
+
+          {/* 3. Öneriler / Diğer Yapımları */}
+          <section className="person-group-section">
+            <h3 className="person-section-title">
+              Önerilen Diğer Yapımları ({groupedCredits.discoverList.length})
             </h3>
-            <div id="personShows" className="person-credit-grid">
-              {renderCreditsList(shows, 'tv')}
-            </div>
+            {loading ? (
+              <div className="skeleton-line" style={{ width: '80%' }} />
+            ) : groupedCredits.discoverList.length > 0 ? (
+              <div className="person-horizontal-shelf">
+                {groupedCredits.discoverList.map(renderShelfItem)}
+              </div>
+            ) : (
+              <p className="person-empty-hint">Bu oyuncunun tüm yapımları listenizde!</p>
+            )}
           </section>
         </div>
+
+        {/* Alt: [+ Favorilerime ekle] Birincil Eylem (Section 6.6) */}
+        {onToggleFavoriteActor && (
+          <footer className="person-drawer-footer">
+            <button
+              type="button"
+              className={`btn ${isFavoriteActor ? 'btn-ghost' : 'btn-primary'} person-footer-fav-btn`}
+              onClick={() =>
+                onToggleFavoriteActor({
+                  id: personId,
+                  name: profile?.name || personName,
+                  profile_path: profile?.profile_path || '',
+                })
+              }
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-star"></use>
+              </svg>
+              <span>{isFavoriteActor ? 'Favori Oyuncularımdan Çıkar' : 'Favori Oyuncularıma Ekle'}</span>
+            </button>
+          </footer>
+        )}
       </section>
     </div>
   );

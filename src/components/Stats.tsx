@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { SavedItem } from '../core/cinetrack-core';
 import { calculateItemWatchMinutes } from '../utils/helpers';
 
@@ -7,114 +7,118 @@ interface StatsProps {
 }
 
 export const Stats: React.FC<StatsProps> = ({ items }) => {
-  const total = items.length;
-  const watching = items.filter((item) => item.status === 'watching').length;
-  const watchlist = items.filter((item) => item.status === 'watchlist').length;
-  const completed = items.filter((item) => item.status === 'completed').length;
-  const rated = items.filter(
-    (item) => Number.isFinite(Number(item.personal_rating)) && item.personal_rating !== ''
-  );
-  const average = rated.length
-    ? `${(
-        rated.reduce((sum, item) => sum + Number(item.personal_rating), 0) / rated.length
-      ).toFixed(1)} / 10`
-    : 'Yok';
+  const statsData = useMemo(() => {
+    const total = items.length;
+    let totalMinutes = 0;
+    const genreCounts: Record<string, number> = {};
+    const actorCounts: Record<string, number> = {};
+    const yearCounts: Record<string, number> = {};
 
-  let totalMinutes = 0;
-  for (const item of items) {
-    totalMinutes += calculateItemWatchMinutes(item);
-  }
+    for (const item of items) {
+      totalMinutes += calculateItemWatchMinutes(item);
 
-  let watchTimeString = '0 sa';
-  if (totalMinutes > 0) {
+      // Genre stats
+      const genres = (item as any).genres || [];
+      for (const g of genres) {
+        const name = typeof g === 'string' ? g : g.name;
+        if (name) genreCounts[name] = (genreCounts[name] || 0) + 1;
+      }
+
+      // Year stats
+      const year = (item.release_date || item.first_air_date || (item as any).year || '').slice(0, 4);
+      if (year && /^\d{4}$/.test(year)) {
+        yearCounts[year] = (yearCounts[year] || 0) + 1;
+      }
+    }
+
+    // Top Genre
+    const sortedGenres = Object.entries(genreCounts).sort((a, b) => b[1] - a[1]);
+    const topGenre = sortedGenres.length ? `${sortedGenres[0][0]} (${sortedGenres[0][1]})` : 'Henüz veri yok';
+
+    // Top Actor (if present in item credits)
+    const sortedActors = Object.entries(actorCounts).sort((a, b) => b[1] - a[1]);
+    const topActor = sortedActors.length ? sortedActors[0][0] : 'Takip ediliyor';
+
+    // Watch time formatted
     const days = Math.floor(totalMinutes / (24 * 60));
     const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
-    watchTimeString = days > 0 ? `${days}g ${hours}sa` : `${hours} sa`;
+    const watchTimeString = days > 0 ? `${days}g ${hours}sa` : `${hours} sa`;
+
+    // Year summary (Wrapped insight)
+    const currentYear = new Date().getFullYear().toString();
+    const currentYearCount = items.filter(
+      (item) => (item.addedAt || '').startsWith(currentYear)
+    ).length;
+
+    return {
+      total,
+      watchTimeString,
+      totalMinutes,
+      topGenre,
+      topActor,
+      currentYearCount,
+      currentYear,
+    };
+  }, [items]);
+
+  if (items.length === 0) {
+    return null;
   }
 
   return (
-    <section className="stats" aria-label="İzleme istatistikleri">
-      <div className="stat">
-        <div className="stat-icon">
-          <svg className="icon" aria-hidden="true">
-            <use href="#icon-library"></use>
-          </svg>
-        </div>
-        <div>
-          <div className="stat-label">Listemde</div>
-          <div id="statTotal" className="stat-value">
-            {total}
+    <section className="stats-dashboard" aria-label="Kişisel Sinema İstatistikleri">
+      {/* 2x2 Metrik Kartları (Section 6.9) */}
+      <div className="stats-2x2-grid">
+        {/* 1. İzlenen Süre */}
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <svg className="icon stat-icon" aria-hidden="true">
+              <use href="#icon-clock"></use>
+            </svg>
+            <span className="stat-label">İzlenen Süre</span>
           </div>
+          <div className="stat-value tabular-nums">{statsData.watchTimeString}</div>
+          <span className="stat-sub">Toplam kaydedilen süre</span>
         </div>
-      </div>
 
-      <div className="stat">
-        <div className="stat-icon">
-          <svg className="icon" aria-hidden="true">
-            <use href="#icon-play"></use>
-          </svg>
-        </div>
-        <div>
-          <div className="stat-label">İzliyorum</div>
-          <div id="statWatching" className="stat-value">
-            {watching}
+        {/* 2. İçerik Sayısı */}
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <svg className="icon stat-icon" aria-hidden="true">
+              <use href="#icon-library"></use>
+            </svg>
+            <span className="stat-label">İçerik Sayısı</span>
           </div>
+          <div className="stat-value tabular-nums">{statsData.total}</div>
+          <span className="stat-sub">Film ve dizi arşivi</span>
         </div>
-      </div>
 
-      <div className="stat">
-        <div className="stat-icon" style={{ background: '#0284c718', color: '#38bdf8' }}>
-          <svg className="icon" aria-hidden="true">
-            <use href="#icon-plus"></use>
-          </svg>
-        </div>
-        <div>
-          <div className="stat-label">İzlenecek</div>
-          <div id="statWatchlist" className="stat-value">
-            {watchlist}
+        {/* 3. En Çok İzlenen Tür */}
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <svg className="icon stat-icon" aria-hidden="true">
+              <use href="#icon-dna"></use>
+            </svg>
+            <span className="stat-label">En Çok Tür</span>
           </div>
+          <div className="stat-value stat-value--text clamp-1" title={statsData.topGenre}>
+            {statsData.topGenre}
+          </div>
+          <span className="stat-sub">Zevk profili ağırlığı</span>
         </div>
-      </div>
 
-      <div className="stat">
-        <div className="stat-icon">
-          <svg className="icon" aria-hidden="true">
-            <use href="#icon-check"></use>
-          </svg>
-        </div>
-        <div>
-          <div className="stat-label">Tamamlandı</div>
-          <div id="statDone" className="stat-value">
-            {completed}
+        {/* 4. Yıl Özeti (Wrapped Hazırlığı) */}
+        <div className="stat-card stat-card--wrapped">
+          <div className="stat-card-header">
+            <svg className="icon stat-icon" aria-hidden="true">
+              <use href="#icon-calendar"></use>
+            </svg>
+            <span className="stat-label">{statsData.currentYear} Seçkisi</span>
           </div>
-        </div>
-      </div>
-
-      <div className="stat">
-        <div className="stat-icon">
-          <svg className="icon" aria-hidden="true">
-            <use href="#icon-star"></use>
-          </svg>
-        </div>
-        <div>
-          <div className="stat-label">Kişisel ortalama</div>
-          <div id="statAverage" className="stat-value">
-            {average}
+          <div className="stat-value tabular-nums">
+            {statsData.currentYearCount > 0 ? `${statsData.currentYearCount} yapım` : 'Arşivleniyor'}
           </div>
-        </div>
-      </div>
-
-      <div className="stat">
-        <div className="stat-icon">
-          <svg className="icon" aria-hidden="true">
-            <use href="#icon-clock"></use>
-          </svg>
-        </div>
-        <div>
-          <div className="stat-label">İzleme süresi</div>
-          <div id="statWatchTime" className="stat-value">
-            {watchTimeString}
-          </div>
+          <span className="stat-sub">Bu yıl listene eklenenler</span>
         </div>
       </div>
     </section>

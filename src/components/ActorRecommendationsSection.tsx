@@ -3,7 +3,6 @@ import {
   FavoriteActorInfo,
   ActorRecommendationItem,
   scoreActorRecommendations,
-  calculateActorRoleBonus,
   SavedItem,
   findSavedItem,
   makeMediaKey,
@@ -14,9 +13,8 @@ import {
   describeActorFetchChipState,
 } from '../core/cinetrack-core';
 import { fetchTmdbCached, TMDB_CACHE_TTLS } from '../services/api';
-import { formatMatchBadge } from '../i18n';
-import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
 import { TmdbItem, TmdbPersonCreditItem } from '../types/tmdb';
+import { MediaCard } from './MediaCard';
 
 interface ActorRecommendationsSectionProps {
   favoriteActors: FavoriteActorInfo[];
@@ -35,7 +33,16 @@ interface ActorRecommendationsSectionProps {
   onOpenPerson?: (id: number, name: string) => void;
 }
 
-const IS_DEV = Boolean(import.meta.env.DEV);
+const ACCORDION_STORAGE_KEY = 'cinetrack.actor-accordions.v1';
+
+function loadAccordionStates(): Record<number, boolean> {
+  try {
+    const raw = localStorage.getItem(ACCORDION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
 
 export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionProps> = ({
   favoriteActors,
@@ -61,14 +68,43 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   const [sortMode, setSortMode] = useState<'best_match' | 'newest' | 'hidden_gems'>('best_match');
   const [typeFilter, setTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
   const [enableDiversity, setEnableDiversity] = useState<boolean>(true);
-  const [showDevPanel, setShowDevPanel] = useState<boolean>(false);
-  const [inspectedCardKeys, setInspectedCardKeys] = useState<Set<string>>(new Set());
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Accordion open/closed states persisted in localStorage
+  const [openAccordions, setOpenAccordions] = useState<Record<number, boolean>>(() => {
+    const saved = loadAccordionStates();
+    // Default the first 2 actors to open if not saved yet
+    if (Object.keys(saved).length === 0 && validFavoriteActors.length > 0) {
+      const initial: Record<number, boolean> = {};
+      validFavoriteActors.slice(0, 2).forEach((a) => {
+        initial[a.id] = true;
+      });
+      return initial;
+    }
+    return saved;
+  });
+
+  // Modal for "Tümünü Gör" per actor
+  const [allViewActor, setAllViewActor] = useState<FavoriteActorInfo | null>(null);
 
   const requestGateRef = useRef(createRequestGate());
   const actorCreditsCacheRef = useRef<
     Map<number, { at: number; credits: TmdbPersonCreditItem[]; status: ActorFetchStatus }>
   >(new Map());
+
+  const saveAccordionStates = (states: Record<number, boolean>) => {
+    setOpenAccordions(states);
+    try {
+      localStorage.setItem(ACCORDION_STORAGE_KEY, JSON.stringify(states));
+    } catch {}
+  };
+
+  const toggleAccordion = (actorId: number) => {
+    saveAccordionStates({
+      ...openAccordions,
+      [actorId]: !openAccordions[actorId],
+    });
+  };
 
   const loadCredits = useCallback(
     async (force = false) => {
@@ -163,18 +199,6 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     void loadCredits();
   }, [loadCredits]);
 
-  const toggleInspectCard = useCallback((key: string) => {
-    setInspectedCardKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  }, []);
-
   const rawRecommendations = useMemo(() => {
     if (validFavoriteActors.length === 0) return [];
     return scoreActorRecommendations({
@@ -187,7 +211,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       preferredProviders,
       sortMode,
       enableDiversity,
-      maxPerGenre: 3,
+      maxPerGenre: 4,
     });
   }, [
     validFavoriteActors,
@@ -206,6 +230,18 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     return rawRecommendations.filter((item) => item.media_type === typeFilter);
   }, [rawRecommendations, typeFilter]);
 
+  // Map recommendations per actor
+  const actorItemsMap = useMemo(() => {
+    const map = new Map<number, ActorRecommendationItem[]>();
+    for (const actor of validFavoriteActors) {
+      const items = filteredRecommendations.filter((item) =>
+        item.matchedActors?.some((a) => a.id === actor.id)
+      );
+      map.set(actor.id, items);
+    }
+    return map;
+  }, [validFavoriteActors, filteredRecommendations]);
+
   if (validFavoriteActors.length === 0) {
     return null;
   }
@@ -215,8 +251,8 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       <div className="actor-recs-head">
         <div>
           <div className="actor-recs-title">
-            <span className="actor-recs-badge">Kadro Keşfi</span>
-            <h3 id="actorRecsHeading">Oyuncularımdan Öneriler</h3>
+            <span className="badge badge-kind">Kadro Keşfi</span>
+            <h3 id="actorRecsHeading">Favori Oyuncularımdan Öneriler</h3>
           </div>
           <p className="actor-recs-sub">
             Favori oyuncularının yer aldığı, kişisel puanlarına ve kadro sırasına göre seçilmiş yapımlar.
@@ -238,7 +274,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             className={`actor-recs-tab-btn ${sortMode === 'hidden_gems' ? 'active' : ''}`}
             onClick={() => setSortMode('hidden_gems')}
             aria-pressed={sortMode === 'hidden_gems'}
-            title="Gözden kaçmış, yüksek puanlı kaliteli yapımları keşfeder"
+            title="Gözden kaçmış, yüksek puanlı yapımları keşfeder"
           >
             Gizli Cevherler
           </button>
@@ -247,9 +283,9 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             className={`actor-recs-tab-btn ${sortMode === 'newest' ? 'active' : ''}`}
             onClick={() => setSortMode('newest')}
             aria-pressed={sortMode === 'newest'}
-            title="En yeni vizyona giren ve yakındaki yapımları gösterir"
+            title="En yeni yapımları gösterir"
           >
-            En Yeniler & Yakında
+            En Yeniler
           </button>
 
           <select
@@ -275,18 +311,6 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             </button>
           )}
 
-          {IS_DEV && (
-            <button
-              type="button"
-              className={`actor-recs-dev-toggle ${showDevPanel ? 'active' : ''}`}
-              onClick={() => setShowDevPanel((v) => !v)}
-              title="Tüm kartlarda 7 sinyal puanını ve ağırlık dökümünü gösterir"
-              aria-pressed={showDevPanel}
-            >
-              {showDevPanel ? 'Algoritma Panelini Gizle' : 'Geliştirici / Sinyal Paneli'}
-            </button>
-          )}
-
           <button
             type="button"
             className="for-you-head-refresh-btn"
@@ -301,29 +325,27 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
         </div>
       </div>
 
-      {/* Oyuncu Bazında İstek Durumu */}
-      <div className="actor-status-bar" aria-live="polite">
-        <span className="actor-status-label">
-          <span>Oyuncu Filmografileri</span>
-          <span className="actor-status-meta">(Eşzamanlı limit: 3 · TTL: 2 sa)</span>
-        </span>
+      {/* Yatay Çip Şeridi: (Al Pacino 9) (Cillian 12) ... */}
+      <div className="actor-chips-strip" role="tablist" aria-label="Favori oyuncu listesi">
         {validFavoriteActors.map((actor) => {
-          const chip = describeActorFetchChipState(actor, actorStatuses[actor.id], isLoading);
+          const count = actorItemsMap.get(actor.id)?.length || 0;
+          const isOpen = Boolean(openAccordions[actor.id]);
           return (
-            <span
+            <button
               key={actor.id}
-              className={`actor-status-chip is-${chip.state}`}
-              title={chip.title}
+              type="button"
+              className={`actor-strip-chip ${isOpen ? 'is-active' : ''}`}
+              onClick={() => {
+                toggleAccordion(actor.id);
+                const el = document.getElementById(`actor-accordion-${actor.id}`);
+                el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              }}
+              title={`${actor.name} için ${count} öneri`}
+              aria-expanded={isOpen}
             >
-              <span className="actor-status-dot" aria-hidden="true"></span>
-              <span className="actor-status-name">{actor.name}</span>
-              {chip.state === 'success' && (
-                <span className="actor-status-count">({chip.creditsCount})</span>
-              )}
-              {(chip.state === 'loading' || chip.state === 'pending') && (
-                <span className="actor-status-count">…</span>
-              )}
-            </span>
+              <span className="actor-strip-name">{actor.name}</span>
+              <span className="actor-strip-count tabular-nums">{count}</span>
+            </button>
           );
         })}
       </div>
@@ -331,315 +353,176 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       {fetchError && (
         <div className="message" role="alert">
           <strong>{fetchError}</strong>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void loadCredits(true)}
-          >
+          <button type="button" className="btn" onClick={() => void loadCredits(true)}>
             Tekrar dene
           </button>
         </div>
       )}
 
-      {isLoading ? (
-        <div className="grid">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="skeleton-card" aria-hidden="true"></div>
-          ))}
-        </div>
-      ) : filteredRecommendations.length === 0 ? (
-        <div className="actor-recs-empty">
-          <strong>Henüz yeni bir öneri bulunamadı</strong>
-          <p>
-            Favori oyuncularının tüm yapımlarını listene eklemiş olabilirsin veya kriterlere uygun yeni bir yapım henüz bulunamadı.
-          </p>
-        </div>
-      ) : (
-        <div className="grid">
-          {filteredRecommendations.slice(0, 24).map((item) => {
-            const key = makeMediaKey(item.media_type, item.id);
-            const title = displayTitle(item);
-            const poster = getPoster(item);
-            const year = releaseYear(item);
-            const kind = item.media_type === 'tv' ? 'Dizi' : 'Film';
-            const saved = findSavedItem(savedItems, item);
-            const isWatchlist = saved?.status === 'watchlist';
-            const isCompleted = saved?.status === 'completed';
-            const breakdown = item.signalBreakdown;
-            const isInspected = IS_DEV && (showDevPanel || inspectedCardKeys.has(key));
+      {/* Akordiyon Rafları Listesi */}
+      <div className="actor-accordions-container">
+        {validFavoriteActors.map((actor) => {
+          const items = actorItemsMap.get(actor.id) || [];
+          const isOpen = Boolean(openAccordions[actor.id]);
+          const status = actorStatuses[actor.id];
+          const isActorLoading = status?.status === 'loading';
+          const chipState = describeActorFetchChipState(actor, status, isLoading);
 
-            const confBadgeClass =
-              item.confidenceLevel === 'high'
-                ? 'conf-high'
-                : item.confidenceLevel === 'medium'
-                ? 'conf-medium'
-                : 'conf-low';
-
-            const confText =
-              item.confidenceLevel === 'high'
-                ? `%${item.confidenceScore} Yüksek Güven`
-                : item.confidenceLevel === 'medium'
-                ? `%${item.confidenceScore} Orta Güven`
-                : `%${item.confidenceScore} Keşif / Az Veri`;
-
-            return (
-              <article key={key} className="card actor-rec-card">
-                <div
-                  className="poster"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`${title} detaylarını gör`}
-                  onClick={() => onOpenDetails(item)}
-                  onKeyDown={(e) => {
-                    if (e.target !== e.currentTarget) return;
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onOpenDetails(item);
-                    }
-                  }}
-                >
-                  <div className="poster-fallback" aria-hidden="true">
-                    <svg className="icon">
-                      <use href="#icon-film"></use>
-                    </svg>
-                    <span className="poster-fallback-title">{title}</span>
-                  </div>
-
-                  {poster && (
-                    <img
-                      src={poster}
-                      alt=""
-                      loading="lazy"
-                      onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
-                    />
-                  )}
-
-                  <span className="badge">{kind}</span>
-
-                  {Number(item.matchScore) > 0 && (
-                    <span
-                      className="match-badge tabular-nums"
-                      title={`Gerçek sinyal uyum puanı: ${formatMatchBadge(item.matchScore)}`}
-                      aria-label={formatMatchBadge(item.matchScore)}
-                    >
-                      {formatMatchBadge(item.matchScore)}
-                    </span>
-                  )}
-
-                  <span
-                    className={`actor-rec-confidence-badge ${confBadgeClass}`}
-                    title={`Algoritma Güven Düzeyi: %${item.confidenceScore} (${item.confidenceLevel})`}
-                  >
-                    {confText}
+          return (
+            <div
+              key={actor.id}
+              id={`actor-accordion-${actor.id}`}
+              className={`actor-accordion ${isOpen ? 'is-open' : 'is-closed'}`}
+            >
+              {/* 56px Yüksekliğinde Akordiyon Başlığı */}
+              <button
+                type="button"
+                className="actor-accordion-head"
+                onClick={() => toggleAccordion(actor.id)}
+                aria-expanded={isOpen}
+                aria-controls={`actor-panel-${actor.id}`}
+              >
+                <div className="actor-accordion-head-left">
+                  <span className="accordion-chevron" aria-hidden="true">
+                    {isOpen ? '▾' : '▸'}
                   </span>
-
-                  {saved && (
-                    <span className={`saved-badge status-${saved.status}`}>
-                      <svg className="icon" aria-hidden="true">
-                        <use
-                          href={
-                            saved.status === 'completed'
-                              ? '#icon-check'
-                              : saved.status === 'watching'
-                              ? '#icon-play'
-                              : '#icon-bookmark'
-                          }
-                        ></use>
-                      </svg>
-                      {saved.status === 'completed'
-                        ? 'İzlendi'
-                        : saved.status === 'watching'
-                        ? 'İzleniyor'
-                        : 'İzlenecek'}
+                  <span className="actor-accordion-name">{actor.name}</span>
+                  <span className="actor-accordion-badge tabular-nums">
+                    {items.length} öneri
+                  </span>
+                  {chipState.state === 'success' && (
+                    <span className="actor-load-status is-success" title="Filmografi yüklendi">
+                      ✓ yüklü
+                    </span>
+                  )}
+                  {isActorLoading && (
+                    <span className="actor-load-status is-loading" title="Yükleniyor…">
+                      ◔ yükleniyor
                     </span>
                   )}
                 </div>
 
-                <div className="card-info actor-rec-card-info">
-                  <div>
-                    <button
-                      className="card-title"
-                      type="button"
-                      onClick={() => onOpenDetails(item)}
-                    >
-                      {title}
-                    </button>
-
-                    <div className="card-meta">
-                      {year && <span className="card-date">{year}</span>}
-                      {Number(item.vote_average) > 0 && (
-                        <span className="actor-rec-rating">
-                          <svg className="icon" aria-hidden="true">
-                            <use href="#icon-star"></use>
-                          </svg>{' '}
-                          {Number(item.vote_average).toFixed(1)}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="actor-rec-matched-list">
-                      {(item.matchedActors || []).map((actor) => {
-                        const roleInfo = calculateActorRoleBonus(actor.order);
-                        return (
-                          <button
-                            key={actor.id}
-                            type="button"
-                            className="actor-rec-matched-pill"
-                            title={`${actor.name} filmografisini gör (${roleInfo.label})`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenPerson?.(actor.id, actor.name);
-                            }}
-                          >
-                            <svg className="icon" aria-hidden="true">
-                              <use href="#icon-star"></use>
-                            </svg>
-                            <span>{actor.name}</span>
-                            {actor.character && (
-                              <span className="actor-rec-character">({actor.character})</span>
-                            )}
-                            <span className="actor-rec-role-badge">{roleInfo.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {item.reason && (
-                      <div className="actor-rec-reason">
-                        <strong>Neden önerildi?</strong>
-                        <span>{item.reason}</span>
-                      </div>
-                    )}
-
-                    {IS_DEV && (
-                      <button
-                        type="button"
-                        className="actor-rec-inspect-btn"
-                        onClick={() => toggleInspectCard(key)}
-                        title="Bu yapımın sinyal puanlarını ayrıntılı gör"
-                      >
-                        <span>{isInspected ? 'Sinyal Puanlarını Kapat' : 'Sinyal Puanlarını İncele'}</span>
-                      </button>
-                    )}
-
-                    {IS_DEV && isInspected && breakdown && (
-                      <div className="actor-rec-dev-panel">
-                        <div className="actor-rec-dev-header">
-                          <span>Algoritma Sinyalleri</span>
-                          <span>Skor: %{item.matchScore}</span>
-                        </div>
-
-                        <div className="actor-rec-dev-row">
-                          <div className="actor-rec-dev-row-top">
-                            <span className="actor-rec-dev-label">
-                              Oyuncu & Kadro Sırası ({breakdown.actorRoleText}):
-                            </span>
-                            <span className="actor-rec-dev-val">{breakdown.actorPresence} / 30</span>
-                          </div>
-                        </div>
-
-                        {breakdown.multiActorBonus > 0 && (
-                          <div className="actor-rec-dev-row">
-                            <div className="actor-rec-dev-row-top">
-                              <span className="actor-rec-dev-label">Çoklu Favori Oyuncu:</span>
-                              <span className="actor-rec-dev-val">+{breakdown.multiActorBonus} / 10</span>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="actor-rec-dev-row">
-                          <div className="actor-rec-dev-row-top">
-                            <span className="actor-rec-dev-label">Sevilen Tür Uyumu:</span>
-                            <span className="actor-rec-dev-val">{breakdown.genreScore} / 20</span>
-                          </div>
-                        </div>
-
-                        <div className="actor-rec-dev-row">
-                          <div className="actor-rec-dev-row-top">
-                            <span className="actor-rec-dev-label">Kullanıcı Puan Zevki (1-10):</span>
-                            <span className="actor-rec-dev-val">{breakdown.tasteScore} / 15</span>
-                          </div>
-                          <span className="actor-rec-dev-detail-sub">{breakdown.tasteExplanation}</span>
-                        </div>
-
-                        <div className="actor-rec-dev-row">
-                          <div className="actor-rec-dev-row-top">
-                            <span className="actor-rec-dev-label">TMDB Kalite (Bayes):</span>
-                            <span className="actor-rec-dev-val">{breakdown.qualityScore} / 10</span>
-                          </div>
-                        </div>
-
-                        <div className="actor-rec-dev-row">
-                          <div className="actor-rec-dev-row-top">
-                            <span className="actor-rec-dev-label">Vizyon & Güncellik:</span>
-                            <span className="actor-rec-dev-val">{breakdown.recencyScore} / 5</span>
-                          </div>
-                        </div>
-
-                        <div className="actor-rec-dev-row">
-                          <div className="actor-rec-dev-row-top">
-                            <span className="actor-rec-dev-label">
-                              Platform Uyumu {breakdown.platformVerified ? '✓ Doğrulandı' : '(Nötr)'}:
-                            </span>
-                            <span className="actor-rec-dev-val">{breakdown.platformScore} / 10</span>
-                          </div>
-                        </div>
-
-                        <div className="actor-rec-dev-footer">
-                          <span>Ham Toplam: {breakdown.rawTotal} / 100</span>
-                          <span>Güven: %{breakdown.confidenceScore}</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="actor-rec-actions">
+                <div className="actor-accordion-head-right" onClick={(e) => e.stopPropagation()}>
+                  {onOpenPerson && (
                     <button
                       type="button"
-                      className={`actor-rec-action-btn actor-rec-action-watchlist ${isWatchlist ? 'is-active' : ''}`}
-                      title={isWatchlist ? 'İzlenecekler listesinde (Düzenle)' : 'İzlenecek listesine doğrudan ekle'}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isWatchlist) {
-                          onQuickSave(item);
-                        } else {
-                          onQuickAdd(item);
-                        }
-                      }}
+                      className="actor-all-view-btn"
+                      onClick={() => onOpenPerson(actor.id, actor.name)}
+                      title={`${actor.name} profilini aç`}
                     >
-                      <svg className="icon" aria-hidden="true">
-                        <use href={isWatchlist ? '#icon-check' : '#icon-plus'}></use>
-                      </svg>
-                      <span>{isWatchlist ? 'Listede' : '+ İzle'}</span>
+                      Profili Gör
                     </button>
-
+                  )}
+                  {items.length > 5 && (
                     <button
                       type="button"
-                      className={`actor-rec-action-btn actor-rec-action-completed ${isCompleted ? 'is-active' : ''}`}
-                      title={isCompleted ? 'İzlendi olarak işaretli' : 'İzlendi olarak kaydet'}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isCompleted) {
-                          onQuickSave(item);
-                        } else {
-                          onSetStatus(item, 'completed');
-                        }
-                      }}
+                      className="actor-all-view-btn"
+                      onClick={() => setAllViewActor(actor)}
+                      title={`${actor.name} için tüm ${items.length} öneriyi gör`}
                     >
-                      <svg className="icon" aria-hidden="true">
-                        <use href="#icon-check"></use>
-                      </svg>
-                      <span>{isCompleted ? 'İzlendi' : '✓ İzlendi'}</span>
+                      Tümünü gör ({items.length}) →
                     </button>
-                  </div>
+                  )}
+                  <button
+                    type="button"
+                    className="actor-toggle-icon-btn"
+                    onClick={() => toggleAccordion(actor.id)}
+                    aria-label={isOpen ? `${actor.name} panelini kapat` : `${actor.name} panelini aç`}
+                  >
+                    {isOpen ? '—' : '+'}
+                  </button>
                 </div>
-              </article>
-            );
-          })}
+              </button>
+
+              {/* Yatay Raf (Shelf) */}
+              {isOpen && (
+                <div
+                  id={`actor-panel-${actor.id}`}
+                  className="actor-shelf-panel"
+                  role="region"
+                  aria-label={`${actor.name} önerileri`}
+                >
+                  {items.length === 0 ? (
+                    <div className="actor-shelf-empty">
+                      {isActorLoading
+                        ? 'İçerikler yükleniyor…'
+                        : 'Bu oyuncu için kriterlere uygun öneri bulunamadı veya tüm yapımları listenizde.'}
+                    </div>
+                  ) : (
+                    <div className="actor-horizontal-shelf">
+                      {items.map((item) => (
+                        <div key={makeMediaKey(item.media_type, item.id)} className="actor-shelf-item">
+                          <MediaCard
+                            item={item}
+                            savedItem={findSavedItem(savedItems, item)}
+                            genres={genresMap}
+                            size="sm"
+                            context="actor"
+                            showMatch={true}
+                            onOpenDetails={onOpenDetails}
+                            onQuickAdd={onQuickAdd}
+                            onSetStatus={onSetStatus}
+                            onQuickSave={onQuickSave}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tümünü Gör Modalı */}
+      {allViewActor && (
+        <div
+          className="modal-wrap open"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="allActorTitle"
+          onClick={() => setAllViewActor(null)}
+        >
+          <div className="modal actor-all-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="actor-all-header">
+              <div>
+                <h3 id="allActorTitle" className="modal-title">
+                  {allViewActor.name} — Tüm Öneriler ({actorItemsMap.get(allViewActor.id)?.length || 0})
+                </h3>
+                <p className="modal-sub">
+                  Kişisel zevkine ve puanlarına göre filtrelenmiş yapımlar
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setAllViewActor(null)}
+                aria-label="Kapat"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="actor-all-grid">
+              {(actorItemsMap.get(allViewActor.id) || []).map((item) => (
+                <MediaCard
+                  key={makeMediaKey(item.media_type, item.id)}
+                  item={item}
+                  savedItem={findSavedItem(savedItems, item)}
+                  genres={genresMap}
+                  size="md"
+                  context="actor"
+                  showMatch={true}
+                  onOpenDetails={onOpenDetails}
+                  onQuickAdd={onQuickAdd}
+                  onSetStatus={onSetStatus}
+                  onQuickSave={onQuickSave}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </section>
   );
 };
-
-export default ActorRecommendationsSection;

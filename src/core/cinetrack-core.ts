@@ -39,6 +39,8 @@ export interface SavedItem {
   personal_rating: number | '';
   personal_rating_cleared?: boolean;
   addedAt?: string;
+  firstAddedAt?: string;
+  totalWatchTimeMinutes?: number;
   updatedAt?: string;
   custom?: boolean;
   cast?: { id: number; name: string; popularity?: number; profile_path?: string; character?: string }[];
@@ -329,6 +331,16 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     personal_rating: validRating || '',
     personal_rating_cleared: validRating ? false : item.personal_rating_cleared === true,
     addedAt: typeof item.addedAt === 'string' ? item.addedAt : '',
+    firstAddedAt:
+      typeof item.firstAddedAt === 'string'
+        ? item.firstAddedAt
+        : typeof item.addedAt === 'string'
+        ? item.addedAt
+        : '',
+    totalWatchTimeMinutes:
+      Number.isFinite(Number(item.totalWatchTimeMinutes)) && Number(item.totalWatchTimeMinutes) >= 0
+        ? Math.floor(Number(item.totalWatchTimeMinutes))
+        : undefined,
     updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : '',
     custom: Boolean(item.custom || String(item.id).startsWith('custom-')),
     isDemo: item.isDemo === true,

@@ -10,8 +10,9 @@ void CURRENT_SCHEMA_VERSION;
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const CINETRACK_HOST = '127.0.0.1';
+void CINETRACK_HOST;
 const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3000;
-const host = process.env.CINETRACK_HOST || CINETRACK_HOST;
+const host = process.env.CINETRACK_HOST || process.env.HOST || '0.0.0.0';
 
 const dataDir = path.join(root, 'data');
 const maxDataBytes = 2_000_000;

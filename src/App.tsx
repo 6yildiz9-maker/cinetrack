@@ -256,6 +256,28 @@ export function App() {
     toastTimerRef.current = setTimeout(() => setToastMessage(null), 7000);
   }, []);
 
+  // Keyboard shortcut: 'n' opens Add Custom Item modal (spec Section 6.5)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        setAddCustomOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // Sync to localStorage (only when data references actually change — no render-time JSON.stringify)
   useEffect(() => {
     try {
@@ -640,7 +662,7 @@ export function App() {
             .slice(0, 4);
 
           const seeds = [...watchedSeeds, ...watchlistSeeds];
-          const moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
+          const _moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
           const dislikedSeeds = currentDislikedKeys
             .map((key) => {
               const [mediaType, id] = key.split(':');
@@ -1773,6 +1795,9 @@ export function App() {
       <Header
         profileName={profileName}
         query={query}
+        tab={tab}
+        onTabChange={setTab}
+        myListCount={allListCount}
         onSearchChange={setQuery}
         onSearchSubmit={handleSearchSubmit}
         onSearchClear={handleSearchClear}
@@ -1791,13 +1816,15 @@ export function App() {
       />
 
       <main className="shell">
-        <Hero
-          heroItem={currentHeroItem}
-          isWatching={Boolean(watchingItem)}
-          onOpenDetails={(item) => setDetailItem(item)}
-        />
+        {tab === 'discover' && !query && (
+          <Hero
+            heroItem={currentHeroItem}
+            isWatching={Boolean(watchingItem)}
+            onOpenDetails={(item) => setDetailItem(item)}
+          />
+        )}
 
-        <Stats items={savedItems} />
+        {tab === 'list' && <Stats items={savedItems} />}
 
         <Controls
           tab={tab}
@@ -1981,6 +2008,54 @@ export function App() {
           </div>
         </div>
       </footer>
+
+      {/* Mobil 56px sticky alt tab bar (v6 spec Section 2.2 / 5) */}
+      <nav className="mobile-tab-bar" aria-label="Mobil Gezinme">
+        <button
+          type="button"
+          className={`mobile-tab-btn ${tab === 'discover' ? 'active' : ''}`}
+          onClick={() => setTab('discover')}
+          aria-label="Keşfet"
+        >
+          <svg className="icon" aria-hidden="true"><use href="#icon-film" /></svg>
+          <span className="mobile-tab-label">Keşfet</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-tab-btn ${tab === 'list' ? 'active' : ''}`}
+          onClick={() => setTab('list')}
+          aria-label="Listem"
+        >
+          <span className="mobile-tab-icon-wrap">
+            <svg className="icon" aria-hidden="true"><use href="#icon-bookmark" /></svg>
+            {allListCount > 0 && (
+              <span className="mobile-tab-badge">{allListCount > 99 ? '99+' : allListCount}</span>
+            )}
+          </span>
+          <span className="mobile-tab-label">Listem</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-tab-btn ${tab === 'taste-map' ? 'active' : ''}`}
+          onClick={() => setTab('taste-map')}
+          aria-label="Zevkim"
+        >
+          <svg className="icon" aria-hidden="true"><use href="#icon-dna" /></svg>
+          <span className="mobile-tab-label">Zevkim</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-tab-btn ${tab === 'relationships' ? 'active' : ''}`}
+          onClick={() => setTab('relationships')}
+          aria-label="İlişkiler"
+        >
+          <svg className="icon" aria-hidden="true"><use href="#icon-network" /></svg>
+          <span className="mobile-tab-label">İlişkiler</span>
+        </button>
+      </nav>
 
       {/* Modals & Drawers */}
       <DetailModal

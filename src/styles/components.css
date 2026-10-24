@@ -160,3 +160,841 @@ a:focus-visible {
   background: #fb923c;
 }
 
+/* =========================================================
+   CineTrack v6 Design Spec — Complete Component Styles
+   ========================================================= */
+
+/* --- 1. Header Navigation & Shortcuts --- */
+.header-nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 3px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.nav-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  position: relative;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.nav-tab-btn:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.nav-tab-btn.nav-tab-active {
+  color: var(--text-1);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.nav-tab-btn.nav-tab-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.nav-tab-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.18);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.header-search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 440px;
+}
+
+.header-search-kbd {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.header-search-kbd kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+}
+
+.profile-avatar-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0284c7, #38bdf8);
+  color: white;
+  font-weight: 700;
+  font-size: 13.5px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.profile-avatar-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+}
+
+/* --- 2. Hero W3C Carousel Controls --- */
+.hero-w3c-carousel {
+  position: relative;
+}
+
+.hero-carousel-controls {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(11, 18, 32, 0.85);
+  backdrop-filter: blur(10px);
+  padding: 6px 12px;
+  border-radius: 24px;
+  border: 1px solid var(--border-subtle);
+  z-index: 10;
+}
+
+.hero-ctrl-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-1);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.hero-ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.hero-ctrl-btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: #0b1220;
+  font-weight: bold;
+}
+
+.hero-slide-counter {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- 3. MediaCard v2 (Unified 4 Surfaces) --- */
+.media-card-v2 {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  border-radius: var(--radius-md);
+  transition: transform var(--dur-med) var(--ease), box-shadow var(--dur-med) var(--ease);
+}
+
+.media-card-v2:hover {
+  transform: translateY(-2px);
+}
+
+.card-size-xs {
+  width: var(--poster-xs, 84px);
+  flex-shrink: 0;
+}
+.card-size-sm {
+  width: var(--poster-sm, 116px);
+  flex-shrink: 0;
+}
+.card-size-md {
+  width: 100%;
+}
+.card-size-lg {
+  width: 100%;
+}
+.card-size-xl {
+  width: 100%;
+}
+
+.poster-surface {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
+}
+
+.media-card-v2:hover .poster-surface {
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.poster-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.poster-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(180deg, #182540, #111a2b);
+  color: var(--text-3);
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.conic-ring-chip {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffffff;
+  z-index: 2;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.conic-ring-chip.ring-0 {
+  background: #059669;
+}
+.conic-ring-chip.ring-1 {
+  background: #475569;
+}
+.conic-ring-chip.ring-2 {
+  background: #d97706;
+}
+
+@supports (background: conic-gradient(from 0deg, red, blue)) {
+  .conic-ring-chip.ring-0 {
+    background: conic-gradient(from 180deg, #10b981, #059669, #047857, #10b981);
+  }
+  .conic-ring-chip.ring-1 {
+    background: conic-gradient(from 180deg, #64748b, #475569, #334155, #64748b);
+  }
+  .conic-ring-chip.ring-2 {
+    background: conic-gradient(from 180deg, #f59e0b, #d97706, #b45309, #f59e0b);
+  }
+}
+
+.card-status-badge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  z-index: 2;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.card-status-badge.badge-watching {
+  background: rgba(56, 189, 248, 0.92);
+  color: #0b1220;
+}
+.card-status-badge.badge-watchlist {
+  background: rgba(245, 158, 11, 0.92);
+  color: #0b1220;
+}
+.card-status-badge.badge-completed {
+  background: rgba(52, 211, 153, 0.92);
+  color: #0b1220;
+}
+.card-status-badge.badge-dropped {
+  background: rgba(251, 113, 133, 0.92);
+  color: #0b1220;
+}
+
+.card-actions-dock {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 6px;
+  background: linear-gradient(180deg, transparent 0%, rgba(11, 18, 32, 0.88) 35%, #0b1220 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+  z-index: 3;
+}
+
+.poster-surface:hover .card-actions-dock,
+.poster-surface:focus-within .card-actions-dock {
+  opacity: 1;
+}
+
+.action-btn-touch {
+  min-width: 44px;
+  min-height: 44px;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.action-btn-touch:hover {
+  background: rgba(255, 255, 255, 0.28);
+  transform: scale(1.06);
+}
+
+.action-btn-touch:active {
+  transform: scale(0.96);
+}
+
+.card-info-wrap {
+  padding: 8px 2px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.card-title-line {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.35;
+  margin: 0;
+}
+
+.card-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.card-vote-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--gold);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-reason-line {
+  font-size: 11px;
+  color: var(--accent);
+  font-style: italic;
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
+/* --- 4. Actor Shelves & Accordion (UI-4) --- */
+.actor-recs-section {
+  margin: 28px 0;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.actor-chips-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.actor-chips-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.actor-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.actor-chip-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text-1);
+}
+
+.actor-chip-btn.actor-chip-active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+.actor-chip-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0.9;
+}
+
+.actor-accordion-item {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.actor-accordion-item:last-child {
+  border-bottom: none;
+}
+
+.actor-accordion-head {
+  min-height: 56px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: transparent;
+  border: none;
+  color: var(--text-1);
+  font-weight: 600;
+  font-size: 14.5px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.actor-accordion-head:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.actor-chevron {
+  transition: transform var(--dur-med) var(--ease);
+}
+
+.actor-accordion-head[aria-expanded="true"] .actor-chevron {
+  transform: rotate(180deg);
+}
+
+.actor-accordion-body {
+  padding: 8px 20px 20px;
+}
+
+.actor-horizontal-shelf {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+}
+
+.actor-shelf-item {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+}
+
+/* --- 5. TasteMapView Poster Wall & Sticky Summary (UI-7) --- */
+.taste-map-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 18px 0;
+}
+
+.taste-summary-strip {
+  position: sticky;
+  top: 72px;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  background: rgba(17, 26, 43, 0.9);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--border-subtle);
+}
+
+.summary-chips-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-2);
+}
+
+.summary-chip-ring-0 {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.08);
+}
+.summary-chip-ring-1 {
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.08);
+}
+.summary-chip-ring-2 {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+}
+.summary-chip-genre {
+  color: var(--accent);
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.taste-poster-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.taste-empty-wall {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-3);
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--border-subtle);
+}
+
+/* --- 6. Mobile 56px Sticky Bottom Tab Bar (Section 2.2 / 5) --- */
+.mobile-tab-bar {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding-bottom: 72px;
+  }
+
+  .header-nav-tabs {
+    display: none;
+  }
+
+  .mobile-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    height: calc(56px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(11, 18, 32, 0.96);
+    backdrop-filter: blur(16px);
+    border-top: 1px solid var(--border-subtle);
+    z-index: var(--z-header, 100);
+    align-items: center;
+    justify-content: space-around;
+  }
+
+  .mobile-tab-btn {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    background: transparent;
+    border: none;
+    color: var(--text-3);
+    font-size: 10.5px;
+    font-weight: 500;
+    padding: 0;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease);
+  }
+
+  .mobile-tab-btn .icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .mobile-tab-btn.active {
+    color: var(--accent);
+  }
+
+  .mobile-tab-icon-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-tab-badge {
+    position: absolute;
+    top: -5px;
+    right: -10px;
+    background: var(--accent);
+    color: #0b1220;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 8px;
+    line-height: 1;
+  }
+}
+
+/* --- 7. Controls Status Filter Chips (Section 6.2) --- */
+.controls-filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 0;
+}
+
+.controls-filter-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.status-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.status-filter-chip:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--text-1);
+}
+
+.status-filter-chip.active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+.status-filter-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- 8. Detail Modal Segmented Status & Sticky Bottom (Section 7) --- */
+.detail-status-segmented {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 16px 0;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+}
+
+.detail-status-btn {
+  padding: 9px 8px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.detail-status-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-1);
+}
+
+.detail-status-btn.active {
+  background: var(--bg-surface);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  font-weight: 700;
+}
+
+.detail-sticky-footer {
+  position: sticky;
+  bottom: 0;
+  background: rgba(24, 37, 64, 0.95);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border-subtle);
+  padding: 12px 24px;
+  margin: 16px -24px -24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  z-index: 10;
+}
+
+/* --- 9. Profile Modal Visual Cards (Section 6.4) --- */
+.profile-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.profile-picker-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+  color: var(--text-1);
+  text-align: center;
+}
+
+.profile-picker-card:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.profile-card-active {
+  border-color: var(--accent) !important;
+  background: rgba(56, 189, 248, 0.08) !important;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.2);
+}
+
+.profile-card-new {
+  border-style: dashed !important;
+  border-color: var(--border-subtle);
+  color: var(--text-2);
+}
+
+.profile-card-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 16px;
+  background: linear-gradient(135deg, #0284c7, #38bdf8);
+  color: white;
+}
+
+.profile-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* --- 10. Error Boundary --- */
+.error-boundary-box {
+  padding: 28px 20px;
+  border-radius: var(--radius-md);
+  background: rgba(251, 113, 133, 0.08);
+  border: 1px solid rgba(251, 113, 133, 0.25);
+  text-align: center;
+  margin: 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.error-boundary-msg {
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 500;
+}

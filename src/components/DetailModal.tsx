@@ -4,7 +4,6 @@ import {
   SavedItem,
   buildSeasonCounts,
   defaultCurrentSeason,
-  sanitizeSeasonProgress,
   makeMediaKey,
   getTasteRingLabel,
 } from '../core/cinetrack-core';
@@ -75,7 +74,6 @@ export const DetailModal: React.FC<DetailModalProps> = ({
       return;
     }
 
-    // Fetch full details with automatic en-US overview fallback when tr-TR overview is empty
     let active = true;
     const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
     fetchTmdb(`/${mediaType}/${item.id}`, { append_to_response: 'credits,videos' })
@@ -91,9 +89,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               resolvedOverview = enData.overview.trim();
               usedFallback = true;
             }
-          } catch {
-            // Keep empty overview if fallback fails
-          }
+          } catch {}
         }
 
         if (!active) return;
@@ -246,6 +242,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     onClose();
   };
 
+  const itemKey = makeMediaKey(currentItem);
+
   return (
     <div
       id="detailModal"
@@ -257,7 +255,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     >
       <article
         ref={dialogRef}
-        className="modal"
+        className="modal detail-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="detailTitle"
@@ -270,7 +268,12 @@ export const DetailModal: React.FC<DetailModalProps> = ({
           </svg>
         </button>
 
-        {backdrop && <img id="detailBackdrop" className="detail-backdrop" src={backdrop} alt="" />}
+        {backdrop && (
+          <div className="detail-backdrop-wrap">
+            <img id="detailBackdrop" className="detail-backdrop" src={backdrop} alt="" />
+            <div className="detail-backdrop-gradient" />
+          </div>
+        )}
 
         <div className="detail-content">
           <h2 id="detailTitle" className="detail-title">
@@ -278,78 +281,155 @@ export const DetailModal: React.FC<DetailModalProps> = ({
           </h2>
 
           <div id="detailMeta" className="detail-meta">
-            {currentItem.custom
-              ? 'Özel içerik'
-              : currentItem.media_type === 'tv'
-              ? 'Dizi'
-              : 'Film'}{' '}
-            | {releaseYear(currentItem)}
-            {!currentItem.custom &&
-              currentItem.vote_average &&
-              ` | TMDB puanı ${Number(currentItem.vote_average).toFixed(1)}`}
-            {currentItem.runtime
-              ? ` | ${currentItem.runtime} dk`
-              : currentItem.episode_run_time?.[0]
-              ? ` | ${currentItem.episode_run_time[0]} dk/bölüm`
-              : ''}
+            <span className="detail-meta-kind">
+              {currentItem.custom ? 'Özel' : currentItem.media_type === 'tv' ? 'Dizi' : 'Film'}
+            </span>
+            <span>·</span>
+            <span className="tabular-nums">{releaseYear(currentItem)}</span>
+            {!currentItem.custom && currentItem.vote_average > 0 && (
+              <>
+                <span>·</span>
+                <span className="tabular-nums">★ {Number(currentItem.vote_average).toFixed(1)} TMDB</span>
+              </>
+            )}
+            {currentItem.runtime ? (
+              <>
+                <span>·</span>
+                <span>{currentItem.runtime} dk</span>
+              </>
+            ) : currentItem.episode_run_time?.[0] ? (
+              <>
+                <span>·</span>
+                <span>{currentItem.episode_run_time[0]} dk/bölüm</span>
+              </>
+            ) : null}
             {Number(currentItem.matchScore || item?.matchScore) > 0 && (
-              <span className="detail-match-badge">
-                · {formatMatchBadge(Number(currentItem.matchScore || item?.matchScore))}
-                {(currentItem.ring || item?.ring) && ` · ${getTasteRingLabel(currentItem.ring || item?.ring)}`}
-              </span>
+              <>
+                <span>·</span>
+                <span className="match-badge tabular-nums">
+                  {formatMatchBadge(Number(currentItem.matchScore || item?.matchScore))}
+                  {(currentItem.ring || item?.ring) && ` · ${getTasteRingLabel(currentItem.ring || item?.ring)}`}
+                </span>
+              </>
             )}
           </div>
 
-          <div id="detailGenres" className="detail-tags" aria-label="Türler">
-            {genresList.map((genre) => (
-              <span key={genre} className="detail-tag">
-                {genre}
-              </span>
-            ))}
-          </div>
+          {/* Tür Rozetleri */}
+          {genresList.length > 0 && (
+            <div id="detailGenres" className="detail-tags" aria-label="Türler">
+              {genresList.map((genre) => (
+                <span key={genre} className="detail-tag">
+                  {genre}
+                </span>
+              ))}
+            </div>
+          )}
 
-          {/* Quick List Status Buttons */}
-          <div className="detail-quick-status-bar" role="group" aria-label="Hızlı liste durumu">
+          {/* Tek Satır Segmented Durum Seçici (Section 6.5) */}
+          <div className="detail-status-segmented" role="group" aria-label="İzleme Durumu">
             <button
               type="button"
-              className={`detail-status-pill pill-watchlist ${status === 'watchlist' && savedItem ? 'is-active' : ''}`}
-              onClick={() => handleQuickSetStatus('watchlist')}
-            >
-              <svg className="icon" aria-hidden="true">
-                <use href={status === 'watchlist' && savedItem ? '#icon-check' : '#icon-plus'}></use>
-              </svg>
-              <span>{savedItem && status === 'watchlist' ? 'İzleneceklerde ✓' : '+ İzleneceklere Ekle'}</span>
-            </button>
-            <button
-              type="button"
-              className={`detail-status-pill pill-watching ${status === 'watching' && savedItem ? 'is-active' : ''}`}
-              onClick={() => handleQuickSetStatus('watching')}
-            >
-              <svg className="icon" aria-hidden="true">
-                <use href="#icon-play"></use>
-              </svg>
-              <span>{savedItem && status === 'watching' ? 'İzleniyor ▶' : '▶ İzliyorum'}</span>
-            </button>
-            <button
-              type="button"
-              className={`detail-status-pill pill-completed ${status === 'completed' && savedItem ? 'is-active' : ''}`}
+              className={`segmented-status-btn ${savedItem && status === 'completed' ? 'is-active is-completed' : ''}`}
               onClick={() => handleQuickSetStatus('completed')}
             >
               <svg className="icon" aria-hidden="true">
                 <use href="#icon-check"></use>
               </svg>
-              <span>{savedItem && status === 'completed' ? 'Tamamlandı ✓' : '✓ İzlendi'}</span>
+              <span>{savedItem && status === 'completed' ? 'İzlendi ✓' : 'İzlendi'}</span>
             </button>
-            {savedItem && (
-              <button
-                type="button"
-                className="detail-status-pill pill-remove"
-                onClick={handleRemove}
-                title="Listeden Kaldır"
-              >
-                ✕ Listeden Çıkar
-              </button>
-            )}
+
+            <button
+              type="button"
+              className={`segmented-status-btn ${savedItem && status === 'watching' ? 'is-active is-watching' : ''}`}
+              onClick={() => handleQuickSetStatus('watching')}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-play"></use>
+              </svg>
+              <span>{savedItem && status === 'watching' ? 'İzliyorum ▶' : 'İzliyorum'}</span>
+            </button>
+
+            <button
+              type="button"
+              className={`segmented-status-btn ${savedItem && status === 'watchlist' ? 'is-active is-watchlist' : ''}`}
+              onClick={() => handleQuickSetStatus('watchlist')}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-plus"></use>
+              </svg>
+              <span>{savedItem && status === 'watchlist' ? 'İzlenecek ✓' : 'İzlenecek'}</span>
+            </button>
+
+            <button
+              type="button"
+              className={`segmented-status-btn status-btn-dislike ${isDisliked ? 'is-active' : ''}`}
+              onClick={() => onToggleDislike(itemKey)}
+              title={isDisliked ? 'İlgilenmiyorum tercihini kaldır' : 'İlgilenmiyorum olarak işaretle'}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-thumbs-down"></use>
+              </svg>
+              <span>{isDisliked ? 'İlgilenmiyorum ✕' : 'İlgilenmiyorum'}</span>
+            </button>
+          </div>
+
+          {/* Kişisel Puan Yıldızları */}
+          <div className="detail-rating-row">
+            <span className="rating-label">
+              {personalRating
+                ? RATING_DESCRIPTIONS[personalRating] || `Kişisel puan: ${personalRating}/10`
+                : 'Kişisel puan (10 üzerinden):'}
+            </span>
+            <div className="stars" role="radiogroup" aria-label="Kişisel Puan">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((star) => (
+                <button
+                  key={star}
+                  className={`star-button ${personalRating && star <= personalRating ? 'is-selected' : ''}`}
+                  type="button"
+                  role="radio"
+                  aria-label={`10 üzerinden ${star}`}
+                  aria-checked={personalRating === star}
+                  onClick={() => {
+                    setPersonalRating(star);
+                    let tracking = {};
+                    if (isTv) {
+                      tracking = {
+                        season_progress: seasonProgress,
+                        season_episode_counts: seasonCounts,
+                        current_season: currentSeason,
+                        next_episode: nextEpNum,
+                        episodes_watched: totalEpisodesWatched,
+                      };
+                    }
+                    onSave(currentItem, status, star, tracking);
+                  }}
+                >
+                  {star}
+                </button>
+              ))}
+              {personalRating !== '' && (
+                <button
+                  type="button"
+                  className="star-clear"
+                  onClick={() => {
+                    setPersonalRating('');
+                    let tracking = {};
+                    if (isTv) {
+                      tracking = {
+                        season_progress: seasonProgress,
+                        season_episode_counts: seasonCounts,
+                        current_season: currentSeason,
+                        next_episode: nextEpNum,
+                        episodes_watched: totalEpisodesWatched,
+                      };
+                    }
+                    onSave(currentItem, status, '', tracking);
+                  }}
+                >
+                  Sıfırla
+                </button>
+              )}
+            </div>
           </div>
 
           {detailError && (
@@ -364,10 +444,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             </span>
           )}
 
-          <p id="detailOverview" className="detail-overview">
+          <p id="detailOverview" className="detail-overview clamp-3">
             {currentItem.overview || 'Bu içerik için açıklama bulunmuyor.'}
           </p>
 
+          {/* Neden Önerildi Bölümü */}
           {(() => {
             const entry = currentItem.tasteMapEntry || item?.tasteMapEntry;
             const rawParts: Record<string, number> = entry?.parts || currentItem.parts || item?.parts || {};
@@ -414,7 +495,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               <section className="explain-rec-box" aria-labelledby="explainRecTitle">
                 <div className="explain-rec-head">
                   <strong id="explainRecTitle">Neden Önerildi?</strong>
-                  <span className="explain-rec-score">{formatMatchBadge(matchVal)}</span>
+                  <span className="explain-rec-score tabular-nums">{formatMatchBadge(matchVal)}</span>
                 </div>
                 {rawTags.length > 0 && (
                   <div className="explain-rec-tags">
@@ -433,7 +514,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                         <span className="explain-rec-bar" aria-hidden="true">
                           <span className="explain-rec-fill" style={{ width: `${sig.percent}%` }} />
                         </span>
-                        <span className="explain-rec-val">{sig.percent}/100</span>
+                        <span className="explain-rec-val tabular-nums">{sig.percent}/100</span>
                       </div>
                     ))}
                   </div>
@@ -442,19 +523,13 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             );
           })()}
 
-          <div id="detailSeasons" className="detail-meta">
-            {currentItem.number_of_seasons
-              ? `${currentItem.number_of_seasons} sezon | ${currentItem.number_of_episodes || 0} bölüm`
-              : ''}
-          </div>
-
-          {/* Episode Tracker */}
+          {/* CLS Sigortalı Sezon Bölüm Takibi */}
           {isTv && (
-            <section id="episodeTracker" className="episode-tracker" aria-labelledby="episodeTrackerTitle">
-              <strong id="episodeTrackerTitle">Bölüm takibi</strong>
+            <section id="episodeTracker" className="episode-tracker cls-reserve-block" aria-labelledby="episodeTrackerTitle">
+              <strong id="episodeTrackerTitle">Sezon & Bölüm İlerlemesi</strong>
               <div className="season-tracker-head">
                 <label htmlFor="currentSeasonSelect">
-                  İzlediğim sezon
+                  İzlediğim sezon:
                   <select
                     id="currentSeasonSelect"
                     value={currentSeason}
@@ -476,11 +551,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                   const ratio = count ? Math.min(100, Math.round((watched / count) * 100)) : 0;
 
                   return (
-                    <div
-                      key={season}
-                      className={`season-row ${!count ? 'no-count' : ''}`}
-                      data-season={season}
-                    >
+                    <div key={season} className={`season-row ${!count ? 'no-count' : ''}`} data-season={season}>
                       <span>Sezon {season}</span>
                       <div className="season-bar" hidden={!count}>
                         <div className="season-bar-fill" style={{ width: `${ratio}%` }}></div>
@@ -493,16 +564,16 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                         onChange={(e) => handleSeasonEpisodeChange(season, Number(e.target.value))}
                         aria-label={`Sezon ${season} izlenen bölüm sayısı`}
                       />
-                      <span className="season-total">
+                      <span className="season-total tabular-nums">
                         {count ? `/ ${count} bölüm` : '/ bölüm sayısı bilinmiyor'}
                       </span>
-                      {count > 0 && <span className="season-percent">%{ratio}</span>}
+                      {count > 0 && <span className="season-percent tabular-nums">%{ratio}</span>}
                     </div>
                   );
                 })}
               </div>
 
-              <p id="seasonTrackerSummary" className="provider-message" aria-live="polite">
+              <p id="seasonTrackerSummary" className="provider-message tabular-nums" aria-live="polite">
                 {totalEpisodesWatched > 0
                   ? `Toplam ${totalEpisodesWatched} bölüm izlendi${
                       overallPercent !== null ? ` · genel %${overallPercent}` : ''
@@ -512,14 +583,14 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             </section>
           )}
 
-          {/* Watch Providers in Turkey */}
-          {!item.custom && (
-            <section id="detailProviders" className="provider-section" aria-labelledby="providersTitle">
+          {/* CLS Sigortalı Platform Bilgisi (Türkiye) */}
+          {!currentItem.custom && (
+            <section id="detailProviders" className="provider-section cls-reserve-block" aria-labelledby="providersTitle">
               <strong id="providersTitle" className="person-section-title">
-                Türkiye'de nerede izlenir?
+                Türkiye'de Nerede İzlenir?
               </strong>
               {loadingProviders ? (
-                <p className="provider-message">Yayın seçenekleri yükleniyor...</p>
+                <div className="skeleton-line" style={{ width: '60%' }} />
               ) : providers ? (
                 <div className="provider-groups">
                   {[
@@ -527,12 +598,12 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     ['free', 'Ücretsiz'],
                     ['ads', 'Reklamlı'],
                     ['rent', 'Kiralama'],
-                    ['buy', 'Satın alma'],
+                    ['buy', 'Satın Alma'],
                   ]
                     .filter(([key]) => Array.isArray(providers[key]) && providers[key].length > 0)
                     .map(([key, label]) => (
                       <div key={key} className="provider-group">
-                        <strong>{label}</strong>
+                        <strong>{label}:</strong>
                         <div className="provider-list">
                           {providers[key].map((p: any) => (
                             <a
@@ -545,7 +616,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                               {p.logo_path && (
                                 <img src={imageUrl(p.logo_path, 'w92')} alt="" loading="lazy" />
                               )}
-                              {p.provider_name}
+                              <span>{p.provider_name}</span>
                             </a>
                           ))}
                         </div>
@@ -553,15 +624,15 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     ))}
                 </div>
               ) : (
-                <p className="provider-message">Türkiye için yayın platformu bilgisi bulunamadı.</p>
+                <p className="provider-message">Türkiye için lisanslı yayın platformu bilgisi bulunamadı.</p>
               )}
             </section>
           )}
 
-          {/* Cast row */}
+          {/* Kadro Şeridi */}
           {cast.length > 0 && (
-            <div id="detailCast" className="detail-cast">
-              <strong className="cast-heading">Oyuncular</strong>
+            <div id="detailCast" className="detail-cast cls-reserve-block">
+              <strong className="cast-heading">Öne Çıkan Oyuncular</strong>
               <div className="cast-row">
                 {cast.map((person: any) => {
                   const isFav = favoriteActors.some((a) => a.id === person.id);
@@ -571,7 +642,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                         className="cast-card"
                         type="button"
                         onClick={() => onOpenPerson(person.id, person.name)}
-                        aria-label={`${person.name} oyuncu bilgilerini aç`}
+                        aria-label={`${person.name} oyuncu profilini aç`}
                       >
                         {person.profile_path ? (
                           <img
@@ -614,119 +685,43 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             </div>
           )}
 
-          {/* Trailer */}
+          {/* Fragman */}
           {trailer && (
             <a
               id="detailTrailer"
-              className="btn btn-small detail-trailer"
+              className="btn detail-trailer-btn"
               href={`https://www.youtube.com/watch?v=${encodeURIComponent(trailer.key)}`}
               target="_blank"
               rel="noopener noreferrer"
             >
               <svg className="icon" aria-hidden="true">
                 <use href="#icon-trailer"></use>
-              </svg>{' '}
-              Fragmanı izle
+              </svg>
+              <span>Fragmanı İzle</span>
             </a>
           )}
+        </div>
 
-          <div className="detail-actions">
-            <select
-              id="detailStatus"
-              aria-label="İzleme durumu"
-              value={status}
-              onChange={(e) => {
-                const newStatus = e.target.value as 'watching' | 'watchlist' | 'completed';
-                setStatus(newStatus);
-                handleQuickSetStatus(newStatus);
-              }}
+        {/* Sticky Alt Çubuk (Section 6.5) */}
+        <div className="modal-sticky-footer">
+          {savedItem && (
+            <button
+              id="removeDetail"
+              className="btn btn-danger btn-sm"
+              type="button"
+              onClick={handleRemove}
             >
-              <option value="watchlist">İzlenecek</option>
-              <option value="watching">İzliyorum</option>
-              <option value="completed">Tamamlandı</option>
-            </select>
-
-            <div>
-              <span id="ratingLabel" style={{ fontSize: '11px', color: '#cbd5e1' }}>
-                {personalRating
-                  ? RATING_DESCRIPTIONS[personalRating] || `Kişisel puan: ${personalRating}/10`
-                  : 'Kişisel puan'}
-              </span>
-              <div id="starRating" className="stars" role="radiogroup" aria-labelledby="ratingLabel">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((star) => (
-                  <button
-                    key={star}
-                    className={`star-button ${
-                      personalRating && star <= personalRating ? 'is-selected' : ''
-                    }`}
-                    type="button"
-                    role="radio"
-                    aria-label={`10 üzerinden ${star}`}
-                    aria-checked={personalRating === star}
-                    onClick={() => {
-                      setPersonalRating(star);
-                      let tracking = {};
-                      if (isTv) {
-                        tracking = {
-                          season_progress: seasonProgress,
-                          season_episode_counts: seasonCounts,
-                          current_season: currentSeason,
-                          next_episode: nextEpNum,
-                          episodes_watched: totalEpisodesWatched,
-                        };
-                      }
-                      onSave(currentItem, status, star, tracking);
-                    }}
-                  >
-                    {star}
-                  </button>
-                ))}
-                <button
-                  id="clearRating"
-                  className="star-clear"
-                  type="button"
-                  onClick={() => {
-                    setPersonalRating('');
-                    let tracking = {};
-                    if (isTv) {
-                      tracking = {
-                        season_progress: seasonProgress,
-                        season_episode_counts: seasonCounts,
-                        current_season: currentSeason,
-                        next_episode: nextEpNum,
-                        episodes_watched: totalEpisodesWatched,
-                      };
-                    }
-                    onSave(currentItem, status, '', tracking);
-                  }}
-                >
-                  Temizle
-                </button>
-              </div>
-            </div>
-
-            <button id="saveDetail" className="btn btn-primary" type="button" onClick={handleSave}>
-              {savedItem ? 'Değişiklikleri kaydet' : 'Listeme kaydet'}
+              Listeden Çıkar
             </button>
+          )}
 
-            {savedItem && (
-              <button id="removeDetail" className="btn btn-danger" type="button" onClick={handleRemove}>
-                Listemden kaldır
-              </button>
-            )}
-
-            {!currentItem.custom && (
-              <button
-                id="dislikeDetail"
-                className="btn"
-                type="button"
-                onClick={() =>
-                  onToggleDislike(makeMediaKey(currentItem))
-                }
-              >
-                {isDisliked ? 'İlgilenmiyorum tercihini kaldır' : 'İlgilenmiyorum'}
-              </button>
-            )}
+          <div className="modal-footer-actions">
+            <button className="btn" type="button" onClick={onClose}>
+              Kapat
+            </button>
+            <button id="saveDetail" className="btn btn-primary" type="button" onClick={handleSave}>
+              {savedItem ? 'Kaydet' : 'Listeme Ekle'}
+            </button>
           </div>
         </div>
       </article>

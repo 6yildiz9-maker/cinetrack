@@ -7,6 +7,9 @@ import { PWAInstallButton } from './PWAInstallButton';
 
 interface HeaderProps {
   profileName: string;
+  tab: 'discover' | 'list' | 'taste-map' | 'relationships';
+  onTabChange: (tab: 'discover' | 'list' | 'taste-map' | 'relationships') => void;
+  myListCount: number;
   query: string;
   onSearchChange: (q: string) => void;
   onSearchSubmit: (q: string) => void;
@@ -21,6 +24,9 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   profileName,
+  tab,
+  onTabChange,
+  myListCount,
   query,
   onSearchChange,
   onSearchSubmit,
@@ -35,6 +41,8 @@ export const Header: React.FC<HeaderProps> = ({
   const [dropdownItems, setDropdownItems] = useState<TmdbItem[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -55,26 +63,30 @@ export const Header: React.FC<HeaderProps> = ({
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
         setDropdownOpen(false);
         setActiveIndex(-1);
+        setIsSearchFocused(false);
       }
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
+  // Global keyboard shortcuts: 'k' or '/' opens search (ignoring when user is typing in inputs or holding modifier keys)
   useEffect(() => {
-    const handleGlobalSlash = (event: KeyboardEvent) => {
-      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+    const handleGlobalShortcuts = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
         return;
       }
-      event.preventDefault();
-      inputRef.current?.focus();
-      inputRef.current?.select();
+      if (event.key === 'k' || event.key === '/') {
+        event.preventDefault();
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }
     };
-    window.addEventListener('keydown', handleGlobalSlash);
-    return () => window.removeEventListener('keydown', handleGlobalSlash);
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    return () => window.removeEventListener('keydown', handleGlobalShortcuts);
   }, []);
 
   useEffect(
@@ -98,54 +110,61 @@ export const Header: React.FC<HeaderProps> = ({
     const requestId = ++requestIdRef.current;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     requestControllerRef.current?.abort();
-    requestControllerRef.current = null;
-    setDropdownItems([]);
-    setActiveIndex(-1);
-    if (!val.trim() || val.trim().length < 2) {
+
+    if (!val.trim()) {
       setDropdownOpen(false);
+      setDropdownItems([]);
+      setActiveIndex(-1);
       return;
     }
 
+    // 350ms debounce with AbortController (Section 4 & Section 14)
     debounceRef.current = setTimeout(async () => {
       const controller = new AbortController();
       requestControllerRef.current = controller;
+
       try {
-        const data = await fetchTmdb(
-          '/search/multi',
-          { query: val.trim(), page: '1' },
+        const res = await fetchTmdb(
+          `/search/multi?query=${encodeURIComponent(val.trim())}&page=1`,
+          {},
           controller.signal
         );
+
         if (requestId !== requestIdRef.current) return;
-        const items: TmdbItem[] = (data.results || [])
-          .filter((item: TmdbItem) => item.media_type === 'movie' || item.media_type === 'tv')
-          .slice(0, 6);
-        setDropdownItems(items);
-        setActiveIndex(-1);
+
+        const results = (res?.results || [])
+          .filter((item: any) => item && (item.media_type === 'movie' || item.media_type === 'tv'))
+          .slice(0, 7);
+
+        setDropdownItems(results);
         setDropdownOpen(true);
-      } catch (err) {
-        if (!controller.signal.aborted) console.warn('Typeahead error:', err);
-      } finally {
+        setActiveIndex(-1);
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
         if (requestId === requestIdRef.current) {
-          requestControllerRef.current = null;
+          setDropdownItems([]);
+          setDropdownOpen(true);
         }
       }
-    }, 200);
+    }, 350);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
-      if (dropdownOpen && dropdownItems.length > 0) {
-        e.preventDefault();
-        setActiveIndex((prev) => (prev + 1) % dropdownItems.length);
+      e.preventDefault();
+      if (!dropdownOpen && dropdownItems.length > 0) {
+        setDropdownOpen(true);
+        setActiveIndex(0);
+        return;
       }
+      setActiveIndex((prev) => (prev < dropdownItems.length - 1 ? prev + 1 : 0));
       return;
     }
 
     if (e.key === 'ArrowUp') {
-      if (dropdownOpen && dropdownItems.length > 0) {
-        e.preventDefault();
-        setActiveIndex((prev) => (prev <= 0 ? dropdownItems.length - 1 : prev - 1));
-      }
+      e.preventDefault();
+      if (!dropdownOpen) return;
+      setActiveIndex((prev) => (prev > 0 ? prev - 1 : dropdownItems.length - 1));
       return;
     }
 
@@ -167,6 +186,7 @@ export const Header: React.FC<HeaderProps> = ({
       cancelTypeahead();
       setDropdownOpen(false);
       setActiveIndex(-1);
+      inputRef.current?.blur();
     }
   };
 
@@ -183,19 +203,64 @@ export const Header: React.FC<HeaderProps> = ({
       ? `search-opt-${activeIndex}`
       : undefined;
 
+  const avatarInitial = (profileName || 'P').trim().charAt(0).toUpperCase();
+
   return (
-    <header>
+    <header className="app-header">
       <div className="shell topbar">
-        <div className="brand">
+        {/* Brand Zone */}
+        <div className="brand" onClick={() => onTabChange('discover')} role="button" tabIndex={0}>
           <span className="brand-icon" aria-hidden="true">
             <svg className="icon">
               <use href="#icon-film"></use>
             </svg>
           </span>
-          <span>CineTrack</span>
+          <span className="brand-title">CineTrack</span>
         </div>
 
-        <div className="search" ref={searchRef}>
+        {/* Primary Desktop Nav Tabs (Section 4) */}
+        <nav className="header-nav-tabs" role="tablist" aria-label="Ana Gezinme">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'discover'}
+            className={`nav-tab-btn ${tab === 'discover' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('discover')}
+          >
+            Keşfet
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'list'}
+            className={`nav-tab-btn ${tab === 'list' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('list')}
+          >
+            Listem
+            {myListCount > 0 && <span className="nav-tab-badge tabular-nums">{myListCount}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'taste-map'}
+            className={`nav-tab-btn ${tab === 'taste-map' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('taste-map')}
+          >
+            Zevkim
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'relationships'}
+            className={`nav-tab-btn ${tab === 'relationships' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('relationships')}
+          >
+            İlişkiler
+          </button>
+        </nav>
+
+        {/* Expandable Search Area (k / /) */}
+        <div className={`search ${isSearchFocused ? 'is-focused' : ''}`} ref={searchRef}>
           <svg className="icon search-icon" aria-hidden="true">
             <use href="#icon-search"></use>
           </svg>
@@ -211,9 +276,11 @@ export const Header: React.FC<HeaderProps> = ({
             value={query}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="TMDB'de film veya dizi ara… (Kısayol: /)"
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => !dropdownOpen && setIsSearchFocused(false)}
+            placeholder="Film veya dizi ara… (Kısayol: k veya /)"
             autoComplete="off"
-            aria-label="Film veya dizi ara (Kısayol: /)"
+            aria-label="Film veya dizi ara"
           />
           {query && (
             <button
@@ -221,7 +288,7 @@ export const Header: React.FC<HeaderProps> = ({
               className="search-clear"
               type="button"
               onClick={handleSearchClear}
-              aria-label="Aramayı temizle ve trendlere dön"
+              aria-label="Aramayı temizle"
             >
               <svg className="icon" aria-hidden="true">
                 <use href="#icon-close"></use>
@@ -250,13 +317,14 @@ export const Header: React.FC<HeaderProps> = ({
                     const year = releaseYear(item);
                     const rating = Number(item.vote_average || 0);
                     const isActive = idx === activeIndex;
-                    const statusText =
+
+                    const statusLabel =
                       saved?.status === 'watching'
-                        ? 'İzliyorum'
+                        ? 'İzleniyor'
                         : saved?.status === 'completed'
-                        ? 'Tamamlandı'
+                        ? 'İzlendi'
                         : saved?.status === 'watchlist'
-                        ? 'Listemde'
+                        ? 'Listede'
                         : '';
 
                     return (
@@ -295,11 +363,11 @@ export const Header: React.FC<HeaderProps> = ({
                           <span className="search-dropdown-title">{title}</span>
                           <div className="search-dropdown-meta">
                             <span className="search-dropdown-badge">{kind}</span>
-                            <span>{year || ''}</span>
-                            {rating > 0 && <span>★ {rating.toFixed(1)}</span>}
+                            <span className="tabular-nums">{year || ''}</span>
+                            {rating > 0 && <span className="tabular-nums">★ {rating.toFixed(1)}</span>}
                             {saved && (
-                              <span className="search-dropdown-badge search-dropdown-badge-saved">
-                                {statusText}
+                              <span className={`search-dropdown-badge search-dropdown-badge-saved status-${saved.status}`}>
+                                {statusLabel}
                               </span>
                             )}
                           </div>
@@ -316,7 +384,7 @@ export const Header: React.FC<HeaderProps> = ({
                       onSearchSubmit(query);
                     }}
                   >
-                    &ldquo;{query}&rdquo; için tüm sonuçları gridde gör (Enter)
+                    &ldquo;{query}&rdquo; için tüm sonuçları gör (Enter)
                   </button>
                 </>
               )}
@@ -324,62 +392,55 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        <div className="actions">
-          {tmdbSource && (
+        {/* Right Actions Zone: Source tag, PWA, Profile, Add */}
+        <div className="topbar-actions">
+          {tmdbSource && tmdbSource !== 'live' && (
             <span
               className={`topbar-source-badge ${
-                tmdbSource === 'live'
-                  ? 'source-live'
-                  : tmdbSource === 'stale-cache'
-                  ? 'source-stale'
-                  : tmdbSource === 'demo'
-                  ? 'source-demo'
-                  : 'source-error'
+                tmdbSource === 'stale-cache' ? 'source-stale' : 'source-demo'
               }`}
               title={
-                tmdbSource === 'live'
-                  ? 'TMDB Canlı API servisine doğrudan ve güncel bağlanılıyor.'
-                  : tmdbSource === 'stale-cache'
-                  ? `TMDB canlı servisi anlık yanıt vermedi${
-                      tmdbStaleReason ? ` (${tmdbStaleReason})` : ''
-                    }; son kaydedilen önbellek verisi sunuluyor.`
-                  : tmdbSource === 'demo'
-                  ? 'TMDB_API_KEY tanımlanmadığından örnek çevrimdışı katalog kullanılıyor.'
-                  : 'TMDB servisine bağlanılamadı.'
+                tmdbSource === 'stale-cache'
+                  ? `TMDB canlı servisi kapalı; önbellek sunuluyor${tmdbStaleReason ? ` (${tmdbStaleReason})` : ''}`
+                  : 'Örnek katalog aktif'
               }
             >
-              <span className="topbar-source-dot" aria-hidden="true"></span>
-              <span>
-                {tmdbSource === 'live'
-                  ? 'Canlı TMDB'
-                  : tmdbSource === 'stale-cache'
-                  ? 'Eski Önbellek'
-                  : tmdbSource === 'demo'
-                  ? 'Demo Katalog'
-                  : 'Bağlantı Yok'}
-              </span>
+              <span>{tmdbSource === 'stale-cache' ? 'Önbellek' : 'Demo'}</span>
             </span>
           )}
 
           <PWAInstallButton />
 
+          {/* Profile Switcher Button with Avatar Initial */}
           <button
             id="profileButton"
             className="btn profile-btn"
             type="button"
             onClick={onOpenProfile}
             aria-haspopup="dialog"
+            aria-label={`Profil: ${profileName || 'Profilim'}`}
+            title="Profil yönetimi ve ayarlar"
+          >
+            <span className="profile-avatar-circle" aria-hidden="true">
+              {avatarInitial}
+            </span>
+            <span id="profileButtonLabel" className="profile-name-text">
+              {profileName || 'Profilim'}
+            </span>
+          </button>
+
+          <button
+            id="addButton"
+            className="btn btn-primary add-custom-btn"
+            type="button"
+            onClick={onOpenAdd}
+            title="Özel film veya dizi ekle"
+            aria-label="Özel yapım ekle"
           >
             <svg className="icon" aria-hidden="true">
-              <use href="#icon-user"></use>
-            </svg>
-            <span id="profileButtonLabel">{profileName || 'Profil'}</span>
-          </button>
-          <button id="addButton" className="btn btn-primary" type="button" onClick={onOpenAdd}>
-            <svg className="icon" aria-hidden="true">
               <use href="#icon-plus"></use>
-            </svg>{' '}
-            Ekle
+            </svg>
+            <span className="add-btn-text">Ekle</span>
           </button>
         </div>
       </div>

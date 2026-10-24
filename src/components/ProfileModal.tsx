@@ -79,7 +79,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [activeTab, setActiveTab] = useState<'stats' | 'settings'>('stats');
   const [genreMediaTypeFilter, setGenreMediaTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
   const [name, setName] = useState(activeProfileName);
-  const [selectedProfileId, setSelectedProfileId] = useState(activeProfileId);
   const [compareProfileId, setCompareProfileId] = useState<string>('');
   const [newProfileName, setNewProfileName] = useState('');
   const [selectedProviders, setSelectedProviders] = useState<string[]>(preferences.providers);
@@ -101,7 +100,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setName(activeProfileName);
-      setSelectedProfileId(activeProfileId);
       setSelectedProviders(preferences.providers);
       setMood(preferences.mood);
       setImportStatus('');
@@ -735,55 +733,87 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 )}
               </div>
 
-              <div className="profile-manage">
-                <label htmlFor="switchProfile">
-                  Profili değiştir
-                  <select
-                    id="switchProfile"
-                    value={selectedProfileId}
-                    onChange={(e) => setSelectedProfileId(e.target.value)}
-                  >
-                    {profiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} {p.isDemo ? '(Demo)' : ''} {p.id === activeProfileId ? '(Geçerli)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onSwitchProfile(selectedProfileId)}
-                  disabled={selectedProfileId === activeProfileId}
-                >
-                  Aç
-                </button>
+              {/* Section 6.7: Profil Kartları Izgarası */}
+              <div className="profile-cards-section">
+                <span className="profile-section-label">Profiller</span>
+                <div className="profile-cards-grid" role="radiogroup" aria-label="Profiller">
+                  {profiles.map((p) => {
+                    const isActive = p.id === activeProfileId;
+                    const initial = (p.name || 'P').charAt(0).toUpperCase();
+                    const itemCount = p.items?.length || (p.id === activeProfileId ? savedItems.length : 0);
+                    return (
+                      <div
+                        key={p.id}
+                        role="radio"
+                        aria-checked={isActive}
+                        tabIndex={0}
+                        className={`profile-picker-card ${isActive ? 'is-active' : ''}`}
+                        onClick={() => {
+                          if (p.id !== activeProfileId) {
+                            onSwitchProfile(p.id);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            if (p.id !== activeProfileId) onSwitchProfile(p.id);
+                          }
+                        }}
+                      >
+                        <div className="profile-card-avatar" aria-hidden="true">
+                          {initial}
+                        </div>
+                        <div className="profile-card-info">
+                          <strong className="profile-card-name clamp-1">{p.name}</strong>
+                          <span className="profile-card-meta tabular-nums">
+                            {itemCount} içerik {p.isDemo ? '· Demo' : ''}
+                          </span>
+                        </div>
+                        {isActive && <span className="profile-card-active-badge">Aktif</span>}
+                      </div>
+                    );
+                  })}
 
-                <label htmlFor="newProfileName">
-                  Yeni profil oluştur
-                  <input
-                    id="newProfileName"
-                    className="field"
-                    type="text"
-                    maxLength={40}
-                    value={newProfileName}
-                    onChange={(e) => setNewProfileName(e.target.value)}
-                    placeholder="Örn: Aile, Ortak"
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => {
-                    if (newProfileName.trim()) {
-                      onCreateProfile(newProfileName.trim());
-                      setNewProfileName('');
-                    }
-                  }}
-                  disabled={!newProfileName.trim()}
-                >
-                  Oluştur
-                </button>
+                  {/* Yeni Profil Kartı (Kesikli Çerçeve) */}
+                  <div className="profile-picker-card profile-card-new">
+                    <div className="profile-card-avatar avatar-new" aria-hidden="true">+</div>
+                    <div className="profile-card-new-form">
+                      <input
+                        id="newProfileName"
+                        className="field new-profile-input"
+                        type="text"
+                        maxLength={40}
+                        value={newProfileName}
+                        onChange={(e) => setNewProfileName(e.target.value)}
+                        placeholder="Yeni profil adı…"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            if (newProfileName.trim()) {
+                              onCreateProfile(newProfileName.trim());
+                              setNewProfileName('');
+                            }
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (newProfileName.trim()) {
+                            onCreateProfile(newProfileName.trim());
+                            setNewProfileName('');
+                          }
+                        }}
+                        disabled={!newProfileName.trim()}
+                      >
+                        Oluştur
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Streaming Providers Preferences */}

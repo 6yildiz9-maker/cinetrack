@@ -39,16 +39,15 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   render(): React.ReactNode {
     if (this.state.hasError) {
       return (
-        <div className="empty-message" role="alert">
-          <strong>
-            {this.props.sectionName
-              ? `${this.props.sectionName} bölümü yüklenirken bir sorun oluştu`
-              : 'Bu görünüm yüklenirken bir sorun oluştu'}
-          </strong>
-          <p>{this.state.errorMessage || 'Lütfen görünümü yenileyerek tekrar deneyin.'}</p>
+        <div className="section-error-boundary" role="alert">
+          <span className="error-icon" aria-hidden="true">⚠️</span>
+          <strong>Bu bölümde bir sorun oluştu.</strong>
+          {this.props.sectionName && (
+            <p className="error-section-sub">({this.props.sectionName})</p>
+          )}
           <div className="message-actions">
-            <button type="button" className="btn btn-primary" onClick={this.handleRetry}>
-              Yeniden Dene
+            <button type="button" className="btn btn-primary btn-sm" onClick={this.handleRetry}>
+              Yenile
             </button>
           </div>
         </div>
