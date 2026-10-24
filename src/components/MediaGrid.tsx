@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { MediaCard } from './MediaCard';
 import { ActorRecommendationsSection } from './ActorRecommendationsSection';
+import { SeasonCalendarSection } from './SeasonCalendarSection';
 import { ErrorBoundary } from './ErrorBoundary';
 import {
   SavedItem,
@@ -42,6 +43,7 @@ interface MediaGridProps {
   onOpenPerson?: (id: number, name: string) => void;
   onToggleFavoriteActor?: (actor: FavoriteActorInfo) => void;
   onRefreshForYou?: () => void;
+  forYouProgressStep?: string;
   tmdbSource?: string;
   tmdbStaleReason?: string;
 }
@@ -76,6 +78,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onOpenPerson,
   onToggleFavoriteActor,
   onRefreshForYou,
+  forYouProgressStep,
   tmdbSource = 'live',
   tmdbStaleReason,
 }) => {
@@ -137,6 +140,21 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             <strong>Örnek Katalog Modu:</strong> TMDB_API_KEY tanımlanmadığından içerikler CineTrack örnek katalog verisiyle sunulmaktadır.
           </div>
         </div>
+      )}
+
+      {tab === 'discover' && category === 'for-you' && isLoading && forYouProgressStep && (
+        <div className="progress-step-banner" role="status" aria-live="polite">
+          <span>{forYouProgressStep}</span>
+        </div>
+      )}
+
+      {tab === 'list' && (listStatus === 'all' || listStatus === 'watching' || listStatus === 'watchlist') && (
+        <SeasonCalendarSection
+          savedItems={savedItems}
+          onSelectMedia={(id, mediaType) =>
+            onOpenDetails({ id: Number(id) || (id as any), media_type: mediaType } as TmdbItem)
+          }
+        />
       )}
 
       <div id="catalogGrid" className="grid">

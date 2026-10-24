@@ -12,6 +12,8 @@ import { ProfileModal } from './components/ProfileModal';
 import { ImportChoiceModal } from './components/ImportChoiceModal';
 import { Toast } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { ConflictBanner } from './components/ConflictBanner';
 
 const TasteMapView = lazy(() => import('./components/TasteMapView'));
 const RelationshipExplorer = lazy(() => import('./components/RelationshipExplorer'));
@@ -60,11 +62,12 @@ import {
   fetchTmdb,
   fetchTmdbCached,
   fetchServerData,
-  pushServerData,
   subscribeTmdbSource,
   checkServerTmdbStatus,
   TmdbSourceMeta,
+  ServerConflictDetail,
 } from './services/api';
+import { useOfflineSync } from './hooks/useOfflineSync';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
@@ -206,6 +209,8 @@ export function App() {
   const [forYouItems, setForYouItems] = useState<any[]>([]);
   const [forYouReasons, setForYouReasons] = useState<Map<string, string>>(new Map());
   const [forYouExplanation, setForYouExplanation] = useState<string>('');
+  const [forYouProgressStep, setForYouProgressStep] = useState<string>('');
+  const [serverConflict, setServerConflict] = useState<ServerConflictDetail | null>(null);
   const [serverSyncReady, setServerSyncReady] = useState(false);
   const [tmdbSourceMeta, setTmdbSourceMeta] = useState<TmdbSourceMeta>({
     source: 'unknown',
@@ -287,9 +292,8 @@ export function App() {
     serverSyncReady,
   ]);
 
-  // Push server data on changes
-  const pushToServer = useCallback(async () => {
-    const payload: DataDocument = {
+  const buildCurrentPayload = useCallback((): DataDocument => {
+    return {
       version: 3,
       schemaVersion: CURRENT_SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
@@ -307,14 +311,66 @@ export function App() {
         isDemo: p.id === activeProfileId ? Boolean(activeProfile?.isDemo) : Boolean(p.isDemo),
       })),
     };
-    const ok = await pushServerData(payload);
-    if (ok) {
+  }, [profiles, activeProfileId, profileName, preferences, savedItems, activeProfile?.isDemo]);
+
+  const handleServerConflict = useCallback((conflict: ServerConflictDetail) => {
+    setServerConflict(conflict);
+    setSyncStatus(`Çakışma algılandı: ${conflict.message}`);
+  }, []);
+
+  const { isOnline, pendingSync, syncDocument } = useOfflineSync(handleServerConflict);
+
+  const applyDataDocumentToState = useCallback((rawDoc: DataDocument) => {
+    const doc = normalizeDataDocument(rawDoc);
+    if (!doc) return;
+    applyingRemoteSnapshotRef.current = true;
+    setProfiles(doc.profiles);
+    setActiveProfileId(doc.activeProfileId);
+    const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
+    setProfileName(active.name);
+    setPreferences(active.preferences);
+    setSavedItems(active.items);
+    const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
+    setFavoriteActors(activeFavs);
+    try {
+      localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
       localStorage.removeItem(DIRTY_KEY);
+    } catch {}
+    setServerConflict(null);
+  }, []);
+
+  // Push server data on changes (with revision guard & offline queue)
+  const pushToServer = useCallback(async () => {
+    const payload = buildCurrentPayload();
+    const res = await syncDocument(payload);
+    if (res.ok) {
+      localStorage.removeItem(DIRTY_KEY);
+      setServerConflict(null);
       setSyncStatus('Kayıt yeri: data/cinetrack-data.json (bu bilgisayarda, tüm profiller).');
-    } else {
+    } else if (res.queued) {
+      setSyncStatus('Çevrimdışı kuyrukta: bağlantı sağlandığında yerel sunucuya aktarılacak.');
+    } else if (!res.conflict) {
       setSyncStatus('Değişiklikler yerel veri dosyasına yazılamadı; şimdilik yalnızca bu tarayıcıda.');
     }
-  }, [profiles, activeProfileId, profileName, preferences, savedItems, activeProfile?.isDemo]);
+  }, [buildCurrentPayload, syncDocument]);
+
+  const handleKeepLocalOnConflict = useCallback(async () => {
+    const payload = buildCurrentPayload();
+    const res = await syncDocument(payload, { forceOverwrite: true, confirmBulkDelete: true });
+    if (res.ok) {
+      localStorage.removeItem(DIRTY_KEY);
+      setServerConflict(null);
+      setSyncStatus('Yerel değişiklikler sunucuya kaydedildi.');
+      showToast('Yerel verileriniz sunucuya kaydedildi.');
+    }
+  }, [buildCurrentPayload, syncDocument, showToast]);
+
+  const handleUseServerOnConflict = useCallback(() => {
+    if (serverConflict?.serverDocument) {
+      applyDataDocumentToState(serverConflict.serverDocument);
+      showToast('Sunucudaki güncel veri yüklendi.');
+    }
+  }, [serverConflict, applyDataDocumentToState, showToast]);
 
   useEffect(() => {
     if (!serverSyncReady) return;
@@ -533,7 +589,7 @@ export function App() {
                     priorityScore,
                     scoreCoverage: mapEntry?.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
                     confidenceLevel: mapEntry?.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
-                    ring: e.ring === 'ring2' ? 'ring2' : 'ring0',
+                    ring: (e.selectionRing || e.ring) === 'ring2' ? 'ring2' : 'ring0',
                     tasteMapEntry: mapEntry,
                   };
                 })
@@ -541,6 +597,7 @@ export function App() {
               setTasteMap(storedTasteMap);
               setCatalogTotalPages(1);
               setCatalogPage(1);
+              setForYouProgressStep('');
               setIsLoading(false);
               return;
             }
@@ -596,6 +653,7 @@ export function App() {
             .slice(0, 10)
             .map((item) => ({ ...item, status: 'disliked', isDisliked: true }));
 
+          setForYouProgressStep('Zevk profili ve geçmiş sinyalleri analiz ediliyor…');
           const historyCredits = await mapLimit([...seeds, ...dislikedSeeds], 4, async (seed) => {
             try {
               const details = await fetchTmdbCached(
@@ -641,6 +699,7 @@ export function App() {
           let movieCandidates: any[] = [];
           let tvCandidates: any[] = [];
 
+          setForYouProgressStep('Aday havuzu güncelleniyor…');
           if (targetType === 'movie') {
             const moviePool = await replenishCandidatePool({
               profileId: activeProfileId,
@@ -651,6 +710,9 @@ export function App() {
               fetchTmdbFn: fetchTmdbCached,
               signal: ticket.signal,
               force: forceRefresh,
+              onProgress: (step) => {
+                if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
+              },
             });
             movieCandidates = moviePool.items.filter((item) =>
               item.media_type === 'movie' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
@@ -665,6 +727,9 @@ export function App() {
               fetchTmdbFn: fetchTmdbCached,
               signal: ticket.signal,
               force: forceRefresh,
+              onProgress: (step) => {
+                if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
+              },
             });
             tvCandidates = tvPool.items.filter((item) =>
               item.media_type === 'tv' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
@@ -681,6 +746,9 @@ export function App() {
                 fetchTmdbFn: fetchTmdbCached,
                 signal: ticket.signal,
                 force: forceRefresh,
+                onProgress: (step) => {
+                  if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
+                },
               }),
               replenishCandidatePool({
                 profileId: activeProfileId,
@@ -748,6 +816,7 @@ export function App() {
             shortlist = tvShortlist;
           }
 
+          setForYouProgressStep('Öne çıkan adayların kadro ve hikâye sinyalleri zenginleştiriliyor…');
           await mapLimit(shortlist, 5, async (entry) => {
             try {
               const details = await fetchTmdbCached(
@@ -874,13 +943,14 @@ export function App() {
                 priorityScore,
                 scoreCoverage: mapEntry?.scoreCoverage ?? e.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
                 confidenceLevel: mapEntry?.confidenceLevel ?? e.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
-                ring: e.ring === 'ring2' ? 'ring2' : 'ring0',
+                ring: (e.selectionRing || e.ring) === 'ring2' ? 'ring2' : 'ring0',
                 tasteMapEntry: mapEntry,
               };
             })
           );
           setCatalogTotalPages(1);
           setCatalogPage(1);
+          setForYouProgressStep('');
           if (forceRefresh) showToast(explanationText);
           return;
         }
@@ -958,6 +1028,7 @@ export function App() {
         }
       } finally {
         if (requestGateRef.current.isCurrent(ticket.id)) {
+          setForYouProgressStep('');
           setIsLoading(false);
           setLoadingMore(false);
         }
@@ -1698,6 +1769,7 @@ export function App() {
 
   return (
     <>
+      <OfflineIndicator isOnline={isOnline} pendingSync={pendingSync} />
       <Header
         profileName={profileName}
         query={query}
@@ -1710,6 +1782,12 @@ export function App() {
         getSaved={(item) => findSavedItem(savedItems, item)}
         tmdbSource={tmdbSourceMeta.source}
         tmdbStaleReason={tmdbSourceMeta.staleReason}
+      />
+      <ConflictBanner
+        conflict={serverConflict}
+        onKeepLocal={handleKeepLocalOnConflict}
+        onUseServer={handleUseServerOnConflict}
+        onDismiss={() => setServerConflict(null)}
       />
 
       <main className="shell">
@@ -1867,6 +1945,7 @@ export function App() {
               }}
               onToggleFavoriteActor={handleToggleFavoriteActor}
               onRefreshForYou={handleRefreshForYou}
+              forYouProgressStep={forYouProgressStep}
               tmdbSource={tmdbSourceMeta.source}
               tmdbStaleReason={tmdbSourceMeta.staleReason}
             />
@@ -1966,11 +2045,13 @@ export function App() {
       <ProfileModal
         isOpen={profileOpen}
         profiles={profiles}
+        activeProfile={activeProfile}
         activeProfileId={activeProfileId}
         activeProfileName={profileName}
         preferences={preferences}
         savedItems={savedItems}
         genresMap={genresMap}
+        tasteEntries={tasteMap.entries}
         syncStatus={syncStatus}
         onClose={() => setProfileOpen(false)}
         onSaveProfileName={handleSaveProfileName}
@@ -1980,6 +2061,15 @@ export function App() {
         onToggleReminders={handleToggleReminders}
         onExportBackup={handleExportBackup}
         onImportBackupFile={handleImportBackupFile}
+        onImportCsvItems={(items) => {
+          const merged = dedupeItems([...savedItems, ...items]);
+          setSavedItems(merged);
+          showToast(`${items.length} yapım CSV'den listenize eklendi.`);
+        }}
+        onApplyRestoredDocument={(doc) => {
+          applyDataDocumentToState(doc);
+          showToast('Sunucu yedeği başarıyla geri yüklendi.');
+        }}
         isDemo={Boolean(activeProfile?.isDemo)}
         onToggleDemoMode={handleToggleDemoMode}
       />

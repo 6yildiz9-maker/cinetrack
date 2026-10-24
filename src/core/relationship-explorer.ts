@@ -8,11 +8,11 @@ import {
   type PoolCandidateItem,
   type Preferences,
   type SavedItem,
-} from './cinetrack-core';
+} from './cinetrack-core.ts';
 
 export type RelationshipMode = 'taste-map' | 'relationships';
 export type MediaFilter = 'all' | 'movie' | 'tv';
-export type RelationshipType = 'semantic' | 'person' | 'universe' | 'personal';
+export type RelationshipType = 'semantic' | 'person' | 'universe' | 'atmosphere' | 'contrast' | 'personal';
 export type RelationshipStatusSignal =
   | 'completed-history'
   | 'interest'
@@ -106,7 +106,7 @@ export interface BuildRelationshipGraphOptions {
   genreNames?: Record<number, string>;
 }
 
-export const RELATIONSHIP_MODEL_VERSION = 'relationship-v2';
+export const RELATIONSHIP_MODEL_VERSION = 'relationship-v3';
 export const RELATIONSHIP_GRAPH_SCHEMA_VERSION = 1;
 
 function stableHash(input: unknown): string {
@@ -230,10 +230,23 @@ const GENERIC_PLOT_WORDS = new Set([
   'dünyada', 'dünyanın', 'insanlar', 'kişiler', 'karakter',
 ]);
 
+const ATMOSPHERIC_TONE_WORDS = new Set([
+  'karanlık', 'distopya', 'distopik', 'gizem', 'gizemli', 'psikolojik', 'uzay',
+  'rüya', 'gerilim', 'sır', 'kabus', 'yalnızlık', 'melankoli', 'noir', 'atmosfer',
+  'klostrofobik', 'tekinsiz', 'kıyamet', 'simülasyon', 'zihin', 'hafıza',
+  'dark', 'dystopia', 'mystery', 'psychological', 'dream', 'isolation', 'tension', 'noir',
+]);
+
+const DARK_ATMOSPHERE_GENRES = new Set([878, 9648, 53, 27, 80, 10765]);
+const IMAGINATIVE_ATMOSPHERE_GENRES = new Set([16, 14, 12, 10751]);
+const LIGHT_TONE_GENRES = new Set([35, 10751, 10749, 10402]);
+
 const TYPE_LABELS: Record<RelationshipType, string> = {
   semantic: 'Anlamsal benzerlik',
   person: 'Kişi bağlantısı',
   universe: 'Seri / evren bağlantısı',
+  atmosphere: 'Atmosferik / duygusal yakınlık',
+  contrast: 'Karşıt ton / tamamlayıcı deneyim',
   personal: 'Kişisel uyum',
 };
 
@@ -419,6 +432,83 @@ function pairRelationships(
           : []),
       ],
     });
+  }
+
+  // 4) Atmosferik / duygusal yakınlık: ortak atmosferik tür kümesi + ortak ton kelimeleri / yakın dönem.
+  const sharedDarkGenres = commonGenres.filter((gid) => DARK_ATMOSPHERE_GENRES.has(Number(gid)));
+  const sharedImaginativeGenres = commonGenres.filter((gid) => IMAGINATIVE_ATMOSPHERE_GENRES.has(Number(gid)));
+  const toneTokens = commonTokens.filter((tok) => ATMOSPHERIC_TONE_WORDS.has(tok));
+  const yearA = Number(String(a.release_date || a.first_air_date || '').slice(0, 4));
+  const yearB = Number(String(b.release_date || b.first_air_date || '').slice(0, 4));
+  const yearDelta = yearA >= 1900 && yearB >= 1900 ? Math.abs(yearA - yearB) : null;
+
+  const hasAtmosphereCluster =
+    sharedDarkGenres.length >= 2 ||
+    sharedImaginativeGenres.length >= 2 ||
+    ((sharedDarkGenres.length >= 1 || sharedImaginativeGenres.length >= 1) && toneTokens.length >= 1);
+
+  if (hasAtmosphereCluster) {
+    const clusterGenres = sharedDarkGenres.length >= sharedImaginativeGenres.length ? sharedDarkGenres : sharedImaginativeGenres;
+    const clusterNames = clusterGenres.map((gid) => genreNames[Number(gid)] || `Tür (${gid})`);
+    const eraBonus = yearDelta !== null && yearDelta <= 6 ? 8 : 0;
+    const atmosphereScore = clamp(
+      Math.min(82, 46 + clusterGenres.length * 10 + Math.min(16, toneTokens.length * 8) + eraBonus),
+    );
+    const evidenceLines: string[] = [
+      `Ortak atmosfer kümesi: ${clusterNames.join(', ')}.`,
+    ];
+    if (toneTokens.length > 0) {
+      evidenceLines.push(`Ortak ton ve duygu izleri: ${toneTokens.slice(0, 4).join(', ')}.`);
+    }
+    if (yearDelta !== null && yearDelta <= 6) {
+      evidenceLines.push(`Yakın dönem sinematografisi (${yearA} – ${yearB}).`);
+    }
+    relationships.push({
+      type: 'atmosphere',
+      score: atmosphereScore,
+      confidence: toneTokens.length >= 1 && clusterGenres.length >= 2 ? 84 : 68,
+      evidence: evidenceLines,
+    });
+  }
+
+  // 5) Karşıt ton / tamamlayıcı deneyim: ortak yaratıcı/oyuncu veya güçlü ortak tema varken zıt ton veya farklı format.
+  const hasSharedAnchor = commonActors.length > 0 || commonCrew.length > 0 || commonTokens.length >= 2;
+  if (hasSharedAnchor) {
+    const aHasDark = [...genresA].some((gid) => DARK_ATMOSPHERE_GENRES.has(gid));
+    const bHasDark = [...genresB].some((gid) => DARK_ATMOSPHERE_GENRES.has(gid));
+    const aHasLight = [...genresA].some((gid) => LIGHT_TONE_GENRES.has(gid));
+    const bHasLight = [...genresB].some((gid) => LIGHT_TONE_GENRES.has(gid));
+    const tonalContrast = (aHasDark && bHasLight && !aHasLight) || (bHasDark && aHasLight && !bHasLight);
+    const formatContrast = a.media_type !== b.media_type && (commonCrew.length > 0 || commonActors.length > 0 || commonGenres.length >= 1);
+
+    if (tonalContrast || formatContrast) {
+      const contrastEvidence: string[] = [];
+      if (tonalContrast) {
+        contrastEvidence.push('Ortak bağ korunurken karanlık/gerilimli ve sıcak/hafif tonlar birbirini dengeler.');
+      }
+      if (formatContrast) {
+        contrastEvidence.push(
+          `Farklı anlatı temposu (${a.media_type === 'tv' ? 'Dizi' : 'Film'} ↔ ${b.media_type === 'tv' ? 'Dizi' : 'Film'}).`,
+        );
+      }
+      if (commonCrew.length > 0) {
+        contrastEvidence.push(`Ortak yaratıcı imza: ${commonCrew.slice(0, 2).join(', ')}.`);
+      } else if (commonActors.length > 0) {
+        contrastEvidence.push(`Ortak oyuncu köprüsü: ${commonActors.slice(0, 2).join(', ')}.`);
+      } else if (commonTokens.length >= 2) {
+        contrastEvidence.push(`Ortak tema köprüsü: ${commonTokens.slice(0, 3).join(', ')}.`);
+      }
+
+      const contrastScore = clamp(
+        Math.min(76, 44 + (tonalContrast ? 14 : 0) + (formatContrast ? 10 : 0) + Math.min(8, commonTokens.length * 3)),
+      );
+      relationships.push({
+        type: 'contrast',
+        score: contrastScore,
+        confidence: commonCrew.length > 0 || commonActors.length > 0 ? 80 : 64,
+        evidence: contrastEvidence,
+      });
+    }
   }
 
   return relationships.sort((left, right) => right.score - left.score);
@@ -814,6 +904,10 @@ export function getRelationshipLinkColor(type: RelationshipType): string {
       return '#a78bfa';
     case 'universe':
       return '#4ade80';
+    case 'atmosphere':
+      return '#2dd4bf';
+    case 'contrast':
+      return '#fb923c';
     case 'personal':
       return '#64748b';
   }

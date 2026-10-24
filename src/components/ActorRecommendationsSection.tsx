@@ -13,7 +13,8 @@ import {
   normalizeFavoriteActors,
   describeActorFetchChipState,
 } from '../core/cinetrack-core';
-import { fetchTmdbCached } from '../services/api';
+import { fetchTmdbCached, TMDB_CACHE_TTLS } from '../services/api';
+import { formatMatchBadge } from '../i18n';
 import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
 import { TmdbItem, TmdbPersonCreditItem } from '../types/tmdb';
 
@@ -65,6 +66,9 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const requestGateRef = useRef(createRequestGate());
+  const actorCreditsCacheRef = useRef<
+    Map<number, { at: number; credits: TmdbPersonCreditItem[]; status: ActorFetchStatus }>
+  >(new Map());
 
   const loadCredits = useCallback(
     async (force = false) => {
@@ -75,12 +79,41 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
         return;
       }
 
+      if (force) {
+        actorCreditsCacheRef.current.clear();
+      }
+
+      const now = Date.now();
+      const cachedCredits: Record<number, TmdbPersonCreditItem[]> = {};
+      const cachedStatuses: Record<number, ActorFetchStatus> = {};
+      const actorsToFetch: FavoriteActorInfo[] = [];
+
+      for (const actor of validFavoriteActors) {
+        const hit = !force ? actorCreditsCacheRef.current.get(actor.id) : undefined;
+        if (hit && now - hit.at < TMDB_CACHE_TTLS.ACTOR_CREDITS && hit.status.status !== 'error') {
+          cachedCredits[actor.id] = hit.credits;
+          cachedStatuses[actor.id] = hit.status;
+        } else {
+          actorsToFetch.push(actor);
+        }
+      }
+
+      if (actorsToFetch.length === 0) {
+        setActorCreditsMap(cachedCredits);
+        setActorStatuses(cachedStatuses);
+        setFetchError(null);
+        setIsLoading(false);
+        return;
+      }
+
       const ticket = requestGateRef.current.begin();
-      setIsLoading(true);
+      setActorCreditsMap((prev) => ({ ...prev, ...cachedCredits }));
+      setActorStatuses((prev) => ({ ...prev, ...cachedStatuses }));
+      setIsLoading(Object.keys(cachedCredits).length === 0);
       setFetchError(null);
 
       try {
-        const result = await fetchActorCreditsBatch(validFavoriteActors, {
+        const result = await fetchActorCreditsBatch(actorsToFetch, {
           concurrency: 3,
           signal: ticket.signal,
           ticketId: ticket.id,
@@ -95,9 +128,22 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
 
         if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-        setActorCreditsMap(result.creditsMap);
-        setActorStatuses(result.statuses);
-        if (result.errorCount > 0 && result.completedCount === 0) {
+        const fetchedAt = Date.now();
+        for (const actor of actorsToFetch) {
+          const st = result.statuses[actor.id];
+          const cr = (result.creditsMap[actor.id] || []) as TmdbPersonCreditItem[];
+          if (st && st.status !== 'error') {
+            actorCreditsCacheRef.current.set(actor.id, {
+              at: fetchedAt,
+              credits: cr,
+              status: st,
+            });
+          }
+        }
+
+        setActorCreditsMap({ ...cachedCredits, ...result.creditsMap });
+        setActorStatuses({ ...cachedStatuses, ...result.statuses });
+        if (result.errorCount > 0 && result.completedCount === 0 && Object.keys(cachedCredits).length === 0) {
           setFetchError('Favori oyuncuların içerikleri yüklenirken bir sorun oluştu.');
         }
       } catch (err: unknown) {
@@ -372,11 +418,11 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
 
                   {Number(item.matchScore) > 0 && (
                     <span
-                      className="match-badge"
-                      title={`Gerçek sinyal uyum puanı: %${item.matchScore}`}
-                      aria-label={`Uyum: %${item.matchScore}`}
+                      className="match-badge tabular-nums"
+                      title={`Gerçek sinyal uyum puanı: ${formatMatchBadge(item.matchScore)}`}
+                      aria-label={formatMatchBadge(item.matchScore)}
                     >
-                      %{item.matchScore} Uyum
+                      {formatMatchBadge(item.matchScore)}
                     </span>
                   )}
 

@@ -1,4 +1,4 @@
-import { DataDocument } from '../core/cinetrack-core';
+import { type DataDocument } from '../core/cinetrack-core';
 
 export type TmdbDataSource = 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
 
@@ -10,11 +10,50 @@ export interface TmdbSourceMeta {
   timestamp: number;
 }
 
+export interface ServerBackupMetadata {
+  id: string;
+  fileName: string;
+  createdAt: string;
+  sizeBytes: number;
+  revision: number;
+  profilesCount: number;
+  itemsCount: number;
+}
+
+export interface ServerConflictDetail {
+  code: 'revision_conflict' | 'sudden_item_drop';
+  message: string;
+  currentRevision?: number;
+  expectedRevision?: number;
+  existingItems?: number;
+  incomingItems?: number;
+  serverDocument?: DataDocument;
+}
+
+export interface PushServerDataResult {
+  ok: boolean;
+  status: number;
+  revision?: number;
+  updatedAt?: string;
+  conflict?: ServerConflictDetail;
+  errorMessage?: string;
+}
+
 let currentTmdbSourceState: TmdbSourceMeta = {
   source: 'unknown',
   cacheStatus: 'none',
   timestamp: Date.now(),
 };
+
+let lastKnownServerRevision: number | null = null;
+
+export function getLastKnownServerRevision(): number | null {
+  return lastKnownServerRevision;
+}
+
+export function setLastKnownServerRevision(rev: number | null): void {
+  lastKnownServerRevision = typeof rev === 'number' && Number.isSafeInteger(rev) && rev >= 0 ? rev : null;
+}
 
 type TmdbSourceListener = (state: TmdbSourceMeta) => void;
 const tmdbSourceListeners = new Set<TmdbSourceListener>();
@@ -71,6 +110,70 @@ export function parseTmdbSourceFromHeaders(headers: Headers): {
   };
 }
 
+/**
+ * Faz 5: TMDB yanıt şeması doğrulaması (bozuk / beklenmeyen upstream JSON yapılarına karşı koruma).
+ */
+export function validateTmdbResponseShape(
+  path: string,
+  data: unknown
+): { valid: boolean; reason?: string } {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { valid: false, reason: 'TMDB yanıtı geçerli bir JSON nesnesi değil.' };
+  }
+
+  const record = data as Record<string, any>;
+
+  if (path === '/genre/movie/list' || path === '/genre/tv/list') {
+    if (!Array.isArray(record.genres)) {
+      return { valid: false, reason: 'Tür listesi yanıtında "genres" dizisi eksik.' };
+    }
+    return { valid: true };
+  }
+
+  if (path.endsWith('/combined_credits')) {
+    if (!Array.isArray(record.cast)) {
+      return { valid: false, reason: 'Oyuncu filmografisi yanıtında "cast" dizisi eksik.' };
+    }
+    return { valid: true };
+  }
+
+  if (path.endsWith('/watch/providers')) {
+    if (record.results == null || typeof record.results !== 'object' || Array.isArray(record.results)) {
+      return { valid: false, reason: 'Yayın sağlayıcıları yanıtında "results" nesnesi eksik.' };
+    }
+    return { valid: true };
+  }
+
+  if (/^\/tv\/\d+\/season\/\d+$/.test(path)) {
+    if (!Array.isArray(record.episodes)) {
+      return { valid: false, reason: 'Sezon detay yanıtında "episodes" dizisi eksik.' };
+    }
+    return { valid: true };
+  }
+
+  if (
+    path.startsWith('/trending/') ||
+    path.startsWith('/discover/') ||
+    path.startsWith('/search/') ||
+    /^\/(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air)$/.test(path) ||
+    /^\/(?:movie|tv)\/\d+\/(?:recommendations|similar)$/.test(path)
+  ) {
+    if (!Array.isArray(record.results)) {
+      return { valid: false, reason: 'Katalog listesi yanıtında "results" dizisi eksik.' };
+    }
+    return { valid: true };
+  }
+
+  if (/^\/(?:movie|tv|person)\/\d+$/.test(path)) {
+    if (record.id == null || (typeof record.id !== 'number' && typeof record.id !== 'string')) {
+      return { valid: false, reason: 'Detay yanıtında geçerli "id" alanı eksik.' };
+    }
+    return { valid: true };
+  }
+
+  return { valid: true };
+}
+
 export async function fetchTmdb(path: string, params: Record<string, string> = {}, signal?: AbortSignal) {
   const query = new URLSearchParams({ path, language: 'tr-TR', ...params });
   const controller = new AbortController();
@@ -109,9 +212,16 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
       throw new Error(detail || 'TMDB isteği reddedildi.');
     }
     if (response.status === 429) {
-      throw new Error('TMDB istek sınırına ulaşıldı. Biraz bekleyip tekrar deneyin.');
+      throw new Error(detail || 'TMDB istek sınırına ulaşıldı. Biraz bekleyip tekrar deneyin.');
     }
     throw new Error(detail || `TMDB isteği başarısız oldu (${response.status}).`);
+  }
+
+  const data = await response.json();
+  const shapeValidation = validateTmdbResponseShape(path, data);
+  if (!shapeValidation.valid) {
+    setTmdbSourceState({ source: 'error', cacheStatus, staleReason: shapeValidation.reason });
+    throw new Error(shapeValidation.reason || 'TMDB yanıt şeması geçersiz.');
   }
 
   setTmdbSourceState({
@@ -121,7 +231,6 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
     staleAgeSeconds,
   });
 
-  const data = await response.json();
   if (data && typeof data === 'object') {
     data._source = source;
     data._cacheStatus = cacheStatus;
@@ -147,16 +256,15 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
   return data;
 }
 
-// Cache TTL'leri veri türüne göre ayrılmıştır
 export const TMDB_CACHE_TTLS = Object.freeze({
-  ACTOR_CREDITS: 2 * 60 * 60_000, // 2 saat: Oyuncu filmografisi çok nadir değişir
-  PERSON_DETAILS: 2 * 60 * 60_000, // 2 saat: Oyuncu biyografi ve profil bilgisi
-  MEDIA_DETAILS: 60 * 60_000, // 1 saat: Film/Dizi künyesi ve oyuncu kadrosu
-  WATCH_PROVIDERS: 60 * 60_000, // 1 saat: Yayın sağlayıcıları
-  DISCOVER_CATALOG: 15 * 60_000, // 15 dakika: Katalog keşif sayfaları
-  SEARCH_RESULTS: 15 * 60_000, // 15 dakika: Çoklu arama sonuçları
-  TRENDING: 10 * 60_000, // 10 dakika: Trend sıralamaları
-  DEFAULT: 30 * 60_000, // 30 dakika: Varsayılan
+  ACTOR_CREDITS: 2 * 60 * 60_000,
+  PERSON_DETAILS: 2 * 60 * 60_000,
+  MEDIA_DETAILS: 60 * 60_000,
+  WATCH_PROVIDERS: 60 * 60_000,
+  DISCOVER_CATALOG: 15 * 60_000,
+  SEARCH_RESULTS: 15 * 60_000,
+  TRENDING: 10 * 60_000,
+  DEFAULT: 30 * 60_000,
 });
 
 export function resolveTmdbCacheTtl(path: string): number {
@@ -168,6 +276,9 @@ export function resolveTmdbCacheTtl(path: string): number {
   }
   if (path.includes('/watch/providers')) {
     return TMDB_CACHE_TTLS.WATCH_PROVIDERS;
+  }
+  if (/^\/tv\/\d+\/season\/\d+$/.test(path)) {
+    return TMDB_CACHE_TTLS.MEDIA_DETAILS;
   }
   if (/^\/(movie|tv)\/\d+/.test(path)) {
     return TMDB_CACHE_TTLS.MEDIA_DETAILS;
@@ -184,10 +295,7 @@ export function resolveTmdbCacheTtl(path: string): number {
   return TMDB_CACHE_TTLS.DEFAULT;
 }
 
-// In-memory cache for TMDB responses
 const tmdbClientCache = new Map<string, { at: number; data: any; ttl: number }>();
-// In-flight istek paylaşımı (In-flight request deduplication):
-// Aynı uç nokta için eşzamanlı istekler tek bir aktif Promise paylaşır.
 const inFlightTmdbRequests = new Map<string, Promise<any>>();
 
 export function clearTmdbClientCache(): void {
@@ -207,7 +315,6 @@ export function fetchTmdbCached(
   const effectiveTtl = typeof ttl === 'number' && ttl > 0 ? ttl : resolveTmdbCacheTtl(path);
   const key = new URLSearchParams({ path, language: 'tr-TR', ...params }).toString();
 
-  // 1. Önbellek kontrolü (Veri türüne göre TTL süresi dolmamışsa derhal dön)
   const hit = tmdbClientCache.get(key);
   if (hit && Date.now() - hit.at < (hit.ttl || effectiveTtl)) {
     tmdbClientCache.delete(key);
@@ -215,13 +322,11 @@ export function fetchTmdbCached(
     return Promise.resolve(hit.data);
   }
 
-  // 2. In-flight istek paylaşımı: Halihazırda devam eden aynı istek varsa mükerrer istek atma
   const existingInFlight = inFlightTmdbRequests.get(key);
   if (existingInFlight) {
     return existingInFlight;
   }
 
-  // 3. Yeni istek başlat ve in-flight haritasına kaydet
   const requestPromise = fetchTmdb(path, params, signal)
     .then((data) => {
       tmdbClientCache.set(key, { at: Date.now(), data, ttl: effectiveTtl });
@@ -242,9 +347,20 @@ export async function fetchServerData(): Promise<DataDocument | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
   try {
-    const response = await fetch('/api/data', { cache: 'no-store', signal: controller.signal });
+    const response = await fetch('/api/data', {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
     if (response.ok) {
-      return await response.json();
+      const doc: DataDocument = await response.json();
+      if (typeof doc?.revision === 'number') {
+        setLastKnownServerRevision(doc.revision);
+      } else {
+        const etag = response.headers.get('ETag') || '';
+        const revMatch = etag.replace(/"/g, '').match(/^rev-(\d+)$/);
+        if (revMatch) setLastKnownServerRevision(Number(revMatch[1]));
+      }
+      return doc;
     }
     return null;
   } catch (error) {
@@ -255,17 +371,118 @@ export async function fetchServerData(): Promise<DataDocument | null> {
   }
 }
 
-export async function pushServerData(payload: DataDocument): Promise<boolean> {
+export async function pushServerDataDetailed(
+  payload: DataDocument,
+  options: { baseRevision?: number | null; confirmBulkDelete?: boolean } = {}
+): Promise<PushServerDataResult> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  const revToCheck = options.baseRevision !== undefined ? options.baseRevision : lastKnownServerRevision;
+  if (typeof revToCheck === 'number' && revToCheck > 0) {
+    headers['If-Match'] = `"rev-${revToCheck}"`;
+  }
+  if (options.confirmBulkDelete) {
+    headers['X-CineTrack-Confirm-Drop'] = '1';
+  }
+
   try {
     const response = await fetch('/api/data', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
-    return response.ok;
-  } catch (error) {
+
+    let bodyJson: any = null;
+    try {
+      bodyJson = await response.json();
+    } catch {
+      bodyJson = null;
+    }
+
+    if (response.ok) {
+      if (typeof bodyJson?.revision === 'number') {
+        setLastKnownServerRevision(bodyJson.revision);
+      }
+      return {
+        ok: true,
+        status: response.status,
+        revision: bodyJson?.revision,
+        updatedAt: bodyJson?.updatedAt,
+      };
+    }
+
+    if (
+      response.status === 409 &&
+      (bodyJson?.code === 'revision_conflict' || bodyJson?.code === 'sudden_item_drop')
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        conflict: {
+          code: bodyJson.code,
+          message: bodyJson.status_message || 'Sunucu veri çakışması algılandı.',
+          currentRevision: bodyJson.currentRevision,
+          expectedRevision: bodyJson.expectedRevision,
+          existingItems: bodyJson.existingItems,
+          incomingItems: bodyJson.incomingItems,
+          serverDocument: bodyJson.serverDocument,
+        },
+        errorMessage: bodyJson.status_message,
+      };
+    }
+
+    return {
+      ok: false,
+      status: response.status,
+      errorMessage: bodyJson?.status_message || `Sunucu kaydı başarısız (${response.status}).`,
+    };
+  } catch (error: any) {
     console.error('CineTrack: yerel veri dosyasına yazılamadı.', error);
-    return false;
+    return {
+      ok: false,
+      status: 0,
+      errorMessage: error?.message || 'Ağ bağlantı hatası.',
+    };
+  }
+}
+
+export async function pushServerData(payload: DataDocument): Promise<boolean> {
+  const res = await pushServerDataDetailed(payload);
+  return res.ok;
+}
+
+export async function fetchServerBackups(): Promise<ServerBackupMetadata[]> {
+  try {
+    const res = await fetch('/api/data/backups', {
+      cache: 'no-store',
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.backups) ? data.backups : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function restoreServerBackup(backupId: string): Promise<DataDocument | null> {
+  try {
+    const res = await fetch('/api/data/restore', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ backupId }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (typeof data?.revision === 'number') {
+      setLastKnownServerRevision(data.revision);
+    }
+    return data?.document || null;
+  } catch {
+    return null;
   }
 }
 
@@ -316,4 +533,3 @@ export function getTmdbSourceDescription(source: TmdbDataSource, staleReason?: s
       return 'Veri kaynağı henüz belirlenmedi.';
   }
 }
-

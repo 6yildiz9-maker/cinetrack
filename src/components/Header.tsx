@@ -3,6 +3,7 @@ import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
 import { SavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { TmdbItem } from '../types/tmdb';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HeaderProps {
   profileName: string;
@@ -35,6 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const searchRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
@@ -57,6 +59,22 @@ export const Header: React.FC<HeaderProps> = ({
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalSlash = (event: KeyboardEvent) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+        return;
+      }
+      event.preventDefault();
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+    window.addEventListener('keydown', handleGlobalSlash);
+    return () => window.removeEventListener('keydown', handleGlobalSlash);
   }, []);
 
   useEffect(
@@ -182,6 +200,7 @@ export const Header: React.FC<HeaderProps> = ({
             <use href="#icon-search"></use>
           </svg>
           <input
+            ref={inputRef}
             id="searchInput"
             type="search"
             role="combobox"
@@ -192,9 +211,9 @@ export const Header: React.FC<HeaderProps> = ({
             value={query}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="TMDB'de film veya dizi ara..."
+            placeholder="TMDB'de film veya dizi ara… (Kısayol: /)"
             autoComplete="off"
-            aria-label="Film veya dizi ara"
+            aria-label="Film veya dizi ara (Kısayol: /)"
           />
           {query && (
             <button
@@ -341,6 +360,8 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             </span>
           )}
+
+          <PWAInstallButton />
 
           <button
             id="profileButton"

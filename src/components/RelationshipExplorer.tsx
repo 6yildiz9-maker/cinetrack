@@ -737,6 +737,8 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
           >
             <option value="all">Tüm ilişkiler</option>
             <option value="semantic">Anlamsal benzerlik (özet/tür)</option>
+            <option value="atmosphere">Atmosferik / duygusal yakınlık</option>
+            <option value="contrast">Karşıt ton / tamamlayıcı deneyim</option>
             <option value="person">Kişi bağlantısı</option>
             <option value="universe">Seri / evren</option>
             {mode === 'taste-map' && <option value="personal">Kişisel uyum</option>}
@@ -790,8 +792,8 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
                             {node.kind === 'source' && (
                               <span className="relationship-list-badge is-source">Kaynak Yapım</span>
                             )}
-                            <span className="relationship-list-badge is-score">
-                              %{node.personalScore} Uyum
+                            <span className="relationship-list-badge is-score tabular-nums">
+                              Uyum: {node.personalScore}/100
                             </span>
                           </span>
                         </button>
@@ -1039,6 +1041,12 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             </span>
             <span>
               <i className="legend-line legend-line-semantic" /> Özet / tür benzerliği
+            </span>
+            <span>
+              <i className="legend-line legend-line-atmosphere" /> Atmosferik yakınlık
+            </span>
+            <span>
+              <i className="legend-line legend-line-contrast" /> Karşıt ton
             </span>
             <span>
               <i className="legend-line legend-line-person" /> Kişi bağlantısı

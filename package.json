@@ -9,7 +9,7 @@
     "build": "vite build",
     "start": "node server.ts",
     "lint": "eslint src server.ts && tsc --noEmit",
-    "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs"
+    "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs tests/phases-all.test.mjs"
   },
   "dependencies": {
     "express": "^5.3.0",
@@ -30,6 +30,7 @@
     "tsx": "^4.23.15",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.72.0",
-    "vite": "^8.3.4"
+    "vite": "^8.3.4",
+    "vite-plugin-pwa": "^2.0.0"
   }
 }

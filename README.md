@@ -1,42 +1,52 @@
-# CineTrack (React + TypeScript)
+# CineTrack (React 19 + TypeScript + Express + PWA)
 
-TMDB destekli modern ve kişisel film ve dizi takip uygulaması. React 19, TypeScript, Express ve Vite ile yeniden yazılmıştır.
+TMDB metaverileriyle çalışan, tamamen deterministik (kural tabanlı) öneri ve ilişki keşif motoruna sahip, kişisel ve yerel (`127.0.0.1:3000`) film/dizi takip uygulaması.
 
-## Özellikler
+## Öne Çıkan Özellikler
 
-- **Canlı TMDB Kataloğu**: Güncel trendler, popüler filmler ve diziler, yüksek puanlı yapımlar, yakında ve yayında olan içerikler.
-- **Canlı Arama & Typeahead**: Arama kutusuna yazıldıkça anlık eşleşmeler, afişler ve izleme durumu rozetleriyle gösterilir.
-- **Sana Özel Öneri Motoru**: Kişisel puanlarınız, tamamlanan/izlenen içerikler, sevilen oyuncular ve yönetmenler, türler, hikâye anahtar kelimeleri ve kadro uyumu gibi 15 sinyali birleştiren kişiselleştirilmiş öneriler.
-- **Çoklu Profil Yönetimi**: Yerel profiller oluşturabilir, profiller arasında geçiş yapabilir, her profil için ayrı izleme listesi ve öneri tercihleri tutabilirsiniz.
-- **Bölüm ve Sezon Takibi**: Dizilerde sezon ve bölüm bazlı izleme ilerlemesi, tamamlanma yüzdesi ve sıradaki bölüm göstergesi.
-- **Türkiye Yayın Platformları**: Netflix, Prime Video, Disney+, BluTV gibi platform filtreleri ve içerik detaylarında nerede izlenebileceği bilgisi.
-- **Kişisel Puanlama & Durumlar**: 10 üzerinden kişisel puanlama, "İzliyorum", "İzlenecek", "Tamamlandı" durumları.
-- **Yayın Hatırlatıcıları**: Takip ettiğiniz yapımların yeni bölüm veya çıkış tarihine 3 gün veya daha az kaldığında bildirim gönderme.
-- **Yedek Alma ve İçe Aktarma**: JSON biçiminde dışa aktarma, mevcut listeyle birleştirme veya üzerine yazma seçenekleriyle içe aktarma.
-- **Özel İçerik Ekleme**: TMDB'de yer almayan yapımları özel afiş, yıl ve puanla listenize ekleyebilme.
+- **Deterministik Sana Özel Öneri Motoru (v3) & Öneri Açıklaması (Explain Recommendation)**: Kişisel puanlar, tamamlanan/izlenen yapımlar, favori oyuncular, yönetmenler, türler, hikâye anahtar kelimeleri ve kadro uyumundan oluşan **15 ağırlıklı sinyali** Bayesyen düzeltme ve zaman aşımıyla birleştirir; detay penceresinde *"Neden Önerildi?"* sinyal dağılımını şeffaf biçimde gösterir.
+- **Yaşam Döngüsü Halkaları (`ring0` / `ring1` / `ring2`)**:
+  - `ring0`: Daha önce hiç önerilmemiş taze adaylar (her yenilemede önceliklidir).
+  - `ring1`: Son öneri grubunda gösterilmiş dinlendirilen adaylar (ardışık yenilemede tekrar seçilmez).
+  - `ring2`: Daha önce gösterilmiş ancak listeye eklenmemiş adaylar (`priorityScore` cezası alır; saf `tasteScore` / `Uyum: X/100` bozulmaz, yalnızca yeterli `ring0` olmadığında yedek olarak seçilir).
+- **500 + 500 Bağımsız Aday Havuzu**: Film ve dizi aday havuzları birbirinden bağımsız yönetilir; `Tümü` modunda 10 film + 10 dizi dengesi korunur.
+- **İlişki Keşif Motoru (`relationship-v3`)**: Evren/seri (`universe`), kişi (`person`), özet/tür benzerliği (`semantic`), atmosferik yakınlık (`atmosphere`) ve karşıt ton (`contrast`) kanıtlarını zevk haritası verisini kirletmeden IndexedDB üzerinde önbellekler.
+- **Zevk DNA Özeti, Ortak İzleme Kesişimi ve Yolculuk Zaman Çizelgesi**: Profil istatistiklerinde baskın dönem/tür karakteri, iki yerel profil arasında *"Birlikte Ne İzlesek?"* kesişimi ve kronolojik izleme yolculuğu.
+- **Sezon Yayın Takvimi ve `.ics` Takvim Dışa Aktarma**: İzlenen dizilerin yaklaşan bölüm ve vizyon tarihlerini listeler; RFC 5545 uyumlu `.ics` dosyası üretir.
+- **Letterboxd / IMDb CSV ve 7 Döner Sunucu Yedeği**: CSV içe/dışa aktarma, JSON yedekleme ve sunucu tarafında son 7 anlık görüntüyü (`data/backups/`) atomik geri yükleme + ani öğe düşüşü koruması (`sudden_item_drop`).
+- **PWA ve Çevrimdışı Senkronizasyon Kuyruğu**: Kurulabilir Web App Manifest, Workbox çalışma zamanı önbelleği, çevrimdışı değişiklik kuyruğu ve `ETag` / `If-Match` tabanlı `409 Conflict` veri kaybı koruması.
 
-## Geliştirme ve Çalıştırma
+## Kurulum ve Çalıştırma (Sıfır Zorunlu Ortam Değişkeni)
 
-1. Node.js kurulu olduğundan emin olun. Windows'ta uygulamayı başlatmak için proje klasöründeki `start.bat` dosyasına çift tıklayın; eksik npm paketleri otomatik yüklenir. Sonra tarayıcıda `http://127.0.0.1:3000` adresini açın. Mac/Linux için:
+1. Bağımlılıkları yükleyin:
    ```bash
    npm install
-   npm run dev
    ```
-2. İsteğe bağlı: TMDB_API_KEY olmadan uygulama demo modunda çalışır. Canlı TMDB verileri için ortam değişkenlerini ayarlayın:
+2. Canlı TMDB kataloğu için isteğe bağlı `.env` dosyasını oluşturup yalnızca `TMDB_API_KEY` değerini ekleyin (`TMDB_API_KEY` girilmezse uygulama yerleşik örnek katalogla çalışır):
    ```bash
    cp .env.example .env
    ```
-   Uygulama varsayılan olarak yalnızca bu bilgisayardan `http://127.0.0.1:3000` adresinde erişilebilir.
-   Yerel ağ üzerinden erişimi özellikle etkinleştirmek için `CINETRACK_HOST=0.0.0.0` ayarlayın; bu durumda profil verilerinize ağdaki cihazlar erişebilir.
-3. Derleme:
+3. Geliştirme sunucusunu başlatın (`http://127.0.0.1:3000`):
+   ```bash
+   npm run dev
+   ```
+4. Üretim derlemesi ve başlatma (`--omit=dev` uyumlu, Node.js yerel TypeScript desteğiyle):
    ```bash
    npm run build
+   npm start
    ```
-4. Testleri çalıştırma:
-   ```bash
-   npm test
-   ```
-5. Tip kontrolü (lint):
-   ```bash
-   npm run lint
-   ```
+
+## Doğrulama ve Test Zinciri
+
+```bash
+npm run lint     # ESLint + tsc --noEmit tip denetimi
+npm test         # Çekirdek, golden skorlama, ilişki grafiği ve entegrasyon testleri
+npm run build    # Vite + PWA üretim paketi oluşturma
+```
+
+## Mimari ve Yerel Güvenlik Notları
+
+- Uygulama varsayılan olarak yalnızca yerel geri döngü arayüzünde (`CINETRACK_HOST = '127.0.0.1'`, port `3000`) çalışır.
+- İstemci tarafında hiçbir `VITE_` önekli sır veya anahtar kullanılmaz; `TMDB_API_KEY` yalnızca sunucu tarafındaki `/api/tmdb` vekil katmanında okunur ve istemci paketine (`dist/`) asla gömülmez.
+- Yazma uçları (`PUT /api/data`, `POST /api/data/restore`) 2 MB sabit JSON boyut sınırından (`maxDataBytes = 2_000_000`), çapraz kaynak (`Origin`) kontrolünden, `If-Match` revizyon denetiminden ve ani öğe düşüşü korumasından geçer.
+- Katalog verileri [The Movie Database (TMDB)](https://www.themoviedb.org/) tarafından sağlanır; bu ürün TMDB tarafından onaylanmamış veya sertifikalandırılmamıştır.

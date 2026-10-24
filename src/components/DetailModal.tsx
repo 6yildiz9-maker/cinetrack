@@ -9,6 +9,7 @@ import {
   getTasteRingLabel,
 } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
+import { formatMatchBadge } from '../i18n';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface DetailModalProps {
@@ -48,6 +49,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const [details, setDetails] = useState<any>(null);
   const [providers, setProviders] = useState<any>(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [overviewFallbackUsed, setOverviewFallbackUsed] = useState<boolean>(false);
   const [status, setStatus] = useState<'watching' | 'watchlist' | 'completed'>('watchlist');
   const [personalRating, setPersonalRating] = useState<number | ''>('');
   const [currentSeason, setCurrentSeason] = useState<number>(1);
@@ -59,27 +62,57 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     if (!item || !isOpen) {
       setDetails(null);
       setProviders(null);
+      setDetailError(null);
+      setOverviewFallbackUsed(false);
       return;
     }
+
+    setDetailError(null);
+    setOverviewFallbackUsed(false);
 
     if (item.custom) {
       setDetails({ ...item, media_type: item.media_type || 'movie' });
       return;
     }
 
-    // Fetch full details
+    // Fetch full details with automatic en-US overview fallback when tr-TR overview is empty
     let active = true;
     const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
     fetchTmdb(`/${mediaType}/${item.id}`, { append_to_response: 'credits,videos' })
-      .then((data) => {
+      .then(async (data) => {
         if (!active || !data) return;
-        setDetails({ ...data, media_type: mediaType });
+        let resolvedOverview = typeof data.overview === 'string' ? data.overview.trim() : '';
+        let usedFallback = false;
+
+        if (!resolvedOverview && !String(item.overview || '').trim()) {
+          try {
+            const enData = await fetchTmdb(`/${mediaType}/${item.id}`, { language: 'en-US' });
+            if (active && typeof enData?.overview === 'string' && enData.overview.trim()) {
+              resolvedOverview = enData.overview.trim();
+              usedFallback = true;
+            }
+          } catch {
+            // Keep empty overview if fallback fails
+          }
+        }
+
+        if (!active) return;
+        setOverviewFallbackUsed(usedFallback);
+        setDetails({
+          ...data,
+          overview: resolvedOverview || data.overview || '',
+          media_type: mediaType,
+        });
         if (mediaType === 'tv' && data.seasons) {
           const counts = buildSeasonCounts(data);
           setSeasonCounts(counts);
         }
       })
-      .catch((err) => console.warn('Details fetch error:', err));
+      .catch((err) => {
+        if (!active) return;
+        console.warn('Details fetch error:', err);
+        setDetailError(err?.message || 'İçerik ayrıntıları yüklenemedi.');
+      });
 
     // Fetch providers
     setLoadingProviders(true);
@@ -260,22 +293,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               ? ` | ${currentItem.episode_run_time[0]} dk/bölüm`
               : ''}
             {Number(currentItem.matchScore || item?.matchScore) > 0 && (
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  background: 'linear-gradient(135deg, #e11d48, #f43f5e)',
-                  color: '#ffffff',
-                  fontWeight: 800,
-                  fontSize: '11px',
-                  padding: '2px 8px',
-                  borderRadius: '6px',
-                  marginLeft: '6px',
-                  boxShadow: '0 2px 8px rgba(225, 29, 72, 0.4)',
-                }}
-              >
-                🎯 %{Math.round(Number(currentItem.matchScore || item?.matchScore))} Sana Özel Uyumu
+              <span className="detail-match-badge">
+                · {formatMatchBadge(Number(currentItem.matchScore || item?.matchScore))}
                 {(currentItem.ring || item?.ring) && ` · ${getTasteRingLabel(currentItem.ring || item?.ring)}`}
               </span>
             )}
@@ -333,9 +352,95 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             )}
           </div>
 
+          {detailError && (
+            <div className="detail-inline-error" role="alert">
+              {detailError}
+            </div>
+          )}
+
+          {overviewFallbackUsed && (
+            <span className="detail-overview-fallback-note">
+              Türkçe özet bulunamadı; İngilizce özet gösteriliyor.
+            </span>
+          )}
+
           <p id="detailOverview" className="detail-overview">
             {currentItem.overview || 'Bu içerik için açıklama bulunmuyor.'}
           </p>
+
+          {(() => {
+            const entry = currentItem.tasteMapEntry || item?.tasteMapEntry;
+            const rawParts: Record<string, number> = entry?.parts || currentItem.parts || item?.parts || {};
+            const rawTags: string[] = Array.isArray(entry?.tags)
+              ? entry.tags
+              : Array.isArray(currentItem.tags)
+              ? currentItem.tags
+              : [];
+            const matchVal = Number(entry?.tasteScore ?? currentItem.tasteScore ?? currentItem.matchScore ?? item?.matchScore ?? 0);
+
+            const signalLabels: Record<string, string> = {
+              genre: 'Tür Uyumu',
+              actor: 'Oyuncu Tercihi',
+              genreActor: 'Tür & Kadro Sinerjisi',
+              castHarmony: 'Kadro Uyumu',
+              director: 'Yönetmen İmzası',
+              keywords: 'Tema & Anahtar Kelimeler',
+              story: 'Hikâye Örgüsü Yakınlığı',
+              lovedSim: 'Sevilen Yapım Benzerliği',
+              quality: 'Bayesyen Kalite Sinyali',
+              exploration: 'Keşif Dengesi',
+              popularity: 'Güncel İlgi',
+              context: 'Ruh Hali / Dönem Uyumu',
+              franchise: 'Evren / Seri Bağı',
+              mediaType: 'Format Tercihi',
+              sourceSignal: 'Çoklu Kaynak Doğrulaması',
+            };
+
+            const topSignals = Object.entries(rawParts)
+              .filter(([k, val]) => signalLabels[k] && typeof val === 'number' && Number.isFinite(val) && val > 0.52)
+              .map(([k, val]) => ({
+                key: k,
+                label: signalLabels[k],
+                percent: Math.max(1, Math.min(100, Math.round(val * 100))),
+              }))
+              .sort((a, b) => b.percent - a.percent)
+              .slice(0, 5);
+
+            if (matchVal <= 0 || (topSignals.length === 0 && rawTags.length === 0)) {
+              return null;
+            }
+
+            return (
+              <section className="explain-rec-box" aria-labelledby="explainRecTitle">
+                <div className="explain-rec-head">
+                  <strong id="explainRecTitle">Neden Önerildi?</strong>
+                  <span className="explain-rec-score">{formatMatchBadge(matchVal)}</span>
+                </div>
+                {rawTags.length > 0 && (
+                  <div className="explain-rec-tags">
+                    {rawTags.map((tag) => (
+                      <span key={tag} className="explain-rec-tag">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {topSignals.length > 0 && (
+                  <div className="explain-rec-signals">
+                    {topSignals.map((sig) => (
+                      <div key={sig.key} className="explain-rec-row">
+                        <span className="explain-rec-label">{sig.label}</span>
+                        <span className="explain-rec-bar" aria-hidden="true">
+                          <span className="explain-rec-fill" style={{ width: `${sig.percent}%` }} />
+                        </span>
+                        <span className="explain-rec-val">{sig.percent}/100</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })()}
 
           <div id="detailSeasons" className="detail-meta">
             {currentItem.number_of_seasons

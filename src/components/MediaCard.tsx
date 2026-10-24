@@ -2,6 +2,7 @@ import React from 'react';
 import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
 import { SavedItem, TasteRing, reminderDaysUntil, resolveAirDate, makeMediaKey, getTasteRingLabel } from '../core/cinetrack-core';
 import { TmdbItem } from '../types/tmdb';
+import { formatMatchBadge } from '../i18n';
 
 interface MediaCardProps {
   item: TmdbItem;
@@ -125,6 +126,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             src={poster}
             alt=""
             loading="lazy"
+            referrerPolicy="no-referrer"
             onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
           />
         )}
@@ -153,13 +155,14 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             : '';
 
           if (roundedScore !== null) {
+            const label = formatMatchBadge(roundedScore);
             return (
               <span
-                className="match-badge"
-                title={`Sana Özel zevk uyumluluğu: %${roundedScore}${ringKey ? ` (${getTasteRingLabel(ringKey)})` : ''}`}
-                aria-label={`Uyumluluk: %${roundedScore}`}
+                className="match-badge tabular-nums"
+                title={`Sana Özel zevk uyumu: ${roundedScore}/100${ringKey ? ` (${getTasteRingLabel(ringKey)})` : ''}`}
+                aria-label={label}
               >
-                %{roundedScore} Uyum
+                {label}
                 {ringSuffix && <span className="match-badge-ring"> · {ringSuffix}</span>}
               </span>
             );

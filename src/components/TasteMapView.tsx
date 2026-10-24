@@ -581,18 +581,17 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                         {/* Uyum ve Öncelik Rozetleri */}
                         <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 items-start">
                           <span
-                            className="bg-rose-600/90 backdrop-blur-md text-white text-[11px] font-bold px-2 py-0.5 rounded shadow flex items-center gap-1"
-                            title={`Saf Zevk Uyumu: %${entry.tasteScore ?? entry.matchScore} (İçeriğin kullanıcı profiline kalıcı zevk uyumu)`}
+                            className="bg-rose-600/90 backdrop-blur-md text-white text-[11px] font-bold px-2 py-0.5 rounded shadow flex items-center gap-1 tabular-nums"
+                            title={`Saf Zevk Uyumu: Uyum: ${entry.tasteScore ?? entry.matchScore}/100 (İçeriğin kullanıcı profiline kalıcı zevk uyumu)`}
                           >
-                            <span>🎯 %{entry.tasteScore ?? entry.matchScore}</span>
-                            <span className="text-[9px] font-normal opacity-90">Uyum</span>
+                            <span>Uyum: {entry.tasteScore ?? entry.matchScore}/100</span>
                           </span>
                           {entry.priorityScore != null && entry.priorityScore < (entry.tasteScore ?? entry.matchScore) && (
                             <span
-                              className="bg-slate-900/90 border border-amber-500/50 backdrop-blur-md text-amber-300 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded shadow"
-                              title={`Gösterim / atlanma cezası sonrası seçim önceliği: %${entry.priorityScore} (Saf zevk uyumu %${entry.tasteScore ?? entry.matchScore} korunuyor)`}
+                              className="bg-slate-900/90 border border-amber-500/50 backdrop-blur-md text-amber-300 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded shadow tabular-nums"
+                              title={`Gösterim / atlanma cezası sonrası seçim önceliği: ${entry.priorityScore}/100 (Saf zevk uyumu ${entry.tasteScore ?? entry.matchScore}/100 korunuyor)`}
                             >
-                              ⚡ %{entry.priorityScore} Öncelik
+                              Öncelik: {entry.priorityScore}/100
                             </span>
                           )}
                         </div>

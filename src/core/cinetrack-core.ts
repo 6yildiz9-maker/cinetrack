@@ -89,40 +89,23 @@ export interface DataDocument {
   updatedAt?: string;
 }
 
-/**
- * Standart film/dizi kimlik anahtarı üretir.
- * Örn: makeMediaKey('movie', 872585) → "movie:872585"
- * Örn: makeMediaKey('tv', '1396') → "tv:1396"
- * Örn: makeMediaKey(item) → "movie:872585"
- */
-export function makeMediaKey(typeOrItem: any, id?: any): string {
-  if (typeOrItem && typeof typeOrItem === 'object') {
-    const mediaType = typeOrItem.media_type === 'tv' ? 'tv' : 'movie';
-    const itemId = typeOrItem.id != null ? String(typeOrItem.id) : '';
-    return `${mediaType}:${itemId}`;
-  }
-  const mediaType = String(typeOrItem) === 'tv' ? 'tv' : 'movie';
-  const itemId = id != null ? String(id) : '';
-  return `${mediaType}:${itemId}`;
-}
+import {
+  makeMediaKey,
+  parseMediaKey,
+  canonicalizeMediaKey,
+  canonicalizeMediaKeyList,
+  mergeTasteMapEntriesOnCollision,
+  migratePersistentTasteMapData,
+} from './keys.ts';
 
-/**
- * Hem iki nokta üst üste ("movie:872585") hem de eski tire ayracını ("movie-872585")
- * güvenli bir şekilde ayrıştırır ve standart yapıya dönüştürür.
- */
-export function parseMediaKey(key: unknown): { type: 'movie' | 'tv'; id: string } | null {
-  if (typeof key !== 'string' || !key.trim()) return null;
-  const trimmed = key.trim();
-  const colonMatch = trimmed.match(/^(movie|tv):([A-Za-z0-9_-]+)$/);
-  if (colonMatch) {
-    return { type: colonMatch[1] as 'movie' | 'tv', id: colonMatch[2] };
-  }
-  const hyphenMatch = trimmed.match(/^(movie|tv)-([A-Za-z0-9_-]+)$/);
-  if (hyphenMatch) {
-    return { type: hyphenMatch[1] as 'movie' | 'tv', id: hyphenMatch[2] };
-  }
-  return null;
-}
+export {
+  makeMediaKey,
+  parseMediaKey,
+  canonicalizeMediaKey,
+  canonicalizeMediaKeyList,
+  mergeTasteMapEntriesOnCollision,
+  migratePersistentTasteMapData,
+};
 
 export function normalizeFavoriteActor(raw: any): FavoriteActorInfo | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -425,8 +408,9 @@ export function filterDislikedByType(
   mediaType: string = 'all'
 ): string[] {
   if (!Array.isArray(dislikedKeys)) return [];
-  if (mediaType !== 'movie' && mediaType !== 'tv') return [...dislikedKeys];
-  return dislikedKeys.filter((key) => key.startsWith(`${mediaType}:`));
+  const canonical = canonicalizeMediaKeyList(dislikedKeys);
+  if (mediaType !== 'movie' && mediaType !== 'tv') return canonical;
+  return canonical.filter((key) => key.startsWith(`${mediaType}:`));
 }
 
 export const TARGET_RECOMMENDATION_COUNT = 20;
@@ -1714,23 +1698,26 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
       const key = getTasteMapStorageKey(profileId);
       const raw = localStorage.getItem(key);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.entries === 'object') {
+        const rawParsed = JSON.parse(raw);
+        if (rawParsed && typeof rawParsed.entries === 'object') {
+          const migration = migratePersistentTasteMapData(rawParsed, MAX_IMPRESSION_HISTORY_PER_ENTRY);
+          const parsed = migration.data;
           const lastRecommendedKeys: string[] = Array.isArray(parsed.lastRecommendedKeys)
             ? parsed.lastRecommendedKeys
             : [];
-          let needsMigrationWrite = false;
+          let needsMigrationWrite = migration.changed;
 
           const sanitizedEntries: Record<string, TasteMapEntry> = {};
           for (const [k, v] of Object.entries(parsed.entries || {})) {
             const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
-            const mediaKey = sanitized.mediaKey || k;
+            const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
             const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
-            if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0') {
+            if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
               needsMigrationWrite = true;
             }
-            sanitizedEntries[k] = {
+            sanitizedEntries[mediaKey] = {
               ...sanitized,
+              mediaKey,
               ring: inferredRing,
               initialRing: 'ring0',
             };
@@ -1740,13 +1727,18 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
           if (parsed.archivedEntries && typeof parsed.archivedEntries === 'object') {
             for (const [k, v] of Object.entries(parsed.archivedEntries)) {
               const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
-              const mediaKey = sanitized.mediaKey || k;
+              const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
+              if (sanitizedEntries[mediaKey]) {
+                needsMigrationWrite = true;
+                continue;
+              }
               const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
-              if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0') {
+              if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
                 needsMigrationWrite = true;
               }
-              sanitizedArchived[k] = {
+              sanitizedArchived[mediaKey] = {
                 ...sanitized,
+                mediaKey,
                 ring: inferredRing,
                 initialRing: 'ring0',
               };
@@ -1799,7 +1791,7 @@ export function markTasteMapItemStatus(
   status: 'saved' | 'disliked' | 'hidden' | 'active'
 ): PersistentTasteMapData {
   if (!tasteMap) return tasteMap;
-  const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
+  const key = typeof itemOrKey === 'string' ? canonicalizeMediaKey(itemOrKey) : makeMediaKey(itemOrKey);
   let changed = false;
   if (tasteMap.entries && tasteMap.entries[key]) {
     tasteMap.entries[key].status = status;
@@ -2216,6 +2208,22 @@ export function updateTasteMapWithBatch({
     weightsSignature,
   };
 
+  const preservedBalancedItems = Array.isArray(newRecommendedItems)
+    ? newRecommendedItems.map((entry: any) => {
+        if (!entry || typeof entry !== 'object') return entry;
+        const cand = entry.candidate || entry;
+        const selectionRing: 'ring0' | 'ring2' =
+          entry.selectionRing === 'ring2' || entry.ring === 'ring2' || cand?.selectionRing === 'ring2'
+            ? 'ring2'
+            : 'ring0';
+        return {
+          ...entry,
+          ring: selectionRing,
+          selectionRing,
+        };
+      })
+    : newRecommendedItems;
+
   return {
     profileId: tasteMap.profileId,
     profileSignature: profileSignature ?? tasteMap.profileSignature ?? '',
@@ -2227,7 +2235,7 @@ export function updateTasteMapWithBatch({
     archivedEntries: updatedArchivedEntries,
     lastRecommendedKeys: Array.from(newKeys),
     lastBatchTimestamp: now,
-    cachedBalancedItems: newRecommendedItems,
+    cachedBalancedItems: preservedBalancedItems,
     lastTargetType: targetType || tasteMap.lastTargetType || 'all',
     lastExplanation: explanation || tasteMap.lastExplanation || '',
     summary: summary || tasteMap.summary,
@@ -2262,7 +2270,7 @@ export function archiveTasteMapEntry(
   reason: 'evicted_from_pool' | 'status_change' | 'manual' = 'manual'
 ): PersistentTasteMapData {
   if (!tasteMap) return tasteMap;
-  const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
+  const key = typeof itemOrKey === 'string' ? canonicalizeMediaKey(itemOrKey) : makeMediaKey(itemOrKey);
   if (!tasteMap.entries?.[key]) return tasteMap;
 
   const now = new Date().toISOString();
@@ -2293,7 +2301,7 @@ export function restoreTasteMapEntry(
   itemOrKey: any
 ): PersistentTasteMapData {
   if (!tasteMap) return tasteMap;
-  const key = typeof itemOrKey === 'string' ? itemOrKey : makeMediaKey(itemOrKey);
+  const key = typeof itemOrKey === 'string' ? canonicalizeMediaKey(itemOrKey) : makeMediaKey(itemOrKey);
   if (!tasteMap.archivedEntries?.[key]) return tasteMap;
 
   const now = new Date().toISOString();
@@ -3761,14 +3769,25 @@ export function isCandidateEligibleInPool(
   preferences: Preferences | undefined | null
 ): boolean {
   if (!item || item.id == null) return false;
-  const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+  const mediaType = item.media_type === 'tv' ? 'tv' : item.media_type === 'movie' ? 'movie' : item.title ? 'movie' : 'tv';
   const key = makeMediaKey(mediaType, item.id);
+  const legacyKey = `${mediaType}-${item.id}`;
 
   // Durum 4: İlgilenmiyorum (disliked)
-  if (preferences?.disliked && preferences.disliked.includes(key)) return false;
+  if (
+    preferences?.disliked &&
+    (preferences.disliked.includes(key) || preferences.disliked.includes(legacyKey))
+  ) {
+    return false;
+  }
 
   // Durum 5: Gizle (hidden)
-  if (preferences?.hidden && preferences.hidden.includes(key)) return false;
+  if (
+    preferences?.hidden &&
+    (preferences.hidden.includes(key) || preferences.hidden.includes(legacyKey))
+  ) {
+    return false;
+  }
 
   // Durum 1, 2, 3: Kayıtlı yapımlar (completed, watchlist, watching)
   if (savedItems && isItemSaved(savedItems, item, mediaType)) return false;
@@ -4388,6 +4407,7 @@ export interface ReplenishCandidatePoolParams {
   force?: boolean;
   concurrency?: number;
   maxTotalRequests?: number;
+  onProgress?: (step: string) => void;
 }
 
 export interface PoolQueueTask {
@@ -4421,8 +4441,10 @@ export async function replenishCandidatePool({
   force = false,
   concurrency = 3,
   maxTotalRequests = 60,
+  onProgress,
 }: ReplenishCandidatePoolParams): Promise<PersistentCandidatePoolData> {
   const lockKey = `${profileId}:${mediaType}`;
+  const labelPrefix = mediaType === 'tv' ? 'Dizi' : 'Film';
 
   // Kilit ve iptal davranışını birbirinden ayır:
   // Çağıranın iptal sinyali (signal) yalnızca çağıranın beklemesini iptal eder,
@@ -4430,6 +4452,7 @@ export async function replenishCandidatePool({
   return poolReplenishmentLock.acquire(
     lockKey,
     async () => {
+      onProgress?.(`${labelPrefix} aday havuzu doğrulanıyor…`);
       const poolData = loadPersistentPoolData(profileId, mediaType);
 
       // 1. Beş durum kontrolü ile mevcut havuzu temizle
@@ -4440,6 +4463,8 @@ export async function replenishCandidatePool({
         savePersistentPoolData(profileId, poolData);
         return poolData;
       }
+
+      onProgress?.(`${labelPrefix} keşif kaynaklarından yeni adaylar taranıyor…`);
 
       const existingItemMap = new Map<string, PoolCandidateItem>();
       for (const it of poolData.items) {
@@ -4725,6 +4750,7 @@ export async function replenishCandidatePool({
       const workers = Array.from({ length: workerCount }, () => worker());
       await Promise.all(workers);
 
+      onProgress?.(`${labelPrefix} havuzu tür ve dönem dengesine göre optimize ediliyor…`);
       // 5. Çok boyutlu denge kur (tür, dönem, popülerlik) ve 500 hedefine kırp
       poolData.items = balanceCandidatePool(poolData.items, POOL_TARGET_CAPACITY);
       poolData.updatedAt = new Date().toISOString();

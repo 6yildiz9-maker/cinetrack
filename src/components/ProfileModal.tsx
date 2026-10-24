@@ -1,16 +1,30 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Profile, Preferences, SavedItem } from '../core/cinetrack-core';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { DataDocument, Profile, Preferences, SavedItem } from '../core/cinetrack-core';
+import {
+  buildMediaJourneyTimeline,
+  buildTasteDnaProfile,
+  computeProfileWatchlistIntersection,
+  exportItemsToCsv,
+  importItemsFromCsv,
+} from '../core/exporters';
+import {
+  fetchServerBackups,
+  restoreServerBackup,
+  type ServerBackupMetadata,
+} from '../services/api';
 import { PROVIDER_OPTIONS, calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface ProfileModalProps {
   isOpen: boolean;
   profiles: Profile[];
+  activeProfile?: Profile;
   activeProfileId: string;
   activeProfileName: string;
   preferences: Preferences;
   savedItems: SavedItem[];
   genresMap: Record<number, string>;
+  tasteEntries?: Record<string, any>;
   syncStatus: string;
   onClose: () => void;
   onSaveProfileName: (name: string) => void;
@@ -20,6 +34,8 @@ interface ProfileModalProps {
   onToggleReminders: () => void;
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
+  onImportCsvItems?: (items: SavedItem[]) => void;
+  onApplyRestoredDocument?: (doc: DataDocument) => void;
   isDemo?: boolean;
   onToggleDemoMode?: () => void;
 }
@@ -39,11 +55,13 @@ function formatMinutes(totalMinutes: number): { primary: string; secondary: stri
 export const ProfileModal: React.FC<ProfileModalProps> = ({
   isOpen,
   profiles,
+  activeProfile,
   activeProfileId,
   activeProfileName,
   preferences,
   savedItems,
   genresMap,
+  tasteEntries = {},
   syncStatus,
   onClose,
   onSaveProfileName,
@@ -53,6 +71,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onToggleReminders,
   onExportBackup,
   onImportBackupFile,
+  onImportCsvItems,
+  onApplyRestoredDocument,
   isDemo = false,
   onToggleDemoMode,
 }) => {
@@ -60,12 +80,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [genreMediaTypeFilter, setGenreMediaTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
   const [name, setName] = useState(activeProfileName);
   const [selectedProfileId, setSelectedProfileId] = useState(activeProfileId);
+  const [compareProfileId, setCompareProfileId] = useState<string>('');
   const [newProfileName, setNewProfileName] = useState('');
   const [selectedProviders, setSelectedProviders] = useState<string[]>(preferences.providers);
   const [mood, setMood] = useState<string>(preferences.mood);
   const [importStatus, setImportStatus] = useState('');
+  const [csvStatus, setCsvStatus] = useState('');
+  const [serverBackups, setServerBackups] = useState<ServerBackupMetadata[]>([]);
+  const [loadingBackups, setLoadingBackups] = useState(false);
+  const [backupMessage, setBackupMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useDialogAccessibility(isOpen, onClose);
+
+  const otherProfiles = useMemo(
+    () => profiles.filter((p) => p.id !== activeProfileId),
+    [profiles, activeProfileId]
+  );
 
   useEffect(() => {
     if (isOpen) {
@@ -74,8 +105,46 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setSelectedProviders(preferences.providers);
       setMood(preferences.mood);
       setImportStatus('');
+      setCsvStatus('');
+      setBackupMessage('');
+      if (otherProfiles.length > 0 && !otherProfiles.some((p) => p.id === compareProfileId)) {
+        setCompareProfileId(otherProfiles[0].id);
+      }
     }
-  }, [isOpen, activeProfileName, activeProfileId, preferences]);
+  }, [isOpen, activeProfileName, activeProfileId, preferences, otherProfiles, compareProfileId]);
+
+  const effectiveActiveProfile: Profile = useMemo(
+    () => ({
+      id: activeProfileId,
+      name: activeProfileName,
+      createdAt: activeProfile?.createdAt || '',
+      preferences,
+      items: savedItems,
+      favoriteActors: activeProfile?.favoriteActors || [],
+      isDemo,
+    }),
+    [activeProfileId, activeProfileName, activeProfile, preferences, savedItems, isDemo]
+  );
+
+  const tasteDna = useMemo(
+    () => buildTasteDnaProfile(effectiveActiveProfile, genresMap),
+    [effectiveActiveProfile, genresMap]
+  );
+
+  const journeyTimeline = useMemo(
+    () => buildMediaJourneyTimeline(effectiveActiveProfile, tasteEntries, 15),
+    [effectiveActiveProfile, tasteEntries]
+  );
+
+  const compareProfile = useMemo(
+    () => otherProfiles.find((p) => p.id === compareProfileId) || null,
+    [otherProfiles, compareProfileId]
+  );
+
+  const watchlistOverlap = useMemo(() => {
+    if (!compareProfile) return null;
+    return computeProfileWatchlistIntersection(effectiveActiveProfile, compareProfile);
+  }, [effectiveActiveProfile, compareProfile]);
 
   if (!isOpen) return null;
 
@@ -176,6 +245,76 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       onImportBackupFile(file);
     }
     e.target.value = '';
+  };
+
+  const handleExportCsv = () => {
+    const csvContent = exportItemsToCsv(savedItems);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `cinetrack-${activeProfileId}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setCsvStatus(`${savedItems.length} içerik CSV olarak dışa aktarıldı.`);
+  };
+
+  const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 2_000_000) {
+      setCsvStatus('CSV dosyası 2 MB sınırını aşamaz.');
+      return;
+    }
+    try {
+      const text = await file.text();
+      const result = importItemsFromCsv(text);
+      if (result.importedItems.length === 0) {
+        setCsvStatus('CSV dosyasında içe aktarılabilecek geçerli satır bulunamadı.');
+        return;
+      }
+      onImportCsvItems?.(result.importedItems);
+      setCsvStatus(
+        `${result.importedItems.length} yapım içe aktarıldı (${result.detectedFormat.toUpperCase()} biçimi${
+          result.skippedCount > 0 ? `, ${result.skippedCount} satır atlandı` : ''
+        }).`
+      );
+    } catch {
+      setCsvStatus('CSV dosyası okunamadı.');
+    }
+  };
+
+  const handleLoadServerBackups = async () => {
+    setLoadingBackups(true);
+    setBackupMessage('');
+    try {
+      const list = await fetchServerBackups();
+      setServerBackups(list);
+      if (list.length === 0) {
+        setBackupMessage('Sunucuda henüz döner yedek (snapshot) kaydı bulunmuyor.');
+      }
+    } finally {
+      setLoadingBackups(false);
+    }
+  };
+
+  const handleRestoreSnapshot = async (backupId: string) => {
+    setLoadingBackups(true);
+    setBackupMessage('');
+    try {
+      const doc = await restoreServerBackup(backupId);
+      if (doc) {
+        onApplyRestoredDocument?.(doc);
+        setBackupMessage('Seçilen sunucu yedeği başarıyla geri yüklendi.');
+        const updatedList = await fetchServerBackups();
+        setServerBackups(updatedList);
+      } else {
+        setBackupMessage('Sunucu yedeği geri yüklenemedi.');
+      }
+    } finally {
+      setLoadingBackups(false);
+    }
   };
 
   return (
@@ -443,6 +582,106 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Faz 10: Zevk DNA Özeti */}
+              <div className="profile-tools-section">
+                <h4 className="profile-tools-heading">
+                  <svg className="icon" width="16" height="16" aria-hidden="true">
+                    <use href="#icon-dna"></use>
+                  </svg>
+                  <span>Zevk DNA Özeti</span>
+                </h4>
+                <div className="dna-traits-grid">
+                  {tasteDna.signatureTraits.map((trait) => (
+                    <div key={trait.label} className="dna-trait-item">
+                      <span className="dna-trait-label">{trait.label}</span>
+                      <span className="dna-trait-value">{trait.value}</span>
+                      <span className="dna-trait-detail">{trait.detail}</span>
+                    </div>
+                  ))}
+                </div>
+                {tasteDna.topGenres.length > 0 && (
+                  <p className="dna-inline-meta">
+                    <strong>Baskın Türler:</strong>{' '}
+                    {tasteDna.topGenres.map((g) => `${g.name} (%${g.sharePercent})`).join(' · ')}
+                  </p>
+                )}
+                {tasteDna.topPeople.length > 0 && (
+                  <p className="dna-inline-meta">
+                    <strong>Öne Çıkan İsimler:</strong>{' '}
+                    {tasteDna.topPeople.map((p) => `${p.name} (${p.role})`).join(' · ')}
+                  </p>
+                )}
+              </div>
+
+              {/* Faz 10: Birlikte Ne İzlesek? (İki Profil Kesişimi) */}
+              {otherProfiles.length > 0 && (
+                <div className="profile-tools-section">
+                  <h4 className="profile-tools-heading">Birlikte Ne İzlesek? (Profil Kesişimi)</h4>
+                  <div className="overlap-select-row">
+                    <label htmlFor="compareProfileSelect" className="provider-message">
+                      Karşılaştırılacak profil:
+                    </label>
+                    <select
+                      id="compareProfileSelect"
+                      value={compareProfileId}
+                      onChange={(e) => setCompareProfileId(e.target.value)}
+                    >
+                      {otherProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {watchlistOverlap &&
+                  (watchlistOverlap.commonWatchlist.length > 0 ||
+                    watchlistOverlap.recommendedByOneToOther.length > 0) ? (
+                    <div className="overlap-results-list">
+                      {watchlistOverlap.commonWatchlist.map((item) => (
+                        <div key={`common-${item.media_type}:${item.id}`} className="overlap-row">
+                          <span>{item.title || item.name}</span>
+                          <span className="journey-date">Ortak İzlenecek Listesi</span>
+                        </div>
+                      ))}
+                      {watchlistOverlap.recommendedByOneToOther.map((rec) => (
+                        <div key={`rec-${rec.item.media_type}:${rec.item.id}`} className="overlap-row">
+                          <span>{rec.item.title || rec.item.name}</span>
+                          <span className="journey-date">
+                            {rec.recommenderName} önerisi ({rec.rating}/10)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="provider-message">
+                      Seçili profil ile henüz ortak izlenecek yapım bulunmuyor.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Faz 10: İzleme Yolculuğu Zaman Çizelgesi */}
+              <div className="profile-tools-section">
+                <h4 className="profile-tools-heading">İzleme Yolculuğu Zaman Çizelgesi</h4>
+                {journeyTimeline.length === 0 ? (
+                  <p className="provider-message">
+                    Kütüphaneye yapım ekledikçe ve tamamladıkça kronolojik yolculuğunuz burada listelenir.
+                  </p>
+                ) : (
+                  <div className="journey-timeline-list">
+                    {journeyTimeline.map((m) => (
+                      <div key={m.id} className="journey-row">
+                        <div>
+                          <strong>{m.title}</strong>
+                          <span className="provider-message"> · {m.detail}</span>
+                        </div>
+                        <span className="journey-date">{m.timestamp.slice(0, 10)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -623,13 +862,75 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   ref={fileInputRef}
                   type="file"
                   accept=".json,application/json"
-                  style={{ display: 'none' }}
+                  className="file-input-hidden"
                   onChange={handleFileChange}
                 />
               </div>
-              {importStatus && <p className="provider-message" style={{ color: '#fb7185' }}>{importStatus}</p>}
+              {importStatus && <p className="provider-message">{importStatus}</p>}
 
-              <button type="submit" className="btn btn-primary" style={{ marginTop: '10px' }}>
+              {/* Faz 10: CSV Export / Import (Letterboxd & IMDb) */}
+              <div className="profile-tools-section">
+                <strong className="profile-tools-heading">CSV İçe / Dışa Aktar (Letterboxd & IMDb)</strong>
+                <div className="csv-actions-row">
+                  <button type="button" className="btn" onClick={handleExportCsv}>
+                    CSV Olarak İndir
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => csvInputRef.current?.click()}
+                  >
+                    CSV İçe Aktar
+                  </button>
+                  <input
+                    ref={csvInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="file-input-hidden"
+                    onChange={handleCsvFileChange}
+                  />
+                </div>
+                {csvStatus && <p className="provider-message">{csvStatus}</p>}
+              </div>
+
+              {/* Faz 4: Server Rotating Snapshots & Restore */}
+              <div className="profile-tools-section">
+                <strong className="profile-tools-heading">Sunucu Yedekleri ve Geri Yükleme</strong>
+                <div className="csv-actions-row">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={loadingBackups}
+                    onClick={handleLoadServerBackups}
+                  >
+                    {loadingBackups ? 'Yedekler okunuyor…' : 'Sunucu Yedeklerini Listele'}
+                  </button>
+                </div>
+                {backupMessage && <p className="provider-message">{backupMessage}</p>}
+                {serverBackups.length > 0 && (
+                  <div className="backups-list">
+                    {serverBackups.map((b) => (
+                      <div key={b.id} className="backup-row">
+                        <div>
+                          <div className="backup-meta">
+                            {b.createdAt.slice(0, 19).replace('T', ' ')} · rev-{b.revision} · {b.itemsCount} içerik
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={loadingBackups}
+                          onClick={() => handleRestoreSnapshot(b.id)}
+                        >
+                          Bu Yedeğe Dön
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button type="submit" className="btn btn-primary">
                 Profil Adını Kaydet ve Kapat
               </button>
             </form>
