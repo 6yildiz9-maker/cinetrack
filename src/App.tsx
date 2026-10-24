@@ -259,6 +259,7 @@ export function App() {
   // Keyboard shortcut: 'n' opens Add Custom Item modal (spec Section 6.5)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&

@@ -134,7 +134,7 @@ export const Hero: React.FC<HeroProps> = ({
           alt=""
           loading="eager"
           decoding="async"
-          {...({ fetchPriority: 'high' } as any)}
+          {...({ fetchPriority: 'high', fetchpriority: 'high' } as any)}
           onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
         />
       )}

@@ -492,7 +492,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
             }
 
             return (
-              <section className="explain-rec-box" aria-labelledby="explainRecTitle">
+              <section className="explain-rec-box cls-reserve-block" aria-labelledby="explainRecTitle">
                 <div className="explain-rec-head">
                   <strong id="explainRecTitle">Neden Önerildi?</strong>
                   <span className="explain-rec-score tabular-nums">{formatMatchBadge(matchVal)}</span>

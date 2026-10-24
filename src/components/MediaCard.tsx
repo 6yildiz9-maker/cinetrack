@@ -19,7 +19,7 @@ export interface MediaCardProps {
   isDisliked?: boolean;
   tab?: 'discover' | 'list' | 'taste-map' | 'relationships';
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
-  context?: 'discover' | 'taste' | 'actor' | 'related';
+  context?: 'discover' | 'taste' | 'actor' | 'related' | 'hero';
   showMatch?: boolean;
   showRing?: boolean;
   related?: React.ReactNode;
@@ -176,9 +176,11 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           <img
             src={poster}
             alt=""
-            loading={eager ? 'eager' : 'lazy'}
+            loading={eager || size === 'xl' || context === 'hero' ? 'eager' : 'lazy'}
             decoding="async"
-            {...(eager ? { fetchPriority: 'high' } : { fetchPriority: 'low' })}
+            {...(eager || size === 'xl' || context === 'hero'
+              ? ({ fetchPriority: 'high', fetchpriority: 'high' } as any)
+              : ({ fetchPriority: 'low', fetchpriority: 'low' } as any))}
             referrerPolicy="no-referrer"
             onError={(e) => {
               (e.target as HTMLElement).style.display = 'none';

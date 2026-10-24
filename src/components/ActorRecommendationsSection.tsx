@@ -428,6 +428,8 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                     className="actor-toggle-icon-btn"
                     onClick={() => toggleAccordion(actor.id)}
                     aria-label={isOpen ? `${actor.name} panelini kapat` : `${actor.name} panelini aç`}
+                    aria-expanded={isOpen}
+                    aria-controls={`actor-panel-${actor.id}`}
                   >
                     {isOpen ? '—' : '+'}
                   </button>

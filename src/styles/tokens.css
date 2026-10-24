@@ -52,6 +52,7 @@
 
   /* Katman tokenları (v5-v6) */
   --z-header: 100;
+  --z-dropdown: 110;
   --z-drawer: 200;
   --z-modal: 300;
   --z-toast: 400;
