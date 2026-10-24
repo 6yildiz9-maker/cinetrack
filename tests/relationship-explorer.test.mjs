@@ -141,3 +141,23 @@ test('film kaynağı dizi filtresiyle uyuşmadığında grafiğe girmez ve rastg
   assert.equal(data.links.length, 0);
 });
 
+test('uyuşan ilişki bulunamadığında boş bağlantı listesi döner', () => {
+  const data = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'test',
+    candidates: [
+      candidate(1, { title: 'Film 1', overview: 'A', genre_ids: [18] }),
+      candidate(2, { title: 'Film 2', overview: 'Z', genre_ids: [35] }),
+    ],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:1',
+    relationshipFilter: 'universe', // Seri ilişkisi yok
+  });
+
+  assert.equal(data.links.length, 0);
+  assert.equal(data.nodes.length, 1); // Sadece kaynak düğüm, bağ kurulan aday yok
+});
+
+

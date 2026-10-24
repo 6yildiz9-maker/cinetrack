@@ -664,6 +664,29 @@
 .relationship-empty-icon {
   color: #5eead4;
   font-size: 3rem;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+.relationship-empty-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+.relationship-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 .relationship-details {

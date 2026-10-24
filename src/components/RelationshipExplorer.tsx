@@ -164,7 +164,11 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       });
 
       setGraphData(nextGraph);
-      setSelectedNode(null);
+      // Kullanıcı seçim yaptıktan sonra harita güncellenirse, seçili yapımın yeni grafikte bulunup bulunmadığını kontrol ederek seçimi koru veya sıfırla
+      setSelectedNode((prev) => {
+        if (!prev) return null;
+        return nextGraph.nodes.find((n) => n.id === prev.id) || null;
+      });
       if (!nextGraph.nodes.length) {
         if (mode === 'relationships' && !effectiveSourceKey) {
           setError('İlişkileri keşfetmek için lütfen bir kaynak yapım seçin.');
@@ -182,7 +186,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   useEffect(() => {
     if (!graphData) return;
     // Filtreler değiştiğinde sadece önbellekteki adaylarla yerel puanlama yapılır; TMDB isteği yapılmaz.
-    setGraphData(createGraph(snapshotCandidates));
+    const nextGraph = createGraph(snapshotCandidates);
+    setGraphData(nextGraph);
+    // Seçili yapımın yeni filtrelenmiş grafikte bulunup bulunmadığını kontrol ederek koru veya sıfırla
+    setSelectedNode((prev) => {
+      if (!prev) return null;
+      return nextGraph.nodes.find((n) => n.id === prev.id) || null;
+    });
     // Bilerek graphData bağımlılığı eklenmiyor; aksi durumda efekt döngüye girer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaFilter, relationFilter, sourceKey]);
@@ -256,7 +266,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       <div className="relationship-filters">
         <label>
           İçerik türü
-          <select value={mediaFilter} onChange={(event) => setMediaFilter(event.target.value as MediaFilter)}>
+          <select
+            value={mediaFilter}
+            onChange={(event) => {
+              setSelectedNode(null);
+              setMediaFilter(event.target.value as MediaFilter);
+            }}
+          >
             <option value="all">Film + dizi</option>
             <option value="movie">Sadece film</option>
             <option value="tv">Sadece dizi</option>
@@ -269,8 +285,8 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             <select
               value={sourceKey}
               onChange={(event) => {
-                setSourceKey(event.target.value);
                 setSelectedNode(null);
+                setSourceKey(event.target.value);
               }}
             >
               <option value="">Kaynak seç…</option>
@@ -285,7 +301,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
 
         <label>
           İlişki türü
-          <select value={relationFilter} onChange={(event) => setRelationFilter(event.target.value as RelationFilter)}>
+          <select
+            value={relationFilter}
+            onChange={(event) => {
+              setSelectedNode(null);
+              setRelationFilter(event.target.value as RelationFilter);
+            }}
+          >
             <option value="all">Tüm ilişkiler</option>
             <option value="semantic">Anlamsal benzerlik</option>
             <option value="person">Kişi bağlantısı</option>
@@ -327,17 +349,91 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             />
           ) : (
             <div className="relationship-empty">
-              <div className="relationship-empty-icon">◎</div>
-              <h3>
-                {mode === 'relationships' && !sourceKey
-                  ? 'Kaynak yapım seçilmedi'
-                  : 'Harita henüz oluşturulmadı'}
-              </h3>
-              <p>
-                {mode === 'relationships' && !sourceKey
-                  ? 'İlişkileri keşfetmek için yukarıdaki menüden bir kaynak yapım seçin veya “Haritayı Güncelle” düğmesine basın.'
-                  : 'Mevcut yerel aday havuzunu ve kişisel profilini kullanmak için “Haritayı Güncelle” düğmesine bas.'}
-              </p>
+              {graphData && graphData.nodes.length === 0 ? (
+                <>
+                  <div className="relationship-empty-icon">🔍</div>
+                  <div className="relationship-empty-badge">0 düğüm · 0 bağlantı</div>
+                  <h3>Bu filtrede yeterli ilişki verisi bulunamadı</h3>
+                  <p>
+                    {mediaFilter === 'movie'
+                      ? 'Film kategorisinde veya seçilen ilişki türünde kriterlere uyan yapım bulunamadı.'
+                      : mediaFilter === 'tv'
+                      ? 'Dizi kategorisinde veya seçilen ilişki türünde kriterlere uyan yapım bulunamadı.'
+                      : 'Seçili ilişki kriterleriyle eşleşen yapım bulunamadı. Filtreleri genişleterek tekrar deneyin.'}
+                  </p>
+                  <div className="relationship-empty-actions">
+                    {(mediaFilter !== 'all' || relationFilter !== 'all') && (
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => {
+                          setSelectedNode(null);
+                          setMediaFilter('all');
+                          setRelationFilter('all');
+                        }}
+                      >
+                        Filtreleri Sıfırla
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      onClick={handleRefresh}
+                      disabled={loading}
+                    >
+                      {loading ? 'Yenileniyor…' : 'Yeniden Dene'}
+                    </button>
+                  </div>
+                </>
+              ) : mode === 'relationships' && !sourceKey ? (
+                <>
+                  <div className="relationship-empty-icon">◉</div>
+                  <h3>Kaynak yapım seçilmedi</h3>
+                  <p>
+                    İlişkileri keşfetmek için yukarıdaki menüden bir kaynak yapım seçin veya “Haritayı Güncelle” düğmesine basın.
+                  </p>
+                  <div className="relationship-empty-actions">
+                    {sourceOptions[0] && (
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => {
+                          setSelectedNode(null);
+                          setSourceKey(relationshipNodeKey(sourceOptions[0]));
+                        }}
+                      >
+                        İlk Kaynağı Seç ({sourceOptions[0].title || sourceOptions[0].name})
+                      </button>
+                    )}
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={handleRefresh}
+                      disabled={loading}
+                    >
+                      {loading ? 'Hazırlanıyor…' : 'Haritayı Güncelle'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="relationship-empty-icon">◎</div>
+                  <h3>Harita henüz oluşturulmadı</h3>
+                  <p>
+                    Mevcut yerel aday havuzunu ve kişisel profilini kullanmak için “Haritayı Güncelle” düğmesine bas.
+                  </p>
+                  <div className="relationship-empty-actions">
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      onClick={handleRefresh}
+                      disabled={loading}
+                    >
+                      {loading ? 'Harita hazırlanıyor…' : 'Haritayı Güncelle'}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
