@@ -20,13 +20,8 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+      - name: Clean install dependencies
+        run: npm ci
 
       - name: Lint & Typecheck
         run: npm run lint
@@ -37,7 +32,10 @@ jobs:
       - name: Production Build
         run: npm run build
 
-      - name: Production Server Startup Smoke Test
+      - name: Prune devDependencies for production verification
+        run: npm prune --omit=dev
+
+      - name: Production Server Startup Smoke Test (--omit=dev)
         run: |
           NODE_ENV=production CINETRACK_HOST=127.0.0.1 PORT=3199 npm start > /tmp/cinetrack-prod.log 2>&1 &
           SERVER_PID=$!
@@ -53,4 +51,4 @@ jobs:
           curl -fsS http://127.0.0.1:3199/api/tmdb-status | grep -q '"source"'
           curl -fsS http://127.0.0.1:3199/ | grep -q '<div id="root"></div>'
           curl -fsS http://127.0.0.1:3199/discover/deep-link | grep -q '<div id="root"></div>'
-          echo "Production smoke test passed."
+          echo "Production smoke test (--omit=dev) passed."

@@ -16,7 +16,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules\tsx\dist\cli.mjs" (
+if not exist "node_modules\express\index.js" (
   echo Gerekli paketler yukleniyor...
   call npm install
   if errorlevel 1 (
@@ -26,7 +26,18 @@ if not exist "node_modules\tsx\dist\cli.mjs" (
   )
 )
 
-echo CineTrack baslatiliyor. Tarayicida http://127.0.0.1:3000 adresini acin.
+if not exist "dist\index.html" (
+  echo Uretim derlemesi hazirlaniyor...
+  call npm run build
+  if errorlevel 1 (
+    echo Derleme basarisiz oldu.
+    pause
+    exit /b 1
+  )
+)
+
+set NODE_ENV=production
+echo CineTrack uretim modunda baslatiliyor. Tarayicida http://127.0.0.1:3000 adresini acin.
 echo Sunucuyu durdurmak icin bu pencerede Ctrl+C tuslarina basin.
-call npm run dev
+call npm start
 pause

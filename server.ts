@@ -1,9 +1,8 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer as createViteServer } from 'vite';
-import { normalizeDataDocument, DataDocument, CURRENT_SCHEMA_VERSION } from './src/core/cinetrack-core';
+import { normalizeDataDocument, CURRENT_SCHEMA_VERSION, type DataDocument } from './src/core/cinetrack-core.ts';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3000;
@@ -643,16 +642,26 @@ app.get('/api/tmdb', async (req: Request, res: Response) => {
   }
 });
 
-// Setup Vite middleware or static serving
+// Setup Vite middleware (explicit --dev only) or static dist serving (production default)
 async function startServer() {
-  if (process.env.NODE_ENV === 'production') {
+  const isDevMode = process.env.NODE_ENV !== 'production' && process.argv.includes('--dev');
+
+  if (!isDevMode) {
     const distPath = path.join(root, 'dist');
+    const indexHtmlPath = path.join(distPath, 'index.html');
+    if (!existsSync(indexHtmlPath)) {
+      console.error(
+        'Üretim derlemesi (dist/index.html) bulunamadı. Önce "npm run build" çalıştırın veya geliştirme modu için "npm run dev" kullanın.'
+      );
+      process.exit(1);
+    }
     app.use(express.static(distPath));
     app.use((req, res, next) => {
       if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.sendFile(indexHtmlPath);
     });
   } else {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, host, port },
       appType: 'spa',
@@ -661,7 +670,7 @@ async function startServer() {
   }
 
   app.listen(port, host, () => {
-    console.log(`CineTrack is running at http://${host}:${port}`);
+    console.log(`CineTrack is running at http://${host}:${port} (${isDevMode ? 'development' : 'production'})`);
     console.log(`Profil ve izleme listesi: ${dataFile}`);
     if (!tmdbApiKey) {
       console.log('TMDB_API_KEY is not configured; running in fallback demo mode.');

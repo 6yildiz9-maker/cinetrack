@@ -4672,4 +4672,46 @@ describe("Yaşam Döngüsü Halkaları (ring0 / ring1 / ring2) — Puan Bağıms
   });
 });
 
+describe("Faz 1: CI ve üretim başlatma zinciri güvenceleri", () => {
+  it("server.ts üretim başlangıcında vite devDependency paketini statik olarak import etmez", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const path = await import("node:path");
+    const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const serverSource = readFileSync(path.join(rootDir, "server.ts"), "utf8");
 
+    assert.equal(
+      /^\s*import\b[^;]*['"]vite['"]/m.test(serverSource),
+      false,
+      "server.ts üst düzey statik vite importu içermemeli (--omit=dev ortamında çökmemeli)"
+    );
+    assert.equal(
+      serverSource.includes("await import('vite')"),
+      true,
+      "vite yalnızca geliştirme dalında dinamik import edilmeli"
+    );
+    assert.equal(
+      serverSource.includes("./src/core/cinetrack-core.ts"),
+      true,
+      "Node 22 yerel TS çalıştırması için açık .ts uzantısı kullanılmalı"
+    );
+  });
+
+  it("package.json ve start.bat üretim başlangıcında geliştirme sunucusuna dayanmaz ve ESLint sürümleri uyumludur", async () => {
+    const { readFileSync, existsSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const path = await import("node:path");
+    const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+    const pkg = JSON.parse(readFileSync(path.join(rootDir, "package.json"), "utf8"));
+    assert.equal(pkg.scripts.start, "node server.ts");
+    assert.equal(pkg.scripts.dev.includes("--dev"), true);
+    assert.match(pkg.devDependencies.eslint, /^\^9\./, "eslint-plugin-jsx-a11y uyumu için ESLint v9 kullanılmalı");
+    assert.match(pkg.devDependencies["@eslint/js"], /^\^9\./, "@eslint/js ESLint v9 ile uyumlu olmalı");
+    assert.equal(existsSync(path.join(rootDir, "package-lock.json")), true, "npm ci için package-lock.json bulunmalı");
+
+    const startBat = readFileSync(path.join(rootDir, "start.bat"), "utf8");
+    assert.equal(startBat.includes("call npm start"), true, "start.bat üretim sunucusunu (npm start) başlatmalı");
+    assert.equal(startBat.includes("call npm run dev"), false, "start.bat geliştirme sunucusuna dayanmamalı");
+  });
+});
