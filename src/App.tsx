@@ -1751,6 +1751,8 @@ export function App() {
             savedItems={savedItems}
             preferences={preferences}
             candidates={[]}
+            favoriteActors={favoriteActors}
+            genreNames={genresMap}
             onRefresh={handleLoadRelationshipCandidates}
             onOpenDetails={(item) => setDetailItem(item as SavedItem)}
             onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
@@ -1784,6 +1786,8 @@ export function App() {
                 savedItems={savedItems}
                 preferences={preferences}
                 candidates={[]}
+                favoriteActors={favoriteActors}
+                genreNames={genresMap}
                 onRefresh={handleLoadRelationshipCandidates}
                 onOpenDetails={(item) => setDetailItem(item as SavedItem)}
                 onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}

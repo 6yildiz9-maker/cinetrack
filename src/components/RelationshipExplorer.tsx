@@ -2,9 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import {
   buildRelationshipGraph,
+  computeRelationshipPoolSignature,
+  computeRelationshipProfileSignature,
   getRelationshipLinkColor,
   getRelationshipNodeColor,
   getRelationshipTypeLabel,
+  RELATIONSHIP_GRAPH_SCHEMA_VERSION,
+  RELATIONSHIP_MODEL_VERSION,
   relationshipNodeKey,
   type MediaFilter,
   type RelationshipGraphData,
@@ -13,7 +17,19 @@ import {
   type RelationshipMode,
   type RelationshipType,
 } from '../core/relationship-explorer';
-import type { PoolCandidateItem, Preferences, SavedItem } from '../core/cinetrack-core';
+import {
+  loadPersistentPoolData,
+  type FavoriteActorInfo,
+  type PoolCandidateItem,
+  type Preferences,
+  type SavedItem,
+} from '../core/cinetrack-core';
+import {
+  latestGraphCacheKey,
+  readRelationshipCache,
+  writeRelationshipCache,
+  type RelationshipGraphSnapshot,
+} from '../services/relationship-cache';
 
 interface RelationshipExplorerProps {
   mode: RelationshipMode;
@@ -21,6 +37,8 @@ interface RelationshipExplorerProps {
   savedItems: SavedItem[];
   preferences: Preferences;
   candidates: PoolCandidateItem[];
+  favoriteActors?: FavoriteActorInfo[];
+  genreNames?: Record<number, string>;
   onRefresh: (mediaFilter: MediaFilter) => Promise<PoolCandidateItem[]>;
   onOpenDetails?: (item: PoolCandidateItem | SavedItem) => void;
   onQuickSave?: (item: PoolCandidateItem | SavedItem) => void;
@@ -32,12 +50,38 @@ function linkEndpointId(endpoint: string | RelationshipGraphNode): string {
   return typeof endpoint === 'string' ? endpoint : endpoint.id;
 }
 
+function readLocalPoolForFilter(profileId: string, filter: MediaFilter): PoolCandidateItem[] {
+  return filter === 'all'
+    ? [
+        ...loadPersistentPoolData(profileId, 'movie').items,
+        ...loadPersistentPoolData(profileId, 'tv').items,
+      ]
+    : loadPersistentPoolData(profileId, filter).items;
+}
+
+function getStatusSignalDescription(
+  signal: RelationshipGraphNode['statusSignal'],
+  status?: string,
+): string {
+  if (signal === 'completed-history') {
+    return 'İzlenmiş geçmiş içerik (puan verilmediyse kişisel uyum nötr kalır)';
+  }
+  if (signal === 'interest') {
+    return status === 'watching' ? 'Şu an izleniyor (ilgi sinyali)' : 'İzleme listesinde (ilgi sinyali)';
+  }
+  if (signal === 'disliked') return 'İlgilenilmiyor olarak işaretli';
+  if (signal === 'hidden') return 'Gizlenmiş içerik';
+  return status ? `Listendeki durum: ${status}` : 'Kayıtlı yapım';
+}
+
 export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   mode,
   profileId,
   savedItems,
   preferences,
   candidates,
+  favoriteActors = [],
+  genreNames = {},
   onRefresh,
   onOpenDetails,
   onQuickSave,
@@ -50,9 +94,40 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   const [selectedNode, setSelectedNode] = useState<RelationshipGraphNode | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [cacheNotice, setCacheNotice] = useState('');
+  const [isRestoringCache, setIsRestoringCache] = useState(true);
+  const [hasGeneratedGraph, setHasGeneratedGraph] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 560 });
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<any>(null);
+  const refreshSequenceRef = useRef(0);
+  const skipNextFilterRebuildRef = useRef(false);
+  const restoredGraphRef = useRef<RelationshipGraphData | null>(null);
+
+  const favoriteActorIds = useMemo(
+    () => favoriteActors.map((actor) => actor.id),
+    [favoriteActors],
+  );
+
+  const currentProfileSignature = useMemo(
+    () =>
+      computeRelationshipProfileSignature({
+        profileId,
+        mediaFilter,
+        savedItems,
+        preferences,
+        favoriteActorIds,
+      }),
+    [profileId, mediaFilter, savedItems, preferences, favoriteActorIds],
+  );
+
+  useEffect(() => {
+    return () => {
+      // Devam eden asenkron sonuçlar artık bu bileşene ait değildir.
+      refreshSequenceRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -69,12 +144,101 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     return () => observer.disconnect();
   }, []);
 
+  // Profil veya mod değişiminde önce durumu temizle, ardından IndexedDB son snapshot'ı doğrula (TMDB isteği yapmaz).
   useEffect(() => {
+    let cancelled = false;
+    refreshSequenceRef.current += 1;
+    restoredGraphRef.current = null;
+    skipNextFilterRebuildRef.current = false;
+
     setGraphData(null);
     setSnapshotCandidates([]);
     setSelectedNode(null);
     setSourceKey('');
     setError('');
+    setCacheNotice('');
+    setHasGeneratedGraph(false);
+    setIsRestoringCache(true);
+
+    void (async () => {
+      try {
+        const record = await readRelationshipCache<RelationshipGraphSnapshot>(
+          'graphs',
+          latestGraphCacheKey(profileId, mode),
+        );
+        if (cancelled || !record) return;
+
+        const snapshot = record.value;
+        if (snapshot.schemaVersion !== RELATIONSHIP_GRAPH_SCHEMA_VERSION) {
+          setCacheNotice('Kayıtlı harita eski şema sürümünde. Güncelleme gerekiyor.');
+          return;
+        }
+        if (snapshot.modelVersion !== RELATIONSHIP_MODEL_VERSION) {
+          setCacheNotice('İlişki algoritması değişti. Haritayı güncelle.');
+          return;
+        }
+
+        const currentSignatureForSnapshot = computeRelationshipProfileSignature({
+          profileId,
+          mediaFilter: snapshot.mediaFilter,
+          savedItems,
+          preferences,
+          favoriteActorIds: favoriteActors.map((actor) => actor.id),
+        });
+        if (snapshot.profileId !== profileId || snapshot.mode !== mode) return;
+        if (snapshot.profileSignature !== currentSignatureForSnapshot) {
+          setCacheNotice(
+            'Kullanıcı listesi, puanları, favori oyuncuları veya tercihleri değişmiş. Haritayı güncelle.',
+          );
+          return;
+        }
+
+        // Havuz localStorage üzerinden salt okunur biçimde kontrol edilir; bu adım TMDB isteği yapmaz.
+        const livePool = readLocalPoolForFilter(profileId, snapshot.mediaFilter);
+        const livePoolSignature = computeRelationshipPoolSignature(livePool);
+        if (snapshot.poolSignature !== livePoolSignature) {
+          setCacheNotice('Yerel aday havuzu değişmiş. Haritayı güncelle.');
+          return;
+        }
+
+        // Sadece haritada görünen adaylar geri yüklenir; tamamı önbellekten kopyalanmaz.
+        const visiblePoolItems = snapshot.visibleItems.filter(
+          (item): item is PoolCandidateItem =>
+            typeof (item as PoolCandidateItem).poolSource === 'string',
+        );
+
+        if (
+          snapshot.mediaFilter !== mediaFilter ||
+          snapshot.relationshipFilter !== relationFilter ||
+          snapshot.sourceKey !== ''
+        ) {
+          skipNextFilterRebuildRef.current = true;
+        }
+        restoredGraphRef.current = snapshot.graph;
+
+        setMediaFilter(snapshot.mediaFilter);
+        setRelationFilter(snapshot.relationshipFilter);
+        setSourceKey(snapshot.sourceKey);
+        setSnapshotCandidates(visiblePoolItems);
+        setGraphData(snapshot.graph);
+        setHasGeneratedGraph(true);
+        setCacheNotice(
+          `Kayıtlı harita yüklendi · ${new Date(snapshot.savedAt).toLocaleString('tr-TR')}`,
+        );
+      } catch (cacheErr) {
+        // Önbellek kullanılamaması uygulamanın çalışmasını engellemez.
+        console.warn('İlişki haritası önbelleği okunamadı:', cacheErr);
+      } finally {
+        if (!cancelled) setIsRestoringCache(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Bu effect yalnızca profil/mod değişiminde son snapshot'ı yükler.
+    // İçerik/tercih değişimleri imza kontrolüyle ayrı işlenir.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileId, mode]);
 
   const sourceOptions = useMemo(() => {
@@ -84,16 +248,16 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       byKey.set(relationshipNodeKey(item), item);
     }
     return [...byKey.values()].sort((a, b) =>
-      String(a.title || a.name || '').localeCompare(String(b.title || b.name || ''), 'tr')
+      String(a.title || a.name || '').localeCompare(String(b.title || b.name || ''), 'tr'),
     );
   }, [savedItems, snapshotCandidates, mediaFilter]);
 
   // Medya filtresi değiştiğinde seçili kaynak yeni filtreye uymuyorsa ilk geçerli kaynağa geçir ve seçili düğümü temizle
   useEffect(() => {
-    if (mode !== 'relationships') return;
+    if (mode !== 'relationships' || isRestoringCache) return;
 
     const isCurrentSourceValid = sourceOptions.some(
-      (item) => relationshipNodeKey(item) === sourceKey
+      (item) => relationshipNodeKey(item) === sourceKey,
     );
 
     if (!isCurrentSourceValid) {
@@ -101,7 +265,17 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       setSourceKey(nextSource ? relationshipNodeKey(nextSource) : '');
       setSelectedNode(null);
     }
-  }, [mode, sourceOptions, sourceKey]);
+  }, [mode, isRestoringCache, sourceOptions, sourceKey]);
+
+  // Grafik değiştiğinde mevcut seçili düğüm artık grafikte yoksa seçimi temizle
+  useEffect(() => {
+    if (!selectedNode) return;
+
+    const currentIds = new Set((graphData?.nodes ?? []).map((node) => node.id));
+    if (!currentIds.has(selectedNode.id)) {
+      setSelectedNode(null);
+    }
+  }, [graphData, selectedNode?.id]);
 
   const createGraph = (
     candidateSnapshot: PoolCandidateItem[],
@@ -109,9 +283,11 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   ) => {
     const effectiveSourceKey =
       mode === 'relationships'
-        ? (sourceOptions.some((item) => relationshipNodeKey(item) === requestedSourceKey)
-            ? requestedSourceKey
-            : (sourceOptions[0] ? relationshipNodeKey(sourceOptions[0]) : ''))
+        ? sourceOptions.some((item) => relationshipNodeKey(item) === requestedSourceKey)
+          ? requestedSourceKey
+          : sourceOptions[0]
+            ? relationshipNodeKey(sourceOptions[0])
+            : ''
         : requestedSourceKey;
 
     return buildRelationshipGraph({
@@ -123,31 +299,44 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       mediaFilter,
       sourceKey: effectiveSourceKey,
       relationshipFilter: relationFilter,
+      favoriteActorIds,
+      genreNames,
       maxNodes: 90,
       maxLinks: 160,
     });
   };
 
   const handleRefresh = async () => {
+    const requestId = ++refreshSequenceRef.current;
     setLoading(true);
     setError('');
+
     try {
       // TMDB/havuz yükleme yalnızca bu kullanıcı eyleminde çalışır.
       const loadedCandidates = await onRefresh(mediaFilter);
+      if (requestId !== refreshSequenceRef.current) return;
+
       setSnapshotCandidates(loadedCandidates);
 
       let effectiveSourceKey = sourceKey;
       if (
-        mode === 'relationships'
-        && (!effectiveSourceKey
-          || (!loadedCandidates.some((item) => relationshipNodeKey(item) === effectiveSourceKey)
-              && !savedItems.some((item) => relationshipNodeKey(item) === effectiveSourceKey && (mediaFilter === 'all' || item.media_type === mediaFilter))))
+        mode === 'relationships' &&
+        (!effectiveSourceKey ||
+          (!loadedCandidates.some((item) => relationshipNodeKey(item) === effectiveSourceKey) &&
+            !savedItems.some(
+              (item) =>
+                relationshipNodeKey(item) === effectiveSourceKey &&
+                (mediaFilter === 'all' || item.media_type === mediaFilter),
+            )))
       ) {
         const first = [...savedItems, ...loadedCandidates].find(
-          (item) => mediaFilter === 'all' || item.media_type === mediaFilter
+          (item) => mediaFilter === 'all' || item.media_type === mediaFilter,
         );
         effectiveSourceKey = first ? relationshipNodeKey(first) : '';
-        setSourceKey(effectiveSourceKey);
+        if (effectiveSourceKey !== sourceKey) {
+          skipNextFilterRebuildRef.current = true;
+          setSourceKey(effectiveSourceKey);
+        }
       }
 
       const nextGraph = buildRelationshipGraph({
@@ -159,43 +348,120 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         mediaFilter,
         sourceKey: effectiveSourceKey,
         relationshipFilter: relationFilter,
+        favoriteActorIds,
+        genreNames,
         maxNodes: 90,
         maxLinks: 160,
       });
 
+      restoredGraphRef.current = null;
       setGraphData(nextGraph);
-      // Kullanıcı seçim yaptıktan sonra harita güncellenirse, seçili yapımın yeni grafikte bulunup bulunmadığını kontrol ederek seçimi koru veya sıfırla
+      setHasGeneratedGraph(true);
+      setCacheNotice('Harita güncellendi (yerel aday havuzu kullanıldı).');
       setSelectedNode((prev) => {
         if (!prev) return null;
         return nextGraph.nodes.find((n) => n.id === prev.id) || null;
       });
-      if (!nextGraph.nodes.length) {
-        if (mode === 'relationships' && !effectiveSourceKey) {
-          setError('İlişkileri keşfetmek için lütfen bir kaynak yapım seçin.');
-        } else {
-          setError('Bu filtre için yeterli ilişki verisi bulunamadı.');
-        }
+
+      const hasUsefulResult =
+        nextGraph.nodes.length > 1 &&
+        (mode === 'taste-map' || nextGraph.links.some((link) => link.type !== 'personal'));
+
+      if (!hasUsefulResult) {
+        setError(
+          mode === 'relationships' && !effectiveSourceKey
+            ? 'İlişkileri keşfetmek için lütfen bir kaynak yapım seç.'
+            : 'Bu filtre için yeterli ilişki verisi bulunamadı.',
+        );
       }
     } catch (err) {
+      if (requestId !== refreshSequenceRef.current) return;
       setError(err instanceof Error ? err.message : 'İlişki haritası oluşturulamadı.');
     } finally {
-      setLoading(false);
+      if (requestId === refreshSequenceRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (!graphData) return;
-    // Filtreler değiştiğinde sadece önbellekteki adaylarla yerel puanlama yapılır; TMDB isteği yapılmaz.
+    if (skipNextFilterRebuildRef.current) {
+      skipNextFilterRebuildRef.current = false;
+      return;
+    }
+
+    // Bu efekt yalnızca yerel filtre değişiminde çalışır; TMDB isteği yapmaz.
+    restoredGraphRef.current = null;
     const nextGraph = createGraph(snapshotCandidates);
     setGraphData(nextGraph);
-    // Seçili yapımın yeni filtrelenmiş grafikte bulunup bulunmadığını kontrol ederek koru veya sıfırla
-    setSelectedNode((prev) => {
-      if (!prev) return null;
-      return nextGraph.nodes.find((n) => n.id === prev.id) || null;
-    });
+    setSelectedNode(null);
     // Bilerek graphData bağımlılığı eklenmiyor; aksi durumda efekt döngüye girer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaFilter, relationFilter, sourceKey]);
+
+  // Güncel grafiği IndexedDB snapshot önbelleğine yaz; profil değişmişse eski grafiği uyar
+  useEffect(() => {
+    if (!graphData || !hasGeneratedGraph) return;
+
+    if (graphData.profileSignature !== currentProfileSignature) {
+      setCacheNotice('Profil değişti; kaydedilmiş grafik eskidi. Haritayı güncelle.');
+      return;
+    }
+
+    // Önbellekten yeni geri yüklenmiş grafiği aynı verilerle tekrar yazma (kayıt zamanını koru)
+    if (restoredGraphRef.current === graphData) {
+      return;
+    }
+
+    const graphNodeIds = new Set(
+      graphData.nodes.filter((node) => node.mediaType !== 'profile').map((node) => node.id),
+    );
+    const visibleByKey = new Map<string, PoolCandidateItem | SavedItem>();
+    // Önce adayları ekle, sonra kayıtlı öğeleri ekleyerek kullanıcı durumunu koru.
+    for (const item of [...snapshotCandidates, ...savedItems]) {
+      const key = relationshipNodeKey(item);
+      if (graphNodeIds.has(key)) visibleByKey.set(key, item);
+    }
+
+    const localPool = readLocalPoolForFilter(profileId, mediaFilter);
+    const poolForSignature =
+      localPool.length > 0
+        ? localPool
+        : snapshotCandidates.filter(
+            (item) => mediaFilter === 'all' || item.media_type === mediaFilter,
+          );
+
+    const snapshot: RelationshipGraphSnapshot = {
+      schemaVersion: RELATIONSHIP_GRAPH_SCHEMA_VERSION,
+      profileId,
+      mode,
+      mediaFilter,
+      sourceKey,
+      relationshipFilter: relationFilter,
+      profileSignature: currentProfileSignature,
+      poolSignature: computeRelationshipPoolSignature(poolForSignature),
+      modelVersion: RELATIONSHIP_MODEL_VERSION,
+      savedAt: Date.now(),
+      graph: graphData,
+      visibleItems: [...visibleByKey.values()],
+    };
+
+    void writeRelationshipCache('graphs', latestGraphCacheKey(profileId, mode), snapshot).catch(
+      (cacheErr) => {
+        console.warn('İlişki haritası önbelleğe yazılamadı:', cacheErr);
+      },
+    );
+  }, [
+    graphData,
+    hasGeneratedGraph,
+    currentProfileSignature,
+    profileId,
+    mode,
+    mediaFilter,
+    sourceKey,
+    relationFilter,
+    savedItems,
+    snapshotCandidates,
+  ]);
 
   useEffect(() => {
     if (graphData && graphRef.current) {
@@ -213,22 +479,48 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     return undefined;
   }, [graphData]);
 
+  const nodeTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const node of graphData?.nodes ?? []) {
+      map.set(node.id, node.title);
+    }
+    return map;
+  }, [graphData]);
+
   const selectedItem = selectedNode
     ? [...snapshotCandidates, ...savedItems].find(
-        (item) => relationshipNodeKey(item) === selectedNode.id
+        (item) => relationshipNodeKey(item) === selectedNode.id,
       )
     : undefined;
 
-  const selectedLinks: RelationshipGraphLink[] = graphData?.links.filter((link) =>
-    linkEndpointId(link.source) === selectedNode?.id
-    || linkEndpointId(link.target) === selectedNode?.id
-  ) || [];
+  const selectedLinks: RelationshipGraphLink[] =
+    graphData?.links.filter(
+      (link) =>
+        linkEndpointId(link.source) === selectedNode?.id ||
+        linkEndpointId(link.target) === selectedNode?.id,
+    ) || [];
 
-  const nodeCanvasObject = (rawNode: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+  const hasUsefulGraph = Boolean(
+    graphData &&
+      graphData.nodes.length > 1 &&
+      (mode === 'taste-map' || graphData.links.some((link) => link.type !== 'personal')),
+  );
+
+  const visibleContentNodeCount = graphData
+    ? graphData.nodes.filter((node) => node.mediaType !== 'profile').length
+    : 0;
+
+  const nodeCanvasObject = (
+    rawNode: any,
+    ctx: CanvasRenderingContext2D,
+    globalScale: number,
+  ) => {
     const node = rawNode as RelationshipGraphNode & { x?: number; y?: number };
     const x = node.x || 0;
     const y = node.y || 0;
-    const radius = node.kind === 'profile' || node.kind === 'source' ? 10 : 6 + node.personalScore / 35;
+    const radius =
+      (node.kind === 'profile' || node.kind === 'source' ? 10 : 6 + node.personalScore / 35) +
+      Math.max(0, node.statusWeight || 0) * 1.5;
 
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, 2 * Math.PI, false);
@@ -237,13 +529,39 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     ctx.fill();
     ctx.globalAlpha = 1;
 
+    // İzleme geçmişi ve ilgi durumunu kişisel uyum puanından bağımsız dış halka olarak çiz
+    if (node.statusSignal === 'completed-history' || node.statusSignal === 'interest') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, radius + 2.2, 0, 2 * Math.PI, false);
+      ctx.lineWidth = 1.25;
+      if (node.statusSignal === 'interest') {
+        ctx.setLineDash([2.5, 2]);
+        ctx.strokeStyle = '#fbbf24';
+      } else {
+        ctx.strokeStyle = '#7dd3fc';
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (node.id === selectedNode?.id) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, radius + 4, 0, 2 * Math.PI, false);
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = '#f8fafc';
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (globalScale > 0.7 || node.id === selectedNode?.id) {
       const fontSize = Math.max(4, Math.min(12, 10 / globalScale));
       ctx.font = `${node.id === selectedNode?.id ? '600 ' : ''}${fontSize}px Inter, Arial, sans-serif`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = '#dbeafe';
-      ctx.fillText(node.label, x + radius + 3, y);
+      ctx.fillText(node.label, x + radius + 4, y);
     }
   };
 
@@ -254,14 +572,30 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
           <h2>{mode === 'taste-map' ? 'Zevk Haritası' : 'İlişki Keşfi'}</h2>
           <p>
             {mode === 'taste-map'
-              ? 'Merkezden uzaklık kişisel uyumu, çizgiler içerikler arasındaki ilişkileri gösterir.'
-              : 'Bir kaynak yapım seç; bağlantı türü, kanıtı ve kişisel uyumunu ayrı incele.'}
+              ? 'Merkezden uzaklık kişisel uyumu, çizgiler ise özet, tür, kadro ve seri metaverisine dayalı ilişkileri gösterir.'
+              : 'Bir kaynak yapım seç; bağlantı türü, metaveri kanıtı ve kişisel uyumunu ayrı ayrı incele.'}
           </p>
         </div>
-        <button className="btn btn-primary" type="button" onClick={handleRefresh} disabled={loading}>
+        <button
+          className="btn btn-primary"
+          type="button"
+          onClick={handleRefresh}
+          disabled={loading}
+        >
           {loading ? 'Harita hazırlanıyor…' : 'Haritayı Güncelle'}
         </button>
       </div>
+
+      {cacheNotice && (
+        <p className="relationship-cache-notice" role="status">
+          {cacheNotice}
+        </p>
+      )}
+      {isRestoringCache && (
+        <p className="relationship-muted" role="status">
+          Kayıtlı harita kontrol ediliyor…
+        </p>
+      )}
 
       <div className="relationship-filters">
         <label>
@@ -309,7 +643,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             }}
           >
             <option value="all">Tüm ilişkiler</option>
-            <option value="semantic">Anlamsal benzerlik</option>
+            <option value="semantic">Anlamsal benzerlik (özet/tür)</option>
             <option value="person">Kişi bağlantısı</option>
             <option value="universe">Seri / evren</option>
             {mode === 'taste-map' && <option value="personal">Kişisel uyum</option>}
@@ -317,11 +651,21 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         </label>
       </div>
 
-      {error && <div className="relationship-message" role="status">{error}</div>}
+      <p className="relationship-muted">
+        {graphData
+          ? `${visibleContentNodeCount} düğüm ve ${graphData.links.length} bağlantı gösteriliyor. Bu görünüm aday havuzunun seçilmiş bir bölümüdür.`
+          : 'Harita henüz oluşturulmadı.'}
+      </p>
+
+      {error && (
+        <div className="relationship-message" role="status">
+          {error}
+        </div>
+      )}
 
       <div className="relationship-layout">
         <div className="relationship-graph" ref={containerRef}>
-          {graphData && graphData.nodes.length > 0 ? (
+          {hasUsefulGraph && graphData ? (
             <ForceGraph2D
               ref={graphRef}
               graphData={graphData as any}
@@ -339,7 +683,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
               linkWidth={(link: any) => Math.max(1, Number(link.score || 0) / 42)}
               linkLabel={(rawLink: any) => {
                 const link = rawLink as RelationshipGraphLink;
-                return `${getRelationshipTypeLabel(link.type)} · ${link.score}/100 · Güven ${link.confidence}/100\n${link.evidence.join('\n')}`;
+                return `${getRelationshipTypeLabel(link.type)} · ${link.score}/100 · Kanıt güveni ${link.confidence}/100\n${link.evidence.join('\n')}`;
               }}
               linkDirectionalParticles={1}
               linkDirectionalParticleWidth={1.5}
@@ -349,91 +693,67 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             />
           ) : (
             <div className="relationship-empty">
-              {graphData && graphData.nodes.length === 0 ? (
-                <>
-                  <div className="relationship-empty-icon">🔍</div>
-                  <div className="relationship-empty-badge">0 düğüm · 0 bağlantı</div>
-                  <h3>Bu filtrede yeterli ilişki verisi bulunamadı</h3>
-                  <p>
-                    {mediaFilter === 'movie'
-                      ? 'Film kategorisinde veya seçilen ilişki türünde kriterlere uyan yapım bulunamadı.'
-                      : mediaFilter === 'tv'
-                      ? 'Dizi kategorisinde veya seçilen ilişki türünde kriterlere uyan yapım bulunamadı.'
-                      : 'Seçili ilişki kriterleriyle eşleşen yapım bulunamadı. Filtreleri genişleterek tekrar deneyin.'}
-                  </p>
-                  <div className="relationship-empty-actions">
-                    {(mediaFilter !== 'all' || relationFilter !== 'all') && (
-                      <button
-                        className="btn"
-                        type="button"
-                        onClick={() => {
-                          setSelectedNode(null);
-                          setMediaFilter('all');
-                          setRelationFilter('all');
-                        }}
-                      >
-                        Filtreleri Sıfırla
-                      </button>
-                    )}
-                    <button
-                      className="btn btn-primary"
-                      type="button"
-                      onClick={handleRefresh}
-                      disabled={loading}
-                    >
-                      {loading ? 'Yenileniyor…' : 'Yeniden Dene'}
-                    </button>
-                  </div>
-                </>
-              ) : mode === 'relationships' && !sourceKey ? (
-                <>
-                  <div className="relationship-empty-icon">◉</div>
-                  <h3>Kaynak yapım seçilmedi</h3>
-                  <p>
-                    İlişkileri keşfetmek için yukarıdaki menüden bir kaynak yapım seçin veya “Haritayı Güncelle” düğmesine basın.
-                  </p>
-                  <div className="relationship-empty-actions">
-                    {sourceOptions[0] && (
-                      <button
-                        className="btn btn-primary"
-                        type="button"
-                        onClick={() => {
-                          setSelectedNode(null);
-                          setSourceKey(relationshipNodeKey(sourceOptions[0]));
-                        }}
-                      >
-                        İlk Kaynağı Seç ({sourceOptions[0].title || sourceOptions[0].name})
-                      </button>
-                    )}
-                    <button
-                      className="btn"
-                      type="button"
-                      onClick={handleRefresh}
-                      disabled={loading}
-                    >
-                      {loading ? 'Hazırlanıyor…' : 'Haritayı Güncelle'}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="relationship-empty-icon">◎</div>
-                  <h3>Harita henüz oluşturulmadı</h3>
-                  <p>
-                    Mevcut yerel aday havuzunu ve kişisel profilini kullanmak için “Haritayı Güncelle” düğmesine bas.
-                  </p>
-                  <div className="relationship-empty-actions">
-                    <button
-                      className="btn btn-primary"
-                      type="button"
-                      onClick={handleRefresh}
-                      disabled={loading}
-                    >
-                      {loading ? 'Harita hazırlanıyor…' : 'Haritayı Güncelle'}
-                    </button>
-                  </div>
-                </>
+              <div className="relationship-empty-icon">
+                {mode === 'relationships' && !sourceKey ? '◉' : graphData ? '🔍' : '◎'}
+              </div>
+              {graphData && (
+                <div className="relationship-empty-badge">
+                  {visibleContentNodeCount} düğüm · {graphData.links.length} bağlantı
+                </div>
               )}
+              <h3>
+                {mode === 'relationships' && !sourceKey
+                  ? 'Kaynak yapım seçilmedi'
+                  : graphData && graphData.nodes.length <= 1
+                    ? 'Bu yapım için yeterli ilişki bulunamadı'
+                    : graphData
+                      ? 'Bu filtrede gösterilecek ilişki yok'
+                      : 'Harita henüz oluşturulmadı'}
+              </h3>
+              <p>
+                {graphData
+                  ? 'Daha geniş bir ilişki filtresi deneyebilir veya farklı bir kaynak yapım seçebilirsin.'
+                  : 'Yerel aday havuzunu kullanmak için “Haritayı Güncelle” düğmesine bas.'}
+              </p>
+              <div className="relationship-empty-actions">
+                {graphData && (mediaFilter !== 'all' || relationFilter !== 'all') && (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => {
+                      setSelectedNode(null);
+                      setMediaFilter('all');
+                      setRelationFilter('all');
+                    }}
+                  >
+                    Filtreleri Sıfırla
+                  </button>
+                )}
+                {mode === 'relationships' && !sourceKey && sourceOptions[0] && (
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => {
+                      setSelectedNode(null);
+                      setSourceKey(relationshipNodeKey(sourceOptions[0]));
+                    }}
+                  >
+                    İlk Kaynağı Seç ({sourceOptions[0].title || sourceOptions[0].name})
+                  </button>
+                )}
+                <button
+                  className={`btn ${mode === 'relationships' && !sourceKey && sourceOptions[0] ? '' : 'btn-primary'}`}
+                  type="button"
+                  onClick={handleRefresh}
+                  disabled={loading}
+                >
+                  {loading
+                    ? 'Harita hazırlanıyor…'
+                    : graphData
+                      ? 'Yeniden Dene'
+                      : 'Haritayı Güncelle'}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -442,40 +762,107 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
           <h3>{selectedNode?.title || 'Düğüm ayrıntıları'}</h3>
           {selectedNode ? (
             <>
-              <p className="relationship-score">Kişisel uyum: <strong>{selectedNode.personalScore}/100</strong></p>
-              <p className="relationship-muted">
-                {selectedNode.kind === 'saved' ? `Listendeki durum: ${selectedNode.status || 'kayıtlı'}` :
-                  selectedNode.kind === 'profile' ? 'Kullanıcı profili' :
-                  selectedNode.kind === 'source' ? 'Seçilmiş kaynak yapım' : 'Keşif adayı'}
+              <p className="relationship-score">
+                Kişisel uyum: <strong>{selectedNode.personalScore}/100</strong>
               </p>
-              {selectedLinks.map((link, index) => (
-                <div className="relationship-evidence" key={`${link.type}-${index}`}>
-                  <strong>{getRelationshipTypeLabel(link.type)} · {link.score}/100</strong>
-                  <span>Güven: {link.confidence}/100</span>
-                  <ul>{link.evidence.map((evidence) => <li key={evidence}>{evidence}</li>)}</ul>
-                </div>
-              ))}
-              {selectedItem && onOpenDetails && selectedNode.mediaType !== 'profile' && (
-                <button className="btn" type="button" onClick={() => onOpenDetails(selectedItem)}>
-                  İçerik ayrıntısını aç
-                </button>
-              )}
-              {selectedItem && onQuickSave && selectedNode.kind === 'candidate' && (
-                <button className="btn btn-primary" type="button" onClick={() => onQuickSave(selectedItem)}>
-                  Listeye ekle
-                </button>
-              )}
+              <p className="relationship-muted">
+                {selectedNode.kind === 'saved'
+                  ? getStatusSignalDescription(selectedNode.statusSignal, selectedNode.status)
+                  : selectedNode.kind === 'profile'
+                    ? 'Kullanıcı profili'
+                    : selectedNode.kind === 'source'
+                      ? selectedNode.status
+                        ? `Seçilmiş kaynak yapım · ${getStatusSignalDescription(selectedNode.statusSignal, selectedNode.status)}`
+                        : 'Seçilmiş kaynak yapım'
+                      : 'Keşif adayı'}
+              </p>
+              {selectedLinks.map((link, linkIndex) => {
+                const srcId = linkEndpointId(link.source);
+                const tgtId = linkEndpointId(link.target);
+                const counterpartId = srcId === selectedNode.id ? tgtId : srcId;
+                const counterpartTitle = nodeTitleById.get(counterpartId);
+
+                const details = link.relationshipDetails?.length
+                  ? link.relationshipDetails
+                  : [
+                      {
+                        type: link.type,
+                        score: link.score,
+                        confidence: link.confidence,
+                        evidence: link.evidence,
+                      },
+                    ];
+
+                return details.map((detail, detailIndex) => (
+                  <div
+                    className="relationship-evidence"
+                    key={`${linkIndex}-${detail.type}-${detailIndex}`}
+                  >
+                    {counterpartTitle && (
+                      <span className="relationship-counterpart">
+                        Bağlantı: {counterpartTitle}
+                      </span>
+                    )}
+                    <strong>
+                      {getRelationshipTypeLabel(detail.type)} · {detail.score}/100
+                    </strong>
+                    <span>
+                      Kanıt güveni: {detail.confidence}/100
+                      {detail.type === 'semantic' ? ' · Özet ve tür verisine dayalı' : ''}
+                    </span>
+                    <ul>
+                      {detail.evidence.map((evidence) => (
+                        <li key={evidence}>{evidence}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ));
+              })}
+              <div className="relationship-detail-actions">
+                {selectedItem && onOpenDetails && selectedNode.mediaType !== 'profile' && (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => onOpenDetails(selectedItem)}
+                  >
+                    İçerik ayrıntısını aç
+                  </button>
+                )}
+                {selectedItem && onQuickSave && selectedNode.kind === 'candidate' && (
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => onQuickSave(selectedItem)}
+                  >
+                    Listeye ekle
+                  </button>
+                )}
+              </div>
             </>
           ) : (
-            <p className="relationship-muted">Haritadaki bir düğüme tıklayarak puanını ve bağlantı kanıtlarını incele.</p>
+            <p className="relationship-muted">
+              Haritadaki bir düğüme tıklayarak kişisel uyumunu ve bağlantı kanıtlarını ayrı ayrı incele.
+            </p>
           )}
           <div className="relationship-legend">
-            <span><i className="legend-dot" style={{ background: '#5eead4' }} /> Kullanıcı profili</span>
-            <span><i className="legend-dot" style={{ background: '#38bdf8' }} /> Kayıtlı yapım</span>
-            <span><i className="legend-dot" style={{ background: '#4ade80' }} /> Yüksek kişisel uyum</span>
-            <span><i className="legend-line" style={{ background: '#38bdf8' }} /> Anlamsal</span>
-            <span><i className="legend-line" style={{ background: '#a78bfa' }} /> Kişi</span>
-            <span><i className="legend-line" style={{ background: '#4ade80' }} /> Seri / evren</span>
+            <span>
+              <i className="legend-dot legend-dot-profile" /> Kullanıcı profili
+            </span>
+            <span>
+              <i className="legend-dot legend-dot-saved" /> Kayıtlı yapım (düz halka: izlendi, kesikli: listede)
+            </span>
+            <span>
+              <i className="legend-dot legend-dot-match" /> Yüksek kişisel uyum
+            </span>
+            <span>
+              <i className="legend-line legend-line-semantic" /> Özet / tür benzerliği
+            </span>
+            <span>
+              <i className="legend-line legend-line-person" /> Kişi bağlantısı
+            </span>
+            <span>
+              <i className="legend-line legend-line-universe" /> Seri / evren
+            </span>
           </div>
         </aside>
       </div>

@@ -575,6 +575,7 @@
   gap: 12px;
   min-width: 0;
   color: var(--text, #e5edf7);
+  font-variant-numeric: tabular-nums;
 }
 
 .relationship-toolbar {
@@ -594,6 +595,16 @@
   color: var(--muted, #94a3b8);
   font-size: 0.88rem;
   margin: 0;
+}
+
+.relationship-cache-notice {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 0.65rem;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.62);
+  font-size: 0.86rem;
 }
 
 .relationship-filters {
@@ -675,7 +686,7 @@
   background: rgba(148, 163, 184, 0.12);
   border: 1px solid rgba(148, 163, 184, 0.25);
   padding: 4px 10px;
-  border-radius: 9999px;
+  border-radius: 6px;
   font-size: 0.78rem;
   color: #94a3b8;
   margin-bottom: 8px;
@@ -721,6 +732,11 @@
   font-size: 0.85rem;
 }
 
+.relationship-counterpart {
+  font-size: 0.78rem;
+  color: #7dd3fc;
+}
+
 .relationship-evidence span {
   color: #94a3b8;
 }
@@ -733,6 +749,13 @@
 
 .relationship-evidence li + li {
   margin-top: 4px;
+}
+
+.relationship-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .relationship-legend {
@@ -758,11 +781,35 @@
   border-radius: 50%;
 }
 
+.legend-dot-profile {
+  background: #5eead4;
+}
+
+.legend-dot-saved {
+  background: #38bdf8;
+}
+
+.legend-dot-match {
+  background: #4ade80;
+}
+
 .legend-line {
   width: 20px;
   height: 3px;
   flex: 0 0 auto;
   border-radius: 2px;
+}
+
+.legend-line-semantic {
+  background: #38bdf8;
+}
+
+.legend-line-person {
+  background: #a78bfa;
+}
+
+.legend-line-universe {
+  background: #4ade80;
 }
 
 .taste-map-view-toggle {
