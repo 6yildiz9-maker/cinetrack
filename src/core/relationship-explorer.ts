@@ -446,9 +446,7 @@ export function buildRelationshipGraph(
   }
 
   const sources = mergedItems;
-  const source = sources.find((item) => relationshipNodeKey(item) === sourceKey)
-    || sources.find((item) => candidateMap.has(relationshipNodeKey(item)))
-    || sources[0];
+  const source = sourceKey ? sources.find((item) => relationshipNodeKey(item) === sourceKey) : null;
 
   if (!source) {
     return {

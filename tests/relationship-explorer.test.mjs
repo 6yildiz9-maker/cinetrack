@@ -84,3 +84,60 @@ test('ilişki modu kaynak düğümü merkezde tutar', () => {
   assert.equal(data.nodes[0]?.fx, 0);
   assert.equal(data.nodes[0]?.fy, 0);
 });
+
+test('ilişki modu kaynak belirtilmediğinde veya geçersiz olduğunda sessizce rastgele yapım seçmez', () => {
+  const dataWithoutSource = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'test',
+    candidates: [
+      candidate(1),
+      candidate(2),
+    ],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: '',
+    relationshipFilter: 'all',
+  });
+
+  assert.equal(dataWithoutSource.nodes.length, 0);
+  assert.equal(dataWithoutSource.links.length, 0);
+
+  const dataWithInvalidSource = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'test',
+    candidates: [
+      candidate(1),
+      candidate(2),
+    ],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:9999',
+    relationshipFilter: 'all',
+  });
+
+  assert.equal(dataWithInvalidSource.nodes.length, 0);
+  assert.equal(dataWithInvalidSource.links.length, 0);
+});
+
+test('film kaynağı dizi filtresiyle uyuşmadığında grafiğe girmez ve rastgele dizi seçilmez', () => {
+  const data = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'test',
+    candidates: [
+      candidate(1, { id: 1, media_type: 'movie', title: 'Film 1' }),
+      candidate(2, { id: 2, media_type: 'tv', title: 'Dizi 2' }),
+    ],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'tv',
+    sourceKey: 'movie:1', // Kaynak film, filtre dizi!
+    relationshipFilter: 'all',
+  });
+
+  // Uyuşmayan kaynak sessizce başka bir diziye geçmemeli, boş dönmelidir
+  assert.equal(data.nodes.length, 0);
+  assert.equal(data.links.length, 0);
+});
+

@@ -88,21 +88,45 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     );
   }, [savedItems, snapshotCandidates, mediaFilter]);
 
+  // Medya filtresi değiştiğinde seçili kaynak yeni filtreye uymuyorsa ilk geçerli kaynağa geçir ve seçili düğümü temizle
+  useEffect(() => {
+    if (mode !== 'relationships') return;
+
+    const isCurrentSourceValid = sourceOptions.some(
+      (item) => relationshipNodeKey(item) === sourceKey
+    );
+
+    if (!isCurrentSourceValid) {
+      const nextSource = sourceOptions[0];
+      setSourceKey(nextSource ? relationshipNodeKey(nextSource) : '');
+      setSelectedNode(null);
+    }
+  }, [mode, sourceOptions, sourceKey]);
+
   const createGraph = (
     candidateSnapshot: PoolCandidateItem[],
     requestedSourceKey = sourceKey,
-  ) => buildRelationshipGraph({
-    mode,
-    profileId,
-    candidates: candidateSnapshot,
-    savedItems,
-    preferences,
-    mediaFilter,
-    sourceKey: requestedSourceKey,
-    relationshipFilter: relationFilter,
-    maxNodes: 90,
-    maxLinks: 160,
-  });
+  ) => {
+    const effectiveSourceKey =
+      mode === 'relationships'
+        ? (sourceOptions.some((item) => relationshipNodeKey(item) === requestedSourceKey)
+            ? requestedSourceKey
+            : (sourceOptions[0] ? relationshipNodeKey(sourceOptions[0]) : ''))
+        : requestedSourceKey;
+
+    return buildRelationshipGraph({
+      mode,
+      profileId,
+      candidates: candidateSnapshot,
+      savedItems,
+      preferences,
+      mediaFilter,
+      sourceKey: effectiveSourceKey,
+      relationshipFilter: relationFilter,
+      maxNodes: 90,
+      maxLinks: 160,
+    });
+  };
 
   const handleRefresh = async () => {
     setLoading(true);
@@ -115,8 +139,9 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       let effectiveSourceKey = sourceKey;
       if (
         mode === 'relationships'
-        && !loadedCandidates.some((item) => relationshipNodeKey(item) === effectiveSourceKey)
-        && !savedItems.some((item) => relationshipNodeKey(item) === effectiveSourceKey)
+        && (!effectiveSourceKey
+          || (!loadedCandidates.some((item) => relationshipNodeKey(item) === effectiveSourceKey)
+              && !savedItems.some((item) => relationshipNodeKey(item) === effectiveSourceKey && (mediaFilter === 'all' || item.media_type === mediaFilter))))
       ) {
         const first = [...savedItems, ...loadedCandidates].find(
           (item) => mediaFilter === 'all' || item.media_type === mediaFilter
@@ -141,7 +166,11 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       setGraphData(nextGraph);
       setSelectedNode(null);
       if (!nextGraph.nodes.length) {
-        setError('Bu filtre için yeterli ilişki verisi bulunamadı.');
+        if (mode === 'relationships' && !effectiveSourceKey) {
+          setError('İlişkileri keşfetmek için lütfen bir kaynak yapım seçin.');
+        } else {
+          setError('Bu filtre için yeterli ilişki verisi bulunamadı.');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'İlişki haritası oluşturulamadı.');
@@ -237,7 +266,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         {mode === 'relationships' && (
           <label>
             Kaynak yapım
-            <select value={sourceKey} onChange={(event) => setSourceKey(event.target.value)}>
+            <select
+              value={sourceKey}
+              onChange={(event) => {
+                setSourceKey(event.target.value);
+                setSelectedNode(null);
+              }}
+            >
               <option value="">Kaynak seç…</option>
               {sourceOptions.map((item) => (
                 <option key={relationshipNodeKey(item)} value={relationshipNodeKey(item)}>
@@ -264,7 +299,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
 
       <div className="relationship-layout">
         <div className="relationship-graph" ref={containerRef}>
-          {graphData ? (
+          {graphData && graphData.nodes.length > 0 ? (
             <ForceGraph2D
               ref={graphRef}
               graphData={graphData as any}
@@ -293,8 +328,16 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
           ) : (
             <div className="relationship-empty">
               <div className="relationship-empty-icon">◎</div>
-              <h3>Harita henüz oluşturulmadı</h3>
-              <p>Mevcut yerel aday havuzunu ve kişisel profilini kullanmak için “Haritayı Güncelle” düğmesine bas.</p>
+              <h3>
+                {mode === 'relationships' && !sourceKey
+                  ? 'Kaynak yapım seçilmedi'
+                  : 'Harita henüz oluşturulmadı'}
+              </h3>
+              <p>
+                {mode === 'relationships' && !sourceKey
+                  ? 'İlişkileri keşfetmek için yukarıdaki menüden bir kaynak yapım seçin veya “Haritayı Güncelle” düğmesine basın.'
+                  : 'Mevcut yerel aday havuzunu ve kişisel profilini kullanmak için “Haritayı Güncelle” düğmesine bas.'}
+              </p>
             </div>
           )}
         </div>
