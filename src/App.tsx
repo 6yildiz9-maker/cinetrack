@@ -12,9 +12,11 @@ import { ProfileModal } from './components/ProfileModal';
 import { ImportChoiceModal } from './components/ImportChoiceModal';
 import { Toast } from './components/Toast';
 import { TasteMapView } from './components/TasteMapView';
+import { RelationshipExplorer } from './components/RelationshipExplorer';
 
 import {
   SavedItem,
+  PoolCandidateItem,
   Profile,
   Preferences,
   DataDocument,
@@ -193,7 +195,8 @@ export function App() {
   const [syncStatus, setSyncStatus] = useState<string>('Kayıt yeri: data/cinetrack-data.json');
 
   // Discover & Grid State
-  const [tab, setTab] = useState<'discover' | 'list' | 'taste-map'>('discover');
+  const [tab, setTab] = useState<'discover' | 'list' | 'taste-map' | 'relationships'>('discover');
+  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'graph' | 'list'>('graph');
   const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
   const [listStatus, setListStatus] = useState<string>('all');
@@ -971,6 +974,32 @@ export function App() {
     loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType);
   }, [loadCategoryResults, selectedProvider, selectedType]);
 
+  const handleLoadRelationshipCandidates = useCallback(
+    async (mediaFilter: 'all' | 'movie' | 'tv'): Promise<PoolCandidateItem[]> => {
+      const mediaTypes: Array<'movie' | 'tv'> =
+        mediaFilter === 'all' ? ['movie', 'tv'] : [mediaFilter];
+
+      const result: PoolCandidateItem[] = [];
+
+      for (const mediaType of mediaTypes) {
+        const pool = await replenishCandidatePool({
+          profileId: activeProfileId,
+          mediaType,
+          savedItems,
+          preferences,
+          favoriteActors,
+          fetchTmdbFn: fetchTmdbCached,
+          force: false,
+        });
+
+        result.push(...pool.items);
+      }
+
+      return result;
+    },
+    [activeProfileId, savedItems, preferences, favoriteActors]
+  );
+
   const handleSelectType = useCallback(
     (newType: string) => {
       setSelectedType(newType);
@@ -1714,21 +1743,68 @@ export function App() {
           onListStatusChange={setListStatus}
         />
 
-        {tab === 'taste-map' ? (
-          <TasteMapView
-            tasteMap={tasteMap}
-            summary={tasteSummary}
-            genresMap={genresMap}
-            onOpenDetails={(item) => setDetailItem(item)}
-            onQuickSave={(item) => setQuickSaveItem(item)}
-            onSetStatus={(item, status) => handleSetStatus(item, status)}
-            onToggleDislike={(key) => handleToggleDislike(key)}
-            onRefreshTasteMap={handleRefreshTasteMap}
-            isLoading={isLoading}
-            isDemo={Boolean(activeProfile?.isDemo)}
-            tmdbSource={tmdbSourceMeta.source}
-            tmdbStaleReason={tmdbSourceMeta.staleReason}
+        {tab === 'relationships' ? (
+          <RelationshipExplorer
+            key={`${activeProfileId}-relationships`}
+            mode="relationships"
+            profileId={activeProfileId}
+            savedItems={savedItems}
+            preferences={preferences}
+            candidates={[]}
+            onRefresh={handleLoadRelationshipCandidates}
+            onOpenDetails={(item) => setDetailItem(item as SavedItem)}
+            onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
           />
+        ) : tab === 'taste-map' ? (
+          <div className="taste-map-page">
+            <div className="taste-map-view-toggle">
+              <button
+                className={`btn ${tasteMapDisplayMode === 'graph' ? 'btn-primary' : ''}`}
+                type="button"
+                onClick={() => setTasteMapDisplayMode('graph')}
+                aria-pressed={tasteMapDisplayMode === 'graph'}
+              >
+                Ağ haritası
+              </button>
+              <button
+                className={`btn ${tasteMapDisplayMode === 'list' ? 'btn-primary' : ''}`}
+                type="button"
+                onClick={() => setTasteMapDisplayMode('list')}
+                aria-pressed={tasteMapDisplayMode === 'list'}
+              >
+                Liste
+              </button>
+            </div>
+
+            {tasteMapDisplayMode === 'graph' ? (
+              <RelationshipExplorer
+                key={`${activeProfileId}-taste-map`}
+                mode="taste-map"
+                profileId={activeProfileId}
+                savedItems={savedItems}
+                preferences={preferences}
+                candidates={[]}
+                onRefresh={handleLoadRelationshipCandidates}
+                onOpenDetails={(item) => setDetailItem(item as SavedItem)}
+                onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
+              />
+            ) : (
+              <TasteMapView
+                tasteMap={tasteMap}
+                summary={tasteSummary}
+                genresMap={genresMap}
+                onOpenDetails={(item) => setDetailItem(item)}
+                onQuickSave={(item) => setQuickSaveItem(item)}
+                onSetStatus={(item, status) => handleSetStatus(item, status)}
+                onToggleDislike={(key) => handleToggleDislike(key)}
+                onRefreshTasteMap={handleRefreshTasteMap}
+                isLoading={isLoading}
+                isDemo={Boolean(activeProfile?.isDemo)}
+                tmdbSource={tmdbSourceMeta.source}
+                tmdbStaleReason={tmdbSourceMeta.staleReason}
+              />
+            )}
+          </div>
         ) : (
           <MediaGrid
             title={catalogTitle}

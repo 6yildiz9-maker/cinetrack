@@ -1,8 +1,8 @@
 import React from 'react';
 
 interface ControlsProps {
-  tab: 'discover' | 'list' | 'taste-map';
-  onTabChange: (tab: 'discover' | 'list' | 'taste-map') => void;
+  tab: 'discover' | 'list' | 'taste-map' | 'relationships';
+  onTabChange: (tab: 'discover' | 'list' | 'taste-map' | 'relationships') => void;
   myListCount: number;
   upcomingCount: number;
   dislikedCount?: number;
@@ -82,9 +82,17 @@ export const Controls: React.FC<ControlsProps> = ({
           >
             🗺️ Zevk Haritası
           </button>
+          <button
+            className={`tab ${tab === 'relationships' ? 'active' : ''}`}
+            type="button"
+            aria-pressed={tab === 'relationships'}
+            onClick={() => onTabChange('relationships')}
+          >
+            ◉ İlişki Keşfi
+          </button>
         </div>
 
-        {tab !== 'taste-map' && (
+        {tab !== 'taste-map' && tab !== 'relationships' && (
           <div className="filters">
             {tab === 'discover' && (
             <select
