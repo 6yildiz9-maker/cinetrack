@@ -1111,6 +1111,8 @@ export const RECOMMENDATION_WEIGHTS_V3 = Object.freeze({
   sourceSignal: 0.02,
 });
 
+export type RecommendationWeightsV3 = Record<string, number>;
+
 export function actorFrequency(na: number): number {
   const n = Number(na);
   if (!Number.isFinite(n) || n <= 0) return 0;
@@ -1574,18 +1576,54 @@ export function calculateTastePillars(parts: Record<string, number> = {}): Taste
   };
 }
 
+export const ALGORITHM_VERSION = 'v3.2.0';
+
+export function computeWeightsSignature(weights: RecommendationWeightsV3 = RECOMMENDATION_WEIGHTS_V3): string {
+  const sortedPairs = Object.entries(weights || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}:${Number(v).toFixed(2)}`);
+
+  let h = 0x811c9dc5;
+  const str = sortedPairs.join(';');
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+export interface TasteProfileSignatureOptions {
+  targetType?: string;
+  algorithmVersion?: string;
+  weights?: RecommendationWeightsV3;
+}
+
 export function computeTasteProfileSignature(
   savedItems: SavedItem[] = [],
   preferences: Preferences = { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
-  favoriteActors: FavoriteActorInfo[] = []
+  favoriteActors: FavoriteActorInfo[] = [],
+  options?: TasteProfileSignatureOptions
 ): string {
+  const targetType = options?.targetType || 'all';
+  const algorithmVersion = options?.algorithmVersion || ALGORITHM_VERSION;
+  const weightsSig = computeWeightsSignature(options?.weights);
+
   // Demo / Live ayrımı: Kullanıcı gerçek (canlı) içeriklere sahipse, imza canlı içeriklere göre üretilir
   const hasLiveItems = (savedItems || []).some(
     (it) => it && it.isDemo !== true && (it.personal_rating || it.status)
   );
-  const effectiveItems = hasLiveItems
+  let effectiveItems = hasLiveItems
     ? (savedItems || []).filter((it) => it && it.isDemo !== true)
     : (savedItems || []);
+
+  // P1 Düzeltmesi — Hedef Türe Göre İzolasyon (Scoped History):
+  // Film modunda bir dizi durumunun değişmesi veya dizi modunda film durumunun değişmesi
+  // diğer türün imzasını veya önbelleğini geçersizleştirmemelidir!
+  if (targetType === 'movie') {
+    effectiveItems = effectiveItems.filter((it) => it.media_type === 'movie' || (!it.media_type && !(it as any).name));
+  } else if (targetType === 'tv') {
+    effectiveItems = effectiveItems.filter((it) => it.media_type === 'tv' || (!it.media_type && (it as any).name));
+  }
 
   const sortedItemTokens = effectiveItems
     .map((it) => {
@@ -1598,12 +1636,23 @@ export function computeTasteProfileSignature(
     })
     .sort();
 
-  const sortedDisliked = [...(preferences?.disliked || [])].sort();
+  // Hedef türe göre olumsuz sinyal listesini de filtrele
+  let rawDisliked = preferences?.disliked || [];
+  if (targetType === 'movie') {
+    rawDisliked = rawDisliked.filter((k) => k.startsWith('movie:'));
+  } else if (targetType === 'tv') {
+    rawDisliked = rawDisliked.filter((k) => k.startsWith('tv:'));
+  }
+
+  const sortedDisliked = [...rawDisliked].sort();
   const sortedProviders = [...(preferences?.providers || [])].sort();
   const mood = preferences?.mood || '';
   const sortedFavActors = (favoriteActors || []).map((a) => a.id).sort((a, b) => a - b);
 
   const fullPayload = [
+    `algo:${algorithmVersion}`,
+    `weights:${weightsSig}`,
+    `target:${targetType}`,
     `items:${sortedItemTokens.join(';')}`,
     `disliked:${sortedDisliked.join(',')}`,
     `providers:${sortedProviders.join(',')}`,
@@ -1620,7 +1669,7 @@ export function computeTasteProfileSignature(
   const hash32 = (h >>> 0).toString(16).padStart(8, '0');
 
   const ratingsSum = effectiveItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
-  return `sig_${effectiveItems.length}_${ratingsSum}_${mood || 'nomood'}_${sortedDisliked.length}_${sortedFavActors.length}_${hash32}`;
+  return `sig_${algorithmVersion}_${weightsSig}_${targetType}_${effectiveItems.length}_${ratingsSum}_${mood || 'nomood'}_${sortedDisliked.length}_${sortedFavActors.length}_${hash32}`;
 }
 
 export interface TasteProfileSummary {
@@ -1740,7 +1789,9 @@ export interface TasteMapEntry {
   release_date?: string;
   first_air_date?: string;
   overview?: string;
-  matchScore: number;
+  matchScore: number;       // Gerçek zevk uyumu (1-100, demotion cezasından etkilenmez: örn 92)
+  tasteScore: number;       // Gerçek zevk uyumu (matchScore ile eşdeğer, açık sinyal ayrımı)
+  priorityScore: number;    // Gösterim ve seçim önceliği puanı (demotion cezası düşülmüş hali: örn 82)
   rawScore: number;
   ring: TasteRing;
   initialRing: TasteRing;
@@ -1760,6 +1811,8 @@ export interface TasteMapEntry {
   isArchived?: boolean;
   archivedAt?: string | null;
   archiveReason?: 'evicted_from_pool' | 'status_change' | 'manual';
+  scoreCoverage?: 'basic' | 'enriched';
+  confidenceLevel?: 'standard' | 'high';
 }
 
 export function appendBoundedImpression(
@@ -1847,12 +1900,18 @@ export interface TasteProfileSnapshot {
   favActorIds?: number[];
   targetType: string;
   hasLiveItems: boolean;
+  algorithmVersion?: string;
+  weightsSignature?: string;
+  scopedItemCount?: number;
+  scopedRatingsSum?: number;
 }
 
 export interface PersistentTasteMapData {
   profileId: string;
   profileSignature?: string;
   profileSnapshot?: TasteProfileSnapshot;
+  algorithmVersion?: string;
+  weightsSignature?: string;
   updatedAt: string;
   entries: Record<string, TasteMapEntry>;
   archivedEntries?: Record<string, TasteMapEntry>;
@@ -1951,6 +2010,8 @@ export function createDefaultTasteMapData(profileId: string): PersistentTasteMap
   return {
     profileId,
     profileSignature: '',
+    algorithmVersion: ALGORITHM_VERSION,
+    weightsSignature: computeWeightsSignature(),
     updatedAt: new Date().toISOString(),
     entries: {},
     archivedEntries: {},
@@ -1981,6 +2042,8 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
             profileId,
             profileSignature: parsed.profileSignature || '',
             profileSnapshot: parsed.profileSnapshot || undefined,
+            algorithmVersion: parsed.algorithmVersion || undefined,
+            weightsSignature: parsed.weightsSignature || undefined,
             updatedAt: parsed.updatedAt || new Date().toISOString(),
             entries: sanitizedEntries,
             archivedEntries: sanitizedArchived,
@@ -2130,7 +2193,12 @@ export function updateTasteMapWithBatch({
 
       // Demotion ceza puanı: her atlama için 5 puan, her halka düşüşü için ek 5 puan (maks 35 puan)
       entry.demotionPenalty = Math.min(35, entry.skippedCount * 5 + (entry.ringDemotions || 0) * 5);
-      entry.matchScore = Math.max(1, Math.min(100, Math.round(entry.rawScore - entry.demotionPenalty)));
+      // Kural: Zevk Uyumu ile Gösterim Önceliği ayrımı!
+      // Gerçek zevk uyumu (tasteScore / matchScore) içeriğin profille olan sabit uyumunu gösterir (örn. %92).
+      // Demotion cezası zevk uyumunu düşürmez; yalnızca seçim/gösterim öncelik puanını (priorityScore) düşürür (örn. %82).
+      entry.tasteScore = Math.max(1, Math.min(100, Math.round(entry.rawScore)));
+      entry.priorityScore = Math.max(1, Math.min(100, Math.round(entry.rawScore - entry.demotionPenalty)));
+      entry.matchScore = entry.tasteScore;
       entry.lastScoredAt = now;
     }
   }
@@ -2178,7 +2246,6 @@ export function updateTasteMapWithBatch({
       const mediaType: 'movie' | 'tv' = cand.media_type === 'tv' ? 'tv' : 'movie';
       const id = Number(cand.id);
       const title = String(cand.title || cand.name || '');
-      const rawScore = Number(poolItem.rawScore ?? poolItem.score ?? cand.score ?? 75);
 
       // Daha önceden entries veya archivedEntries'de varsa geçmişini koru
       const existing = updatedEntries[key] || updatedArchivedEntries[key];
@@ -2186,6 +2253,8 @@ export function updateTasteMapWithBatch({
       if (updatedArchivedEntries[key]) {
         delete updatedArchivedEntries[key];
       }
+
+      const rawScore = Number(poolItem.rawScore ?? poolItem.score ?? cand.score ?? cand.rawScore ?? existing?.rawScore ?? 75);
 
       const demotionPenalty = existing?.demotionPenalty || poolItem.demotionPenalty || 0;
       const ringDemotions = existing?.ringDemotions || poolItem.ringDemotions || 0;
@@ -2202,7 +2271,22 @@ export function updateTasteMapWithBatch({
       let initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
       if (normalizeLegacyRings) initialRing = normalizeTasteRing(initialRing);
 
-      const netMatchScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+      // Puan Ayrımı: Zevk Uyumu (tasteScore) vs Gösterim/Seçim Önceliği (priorityScore)
+      const tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
+      const priorityScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+      const netMatchScore = tasteScore;
+
+      // Puan Derinliği (Score Coverage): Adayın kadro kredisi var mı?
+      const candHasCredits = Boolean(
+        (cand.cast && cand.cast.length > 0) ||
+        (cand.crew && cand.crew.length > 0) ||
+        cand.director ||
+        (poolItem.cast && poolItem.cast.length > 0) ||
+        poolItem.director
+      );
+      const scoreCoverage: 'basic' | 'enriched' = (existing?.scoreCoverage === 'enriched' || poolItem.scoreCoverage === 'enriched' || candHasCredits) ? 'enriched' : 'basic';
+      const confidenceLevel: 'standard' | 'high' = scoreCoverage === 'enriched' ? 'high' : 'standard';
+
       const parts = poolItem.parts || poolItem.signalBreakdown || existing?.parts || {};
       const pillars = calculateTastePillars(parts);
       const tags = Array.isArray(poolItem.tags) ? poolItem.tags : existing?.tags || [];
@@ -2231,6 +2315,8 @@ export function updateTasteMapWithBatch({
         first_air_date: cand.first_air_date || existing?.first_air_date,
         overview: cand.overview || existing?.overview || '',
         matchScore: netMatchScore,
+        tasteScore,
+        priorityScore,
         rawScore,
         ring,
         initialRing,
@@ -2249,6 +2335,8 @@ export function updateTasteMapWithBatch({
         status,
         isArchived: false,
         archivedAt: null,
+        scoreCoverage,
+        confidenceLevel,
       };
     }
   }
@@ -2264,11 +2352,11 @@ export function updateTasteMapWithBatch({
     const mediaType: 'movie' | 'tv' = cand.media_type === 'tv' ? 'tv' : 'movie';
     const id = Number(cand.id);
     const title = String(cand.title || cand.name || '');
-    const rawScore = Number(item.rawScore ?? item.score ?? cand.score ?? 75);
     const existing = updatedEntries[key] || updatedArchivedEntries[key];
     if (updatedArchivedEntries[key]) {
       delete updatedArchivedEntries[key];
     }
+    const rawScore = Number(item.rawScore ?? item.score ?? cand.score ?? cand.rawScore ?? existing?.rawScore ?? 75);
 
     const demotionPenalty = existing?.demotionPenalty || item.demotionPenalty || 0;
     const ringDemotions = existing?.ringDemotions || item.ringDemotions || 0;
@@ -2289,7 +2377,19 @@ export function updateTasteMapWithBatch({
     let initialRing: TasteRing = existing?.initialRing || assignTasteRing(rawScore);
     if (normalizeLegacyRings) initialRing = normalizeTasteRing(initialRing);
 
-    const netMatchScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+    const tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
+    const priorityScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+    const netMatchScore = tasteScore;
+
+    const candHasCredits = Boolean(
+      (cand.cast && cand.cast.length > 0) ||
+      (cand.crew && cand.crew.length > 0) ||
+      cand.director ||
+      (item.cast && item.cast.length > 0) ||
+      item.director
+    );
+    const scoreCoverage: 'basic' | 'enriched' = (existing?.scoreCoverage === 'enriched' || item.scoreCoverage === 'enriched' || candHasCredits) ? 'enriched' : 'basic';
+    const confidenceLevel: 'standard' | 'high' = scoreCoverage === 'enriched' ? 'high' : 'standard';
 
     const parts = item.parts || existing?.parts || {};
     const pillars = calculateTastePillars(parts);
@@ -2308,6 +2408,8 @@ export function updateTasteMapWithBatch({
       first_air_date: cand.first_air_date || existing?.first_air_date,
       overview: cand.overview || existing?.overview || '',
       matchScore: netMatchScore,
+      tasteScore,
+      priorityScore,
       rawScore,
       ring,
       initialRing,
@@ -2326,6 +2428,8 @@ export function updateTasteMapWithBatch({
       status: 'active',
       isArchived: false,
       archivedAt: null,
+      scoreCoverage,
+      confidenceLevel,
     };
   }
 
@@ -2337,13 +2441,33 @@ export function updateTasteMapWithBatch({
     ? (savedItems || []).filter((it) => it && it.isDemo !== true)
     : (savedItems || []);
   const ratingsSum = effectiveItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
-  const dislikedList = [...(preferences?.disliked || [])].sort();
+
+  // P1: Hedef türe göre ayrıştırılmış (scoped) metrikler
+  const scopedItems = targetType === 'movie'
+    ? effectiveItems.filter((it) => it.media_type === 'movie' || (!it.media_type && !(it as any).name))
+    : targetType === 'tv'
+    ? effectiveItems.filter((it) => it.media_type === 'tv' || (!it.media_type && (it as any).name))
+    : effectiveItems;
+  const scopedRatingsSum = scopedItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+
+  let rawDisliked = preferences?.disliked || [];
+  if (targetType === 'movie') {
+    rawDisliked = rawDisliked.filter((k) => k.startsWith('movie:'));
+  } else if (targetType === 'tv') {
+    rawDisliked = rawDisliked.filter((k) => k.startsWith('tv:'));
+  }
+
+  const dislikedList = [...rawDisliked].sort();
   const providersList = [...(preferences?.providers || [])].sort();
   const favActorIds = (favoriteActors || []).map((a) => a.id).sort((a, b) => a - b);
+  const algorithmVersion = ALGORITHM_VERSION;
+  const weightsSignature = computeWeightsSignature();
 
   const profileSnapshot: TasteProfileSnapshot = {
     savedItemCount: effectiveItems.length,
     ratingsSum,
+    scopedItemCount: scopedItems.length,
+    scopedRatingsSum,
     dislikedCount: dislikedList.length,
     dislikedHash: dislikedList.join(','),
     providerHash: providersList.join(','),
@@ -2352,12 +2476,16 @@ export function updateTasteMapWithBatch({
     favActorIds,
     targetType: targetType || 'all',
     hasLiveItems,
+    algorithmVersion,
+    weightsSignature,
   };
 
   return {
     profileId: tasteMap.profileId,
     profileSignature: profileSignature ?? tasteMap.profileSignature ?? '',
     profileSnapshot,
+    algorithmVersion,
+    weightsSignature,
     updatedAt: now,
     entries: updatedEntries,
     archivedEntries: updatedArchivedEntries,
@@ -2498,6 +2626,8 @@ export interface TasteMapCacheValidParams {
   preferences: Preferences;
   favoriteActors?: FavoriteActorInfo[];
   forceRefresh?: boolean;
+  algorithmVersion?: string;
+  weights?: RecommendationWeightsV3;
 }
 
 export function isTasteMapCacheValid({
@@ -2508,12 +2638,20 @@ export function isTasteMapCacheValid({
   preferences,
   favoriteActors = [],
   forceRefresh = false,
+  algorithmVersion = ALGORITHM_VERSION,
+  weights,
 }: TasteMapCacheValidParams): boolean {
   if (forceRefresh) return false;
   if (!tasteMap || !tasteMap.entries) return false;
   if (!Array.isArray(tasteMap.cachedBalancedItems) || tasteMap.cachedBalancedItems.length === 0) return false;
   if (tasteMap.profileSignature !== currentSig) return false;
   if (tasteMap.lastTargetType !== targetType) return false;
+
+  // P1 Düzeltmesi: Algoritma Sürümü ve Ağırlık İmzası Doğrulaması
+  // Algoritma veya ağırlıklar değiştiğinde eski puanlar yeni algoritma sonucu gibi sunulamaz!
+  const currentWeightsSig = computeWeightsSignature(weights);
+  if (tasteMap.algorithmVersion && tasteMap.algorithmVersion !== algorithmVersion) return false;
+  if (tasteMap.weightsSignature && tasteMap.weightsSignature !== currentWeightsSig) return false;
 
   // Önemli Profil Alanları Derin Doğrulaması (Deep Field Validation)
   // Aynı imzaya sahip görünse bile önemli profil alanları değişmişse önbelleği kesinlikle geçersizleştir.
@@ -2524,17 +2662,44 @@ export function isTasteMapCacheValid({
     ? (savedItems || []).filter((it) => it && it.isDemo !== true)
     : (savedItems || []);
   const currentRatingsSum = effectiveItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
-  const currentDislikedList = [...(preferences?.disliked || [])].sort();
+
+  // P1 Düzeltmesi: Hedef türe göre ayrıştırılmış (scoped) metrikler
+  // Film modunda bir dizi değiştiğinde film haritası gereksiz geçersizleşmez!
+  const scopedItems = targetType === 'movie'
+    ? effectiveItems.filter((it) => it.media_type === 'movie' || (!it.media_type && !(it as any).name))
+    : targetType === 'tv'
+    ? effectiveItems.filter((it) => it.media_type === 'tv' || (!it.media_type && (it as any).name))
+    : effectiveItems;
+  const currentScopedRatingsSum = scopedItems.reduce((acc, it) => acc + (Number(it.personal_rating) || 0), 0);
+
+  let rawDisliked = preferences?.disliked || [];
+  if (targetType === 'movie') {
+    rawDisliked = rawDisliked.filter((k) => k.startsWith('movie:'));
+  } else if (targetType === 'tv') {
+    rawDisliked = rawDisliked.filter((k) => k.startsWith('tv:'));
+  }
+
+  const currentDislikedList = [...rawDisliked].sort();
   const currentProvidersList = [...(preferences?.providers || [])].sort();
   const currentFavActorIds = (favoriteActors || []).map((a) => a.id).sort((a, b) => a - b);
   const currentMood = preferences?.mood || '';
 
   const snap = tasteMap.profileSnapshot;
   if (snap) {
+    if (snap.algorithmVersion && snap.algorithmVersion !== algorithmVersion) return false;
+    if (snap.weightsSignature && snap.weightsSignature !== currentWeightsSig) return false;
     if (snap.targetType !== targetType) return false;
     if (snap.hasLiveItems !== hasLiveItems) return false;
-    if (snap.savedItemCount !== effectiveItems.length) return false;
-    if (snap.ratingsSum !== currentRatingsSum) return false;
+
+    // Hedef türe göre scoped alan kontrolü
+    if (snap.scopedItemCount != null) {
+      if (snap.scopedItemCount !== scopedItems.length) return false;
+      if (snap.scopedRatingsSum != null && snap.scopedRatingsSum !== currentScopedRatingsSum) return false;
+    } else {
+      if (snap.savedItemCount !== effectiveItems.length) return false;
+      if (snap.ratingsSum !== currentRatingsSum) return false;
+    }
+
     if (snap.dislikedCount !== currentDislikedList.length) return false;
     if (snap.dislikedHash && snap.dislikedHash !== currentDislikedList.join(',')) return false;
     if (snap.providerHash && snap.providerHash !== currentProvidersList.join(',')) return false;
@@ -2571,6 +2736,10 @@ export function syncPoolCandidatesWithTasteMap(
     return {
       ...item,
       matchScore: entry.matchScore,
+      tasteScore: entry.tasteScore ?? entry.matchScore,
+      priorityScore: entry.priorityScore ?? entry.matchScore,
+      scoreCoverage: entry.scoreCoverage,
+      confidenceLevel: entry.confidenceLevel,
       rawScore: entry.rawScore,
       ring: entry.ring,
       initialRing: entry.initialRing,
@@ -2876,19 +3045,40 @@ export function scoreCandidatesV3(
       ring = assignTasteRing(rawScore);
     }
 
-    let effectiveScore: number;
+    // Puan Derinliği (Score Coverage): Adayın kadro kredisi var mı?
+    const hasCredits = Boolean(
+      (cast && cast.length > 0) ||
+      (crew && crew.length > 0) ||
+      candidate.director ||
+      (candidate.cast && candidate.cast.length > 0)
+    );
+    const scoreCoverage: 'basic' | 'enriched' = hasCredits ? 'enriched' : 'basic';
+    const confidenceLevel: 'standard' | 'high' = scoreCoverage === 'enriched' ? 'high' : 'standard';
+
     let finalRawScore: number;
+    let tasteScore: number;
+    let priorityScore: number;
 
     if (tasteEntry && typeof tasteEntry.matchScore === 'number' && !['inner', 'outer', 'orbit'].includes(ring)) {
-      effectiveScore = tasteEntry.matchScore;
-      finalRawScore = tasteEntry.rawScore || tasteEntry.matchScore;
+      tasteScore = tasteEntry.tasteScore ?? tasteEntry.rawScore ?? tasteEntry.matchScore;
+      finalRawScore = tasteEntry.rawScore ?? tasteScore;
+      priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
+    } else if (tasteEntry) {
+      tasteScore = tasteEntry.tasteScore ?? Math.max(1, Math.min(100, Math.round(rawScore)));
+      finalRawScore = rawScore;
+      priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
     } else {
       finalRawScore = rawScore;
-      effectiveScore = Math.max(1, Math.min(100, Math.round(rawScore - demotionPenalty)));
+      tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
+      priorityScore = tasteScore;
     }
 
     // Sinyalleri ve kalıcı zevk alanlarını doğrudan aday nesnesi üzerine de yaz
-    candidate.matchScore = effectiveScore;
+    candidate.matchScore = tasteScore; // Rozet ve kartlar saf zevk uyumunu (%92) gösterir!
+    candidate.tasteScore = tasteScore;
+    candidate.priorityScore = priorityScore;
+    candidate.scoreCoverage = scoreCoverage;
+    candidate.confidenceLevel = confidenceLevel;
     candidate.rawScore = finalRawScore;
     candidate.ring = ring;
     candidate.demotionPenalty = demotionPenalty;
@@ -2901,7 +3091,12 @@ export function scoreCandidatesV3(
 
     return {
       candidate,
-      score: effectiveScore,
+      score: priorityScore, // Seçim algoritmaları (balance / diversify) seçim önceliği puanını (%82) kullanır!
+      tasteScore,
+      priorityScore,
+      matchScore: tasteScore,
+      scoreCoverage,
+      confidenceLevel,
       rawScore,
       parts,
       tags: tags.slice(0, 4),

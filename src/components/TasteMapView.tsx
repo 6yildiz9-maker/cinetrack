@@ -573,10 +573,40 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                           </div>
                         )}
 
-                        {/* Uyum Rozeti */}
-                        <div className="absolute top-2 left-2 z-10">
-                          <span className="bg-rose-600/90 backdrop-blur-md text-white text-[11px] font-bold px-2 py-0.5 rounded shadow">
-                            🎯 %{entry.matchScore}
+                        {/* Uyum ve Öncelik Rozetleri */}
+                        <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 items-start">
+                          <span
+                            className="bg-rose-600/90 backdrop-blur-md text-white text-[11px] font-bold px-2 py-0.5 rounded shadow flex items-center gap-1"
+                            title={`Saf Zevk Uyumu: %${entry.tasteScore ?? entry.matchScore} (İçeriğin kullanıcı profiline kalıcı zevk uyumu)`}
+                          >
+                            <span>🎯 %{entry.tasteScore ?? entry.matchScore}</span>
+                            <span className="text-[9px] font-normal opacity-90">Uyum</span>
+                          </span>
+                          {entry.priorityScore != null && entry.priorityScore < (entry.tasteScore ?? entry.matchScore) && (
+                            <span
+                              className="bg-slate-900/90 border border-amber-500/50 backdrop-blur-md text-amber-300 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded shadow"
+                              title={`Gösterim / atlanma cezası sonrası seçim önceliği: %${entry.priorityScore} (Saf zevk uyumu %${entry.tasteScore ?? entry.matchScore} korunuyor)`}
+                            >
+                              ⚡ %{entry.priorityScore} Öncelik
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Puan Derinliği (Score Coverage) */}
+                        <div className="absolute bottom-2 left-2 z-10 pointer-events-none">
+                          <span
+                            className={`backdrop-blur-md text-[9px] font-semibold px-1.5 py-0.5 rounded shadow ${
+                              entry.scoreCoverage === 'enriched'
+                                ? 'bg-amber-500/85 text-amber-100 border border-amber-400/40'
+                                : 'bg-slate-900/85 text-slate-300 border border-slate-700/60'
+                            }`}
+                            title={
+                              entry.scoreCoverage === 'enriched'
+                                ? 'Ayrıntılı Puanlama: Oyuncu, yönetmen ve TMDB kadro kredileriyle yüksek derinlikte hesaplandı'
+                                : 'Temel Puanlama: Katalog türleri ve genel metaverilerle standart derinlikte hesaplandı'
+                            }
+                          >
+                            {entry.scoreCoverage === 'enriched' ? '✨ Kadro Derinliği' : '📋 Temel Katalog'}
                           </span>
                         </div>
 
@@ -626,6 +656,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                             {entry.vote_average ? (
                               <span>⭐ {entry.vote_average.toFixed(1)}</span>
                             ) : null}
+                            <span className="text-[10px] font-mono text-slate-500">
+                              · {entry.scoreCoverage === 'enriched' ? '✨ Ayrıntılı' : '📋 Temel'}
+                            </span>
                           </div>
                         </div>
 
@@ -665,24 +698,32 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                           </div>
                         </div>
 
-                        {/* Gösterim & Halka Durumu */}
-                        <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between">
-                          <span
-                            title={
-                              entry.firstShownAt
-                                ? `Toplam ${entry.shownCount || 0} gösterim (İlk: ${new Date(entry.firstShownAt).toLocaleDateString('tr-TR')} · Son: ${entry.lastShownAt ? new Date(entry.lastShownAt).toLocaleDateString('tr-TR') : '-'}${entry.archivedImpressionCount ? ` · Arşivlenen: ${entry.archivedImpressionCount}` : ''})`
-                                : `Toplam ${entry.shownCount || 0} gösterim`
-                            }
-                          >
-                            👁️ {entry.shownCount || 0} gösterim
-                          </span>
-                          {normalizeTasteRing(entry.ring) === 'ring0' ? (
-                            <span className="text-emerald-400 font-medium">🌟 Yeni</span>
-                          ) : normalizeTasteRing(entry.ring) === 'ring1' ? (
-                            <span className="text-amber-400 font-medium">⏳ Dinleniyor</span>
-                          ) : (
-                            <span className="text-sky-400 font-medium">🔄 Yedek ({entry.skippedCount || 1}x)</span>
+                        {/* Gösterim, Öncelik & Halka Durumu */}
+                        <div className="space-y-1 pt-1 border-t border-slate-800/60">
+                          {entry.demotionPenalty > 0 && (
+                            <div className="flex items-center justify-between text-[10px] text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                              <span>⚡ Seçim Önceliği:</span>
+                              <span className="font-mono font-bold">%{entry.priorityScore ?? entry.matchScore} (-{entry.demotionPenalty}p)</span>
+                            </div>
                           )}
+                          <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                            <span
+                              title={
+                                entry.firstShownAt
+                                  ? `Toplam ${entry.shownCount || 0} gösterim (İlk: ${new Date(entry.firstShownAt).toLocaleDateString('tr-TR')} · Son: ${entry.lastShownAt ? new Date(entry.lastShownAt).toLocaleDateString('tr-TR') : '-'}${entry.archivedImpressionCount ? ` · Arşivlenen: ${entry.archivedImpressionCount}` : ''})`
+                                  : `Toplam ${entry.shownCount || 0} gösterim`
+                              }
+                            >
+                              👁️ {entry.shownCount || 0} gösterim
+                            </span>
+                            {normalizeTasteRing(entry.ring) === 'ring0' ? (
+                              <span className="text-emerald-400 font-medium">🌟 Yeni</span>
+                            ) : normalizeTasteRing(entry.ring) === 'ring1' ? (
+                              <span className="text-amber-400 font-medium">⏳ Dinleniyor</span>
+                            ) : (
+                              <span className="text-sky-400 font-medium">🔄 Yedek ({entry.skippedCount || 1}x)</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </article>
@@ -802,7 +843,10 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                         </h4>
                         <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
                           <span>{year}</span>
-                          <span>🎯 %{entry.matchScore}</span>
+                          <span>🎯 %{entry.tasteScore ?? entry.matchScore} Uyum</span>
+                          {entry.priorityScore != null && entry.priorityScore < (entry.tasteScore ?? entry.matchScore) && (
+                            <span className="text-amber-400 font-mono text-[10px]">· ⚡ %{entry.priorityScore}</span>
+                          )}
                         </div>
                       </div>
 
@@ -822,6 +866,12 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                           </div>
                         )}
                         <div className="flex justify-between">
+                          <span>Puan Derinliği:</span>
+                          <span className={entry.scoreCoverage === 'enriched' ? 'text-amber-300' : 'text-slate-400'}>
+                            {entry.scoreCoverage === 'enriched' ? '✨ Kadro' : '📋 Temel'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
                           <span>Son Halka Durumu:</span>
                           <span className="text-slate-300">{normalizeTasteRing(entry.ring)}</span>
                         </div>
@@ -838,9 +888,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
       {/* Mimari Açıklama Kartı */}
       <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 text-xs text-slate-400 space-y-2">
         <h4 className="font-bold text-slate-200 text-sm flex items-center gap-2">
-          <span>ℹ️ Halka Sistemi ve Zevk Haritası Mimarisi Nasıl Çalışır?</span>
+          <span>ℹ️ Halka Sistemi, Zevk Uyumu ve Puan Derinliği Mimarisi</span>
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
           <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
             <strong className="text-emerald-300 block mb-1">🌟 Halka 0 — Yeni Eşleşme</strong>
             Bu profil için henüz vitrinde gösterilmemiş taze adaylar. Normal öneri sıralamasında 1. önceliktedir.
@@ -852,6 +902,10 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
           <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
             <strong className="text-sky-300 block mb-1">🔄 Halka 2 — Daha Önce Atlandı</strong>
             Gerçek eşleşme puanı (%91 gibi) korunur. Yeni adaylar (Halka 0) 10+10 kotasını dolduramazsa devreye girer.
+          </div>
+          <div className="bg-slate-950/40 p-3 rounded-lg border border-slate-800">
+            <strong className="text-rose-300 block mb-1">🎯 Uyum vs ⚡ Öncelik & Derinlik</strong>
+            Atlanan içeriklerin saf zevk uyumu (%92) ceza puanıyla düşürülmez; yalnızca seçim önceliği (%82) etkilenir. Kadro kredisi olanlar ✨ Kadro Derinliği rozeti taşır.
           </div>
         </div>
       </div>

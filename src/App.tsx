@@ -499,7 +499,7 @@ export function App() {
           const rawSaved = savedItemsRef.current;
           const currentPrefs = preferencesRef.current;
           const currentGenres = genresMapRef.current;
-          const currentSig = computeTasteProfileSignature(rawSaved, currentPrefs, favoriteActorsRef.current);
+          const currentSig = computeTasteProfileSignature(rawSaved, currentPrefs, favoriteActorsRef.current, { targetType });
           const storedTasteMap = loadPersistentTasteMap(activeProfileId);
 
           // Ana ilke: Kullanıcının zevk profili ve adaylarla eşleşme haritası, yalnızca gerektiğinde güncellensin.
@@ -532,9 +532,15 @@ export function App() {
                   const cand = e.candidate || e;
                   const key = makeMediaKey(cand);
                   const mapEntry = storedTasteMap.entries[key];
+                  const tasteScore = mapEntry?.tasteScore ?? mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.tasteScore || e.tasteScore || e.score) || 75)));
+                  const priorityScore = mapEntry?.priorityScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.priorityScore || e.priorityScore || e.score) || 75)));
                   return {
                     ...cand,
-                    matchScore: mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(e.score) || 75))),
+                    matchScore: tasteScore,
+                    tasteScore,
+                    priorityScore,
+                    scoreCoverage: mapEntry?.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
+                    confidenceLevel: mapEntry?.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
                     ring: mapEntry?.ring ?? e.ring ?? assignTasteRing(Number(e.score) || 75),
                     tasteMapEntry: mapEntry,
                   };
@@ -856,9 +862,15 @@ export function App() {
               const cand = e.candidate || e;
               const key = makeMediaKey(cand);
               const mapEntry = updatedTasteMap.entries[key];
+              const tasteScore = mapEntry?.tasteScore ?? mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.tasteScore || e.tasteScore || e.score) || 75)));
+              const priorityScore = mapEntry?.priorityScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.priorityScore || e.priorityScore || e.score) || 75)));
               return {
                 ...cand,
-                matchScore: mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(e.score) || 75))),
+                matchScore: tasteScore,
+                tasteScore,
+                priorityScore,
+                scoreCoverage: mapEntry?.scoreCoverage ?? e.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
+                confidenceLevel: mapEntry?.confidenceLevel ?? e.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
                 ring: mapEntry?.ring ?? e.ring ?? assignTasteRing(Number(e.score) || 75),
                 tasteMapEntry: mapEntry,
               };

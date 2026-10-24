@@ -30,7 +30,8 @@ import {
   getTasteMapEntries, getTasteMapArchivedEntries, getTasteMapActiveAndArchivedCounts,
   archiveTasteMapEntry, restoreTasteMapEntry,
   MAX_IMPRESSION_HISTORY_PER_ENTRY, appendBoundedImpression,
-  sanitizeTasteMapEntryImpressions, getImpressionSummary
+  sanitizeTasteMapEntryImpressions, getImpressionSummary,
+  ALGORITHM_VERSION, computeWeightsSignature
 } from "../src/core/cinetrack-core.ts";
 import {
   TMDB_CACHE_TTLS,
@@ -2609,7 +2610,9 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     // 1. Atlamada skippedCount=1 olur, hafif ceza uygulanır (5 puan)
     assert.equal(tasteMap.entries["movie:701"].skippedCount, 1);
     assert.equal(tasteMap.entries["movie:701"].demotionPenalty, 5);
-    assert.equal(tasteMap.entries["movie:701"].matchScore, 85); // 90 - 5 = 85
+    assert.equal(tasteMap.entries["movie:701"].matchScore, 90); // Saf zevk uyumu 90 korunur
+    assert.equal(tasteMap.entries["movie:701"].tasteScore, 90);
+    assert.equal(tasteMap.entries["movie:701"].priorityScore, 85); // 90 - 5 = 85 seçim önceliği
     assert.equal(tasteMap.entries["movie:701"].ring, "core"); // 2. atlamaya kadar ring henüz düşmez
 
     // 3. Yenileme: itemE ve itemF gösterildi, itemA ve itemB hâlâ seçilmedi
@@ -2629,9 +2632,9 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     assert.equal(demotedEntry.skippedCount, 2);
     assert.equal(demotedEntry.ringDemotions, 1, "Halka geriletmesi 1 kez gerçekleşmiş olmalı");
     assert.equal(demotedEntry.ring, "inner", "Çekirdek halkadan yakın halkaya (core -> inner) geriletilmeli");
-    // Demotion ceza puanı: 2 atlama * 5 + 1 geriletme * 5 = 15
-    assert.equal(demotedEntry.demotionPenalty, 15);
-    assert.equal(demotedEntry.matchScore, 75); // 90 - 15 = 75
+    assert.equal(demotedEntry.matchScore, 90); // Saf zevk uyumu 90 korunur
+    assert.equal(demotedEntry.tasteScore, 90);
+    assert.equal(demotedEntry.priorityScore, 75); // 90 - 15 = 75 seçim önceliği
   });
 
   it("updateTasteMapWithBatch: kaydedilen (saved) yapımlarda atlandı sayacı ve ceza artırılmaz", () => {
@@ -2761,8 +2764,8 @@ describe("Sorun D — Öneri Puanları, Kalıcı Zevk Haritası ve Halka Gerilet
     assert.ok(freshScored.score > demotedScored.score, "Taze adayın net puanı atlanan adaydan yüksek olmalı");
     assert.equal(demotedScored.demotionPenalty, 20, "Atlanan adaya 20 puanlık geriletme cezası yansıtılmalı");
     assert.equal(demotedScored.ring, "inner", "Geriletilmiş halka durumu ('inner') korunmalı");
-    assert.equal(demotedScored.candidate.ring, "inner", "Aday nesnesi üzerine ring yazılmalı");
-    assert.equal(demotedScored.candidate.matchScore, demotedScored.score, "Aday nesnesi üzerine nihai matchScore yazılmalı");
+    assert.equal(demotedScored.candidate.matchScore, demotedScored.tasteScore, "Aday nesnesi üzerine saf zevk uyumu matchScore yazılmalı");
+    assert.equal(demotedScored.candidate.priorityScore, demotedScored.score, "Aday nesnesi üzerine seçim önceliği priorityScore yazılmalı");
   });
 
   it("syncPoolCandidatesWithTasteMap: aday havuzundaki öğeleri kalıcı zevk haritası ile senkronize eder", () => {
@@ -4084,6 +4087,225 @@ describe("Sınırlı Gösterim Geçmişi ve Depolama Optimizasyonu — Bounded I
     const emptySummary = getImpressionSummary(null);
     assert.equal(emptySummary.totalShown, 0);
     assert.equal(emptySummary.recentCount, 0);
+  });
+});
+
+describe("Zevk Haritası Mimari İyileştirmeleri — Puan Ayrımı, Algoritma Sürümü, Kapsam İzolasyonu ve Puan Derinliği", () => {
+  it("Zevk Uyumu vs Gösterim Önceliği: Atlanan adayın saf zevk uyumu (92) düşürülmez, yalnızca öncelik puanı (82) geriletilir", () => {
+    const candidate = { id: 99, media_type: "movie", title: "Kritik Başyapıt" };
+    const tasteMap = createDefaultTasteMapData("user_test");
+
+    // 1. İlk vitrin gösterimi: 92 puanlı adayı öneriye çıkarıyoruz
+    const batch1 = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [{ candidate, rawScore: 92, score: 92 }],
+      allPoolCandidates: [candidate],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-24T00:00:00Z",
+    });
+
+    const entry1 = batch1.entries["movie:99"];
+    assert.ok(entry1);
+    assert.equal(entry1.rawScore, 92);
+    assert.equal(entry1.tasteScore, 92, "İlk zevk uyumu 92 olmalı");
+    assert.equal(entry1.matchScore, 92, "Karttaki eşleşme rozeti saf zevk uyumunu göstermeli");
+    assert.equal(entry1.priorityScore, 92, "İlk seçim önceliği cezasız 92 olmalı");
+    assert.equal(entry1.demotionPenalty, 0);
+
+    // 2. İkinci vitrin: Kullanıcı bu adayı seçmeyip başka bir adayı vitrine aldı (atlandı)
+    const otherCandidate = { id: 100, media_type: "movie", title: "Başka Bir Film" };
+    const batch2 = updateTasteMapWithBatch({
+      tasteMap: batch1,
+      newRecommendedItems: [{ candidate: otherCandidate, rawScore: 88, score: 88 }],
+      allPoolCandidates: [candidate, otherCandidate],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+      now: "2026-10-24T00:01:00Z",
+    });
+
+    const entry2 = batch2.entries["movie:99"];
+    assert.ok(entry2);
+    assert.equal(entry2.skippedCount, 1, "1 kez atlandı");
+    assert.equal(entry2.demotionPenalty, 5, "1 atlama için 5 ceza puanı");
+    // SAF ZEVK UYUMU KORUNMALI!
+    assert.equal(entry2.tasteScore, 92, "Saf zevk uyumu ceza almadan 92/100 olarak kalmalı");
+    assert.equal(entry2.matchScore, 92, "Kullanıcıya gösterilen uyum puanı 92 olmalı, 87'ye düşmemeli");
+    // GÖSTERİM / SEÇİM ÖNCELİĞİ DÜŞMELİ
+    assert.equal(entry2.priorityScore, 87, "Seçim önceliği 92 - 5 = 87 olmalı");
+
+    // 3. scoreCandidatesV3 içinde sıralama/seçim puanı (score) priorityScore (87) iken tasteScore ve matchScore 92 olmalı
+    const scoredList = scoreCandidatesV3(
+      [candidate],
+      buildTasteProfileV3([]),
+      {
+        weights: RECOMMENDATION_WEIGHTS_V3,
+        tasteMap: batch2,
+      }
+    );
+    assert.equal(scoredList.length, 1);
+    const scoredItem = scoredList[0];
+    assert.equal(scoredItem.matchScore, 92, "Adayın saf zevk uyumu 92 korunmalı");
+    assert.equal(scoredItem.tasteScore, 92, "Adayın tasteScore değeri 92 olmalı");
+    assert.equal(scoredItem.score, 87, "Algoritma sıralama ve seçim puanı (score) öncelik puanı (87) olmalı");
+    assert.equal(scoredItem.priorityScore, 87, "Adayın priorityScore değeri 87 olmalı");
+  });
+
+  it("P1 — Profil İmzasına Algoritma Sürümü ve Ağırlık İmzası: Sürüm veya ağırlık değiştiğinde önbellek geçersizleşir", () => {
+    const saved = [baseItem({ id: 1, media_type: "movie", personal_rating: 9 })];
+    const prefs = { disliked: [], providers: [], mood: "akşam" };
+
+    const sigV3 = computeTasteProfileSignature(saved, prefs, [], {
+      algorithmVersion: ALGORITHM_VERSION,
+      weights: RECOMMENDATION_WEIGHTS_V3,
+    });
+    assert.ok(sigV3.startsWith(`sig_${ALGORITHM_VERSION}_`), "İmza algoritma sürümüyle başlamalı");
+
+    const candidate = { id: 10, media_type: "movie", title: "Test Film" };
+    const tasteMap = createDefaultTasteMapData("user_test");
+    const updatedMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [{ candidate, score: 85 }],
+      allPoolCandidates: [candidate],
+      savedItems: saved,
+      preferences: prefs,
+      profileSignature: sigV3,
+      targetType: "all",
+    });
+
+    // 1. Mevcut sürümle önbellek geçerlidir
+    const validCurrent = isTasteMapCacheValid({
+      tasteMap: updatedMap,
+      currentSig: sigV3,
+      targetType: "all",
+      savedItems: saved,
+      preferences: prefs,
+      algorithmVersion: ALGORITHM_VERSION,
+    });
+    assert.equal(validCurrent, true, "Güncel algoritma sürümüyle önbellek geçerli olmalı");
+
+    // 2. Algoritma sürümü değiştiğinde (örn: 'v4.0.0') önbellek geçersizleşmeli
+    const validNewAlgo = isTasteMapCacheValid({
+      tasteMap: updatedMap,
+      currentSig: sigV3,
+      targetType: "all",
+      savedItems: saved,
+      preferences: prefs,
+      algorithmVersion: "v4.0.0",
+    });
+    assert.equal(validNewAlgo, false, "Algoritma sürümü değiştiğinde eski önbellek geçersiz olmalı");
+
+    // 3. Ağırlıklar değiştiğinde computeWeightsSignature farklı sonuç vermeli ve imza değişmeli
+    const alteredWeights = { ...RECOMMENDATION_WEIGHTS_V3, genre: 0.99 };
+    const validAlteredWeights = isTasteMapCacheValid({
+      tasteMap: updatedMap,
+      currentSig: sigV3,
+      targetType: "all",
+      savedItems: saved,
+      preferences: prefs,
+      weights: alteredWeights,
+    });
+    assert.equal(validAlteredWeights, false, "Öneri ağırlıkları değiştiğinde önbellek geçersiz olmalı");
+  });
+
+  it("P1 — Film Haritası ile Dizi Geçmişi İzolasyonu (Scoped Signature): Film modunda dizi eklenmesi film imzasını bozmaz", () => {
+    const movieOnlySaved = [
+      baseItem({ id: 101, media_type: "movie", title: "Inception", personal_rating: 10 }),
+      baseItem({ id: 102, media_type: "movie", title: "Interstellar", personal_rating: 9 }),
+    ];
+    const prefs = { disliked: ["tv:999"], providers: [], mood: "" };
+
+    // Film hedef türü için hesaplanan imza
+    const movieSigBefore = computeTasteProfileSignature(movieOnlySaved, prefs, [], { targetType: "movie" });
+
+    // Kullanıcı yeni bir dizi izledi ve listesine ekledi
+    const mixedSaved = [
+      ...movieOnlySaved,
+      baseItem({ id: 501, media_type: "tv", name: "Breaking Bad", personal_rating: 10, status: "completed" }),
+    ];
+
+    // Film hedef türü için hesaplanan imza dizi eklendikten sonra da BİREBİR AYNI KALMALI!
+    const movieSigAfter = computeTasteProfileSignature(mixedSaved, prefs, [], { targetType: "movie" });
+    assert.equal(movieSigBefore, movieSigAfter, "Film modu imzası dizi geçmişi değiştiğinde DEĞİŞMEMELİ!");
+
+    // Dizi modu imzası ise değişmeli
+    const tvSigBefore = computeTasteProfileSignature(movieOnlySaved, prefs, [], { targetType: "tv" });
+    const tvSigAfter = computeTasteProfileSignature(mixedSaved, prefs, [], { targetType: "tv" });
+    assert.notEqual(tvSigBefore, tvSigAfter, "Dizi modu imzası dizi geçmişi değiştiğinde güncellenmeli");
+
+    // Önbellek doğrulaması: Film haritası dizi eklense bile geçerli kalmalı
+    const candidate = { id: 999, media_type: "movie", title: "Yeni Öneri Adayı" };
+    const tasteMap = createDefaultTasteMapData("user_test");
+    const movieMap = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [{ candidate, score: 95 }],
+      allPoolCandidates: [candidate],
+      savedItems: movieOnlySaved,
+      preferences: prefs,
+      profileSignature: movieSigBefore,
+      targetType: "movie",
+    });
+
+    const isMovieCacheStillValid = isTasteMapCacheValid({
+      tasteMap: movieMap,
+      currentSig: movieSigAfter,
+      targetType: "movie",
+      savedItems: mixedSaved, // dizi eklenmiş liste
+      preferences: prefs,
+    });
+    assert.equal(isMovieCacheStillValid, true, "Film haritası, listeye dizi eklendiğinde gereksiz yere geçersizleşmemeli");
+  });
+
+  it("P1 — Haritadaki Adayların Puan Derinliği (scoreCoverage: basic vs enriched)", () => {
+    // 1. Kadrosu/yönetmeni olmayan temel katalog adayı
+    const basicCandidate = {
+      id: 201,
+      media_type: "movie",
+      title: "Temel Katalog Filmi",
+      genre_ids: [28, 12],
+    };
+
+    // 2. TMDB kadro kredileri getirilmiş ayrıntılı aday
+    const enrichedCandidate = {
+      id: 202,
+      media_type: "movie",
+      title: "Ayrıntılı Başyapıt",
+      genre_ids: [28, 12],
+      cast: [{ id: 500, name: "Sevilen Oyuncu" }],
+      director: "Usta Yönetmen",
+    };
+
+    const scored = scoreCandidatesV3(
+      [basicCandidate, enrichedCandidate],
+      buildTasteProfileV3([]),
+      { weights: RECOMMENDATION_WEIGHTS_V3 }
+    );
+
+    const scoredBasic = scored.find((s) => s.candidate.id === 201);
+    const scoredEnriched = scored.find((s) => s.candidate.id === 202);
+
+    assert.ok(scoredBasic);
+    assert.ok(scoredEnriched);
+
+    assert.equal(scoredBasic.scoreCoverage, "basic", "Kredisiz aday 'basic' derinlik almalı");
+    assert.equal(scoredBasic.confidenceLevel, "standard", "Kredisiz aday 'standard' güven düzeyi almalı");
+
+    assert.equal(scoredEnriched.scoreCoverage, "enriched", "Kredili aday 'enriched' derinlik almalı");
+    assert.equal(scoredEnriched.confidenceLevel, "high", "Kredili aday 'high' güven düzeyi almalı");
+
+    // updateTasteMapWithBatch içine girdiğinde haritada saklanması
+    const tasteMap = createDefaultTasteMapData("user_test");
+    const updated = updateTasteMapWithBatch({
+      tasteMap,
+      newRecommendedItems: [scoredEnriched],
+      allPoolCandidates: [scoredBasic, scoredEnriched],
+      savedItems: [],
+      preferences: { disliked: [], hidden: [], mood: "" },
+    });
+
+    assert.equal(updated.entries["movie:201"].scoreCoverage, "basic");
+    assert.equal(updated.entries["movie:202"].scoreCoverage, "enriched");
+    assert.equal(updated.entries["movie:202"].confidenceLevel, "high");
   });
 });
 
