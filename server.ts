@@ -41,13 +41,23 @@ for (const envFileName of ['.env.local', '.env']) {
 
 const tmdbApiKey = process.env.TMDB_API_KEY || localEnv.TMDB_API_KEY || '';
 const optionalAuthToken = process.env.CINETRACK_TOKEN || localEnv.CINETRACK_TOKEN || '';
+const githubToken = process.env.CINETRACK_GITHUB_TOKEN || process.env.CINETRACK_GITHUB_PAT || localEnv.CINETRACK_GITHUB_TOKEN || localEnv.CINETRACK_GITHUB_PAT || '';
+const githubOwner = process.env.CINETRACK_DATA_OWNER || localEnv.CINETRACK_DATA_OWNER || '';
+const githubRepo = process.env.CINETRACK_DATA_REPO || localEnv.CINETRACK_DATA_REPO || '';
+const githubBranch = process.env.CINETRACK_DATA_BRANCH || localEnv.CINETRACK_DATA_BRANCH || 'main';
+const isPublicRepo = (process.env.CINETRACK_DATA_REPO_IS_PUBLIC || localEnv.CINETRACK_DATA_REPO_IS_PUBLIC || '').toLowerCase() === 'true';
 
-const { app, storage } = createCineTrackApp({
+const { app, storage, persistentStore } = createCineTrackApp({
   dataDir,
   maxDataBytes,
   maxProfiles,
   maxItemsPerProfile,
   tmdbApiKey,
+  githubToken,
+  githubOwner,
+  githubRepo,
+  githubBranch,
+  isPublicRepo,
   ...(optionalAuthToken ? { authToken: optionalAuthToken } : {}),
 });
 
@@ -88,6 +98,10 @@ async function startServer() {
   httpServer.listen(port, host, () => {
     console.log(`CineTrack is running at http://${host}:${port} (${isDevMode ? 'development' : 'production'})`);
     console.log(`Profil ve izleme listesi: ${storage.dataFile}`);
+    const syncStatus = persistentStore.getSyncStatus();
+    console.log(
+      `Kalıcı Veri Deposu: ${syncStatus.mode === 'github' ? `GitHub Uzak Eşitleme (${syncStatus.remoteTarget?.repo})` : 'Yerel Depolama (data/catalog & data/profiles)'}`
+    );
     if (!tmdbApiKey) {
       console.log('TMDB_API_KEY is not configured; running in fallback demo mode.');
     }

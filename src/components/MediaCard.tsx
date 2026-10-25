@@ -156,37 +156,32 @@ export const MediaCard: React.FC<MediaCardProps> = ({
       data-media-key={itemKey}
       data-size={size}
     >
-      <div
-        className="poster"
-        role="button"
-        tabIndex={0}
-        aria-label={`${title} detaylarını gör`}
-        onClick={() => onOpenDetails(item)}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            onOpenDetails(item);
-          }
-        }}
-      >
-        <div className="poster-fallback" aria-hidden="true">
-          <svg className="icon">
-            <use href="#icon-film"></use>
-          </svg>
-          <span className="poster-fallback-title">{title}</span>
-        </div>
+      <div className="poster poster-frame">
+        <button
+          type="button"
+          className="poster-trigger"
+          aria-label={`${title} detaylarını gör`}
+          onClick={() => onOpenDetails(item)}
+        >
+          <div className="poster-fallback" aria-hidden="true">
+            <svg className="icon">
+              <use href="#icon-film"></use>
+            </svg>
+            <span className="poster-fallback-title">{title}</span>
+          </div>
 
-        {poster && !posterFailed && (
-          <img
-            src={poster}
-            alt={title}
-            loading="lazy"
-            decoding="async"
-            referrerPolicy="no-referrer"
-            onError={() => setPosterFailed(true)}
-          />
-        )}
+          {poster && !posterFailed && (
+            <img
+              src={poster}
+              alt=""
+              loading={_eager ? 'eager' : 'lazy'}
+              decoding="async"
+              referrerPolicy="no-referrer"
+              {...(_eager ? { fetchPriority: 'high', fetchpriority: 'high' } as any : {})}
+              onError={() => setPosterFailed(true)}
+            />
+          )}
+        </button>
 
         {/* Top-left Badges row */}
         <div className="poster-badges-row">

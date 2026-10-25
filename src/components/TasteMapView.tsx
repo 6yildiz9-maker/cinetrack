@@ -92,14 +92,22 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   }, [activeViewTab, entriesList, archivedList, selectedRing, mediaFilter, sortOrder, lastKeys]);
 
   const strongestGenre = useMemo(() => {
-    if (summary?.topGenres && summary.topGenres.length > 0) {
+    if (summary?.topGenres && summary.topGenres.length > 0 && summary.topGenres[0]?.name) {
       return summary.topGenres[0].name;
     }
-    return 'Dram';
+    return '—';
   }, [summary]);
 
   return (
     <div className="taste-map-container">
+      {/* Sayfa Başlığı ve Kısa Açıklama (Section 3.A) */}
+      <div className="section-head taste-page-head">
+        <div>
+          <h2 id="tasteMapTitle" className="section-title">Zevk Haritası</h2>
+          <p className="section-desc">Kişisel zevk halkalarına (Yeni Eşleşme, Son Öneri, Yedek) göre ayrıştırılmış film ve dizi arşivi</p>
+        </div>
+      </div>
+
       {/* Sticky Özet Şerit (Section 6.3) */}
       <div className="taste-summary-strip" role="region" aria-label="Zevk Haritası Özeti">
         <div className="taste-summary-counts">
@@ -118,7 +126,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
             <strong className="tabular-nums">{ringCounts.ring2 || 0}</strong>{' '}
             <span>yedek</span>
           </div>
-          <div className="taste-summary-pill taste-top-genre" title="En güçlü tür sinyali">
+          <div className="taste-summary-pill taste-top-genre" title={strongestGenre === '—' ? 'Henüz yeterli izleme verisi toplanmadı' : 'En güçlü tür sinyali'}>
             <span>En güçlü tür:</span>{' '}
             <strong>{strongestGenre}</strong>
           </div>

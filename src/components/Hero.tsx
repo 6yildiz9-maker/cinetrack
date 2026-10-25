@@ -34,12 +34,6 @@ export const Hero: React.FC<HeroProps> = ({
 
   const total = carouselItems.length || 1;
   const activeItem = carouselItems[currentIndex] || heroItem;
-  const poster = activeItem ? getPoster(activeItem) || imageUrl(activeItem.backdrop_path, 'w780') : '';
-  const [posterFailed, setPosterFailed] = useState(false);
-
-  useEffect(() => {
-    setPosterFailed(false);
-  }, [poster]);
 
   const handleNext = useCallback(() => {
     setCurrentIndex((prev) => (prev + 1) % total);
@@ -105,6 +99,11 @@ export const Hero: React.FC<HeroProps> = ({
 
   const title = displayTitle(activeItem);
   const score = Number(activeItem.vote_average || 0);
+  const backdropImage = activeItem.backdrop_path
+    ? imageUrl(activeItem.backdrop_path, 'w1280') || imageUrl(activeItem.backdrop_path, 'w780')
+    : null;
+  const posterFallback = getPoster(activeItem);
+  const heroImage = backdropImage || posterFallback;
 
   let overviewText =
     activeItem.overview ||
@@ -131,16 +130,16 @@ export const Hero: React.FC<HeroProps> = ({
       onFocus={() => setIsHoveredOrFocused(true)}
       onBlur={() => setIsHoveredOrFocused(false)}
     >
-      {poster && !posterFailed && (
+      {heroImage && (
         <img
           id="heroPoster"
-          className="hero-poster"
-          src={poster}
+          className={`hero-poster ${backdropImage ? 'hero-poster--backdrop' : 'hero-poster--portrait'}`}
+          src={heroImage}
           alt=""
           loading="eager"
           decoding="async"
-          fetchPriority="high"
-          onError={() => setPosterFailed(true)}
+          {...({ fetchPriority: 'high', fetchpriority: 'high' } as any)}
+          onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
         />
       )}
 

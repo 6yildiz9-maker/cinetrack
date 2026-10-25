@@ -48,7 +48,11 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
   const ratingText = personalRating ? `${personalRating}/10` : 'Puan verilmedi';
 
   const handleSave = () => {
-    onSave(item, selectedStatus, personalRating);
+    const effectiveStatus =
+      typeof personalRating === 'number' && personalRating > 0 && selectedStatus === 'watchlist'
+        ? 'completed'
+        : selectedStatus;
+    onSave(item, effectiveStatus, personalRating);
     onClose();
   };
 
@@ -172,7 +176,12 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
                     className={`star-button quick-star-btn ${
                       personalRating && star <= personalRating ? 'is-selected' : ''
                     }`}
-                    onClick={() => setPersonalRating(star)}
+                    onClick={() => {
+                      setPersonalRating(star);
+                      if (selectedStatus === 'watchlist') {
+                        setSelectedStatus('completed');
+                      }
+                    }}
                   >
                     {star}
                   </button>

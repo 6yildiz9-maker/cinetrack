@@ -338,7 +338,8 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
               onClick={() => {
                 toggleAccordion(actor.id);
                 const el = document.getElementById(`actor-accordion-${actor.id}`);
-                el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                el?.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'nearest' });
               }}
               title={`${actor.name} için ${count} öneri`}
               aria-expanded={isOpen}

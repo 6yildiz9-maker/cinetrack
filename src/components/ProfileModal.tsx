@@ -387,13 +387,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 {/* Film vs TV visual proportion bar */}
                 {overallMinutes > 0 && (
                   <div style={{ marginTop: '12px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#cbd5e1', marginBottom: '5px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-2)', marginBottom: '5px' }}>
                       <span>🎬 Filmler (%{movieTimePercent})</span>
                       <span>📺 Diziler (%{tvTimePercent})</span>
                     </div>
-                    <div style={{ height: '7px', background: '#090d16', borderRadius: '999px', overflow: 'hidden', display: 'flex' }}>
-                      <div style={{ width: `${movieTimePercent}%`, background: 'linear-gradient(90deg, #38bdf8, #0284c7)' }} title={`Filmler: ${movieTimeFmt.primary}`}></div>
-                      <div style={{ width: `${tvTimePercent}%`, background: 'linear-gradient(90deg, #f43f5e, #fb923c)' }} title={`Diziler: ${tvTimeFmt.primary}`}></div>
+                    <div style={{ height: '7px', background: 'var(--bg-app)', borderRadius: '999px', overflow: 'hidden', display: 'flex' }}>
+                      <div style={{ width: `${movieTimePercent}%`, background: 'linear-gradient(90deg, var(--accent), var(--accent-strong))' }} title={`Filmler: ${movieTimeFmt.primary}`}></div>
+                      <div style={{ width: `${tvTimePercent}%`, background: 'linear-gradient(90deg, var(--danger), #fb923c)' }} title={`Diziler: ${tvTimeFmt.primary}`}></div>
                     </div>
                   </div>
                 )}
@@ -556,7 +556,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       const percent = totalGenreHits > 0 ? Math.round((g.count / totalGenreHits) * 100) : 0;
                       // Palette variation for top bars
                       const gradient = index === 0
-                        ? 'linear-gradient(90deg, #f43f5e, #fb923c)'
+                        ? 'linear-gradient(90deg, var(--danger), #fb923c)'
                         : index === 1
                         ? 'linear-gradient(90deg, #38bdf8, #818cf8)'
                         : index === 2

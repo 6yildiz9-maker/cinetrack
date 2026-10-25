@@ -698,7 +698,7 @@
 
   @media (max-width: 639px) {
     .grid {
-      grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
       gap: var(--space-3);
     }
   }

@@ -3,10 +3,60 @@
    ========================================================= */
 @layer components {
   /* --- 0. Global Focus, Buttons, PWA & Offline Banners --- */
-  .poster:focus-within .poster-actions-stack,
-  .card:focus-within .poster-actions-stack {
-    opacity: 1;
-    pointer-events: auto;
+  .poster-trigger {
+    all: unset;
+    display: block;
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    inset: 0;
+    cursor: pointer;
+    border-radius: inherit;
+  }
+
+  .poster-trigger:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .poster-action-btn {
+    min-width: 32px;
+    min-height: 32px;
+    position: relative;
+  }
+
+  .poster-action-btn::after {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: -6px;
+    right: -6px;
+    bottom: -6px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .poster-actions-stack {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--dur-fast) var(--ease);
+    }
+
+    .poster:hover .poster-actions-stack,
+    .card:hover .poster-actions-stack,
+    .poster:focus-within .poster-actions-stack,
+    .card:focus-within .poster-actions-stack {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  @media (hover: none), (pointer: coarse) {
+    .poster-actions-stack {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
   .btn-sm {
@@ -839,7 +889,7 @@
 
   @media (max-width: 639px) {
     .taste-poster-wall {
-      grid-template-columns: repeat(auto-fill, minmax(134px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
       gap: 12px;
     }
   }
@@ -1531,5 +1581,15 @@
   .detail-cast.cls-reserve-block,
   .detail-cast {
     min-height: 110px;
+  }
+
+  .season-tracker.cls-reserve-block,
+  .season-tracker {
+    min-height: 96px;
+  }
+
+  .detail-recommendations.cls-reserve-block,
+  .detail-recommendations {
+    min-height: 120px;
   }
 }

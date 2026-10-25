@@ -233,7 +233,11 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         episodes_watched: totalEpisodesWatched,
       };
     }
-    onSave(currentItem, status, personalRating, tracking);
+    const effectiveStatus =
+      typeof personalRating === 'number' && personalRating > 0 && (status === 'watchlist' || !status)
+        ? 'completed'
+        : status;
+    onSave(currentItem, effectiveStatus, personalRating, tracking);
     onClose();
   };
 
@@ -390,6 +394,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                   aria-label={`10 üzerinden ${star}`}
                   aria-checked={personalRating === star}
                   onClick={() => {
+                    const nextStatus = 'completed';
+                    setStatus(nextStatus);
                     setPersonalRating(star);
                     let tracking = {};
                     if (isTv) {
@@ -401,7 +407,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                         episodes_watched: totalEpisodesWatched,
                       };
                     }
-                    onSave(currentItem, status, star, tracking);
+                    onSave(currentItem, nextStatus, star, tracking);
                   }}
                 >
                   {star}

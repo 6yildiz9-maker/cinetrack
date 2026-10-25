@@ -195,7 +195,7 @@ export function App() {
 
   // Discover & Grid State
   const [tab, setTab] = useState<'discover' | 'list' | 'taste-map' | 'relationships'>('discover');
-  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'graph' | 'list'>('graph');
+  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph'>('poster');
   const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
   const [listStatus, setListStatus] = useState<string>('all');
@@ -1246,11 +1246,15 @@ export function App() {
       title: item.title,
       name: item.name,
     });
+    const effectiveStatus =
+      typeof personalRating === 'number' && personalRating > 0 && (status === 'watchlist' || !status)
+        ? 'completed'
+        : status;
     const normalized = normalizeSavedItem({
       ...item,
       media_type: mediaType,
       ...tracking,
-      status,
+      status: effectiveStatus,
       personal_rating: personalRating || '',
       personal_rating_cleared: Boolean(existing && !personalRating && existing.personal_rating !== ''),
       addedAt: existing ? existing.addedAt : new Date().toISOString(),
@@ -1302,9 +1306,9 @@ export function App() {
     } catch {}
 
     const title = displayTitle(item);
-    if (status === 'completed') {
+    if (effectiveStatus === 'completed') {
       showToast(`✓ "${title}" izlendi listesine kaydedildi! 🎉`);
-    } else if (status === 'watching') {
+    } else if (effectiveStatus === 'watching') {
       showToast(`▶ "${title}" izleniyor olarak kaydedildi! 🍿`);
     } else {
       showToast(`✓ "${title}" izlenecekler listesine kaydedildi! ✨`);
@@ -1614,6 +1618,33 @@ export function App() {
   // Hero Item
   const watchingItem = savedItems.find((item) => item.status === 'watching') || null;
   const currentHeroItem = watchingItem || trendingTop || catalogItems[0] || null;
+  const featuredHeroItems = React.useMemo(() => {
+    const list: any[] = [];
+    if (currentHeroItem) list.push(currentHeroItem);
+    if (
+      trendingTop &&
+      !list.some(
+        (it) =>
+          `${it.media_type || (it.title ? 'movie' : 'tv')}:${it.id}` ===
+          `${trendingTop.media_type || (trendingTop.title ? 'movie' : 'tv')}:${trendingTop.id}`
+      )
+    ) {
+      list.push(trendingTop);
+    }
+    for (const item of catalogItems) {
+      if (list.length >= 3) break;
+      const key = `${item.media_type || (item.title ? 'movie' : 'tv')}:${item.id}`;
+      if (
+        !list.some(
+          (existing) =>
+            `${existing.media_type || (existing.title ? 'movie' : 'tv')}:${existing.id}` === key
+        )
+      ) {
+        list.push(item);
+      }
+    }
+    return list;
+  }, [currentHeroItem, trendingTop, catalogItems]);
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const upcomingCount = savedItems.filter((item) => {
@@ -1927,6 +1958,7 @@ export function App() {
         {tab === 'discover' && !query && (
           <Hero
             heroItem={currentHeroItem}
+            featuredItems={featuredHeroItems}
             isWatching={Boolean(watchingItem)}
             onOpenDetails={(item) => setDetailItem(item)}
           />
@@ -1990,20 +2022,20 @@ export function App() {
           <div className="taste-map-page">
             <div className="taste-map-view-toggle" role="group" aria-label="Zevk haritası görünüm modu">
               <button
+                className={`btn ${tasteMapDisplayMode === 'poster' ? 'btn-primary' : ''}`}
+                type="button"
+                onClick={() => setTasteMapDisplayMode('poster')}
+                aria-pressed={tasteMapDisplayMode === 'poster'}
+              >
+                Poster Duvarı
+              </button>
+              <button
                 className={`btn ${tasteMapDisplayMode === 'graph' ? 'btn-primary' : ''}`}
                 type="button"
                 onClick={() => setTasteMapDisplayMode('graph')}
                 aria-pressed={tasteMapDisplayMode === 'graph'}
               >
-                Ağ haritası
-              </button>
-              <button
-                className={`btn ${tasteMapDisplayMode === 'list' ? 'btn-primary' : ''}`}
-                type="button"
-                onClick={() => setTasteMapDisplayMode('list')}
-                aria-pressed={tasteMapDisplayMode === 'list'}
-              >
-                Liste
+                Zevk Ağı (Grafik)
               </button>
             </div>
 
@@ -2015,21 +2047,7 @@ export function App() {
                   </div>
                 }
               >
-                {tasteMapDisplayMode === 'graph' ? (
-                  <RelationshipExplorer
-                    key={`${activeProfileId}-taste-map`}
-                    mode="taste-map"
-                    profileId={activeProfileId}
-                    savedItems={savedItems}
-                    preferences={preferences}
-                    candidates={[]}
-                    favoriteActors={favoriteActors}
-                    genreNames={genresMap}
-                    onRefresh={handleLoadRelationshipCandidates}
-                    onOpenDetails={(item) => setDetailItem(item as SavedItem)}
-                    onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
-                  />
-                ) : (
+                {tasteMapDisplayMode === 'poster' ? (
                   <TasteMapView
                     tasteMap={tasteMap}
                     summary={tasteSummary}
@@ -2043,6 +2061,20 @@ export function App() {
                     isDemo={Boolean(activeProfile?.isDemo)}
                     tmdbSource={tmdbSourceMeta.source}
                     tmdbStaleReason={tmdbSourceMeta.staleReason}
+                  />
+                ) : (
+                  <RelationshipExplorer
+                    key={`${activeProfileId}-taste-map`}
+                    mode="taste-map"
+                    profileId={activeProfileId}
+                    savedItems={savedItems}
+                    preferences={preferences}
+                    candidates={[]}
+                    favoriteActors={favoriteActors}
+                    genreNames={genresMap}
+                    onRefresh={handleLoadRelationshipCandidates}
+                    onOpenDetails={(item) => setDetailItem(item as SavedItem)}
+                    onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
                   />
                 )}
               </Suspense>

@@ -533,3 +533,48 @@ export function getTmdbSourceDescription(source: TmdbDataSource, staleReason?: s
       return 'Veri kaynağı henüz belirlenmedi.';
   }
 }
+
+export async function fetchSyncStatus(): Promise<any> {
+  try {
+    const res = await fetch('/api/sync/status');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function pushCatalogItems(items: any[]): Promise<any> {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  try {
+    const res = await fetch('/api/catalog/upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function pushDerivedProfileData(data: {
+  profileId: string;
+  algorithmVersion: string;
+  profileFingerprint: string;
+  items: Record<string, any>;
+}): Promise<any> {
+  try {
+    const res = await fetch('/api/profiles/derived/upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+

@@ -7,9 +7,15 @@ import {
   type SecurityOptions,
 } from './security.ts';
 import { createTmdbProxyService, type TmdbProxyServiceOptions } from './tmdb-proxy.ts';
+import { PersistentDataStore } from './persistent-store.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
   maxDataBytes?: number;
+  githubToken?: string;
+  githubOwner?: string;
+  githubRepo?: string;
+  githubBranch?: string;
+  isPublicRepo?: boolean;
 }
 
 function parseIfMatchRevision(req: Request): number | null {
@@ -44,10 +50,19 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app: Express;
   storage: ReturnType<typeof createDataStorage>;
   tmdbProxy: ReturnType<typeof createTmdbProxyService>;
+  persistentStore: PersistentDataStore;
 } {
   const maxDataBytes = options.maxDataBytes ?? 2_000_000;
   const storage = createDataStorage(options);
   const tmdbProxy = createTmdbProxyService(options);
+  const persistentStore = new PersistentDataStore({
+    dataDir: options.dataDir,
+    githubToken: options.githubToken,
+    githubOwner: options.githubOwner,
+    githubRepo: options.githubRepo,
+    githubBranch: options.githubBranch,
+    isPublicRepo: options.isPublicRepo,
+  });
 
   const originGuard = createOriginMiddleware(options);
   const tokenGuard = createTokenAuthMiddleware(options);
@@ -163,5 +178,68 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     });
   });
 
-  return { app, storage, tmdbProxy };
+  // --- Kalıcı Veri Deposu (Bölüm 8: Katalog ve Profil İşlenmiş Veri Deposu) ---
+  app.get('/api/sync/status', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(persistentStore.getSyncStatus());
+  });
+
+  app.post('/api/sync/trigger', originGuard, tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const syncResult = await persistentStore.syncToGitHub();
+      res.json(syncResult);
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message || 'Sync failed' });
+    }
+  });
+
+  app.get('/api/catalog', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const type = _req.query.type === 'tv' ? 'tv' : _req.query.type === 'movie' ? 'movie' : 'all';
+    if (type === 'all') {
+      const movies = persistentStore.readCatalog('movie');
+      const tv = persistentStore.readCatalog('tv');
+      res.json({ movies, tv });
+    } else {
+      res.json(persistentStore.readCatalog(type));
+    }
+  });
+
+  app.post('/api/catalog/upsert', originGuard, tokenGuard, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const raw = req.body;
+    const items = Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const result = persistentStore.upsertCatalogItems(items);
+    res.json({ ok: true, ...result });
+  });
+
+  app.get('/api/profiles/derived/:profileId', tokenGuard, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const profileId = String(req.params.profileId || '');
+    const doc = persistentStore.readDerivedProfile(profileId);
+    if (!doc) {
+      res.status(404).json({ ok: false, message: 'Belirtilen profile ait işlenmiş veri bulunamadı.' });
+      return;
+    }
+    res.json(doc);
+  });
+
+  app.post('/api/profiles/derived/upsert', originGuard, tokenGuard, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const { profileId, algorithmVersion, profileFingerprint, items } = req.body || {};
+    if (!profileId || typeof profileId !== 'string') {
+      res.status(400).json({ ok: false, message: 'profileId zorunludur.' });
+      return;
+    }
+    const result = persistentStore.upsertDerivedProfile({
+      profileId,
+      algorithmVersion: algorithmVersion || '3.0.0',
+      profileFingerprint: profileFingerprint || 'default',
+      items: items || {},
+    });
+    res.json({ ok: true, ...result });
+  });
+
+  return { app, storage, tmdbProxy, persistentStore };
 }

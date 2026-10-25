@@ -162,7 +162,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="skeleton-card" aria-hidden="true"></div>
           ))
-        ) : listStatus === 'actors' ? (
+        ) : tab === 'list' && listStatus === 'actors' ? (
           safeFavoriteActors.length === 0 ? (
             <div className="empty-message">
               <strong>Henüz favori oyuncu eklemediniz</strong>
@@ -385,7 +385,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         )}
       </div>
 
-      {listStatus === 'actors' && safeFavoriteActors.length > 0 && (
+      {tab === 'list' && listStatus === 'actors' && safeFavoriteActors.length > 0 && (
         <ErrorBoundary sectionName="Favori Oyuncu Önerileri">
           <ActorRecommendationsSection
             favoriteActors={safeFavoriteActors}
