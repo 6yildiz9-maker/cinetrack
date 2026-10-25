@@ -1,5 +1,6 @@
 import express from 'express';
 import { existsSync, readFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeDataDocument, CURRENT_SCHEMA_VERSION } from './src/core/cinetrack-core.ts';
@@ -53,6 +54,7 @@ const { app, storage } = createCineTrackApp({
 // Setup Vite middleware (explicit --dev only) or static dist serving (production default)
 async function startServer() {
   const isDevMode = process.env.NODE_ENV !== 'production' && process.argv.includes('--dev');
+  const httpServer = createHttpServer(app);
 
   if (!isDevMode) {
     const distPath = path.join(root, 'dist');
@@ -69,15 +71,21 @@ async function startServer() {
       res.sendFile(indexHtmlPath);
     });
   } else {
+    const hmrDisabled = process.env.DISABLE_HMR === 'true' || Boolean(process.env.APP_URL);
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, host, port },
+      server: {
+        middlewareMode: true,
+        host,
+        port,
+        hmr: hmrDisabled ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   }
 
-  app.listen(port, host, () => {
+  httpServer.listen(port, host, () => {
     console.log(`CineTrack is running at http://${host}:${port} (${isDevMode ? 'development' : 'production'})`);
     console.log(`Profil ve izleme listesi: ${storage.dataFile}`);
     if (!tmdbApiKey) {
