@@ -30,6 +30,7 @@ interface ControlsProps {
 
 export const Controls: React.FC<ControlsProps> = ({
   tab,
+  myListCount,
   upcomingCount = 0,
   dislikedCount = 0,
   favoriteActorsCount = 0,
@@ -57,7 +58,7 @@ export const Controls: React.FC<ControlsProps> = ({
   }
 
   const disableProviderFilters = isSearchActive || selectedCategory === 'for-you';
-  const totalListCount = watchingCount + watchlistCount + completedCount;
+  const totalListCount = myListCount || watchingCount + watchlistCount + completedCount;
 
   return (
     <div className="section-controls-wrap">

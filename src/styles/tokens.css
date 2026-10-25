@@ -1,153 +1,146 @@
-:root {
-  /* Fonts */
-  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+@layer tokens {
+  :root {
+    color-scheme: dark;
 
-  /* Zeminler — derinlik hiyerarşisi */
-  --bg-app: #0b1220; /* sayfa zemini */
-  --bg-surface: #111a2b; /* kart, raf, toolbar */
-  --bg-elevated: #182540; /* modal, drawer, overlay */
-  --bg-hover: rgba(255, 255, 255, 0.05);
+    /* Fonts */
+    --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  /* Kenar & metin */
-  --border-subtle: rgba(148, 163, 184, 0.14);
-  --border-strong: rgba(148, 163, 184, 0.28);
-  --text-1: #e6edf7; /* başlıklar, sayılar */
-  --text-2: #9fb0c7; /* gövde, meta */
-  --text-3: #7b8ca3; /* pasif, ipucu — bg-app üzerinde ~5.5:1 (WCAG AA) */
+    /* Zeminler — derinlik hiyerarşisi */
+    --bg-app: #0b1220; /* sayfa zemini */
+    --bg-canvas: #071321; /* grafik / derin tuval zemini */
+    --bg-surface: #111a2b; /* buton, çip, kart rafı, toolbar */
+    --bg-elevated: #182540; /* kart ana gövdesi, modal, drawer, overlay */
+    --bg-header: rgba(11, 18, 32, 0.94);
+    --bg-scrim: rgba(2, 6, 23, 0.74);
+    --bg-overlay: rgba(11, 18, 32, 0.74);
+    --bg-hover: rgba(255, 255, 255, 0.05);
 
-  /* Vurgu & anlam */
-  --accent: #38bdf8; /* birincil eylem, aktif sekme, odak */
-  --accent-strong: #0ea5e9;
-  --gold: #fbbf24; /* TMDB puanı, ödüller */
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #fb7185;
+    /* Kenar & metin */
+    --border-subtle: rgba(148, 163, 184, 0.14);
+    --border-strong: rgba(148, 163, 184, 0.28);
+    --text-1: #e6edf7; /* başlıklar, sayılar */
+    --text-2: #9fb0c7; /* gövde, meta */
+    --text-3: #7b8ca3; /* pasif, ipucu — bg-app üzerinde WCAG AA */
+    --text-on-accent: #ffffff;
 
-  /* Zevk halkaları (sabit anlam renkleri) */
-  --ring-0: #34d399; /* Yeni Eşleşme */
-  --ring-1: #94a3b8; /* Son Öneri */
-  --ring-2: #f59e0b; /* Yedek Halka */
+    /* Vurgu & anlam */
+    --accent: #38bdf8; /* birincil eylem, aktif sekme, odak */
+    --accent-strong: #0ea5e9;
+    --accent-soft: rgba(56, 189, 248, 0.14);
+    --accent-border: rgba(56, 189, 248, 0.36);
+    --gold: #fbbf24; /* TMDB puanı, ödüller */
+    --gold-soft: rgba(251, 191, 36, 0.16);
+    --success: #34d399;
+    --success-soft: rgba(52, 211, 153, 0.15);
+    --success-border: rgba(52, 211, 153, 0.36);
+    --warning: #fbbf24;
+    --warning-soft: rgba(245, 158, 11, 0.16);
+    --warning-border: rgba(245, 158, 11, 0.36);
+    --danger: #fb7185;
+    --danger-soft: rgba(251, 113, 133, 0.15);
+    --danger-border: rgba(251, 113, 133, 0.38);
 
-  /* Yerleşim tokenları */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+    /* İlişki grafiği ek anlam renkleri */
+    --link-person: #a78bfa;
+    --link-atmosphere: #2dd4bf;
+    --link-contrast: #fb923c;
+    --link-universe: #4ade80;
+    --node-profile: #5eead4;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+    /* Zevk halkaları (sabit anlam renkleri) */
+    --ring-0: #34d399; /* Yeni Eşleşme */
+    --ring-1: #94a3b8; /* Son Öneri */
+    --ring-2: #f59e0b; /* Yedek Halka */
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-float: 0 8px 32px rgba(0, 0, 0, 0.5);
+    /* Yerleşim tokenları */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
 
-  --dur-fast: 120ms;
-  --dur-med: 220ms;
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
 
-  --focus-ring: 0 0 0 2px #0b1220, 0 0 0 4px var(--accent);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-float: 0 8px 32px rgba(0, 0, 0, 0.5);
 
-  /* Katman tokenları (v5-v6) */
-  --z-header: 100;
-  --z-dropdown: 110;
-  --z-drawer: 200;
-  --z-modal: 300;
-  --z-toast: 400;
-  --z-tooltip: 500;
+    --dur-fast: 120ms;
+    --dur-med: 220ms;
+    --ease: cubic-bezier(0.4, 0, 0.2, 1);
 
-  --content-width: 1440px;
+    --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
 
-  /* Poster kart genişlikleri */
-  --poster-xl: 260px;
-  --poster-lg: 178px;
-  --poster-md: 148px;
-  --poster-sm: 116px;
-  --poster-xs: 84px;
+    /* Katman tokenları (v5) */
+    --z-header: 100;
+    --z-dropdown: 110;
+    --z-drawer: 200;
+    --z-modal: 300;
+    --z-toast: 400;
+    --z-tooltip: 500;
 
-  /* Geriye dönük uyumluluk takma adları */
-  --bg: var(--bg-app);
-  --panel: var(--bg-surface);
-  --panel-2: var(--bg-elevated);
-  --border: var(--border-subtle);
-  --border-hairline: var(--border-subtle);
-  --muted: var(--text-2);
-  --text: var(--text-1);
-  --brand: var(--accent);
-  --brand-hover: var(--accent-strong);
-  --amber: var(--gold);
-  --green: var(--success);
-  --red: var(--danger);
-  --surface-elevated: var(--bg-elevated);
-  --surface-subtle: var(--bg-surface);
-  --accent-sky: var(--accent);
-  --accent-teal: var(--accent);
-  --radius-xs: 4px;
-}
+    --content-width: 1440px;
 
-body {
-  font-family: var(--font-sans);
-  background-color: var(--bg-app);
-  color: var(--text-1);
-}
+    /* Poster kart genişlikleri */
+    --poster-xl: 260px;
+    --poster-lg: 178px;
+    --poster-md: 148px;
+    --poster-sm: 116px;
+    --poster-xs: 84px;
 
-.poster {
-  aspect-ratio: 2 / 3;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition-duration: 0.01ms !important;
-    animation: none !important;
+    /* Geriye dönük uyumluluk takma adları */
+    --bg: var(--bg-app);
+    --panel: var(--bg-surface);
+    --panel-2: var(--bg-elevated);
+    --border: var(--border-subtle);
+    --border-hairline: var(--border-subtle);
+    --muted: var(--text-2);
+    --text: var(--text-1);
+    --brand: var(--accent);
+    --brand-hover: var(--accent-strong);
+    --amber: var(--gold);
+    --green: var(--success);
+    --red: var(--danger);
+    --surface-elevated: var(--bg-elevated);
+    --surface-subtle: var(--bg-surface);
+    --accent-sky: var(--accent);
+    --accent-teal: var(--accent);
+    --accent-primary: var(--accent);
   }
 }
 
-.tabular-nums,
-.match-badge,
-.rating-badge,
-.season-calendar-date,
-.dna-stat-value,
-.stat-value {
-  font-variant-numeric: tabular-nums;
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--bg-app);
+    color: var(--text-1);
+  }
+
+  .poster {
+    aspect-ratio: 2 / 3;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      animation: none !important;
+    }
+  }
 }
 
-/* Text Truncation Utilities */
-.clamp-1 {
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.clamp-3 {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+@layer utilities {
+  .tabular-nums,
+  .match-badge,
+  .rating-badge,
+  .season-calendar-date,
+  .dna-stat-value,
+  .stat-value {
+    font-variant-numeric: tabular-nums;
+  }
 }

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
 import {
   SavedItem,
@@ -52,13 +52,18 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   onToggleDislike,
   matchScore,
   selectionRing,
-  eager = false,
+  eager: _eager = false,
 }) => {
   const title = displayTitle(item);
   const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
   const kind = mediaType === 'tv' ? 'Dizi' : 'Film';
   const poster = getPoster(item);
   const status = savedItem?.status || '';
+  const [posterFailed, setPosterFailed] = useState(false);
+
+  useEffect(() => {
+    setPosterFailed(false);
+  }, [poster]);
 
   const statusText =
     status === 'watching'
@@ -172,19 +177,14 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           <span className="poster-fallback-title">{title}</span>
         </div>
 
-        {poster && (
+        {poster && !posterFailed && (
           <img
             src={poster}
-            alt=""
-            loading={eager || size === 'xl' || context === 'hero' ? 'eager' : 'lazy'}
+            alt={title}
+            loading="lazy"
             decoding="async"
-            {...(eager || size === 'xl' || context === 'hero'
-              ? ({ fetchPriority: 'high', fetchpriority: 'high' } as any)
-              : ({ fetchPriority: 'low', fetchpriority: 'low' } as any))}
             referrerPolicy="no-referrer"
-            onError={(e) => {
-              (e.target as HTMLElement).style.display = 'none';
-            }}
+            onError={() => setPosterFailed(true)}
           />
         )}
 
@@ -432,7 +432,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
       {/* Card Info footer */}
       <div className="card-info">
         <button
-          className={`card-title ${size === 'sm' || size === 'xs' ? 'clamp-1' : 'clamp-2'}`}
+          className="card-title clamp-2"
           type="button"
           onClick={() => onOpenDetails(item)}
           title={title}
@@ -443,7 +443,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         {size !== 'xs' && (
           <div className="card-meta">
             <span
-              className="card-date tabular-nums"
+              className="card-date tabular-nums clamp-1"
               title={item.media_type === 'tv' ? 'İlk ve son yayınlanma yılları' : 'Yapım yılı'}
             >
               {formatMediaDates(item, savedItem)}
@@ -451,27 +451,23 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             {(size === 'lg' || size === 'xl' || size === 'md') && genreNames && (
               <>
                 {' '}
-                <span className="card-genres clamp-1">· {genreNames}</span>
+                <span className="card-meta-sep" aria-hidden="true">
+                  ·
+                </span>{' '}
+                <span className="card-genres clamp-1">{genreNames}</span>
               </>
             )}
           </div>
         )}
 
         {seasonProgressInfo && (
-          <div
-            className="season-progress"
-            role="progressbar"
-            aria-valuenow={seasonProgressInfo.percent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`Toplam sezon ilerlemesi: %${seasonProgressInfo.percent}`}
-          >
-            <span className="season-progress-track">
-              <span
-                className="season-progress-fill"
-                style={{ width: `${seasonProgressInfo.percent}%` }}
-              ></span>
-            </span>{' '}
+          <div className="season-progress">
+            <progress
+              className="season-progress-native"
+              value={seasonProgressInfo.percent}
+              max={100}
+              aria-label={`Toplam sezon ilerlemesi: %${seasonProgressInfo.percent}`}
+            />{' '}
             <span className="season-progress-label tabular-nums">
               %{seasonProgressInfo.percent} · {seasonProgressInfo.watched}/{seasonProgressInfo.total}
             </span>

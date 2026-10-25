@@ -197,7 +197,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                     }}
                   >
                     {photo ? (
-                      <img src={photo} alt={actor.name} loading="lazy" />
+                      <img src={photo} alt={actor.name} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
                     ) : (
                       <div className="poster-fallback">
                         <svg className="icon">
@@ -228,9 +228,13 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                       {actor.name}
                     </button>
                     <div className="card-meta">
-                      <span className="kind-tag">Oyuncu</span>
+                      <span className="kind-tag clamp-1">Oyuncu</span>
                       {actor.character && (
-                        <span className="actor-card-character">{actor.character}</span>
+                        <>
+                          {' '}
+                          <span className="card-meta-sep" aria-hidden="true">·</span>{' '}
+                          <span className="actor-card-character clamp-1">{actor.character}</span>
+                        </>
                       )}
                     </div>
                     <div className="actor-card-cta-wrap">
