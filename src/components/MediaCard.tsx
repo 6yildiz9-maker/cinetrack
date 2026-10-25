@@ -212,20 +212,25 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             </span>
           )}
 
-          {shouldRenderRingChip && ringKey && (
+            {shouldRenderRingChip && ringKey && (
             <span
               className={`ring-chip ring-chip--${isRing0 ? '0' : isRing1 ? '1' : isRing2 ? '2' : 'orbit'}`}
               title={`Zevk Halkası: ${ringLabel}`}
               aria-label={ringLabel}
             >
               <span className="ring-chip-dot" aria-hidden="true" />
-              {size !== 'xs' && size !== 'sm' && <span className="ring-chip-text">{ringLabel}</span>}
+              {size !== 'xs' && size !== 'sm' && (
+                <>
+                  {' '}
+                  <span className="ring-chip-text">{ringLabel}</span>
+                </>
+              )}
             </span>
           )}
 
           {countdownText && (
             <span className="release-countdown" title={`Yayın tarihi: ${airDate}`}>
-              📅 {countdownText}
+              {countdownText}
             </span>
           )}
 
@@ -248,7 +253,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           )}
         </div>
 
-        {/* Quick action buttons stack (top-right) - 44px touch targets */}
+        {/* Quick action buttons stack (top-right) */}
         {(onSetStatus || onToggleDislike || onQuickSave) && size !== 'xs' && (
           <div className="poster-actions-stack" onClick={(e) => e.stopPropagation()}>
             {onSetStatus && (
@@ -349,32 +354,36 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           </div>
         )}
 
-        {/* Rating and saved badge on bottom of poster */}
-        {tmdbRating > 0 && size !== 'xs' && (
-          <span className={`rating ${ratingClass}`} aria-label={`TMDB puanı ${tmdbRating.toFixed(1)}`}>
-            <svg className="icon" aria-hidden="true">
-              <use href="#icon-star"></use>
-            </svg>
-            <span className="tabular-nums">{tmdbRating.toFixed(1)}</span>
-          </span>
-        )}
+        {/* Bottom poster badges row (saved status, TMDB rating, personal rating) */}
+        {size !== 'xs' && (tmdbRating > 0 || savedItem || personalRating) && (
+          <div className="poster-bottom-row">
+            {savedItem && (
+              <span className={`saved-badge status-${status}`}>
+                <svg className="icon" aria-hidden="true">
+                  <use href={`#${statusIcon}`}></use>
+                </svg>{' '}
+                <span>{statusText}</span>
+              </span>
+            )}
 
-        {savedItem && size !== 'xs' && (
-          <span className={`saved-badge status-${status}`}>
-            <svg className="icon" aria-hidden="true">
-              <use href={`#${statusIcon}`}></use>
-            </svg>
-            <span>{statusText}</span>
-          </span>
-        )}
+            {tmdbRating > 0 && (
+              <span className={`rating ${ratingClass}`} aria-label={`TMDB puanı ${tmdbRating.toFixed(1)}`}>
+                <svg className="icon" aria-hidden="true">
+                  <use href="#icon-star"></use>
+                </svg>{' '}
+                <span className="tabular-nums">{tmdbRating.toFixed(1)}</span>
+              </span>
+            )}
 
-        {personalRating && size !== 'xs' && (
-          <span
-            className="personal-rating tabular-nums"
-            aria-label={`Kişisel puan ${personalRating} üzerinden 10`}
-          >
-            ★ {personalRating}/10
-          </span>
+            {personalRating && (
+              <span
+                className="personal-rating tabular-nums"
+                aria-label={`Kişisel puan ${personalRating} üzerinden 10`}
+              >
+                ★ {personalRating}/10
+              </span>
+            )}
+          </div>
         )}
 
         {/* Hover / Odak overlay */}
@@ -383,7 +392,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             <div className={`overlay-saved-pill status-${status}`}>
               <svg className="icon" aria-hidden="true">
                 <use href={`#${statusIcon}`}></use>
-              </svg>
+              </svg>{' '}
               <span>{statusText}</span>
             </div>
           ) : onQuickAdd ? (
@@ -398,8 +407,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             >
               <svg className="icon" aria-hidden="true">
                 <use href="#icon-plus"></use>
-              </svg>
-              Listeme Ekle
+              </svg>{' '}
+              <span>Listeme Ekle</span>
             </button>
           ) : null}
 
@@ -414,8 +423,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           >
             <svg className="icon" aria-hidden="true">
               <use href="#icon-play"></use>
-            </svg>
-            Detaylar
+            </svg>{' '}
+            <span>Detaylar</span>
           </button>
         </div>
       </div>
@@ -440,7 +449,10 @@ export const MediaCard: React.FC<MediaCardProps> = ({
               {formatMediaDates(item, savedItem)}
             </span>
             {(size === 'lg' || size === 'xl' || size === 'md') && genreNames && (
-              <span className="card-genres">· {genreNames}</span>
+              <>
+                {' '}
+                <span className="card-genres clamp-1">· {genreNames}</span>
+              </>
             )}
           </div>
         )}
@@ -459,7 +471,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
                 className="season-progress-fill"
                 style={{ width: `${seasonProgressInfo.percent}%` }}
               ></span>
-            </span>
+            </span>{' '}
             <span className="season-progress-label tabular-nums">
               %{seasonProgressInfo.percent} · {seasonProgressInfo.watched}/{seasonProgressInfo.total}
             </span>

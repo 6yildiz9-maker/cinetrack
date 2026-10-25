@@ -1996,7 +1996,7 @@ export function App() {
             .
           </div>
           <div className="footer-source-status">
-            <span>Veri Durumu:</span>
+            <span>Veri Durumu:</span>{' '}
             <strong>
               {tmdbSourceMeta.source === 'live'
                 ? 'Canlı TMDB API'

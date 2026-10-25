@@ -125,8 +125,8 @@ export const Header: React.FC<HeaderProps> = ({
 
       try {
         const res = await fetchTmdb(
-          `/search/multi?query=${encodeURIComponent(val.trim())}&page=1`,
-          {},
+          '/search/multi',
+          { query: val.trim(), page: '1' },
           controller.signal
         );
 
@@ -227,7 +227,7 @@ export const Header: React.FC<HeaderProps> = ({
             className={`nav-tab-btn ${tab === 'discover' ? 'is-active' : ''}`}
             onClick={() => onTabChange('discover')}
           >
-            Keşfet
+            <span>Keşfet</span>
           </button>
           <button
             type="button"
@@ -236,8 +236,13 @@ export const Header: React.FC<HeaderProps> = ({
             className={`nav-tab-btn ${tab === 'list' ? 'is-active' : ''}`}
             onClick={() => onTabChange('list')}
           >
-            Listem
-            {myListCount > 0 && <span className="nav-tab-badge tabular-nums">{myListCount}</span>}
+            <span>Listem</span>
+            {myListCount > 0 && (
+              <>
+                {' '}
+                <span className="nav-tab-badge tabular-nums">{myListCount}</span>
+              </>
+            )}
           </button>
           <button
             type="button"
@@ -246,7 +251,7 @@ export const Header: React.FC<HeaderProps> = ({
             className={`nav-tab-btn ${tab === 'taste-map' ? 'is-active' : ''}`}
             onClick={() => onTabChange('taste-map')}
           >
-            Zevkim
+            <span>Zevkim</span>
           </button>
           <button
             type="button"
@@ -255,7 +260,7 @@ export const Header: React.FC<HeaderProps> = ({
             className={`nav-tab-btn ${tab === 'relationships' ? 'is-active' : ''}`}
             onClick={() => onTabChange('relationships')}
           >
-            İlişkiler
+            <span>İlişkiler</span>
           </button>
         </nav>
 

@@ -97,7 +97,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           </h2>
           <p id="catalogDescription">{description}</p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div className="section-head-actions">
           {tab === 'discover' && category === 'for-you' && onRefreshForYou && (
             <button
               type="button"
@@ -106,7 +106,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
               onClick={onRefreshForYou}
               title="Önerileri manuel olarak güncelle"
             >
-              <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`}>🔄</span>
+              <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
               <span>{isLoading ? 'Hesaplanıyor...' : 'Önerileri Güncelle'}</span>
             </button>
           )}
@@ -220,9 +220,10 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   </div>
                   <div className="card-info">
                     <button
-                      className="card-title"
+                      className="card-title clamp-2"
                       type="button"
                       onClick={() => onOpenPerson?.(actor.id, actor.name)}
+                      title={actor.name}
                     >
                       {actor.name}
                     </button>
@@ -269,12 +270,11 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 <div className="message-actions">
                   {onRefreshForYou && (
                     <button
-                      className="btn"
+                      className="btn btn-primary"
                       type="button"
-                      style={{ background: 'linear-gradient(135deg, #f43f5e, #e11d48)', color: '#fff', border: '1px solid #fb718588' }}
                       onClick={onRefreshForYou}
                     >
-                      🔄 Önerileri Hesapla
+                      Önerileri Hesapla
                     </button>
                   )}
                   <button
@@ -416,7 +416,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             onClick={onRefreshForYou}
             title="Önerileri manuel olarak güncelle"
           >
-            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`}>🔄</span>
+            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
             <span>{isLoading ? 'Öneriler Hesaplanıyor...' : 'Listeyi Güncelle'}</span>
           </button>
         </div>

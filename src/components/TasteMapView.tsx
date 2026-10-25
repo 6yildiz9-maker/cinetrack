@@ -104,27 +104,27 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
       <div className="taste-summary-strip" role="region" aria-label="Zevk Haritası Özeti">
         <div className="taste-summary-counts">
           <div className="taste-summary-pill ring-pill--0" title={getTasteRingLabel('ring0')}>
-            <span className="ring-chip-dot" />
-            <strong className="tabular-nums">{ringCounts.ring0 || 0}</strong>
+            <span className="ring-chip-dot" aria-hidden="true" />
+            <strong className="tabular-nums">{ringCounts.ring0 || 0}</strong>{' '}
             <span>yeni</span>
           </div>
           <div className="taste-summary-pill ring-pill--1" title={getTasteRingLabel('ring1')}>
-            <span className="ring-chip-dot" />
-            <strong className="tabular-nums">{ringCounts.ring1 || 0}</strong>
+            <span className="ring-chip-dot" aria-hidden="true" />
+            <strong className="tabular-nums">{ringCounts.ring1 || 0}</strong>{' '}
             <span>son öneri</span>
           </div>
           <div className="taste-summary-pill ring-pill--2" title={getTasteRingLabel('ring2')}>
-            <span className="ring-chip-dot" />
-            <strong className="tabular-nums">{ringCounts.ring2 || 0}</strong>
+            <span className="ring-chip-dot" aria-hidden="true" />
+            <strong className="tabular-nums">{ringCounts.ring2 || 0}</strong>{' '}
             <span>yedek</span>
           </div>
           <div className="taste-summary-pill taste-top-genre" title="En güçlü tür sinyali">
-            <span>En güçlü tür:</span>
+            <span>En güçlü tür:</span>{' '}
             <strong>{strongestGenre}</strong>
           </div>
           {isDemo && (
             <div className="taste-summary-pill" title="Demo Modu Aktif">
-              <span className="ring-chip-dot" style={{ background: 'var(--accent)' }} />
+              <span className="ring-chip-dot dot-demo" aria-hidden="true" />
               <span>Demo</span>
             </div>
           )}
@@ -139,7 +139,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
             title="Zevk haritasını taze verilerle yeniden hesapla"
             aria-label="Haritayı Yenile"
           >
-            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`}>↻</span>
+            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
             <span>Yenile</span>
           </button>
         </div>
@@ -179,8 +179,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               setSelectedRing('ring0');
             }}
           >
-            <span className="ring-tab-dot dot-ring0" />
-            Yeni Eşleşme ({ringCounts.ring0 || 0})
+            <span className="ring-tab-dot dot-ring0" aria-hidden="true" />
+            <span>Yeni Eşleşme</span>{' '}
+            <span className="ring-tab-count tabular-nums">{ringCounts.ring0 || 0}</span>
           </button>
           <button
             type="button"
@@ -192,8 +193,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               setSelectedRing('ring1');
             }}
           >
-            <span className="ring-tab-dot dot-ring1" />
-            Son Öneri ({ringCounts.ring1 || 0})
+            <span className="ring-tab-dot dot-ring1" aria-hidden="true" />
+            <span>Son Öneri</span>{' '}
+            <span className="ring-tab-count tabular-nums">{ringCounts.ring1 || 0}</span>
           </button>
           <button
             type="button"
@@ -205,8 +207,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               setSelectedRing('ring2');
             }}
           >
-            <span className="ring-tab-dot dot-ring2" />
-            Yedek Halka ({ringCounts.ring2 || 0})
+            <span className="ring-tab-dot dot-ring2" aria-hidden="true" />
+            <span>Yedek Halka</span>{' '}
+            <span className="ring-tab-count tabular-nums">{ringCounts.ring2 || 0}</span>
           </button>
           <button
             type="button"
@@ -215,7 +218,8 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
             className={`taste-ring-tab ${activeViewTab === 'archived' ? 'active' : ''}`}
             onClick={() => setActiveViewTab('archived')}
           >
-            Arşiv ({archivedList.length})
+            <span>Arşiv</span>{' '}
+            <span className="ring-tab-count tabular-nums">{archivedList.length}</span>
           </button>
         </div>
 

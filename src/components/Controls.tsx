@@ -32,6 +32,7 @@ export const Controls: React.FC<ControlsProps> = ({
   tab,
   upcomingCount = 0,
   dislikedCount = 0,
+  favoriteActorsCount = 0,
   watchingCount = 0,
   watchlistCount = 0,
   completedCount = 0,
@@ -56,6 +57,7 @@ export const Controls: React.FC<ControlsProps> = ({
   }
 
   const disableProviderFilters = isSearchActive || selectedCategory === 'for-you';
+  const totalListCount = watchingCount + watchlistCount + completedCount;
 
   return (
     <div className="section-controls-wrap">
@@ -68,8 +70,8 @@ export const Controls: React.FC<ControlsProps> = ({
             onClick={() => onListStatusChange('all')}
             aria-pressed={listStatus === 'all'}
           >
-            <span>Tümü</span>
-            <strong className="tabular-nums">{watchingCount + watchlistCount + completedCount}</strong>
+            <span className="chip-label">Tümü</span>{' '}
+            <strong className="chip-count tabular-nums">{totalListCount}</strong>
           </button>
 
           <button
@@ -79,8 +81,8 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'completed'}
           >
             <span className="status-dot dot-completed" aria-hidden="true" />
-            <span>İzlendi</span>
-            <strong className="tabular-nums">{completedCount}</strong>
+            <span className="chip-label">İzlendi</span>{' '}
+            <strong className="chip-count tabular-nums">{completedCount}</strong>
           </button>
 
           <button
@@ -90,8 +92,8 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'watching'}
           >
             <span className="status-dot dot-watching" aria-hidden="true" />
-            <span>İzliyorum</span>
-            <strong className="tabular-nums">{watchingCount}</strong>
+            <span className="chip-label">İzliyorum</span>{' '}
+            <strong className="chip-count tabular-nums">{watchingCount}</strong>
           </button>
 
           <button
@@ -101,9 +103,21 @@ export const Controls: React.FC<ControlsProps> = ({
             aria-pressed={listStatus === 'watchlist'}
           >
             <span className="status-dot dot-watchlist" aria-hidden="true" />
-            <span>İzlenecek</span>
-            <strong className="tabular-nums">{watchlistCount}</strong>
+            <span className="chip-label">İzlenecek</span>{' '}
+            <strong className="chip-count tabular-nums">{watchlistCount}</strong>
           </button>
+
+          {(favoriteActorsCount > 0 || listStatus === 'actors') && (
+            <button
+              type="button"
+              className={`list-status-chip chip--actors ${listStatus === 'actors' ? 'is-active' : ''}`}
+              onClick={() => onListStatusChange('actors')}
+              aria-pressed={listStatus === 'actors'}
+            >
+              <span className="chip-label">Favori Oyuncular</span>{' '}
+              <strong className="chip-count tabular-nums">{favoriteActorsCount}</strong>
+            </button>
+          )}
 
           {upcomingCount > 0 && (
             <button
@@ -112,8 +126,8 @@ export const Controls: React.FC<ControlsProps> = ({
               onClick={() => onListStatusChange('upcoming')}
               aria-pressed={listStatus === 'upcoming'}
             >
-              <span>📅 Yaklaşan</span>
-              <strong className="tabular-nums">{upcomingCount}</strong>
+              <span className="chip-label">Yaklaşan</span>{' '}
+              <strong className="chip-count tabular-nums">{upcomingCount}</strong>
             </button>
           )}
 
@@ -124,8 +138,8 @@ export const Controls: React.FC<ControlsProps> = ({
               onClick={() => onListStatusChange('disliked')}
               aria-pressed={listStatus === 'disliked'}
             >
-              <span>✕ İlgilenmiyorum</span>
-              <strong className="tabular-nums">{dislikedCount}</strong>
+              <span className="chip-label">İlgilenmiyorum</span>{' '}
+              <strong className="chip-count tabular-nums">{dislikedCount}</strong>
             </button>
           )}
         </div>

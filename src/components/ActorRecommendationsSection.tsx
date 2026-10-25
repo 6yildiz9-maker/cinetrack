@@ -319,7 +319,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
             title="Önerileri yenile"
             aria-label="Önerileri yenile"
           >
-            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`}>↻</span>
+            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
             <span>Yenile</span>
           </button>
         </div>
@@ -343,7 +343,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
               title={`${actor.name} için ${count} öneri`}
               aria-expanded={isOpen}
             >
-              <span className="actor-strip-name">{actor.name}</span>
+              <span className="actor-strip-name">{actor.name}</span>{' '}
               <span className="actor-strip-count tabular-nums">{count}</span>
             </button>
           );
@@ -375,34 +375,40 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
               className={`actor-accordion ${isOpen ? 'is-open' : 'is-closed'}`}
             >
               {/* 56px Yüksekliğinde Akordiyon Başlığı */}
-              <button
-                type="button"
-                className="actor-accordion-head"
-                onClick={() => toggleAccordion(actor.id)}
-                aria-expanded={isOpen}
-                aria-controls={`actor-panel-${actor.id}`}
-              >
-                <div className="actor-accordion-head-left">
+              <div className="actor-accordion-head">
+                <button
+                  type="button"
+                  className="actor-accordion-trigger"
+                  onClick={() => toggleAccordion(actor.id)}
+                  aria-expanded={isOpen}
+                  aria-controls={`actor-panel-${actor.id}`}
+                >
                   <span className="accordion-chevron" aria-hidden="true">
                     {isOpen ? '▾' : '▸'}
-                  </span>
-                  <span className="actor-accordion-name">{actor.name}</span>
+                  </span>{' '}
+                  <span className="actor-accordion-name">{actor.name}</span>{' '}
                   <span className="actor-accordion-badge tabular-nums">
                     {items.length} öneri
                   </span>
                   {chipState.state === 'success' && (
-                    <span className="actor-load-status is-success" title="Filmografi yüklendi">
-                      ✓ yüklü
-                    </span>
+                    <>
+                      {' '}
+                      <span className="actor-load-status is-success" title="Filmografi yüklendi">
+                        ✓ yüklü
+                      </span>
+                    </>
                   )}
                   {isActorLoading && (
-                    <span className="actor-load-status is-loading" title="Yükleniyor…">
-                      ◔ yükleniyor
-                    </span>
+                    <>
+                      {' '}
+                      <span className="actor-load-status is-loading" title="Yükleniyor…">
+                        ◔ yükleniyor
+                      </span>
+                    </>
                   )}
-                </div>
+                </button>
 
-                <div className="actor-accordion-head-right" onClick={(e) => e.stopPropagation()}>
+                <div className="actor-accordion-head-right">
                   {onOpenPerson && (
                     <button
                       type="button"
@@ -434,7 +440,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                     {isOpen ? '—' : '+'}
                   </button>
                 </div>
-              </button>
+              </div>
 
               {/* Yatay Raf (Shelf) */}
               {isOpen && (
