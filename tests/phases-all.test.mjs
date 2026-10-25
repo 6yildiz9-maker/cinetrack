@@ -13,12 +13,19 @@ import {
   migratePersistentTasteMapData,
 } from '../src/core/keys.ts';
 import {
+  HIDE_LISTED_CATEGORIES,
   RECOMMENDATION_WEIGHTS_V3,
   buildTasteProfileSummary,
   buildTasteProfileV3,
   computeTasteProfileSignature,
+  createDefaultTasteMapData,
+  filterHiddenUserRegisteredItems,
+  filterOutLastRecommendedCandidates,
+  isMediaRegisteredInUserProfile,
   isTasteMapCacheValid,
   loadPersistentTasteMap,
+  recordDisplayedRecommendations,
+  recordTasteMapPoolScores,
   savePersistentTasteMap,
   scoreCandidatesV3,
   selectBalancedRecommendations,
@@ -971,4 +978,276 @@ test('Golden Skorlama Testi: sabit referans profil ve adaylar üzerinde scoreCan
   assert.ok(byId[872585].parts.director > 0.85, 'Christopher Nolan yönetmen sinyali yüksek olmalı');
   assert.ok(byId[329865].parts.genre > 0.85, 'Bilim Kurgu + Dram tür sinyali yüksek olmalı');
 });
+
+// ============================================================================
+// SANA ÖZEL RING 1 (GÖSTERİM HAFIZASI) & 'LİSTEMDEKİLERİ GİZLE' VERİ KATMANI TESTLERİ
+// ============================================================================
+test('Sana Özel - Ring 1 (Gösterim Hafızası): gösterilen grubun mediaKey anahtarları lastRecommendedKeys içine kaydedilir, shownCount artar ve Önerileri Güncelle turunda önceki grup kesinlikle elenir', () => {
+  const prevStorage = globalThis.localStorage;
+  const memStorage = createMemoryLocalStorage();
+  globalThis.localStorage = memStorage;
+
+  try {
+    const profileId = 'profile-ring1-test';
+    const savedItems = [
+      {
+        id: 10,
+        media_type: 'movie',
+        title: 'Referans Bilim Kurgu',
+        genre_ids: [878, 18],
+        vote_average: 8.6,
+        status: 'completed',
+        personal_rating: 9,
+      },
+    ];
+    const preferences = { disliked: [], hidden: [], providers: [], mood: '', reminders: false, notified: [] };
+    const tasteProfile = buildTasteProfileV3(savedItems, { lambda: 1 });
+
+    // 30 film + 30 dizi aday havuzu oluştur (2 ardışık 10+10 turuna yetecek taze aday)
+    const moviePool = Array.from({ length: 30 }, (_, idx) => ({
+      id: 1001 + idx,
+      media_type: 'movie',
+      title: `Aday Film ${idx + 1}`,
+      genre_ids: [878, (idx % 5) + 12],
+      vote_average: 8.5 - (idx % 10) * 0.1,
+      vote_count: 1500 + idx * 50,
+      popularity: 80 - idx,
+      release_date: `${2005 + (idx % 20)}-05-10`,
+    }));
+    const tvPool = Array.from({ length: 30 }, (_, idx) => ({
+      id: 2001 + idx,
+      media_type: 'tv',
+      name: `Aday Dizi ${idx + 1}`,
+      genre_ids: [18, (idx % 5) + 80],
+      vote_average: 8.4 - (idx % 10) * 0.1,
+      vote_count: 1200 + idx * 40,
+      popularity: 75 - idx,
+      first_air_date: `${2008 + (idx % 17)}-09-15`,
+    }));
+
+    const initialMap = createDefaultTasteMapData(profileId);
+    const sig = computeTasteProfileSignature(savedItems, preferences, [], { targetType: 'all' });
+
+    // 1. TUR: İlk öneri grubu seçilir ve UI'da gösterilir
+    const scoredMoviesR1 = scoreCandidatesV3(moviePool, tasteProfile, { tasteMap: initialMap });
+    const scoredTvR1 = scoreCandidatesV3(tvPool, tasteProfile, { tasteMap: initialMap });
+    const round1 = selectBalancedRecommendations({
+      targetType: 'all',
+      scoredMovies: scoredMoviesR1.slice(0, 15),
+      scoredTv: scoredTvR1.slice(0, 15),
+      remainingMovies: scoredMoviesR1.slice(15),
+      remainingTv: scoredTvR1.slice(15),
+      lastRecommendedKeys: initialMap.lastRecommendedKeys,
+      tasteMap: initialMap,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
+    assert.equal(round1.items.length, 20, '1. turda 10 film + 10 dizi = 20 öneri seçilmeli');
+
+    const mapAfterR1 = updateTasteMapWithBatch({
+      tasteMap: initialMap,
+      newRecommendedItems: round1.items,
+      allPoolCandidates: [...scoredMoviesR1, ...scoredTvR1],
+      savedItems,
+      preferences,
+      profileSignature: sig,
+      targetType: 'all',
+      now: '2026-03-10T10:00:00.000Z',
+    });
+    savePersistentTasteMap(profileId, mapAfterR1);
+
+    // Kalıcı depodan geri yükle (migrasyonun cachedBalancedItems { candidate } sarmalayıcılarını bozmadığını doğrula)
+    const reloadedR1 = loadPersistentTasteMap(profileId);
+    assert.equal(reloadedR1.lastRecommendedKeys.length, 20, 'Gösterilen 20 içeriğin tamamı lastRecommendedKeys içine kaydedilmeli');
+    assert.equal(reloadedR1.cachedBalancedItems?.length, 20, 'cachedBalancedItems 20 öğeyi eksiksiz korumalı');
+
+    const round1Keys = round1.items.map((e) => makeMediaKey(e.candidate || e));
+    assert.deepEqual(new Set(reloadedR1.lastRecommendedKeys), new Set(round1Keys));
+
+    for (const key of round1Keys) {
+      const entry = reloadedR1.entries[key];
+      assert.ok(entry, `${key} Zevk Haritası entries içinde bulunmalı`);
+      assert.equal(entry.shownCount, 1, `${key} shownCount değeri 1 olmalı`);
+      assert.equal(entry.ring, 'ring1', `${key} son gösterilen grupta olduğu için ring1 olmalı`);
+    }
+
+    // Havuz puan kaydı (recordTasteMapPoolScores) lastRecommendedKeys'i asla sıfırlamamalı
+    const afterPoolRescore = recordTasteMapPoolScores({
+      tasteMap: reloadedR1,
+      poolCandidates: [...scoredMoviesR1, ...scoredTvR1],
+      savedItems,
+      preferences,
+      profileSignature: sig,
+      targetType: 'all',
+      now: '2026-03-10T10:05:00.000Z',
+    });
+    assert.deepEqual(new Set(afterPoolRescore.lastRecommendedKeys), new Set(round1Keys));
+    for (const key of round1Keys) {
+      assert.equal(afterPoolRescore.entries[key].skippedCount, 0, 'Sadece havuz puanlaması skippedCount artırmamalı');
+      assert.equal(afterPoolRescore.entries[key].ring, 'ring1');
+    }
+
+    // recordDisplayedRecommendations aynı grup için idempotent olmalı (shownCount 2'ye çıkmamalı)
+    const idempotentSync = recordDisplayedRecommendations(reloadedR1, reloadedR1.cachedBalancedItems, {
+      targetType: 'all',
+      now: '2026-03-10T10:06:00.000Z',
+    });
+    assert.equal(idempotentSync.changed, false);
+    assert.equal(idempotentSync.tasteMap.entries[round1Keys[0]].shownCount, 1);
+
+    // 2. TUR: Kullanıcı hiçbir içeriği listeye eklemeden 'Önerileri Güncelle' butonuna basar
+    const scoredMoviesR2 = scoreCandidatesV3(moviePool, tasteProfile, { tasteMap: reloadedR1 });
+    const scoredTvR2 = scoreCandidatesV3(tvPool, tasteProfile, { tasteMap: reloadedR1 });
+
+    // kasıtlı olarak scoredMoviesR2 / remainingMovies içine 1. turun adaylarını doğrudan versek bile
+    // selectBalancedRecommendations ve filterOutLastRecommendedCandidates bunları kesinlikle elemeli!
+    const filteredMoviesR2 = filterOutLastRecommendedCandidates(scoredMoviesR2, reloadedR1.lastRecommendedKeys);
+    assert.equal(
+      filteredMoviesR2.some((e) => round1Keys.includes(makeMediaKey(e.candidate))),
+      false,
+      'filterOutLastRecommendedCandidates 1. turdaki hiçbir filmi geçirmemeli'
+    );
+
+    const round2 = selectBalancedRecommendations({
+      targetType: 'all',
+      scoredMovies: scoredMoviesR2, // filtrelenmemiş liste verilse dahi iç güvenlik katmanı ring1/lastRecommendedKeys'i elemeli
+      scoredTv: scoredTvR2,
+      remainingMovies: scoredMoviesR2,
+      remainingTv: scoredTvR2,
+      lastRecommendedKeys: reloadedR1.lastRecommendedKeys.map((k) => k.replace(':', '-')), // eski movie-123 biçimiyle bile çalışmalı
+      tasteMap: reloadedR1,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
+
+    assert.equal(round2.items.length, 20, '2. turda 20 yeni öneri seçilmeli');
+    const round2Keys = round2.items.map((e) => makeMediaKey(e.candidate || e));
+    const overlap = round2Keys.filter((k) => round1Keys.includes(k));
+    assert.equal(
+      overlap.length,
+      0,
+      `Önerileri Güncelle sonrasında 1. turda gösterilen hiçbir içerik 2. turda tekrar çıkmamalı (çakışan: ${overlap.join(', ')})`
+    );
+
+    const mapAfterR2 = updateTasteMapWithBatch({
+      tasteMap: reloadedR1,
+      newRecommendedItems: round2.items,
+      allPoolCandidates: [...scoredMoviesR2, ...scoredTvR2],
+      savedItems,
+      preferences,
+      profileSignature: sig,
+      targetType: 'all',
+      now: '2026-03-10T10:15:00.000Z',
+    });
+
+    assert.deepEqual(new Set(mapAfterR2.lastRecommendedKeys), new Set(round2Keys));
+    for (const r1Key of round1Keys) {
+      assert.equal(mapAfterR2.entries[r1Key].ring, 'ring2', '1. turda eklenmeyen içerikler 2. turda ring2 olmalı');
+      assert.equal(mapAfterR2.entries[r1Key].skippedCount, 1, '1. turda eklenmeyen içeriklerin skippedCount değeri 1 olmalı');
+      assert.equal(mapAfterR2.entries[r1Key].shownCount, 1);
+    }
+    for (const r2Key of round2Keys) {
+      assert.equal(mapAfterR2.entries[r2Key].ring, 'ring1', '2. turda gösterilen içerikler ring1 olmalı');
+      assert.equal(mapAfterR2.entries[r2Key].shownCount, 1, '2. turda gösterilen içeriklerin shownCount değeri 1 olmalı');
+    }
+
+    // Kota aşımı (QuotaExceededError) durumunda bile lastRecommendedKeys ve shownCount korunmalı
+    let throwOnFirstWrite = true;
+    const quotaStorage = {
+      getItem: (k) => memStorage.getItem(k),
+      setItem: (k, v) => {
+        if (throwOnFirstWrite) {
+          throwOnFirstWrite = false;
+          throw new Error('QuotaExceededError');
+        }
+        memStorage.setItem(k, v);
+      },
+      removeItem: (k) => memStorage.removeItem(k),
+      clear: () => memStorage.clear(),
+    };
+    globalThis.localStorage = quotaStorage;
+    savePersistentTasteMap(profileId, mapAfterR2);
+    const loadedAfterQuota = loadPersistentTasteMap(profileId);
+    assert.deepEqual(new Set(loadedAfterQuota.lastRecommendedKeys), new Set(round2Keys));
+    assert.equal(loadedAfterQuota.entries[round2Keys[0]].shownCount, 1);
+  } finally {
+    globalThis.localStorage = prevStorage;
+  }
+});
+
+test("Keşfet - 'Listemdekileri Gizle' filtresi: Gündemdekiler, Yüksek Puanlılar ve Gizli Cevherler için tüm kayıtlı/etkileşimli durumları veri katmanında anında süzer", () => {
+  assert.deepEqual(HIDE_LISTED_CATEGORIES, ['trending', 'top-rated', 'gems']);
+
+  const savedItems = [
+    { id: 501, media_type: 'movie', title: 'İzlenen Film', status: 'completed' },
+    { id: 502, media_type: 'movie', title: 'İzlenecek Film', status: 'watchlist' },
+    { id: 503, media_type: 'tv', name: 'İzlenen Dizi', status: 'watching' },
+  ];
+  const preferences = {
+    disliked: ['movie:504'],
+    hidden: ['tv:505'],
+    providers: [],
+    mood: '',
+    reminders: false,
+    notified: [],
+  };
+  const tasteMap = {
+    ...createDefaultTasteMapData('profile-hide-filter'),
+    entries: {
+      'movie:506': { mediaKey: 'movie:506', mediaType: 'movie', id: 506, title: 'Haritada Kayıtlı', status: 'saved', shownCount: 1 },
+      'movie-508': { mediaKey: 'movie-508', mediaType: 'movie', id: 508, title: 'Eski Anahtar Gizli', status: 'hidden', shownCount: 1 },
+      'movie:509': { mediaKey: 'movie:509', mediaType: 'movie', id: 509, title: 'Sadece Havuzda Aday', status: 'active', shownCount: 1 },
+    },
+    archivedEntries: {
+      'tv:507': { mediaKey: 'tv:507', mediaType: 'tv', id: 507, title: 'Arşivde İlgilenilmeyen', status: 'disliked', shownCount: 1 },
+    },
+  };
+
+  const discoverCatalog = [
+    { id: 501, media_type: 'movie', title: 'İzlenen Film' },
+    { id: 502, media_type: 'movie', title: 'İzlenecek Film' },
+    { id: 503, media_type: 'tv', name: 'İzlenen Dizi' },
+    { id: 504, media_type: 'movie', title: 'İlgilenilmeyen Film' },
+    { id: 505, media_type: 'tv', name: 'Gizlenen Dizi' },
+    { id: 506, media_type: 'movie', title: 'Haritada Kayıtlı' },
+    { id: 507, media_type: 'tv', name: 'Arşivde İlgilenilmeyen' },
+    { id: 508, media_type: 'movie', title: 'Eski Anahtar Gizli' },
+    { id: 509, media_type: 'movie', title: 'Sadece Havuzda Aday' },
+    { id: 510, media_type: 'tv', name: 'Tamamen Yeni Keşif Dizisi' },
+  ];
+
+  // Kutucuk işaretli değilken (hideListedItems: false) katalog olduğu gibi dönmeli
+  const unfiltered = filterHiddenUserRegisteredItems(discoverCatalog, {
+    savedItems,
+    preferences,
+    tasteMap,
+    hideListedItems: false,
+  });
+  assert.equal(unfiltered.length, 10);
+
+  // Kutucuk işaretliyken (hideListedItems: true) İzlendi, İzlenecek, İzliyorum, İlgilenmiyorum, Gizle
+  // ve Zevk Haritasındaki saved/disliked/hidden öğeler anında elenmeli; yalnızca status:'active' ve yeni içerikler kalmalı
+  const filtered = filterHiddenUserRegisteredItems(discoverCatalog, {
+    savedItems,
+    preferences,
+    tasteMap,
+    hideListedItems: true,
+  });
+  assert.deepEqual(
+    filtered.map((item) => makeMediaKey(item)),
+    ['movie:509', 'tv:510']
+  );
+
+  assert.equal(isMediaRegisteredInUserProfile({ id: 501, media_type: 'movie' }, { savedItems, preferences, tasteMap }), true);
+  assert.equal(isMediaRegisteredInUserProfile({ id: 509, media_type: 'movie' }, { savedItems, preferences, tasteMap }), false);
+
+  // Controls.tsx ve App.tsx entegrasyon kontrolü
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const controlsTsx = fs.readFileSync(path.join(repoRoot, 'src/components/Controls.tsx'), 'utf8');
+  const appTsx = fs.readFileSync(path.join(repoRoot, 'src/App.tsx'), 'utf8');
+  assert.ok(controlsTsx.includes('Listemdekileri Gizle'), 'Controls.tsx içinde Listemdekileri Gizle etiketi bulunmalı');
+  assert.ok(controlsTsx.includes('type="checkbox"'), 'Controls.tsx içinde checkbox kontrolü bulunmalı');
+  assert.ok(appTsx.includes('filterHiddenUserRegisteredItems'), 'App.tsx veri katmanında filterHiddenUserRegisteredItems kullanmalı');
+});
+
 

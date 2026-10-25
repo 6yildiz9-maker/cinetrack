@@ -292,7 +292,12 @@ export function migratePersistentTasteMapData<T extends Record<string, any>>(
         changed = true;
         continue;
       }
-      const canonical = makeMediaKey(item);
+      const target = item.candidate && typeof item.candidate === 'object' ? item.candidate : item;
+      const canonical = makeMediaKey(target);
+      if (!parseMediaKey(canonical)) {
+        changed = true;
+        continue;
+      }
       if (seenBalanced.has(canonical)) {
         changed = true;
         continue;

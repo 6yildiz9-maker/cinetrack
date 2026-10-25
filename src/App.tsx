@@ -57,6 +57,12 @@ import {
   computeTasteProfileSignature,
   buildTasteProfileSummary,
   isTasteMapCacheValid,
+  recordDisplayedRecommendations,
+  filterOutLastRecommendedCandidates,
+  loadPersistentPoolData,
+  POOL_LOW_WATERMARK,
+  HIDE_LISTED_CATEGORIES,
+  filterHiddenUserRegisteredItems,
 } from './core/cinetrack-core';
 import {
   fetchTmdb,
@@ -198,6 +204,7 @@ export function App() {
   const [selectedType, setSelectedType] = useState<string>('all');
   const [selectedSort, setSelectedSort] = useState<string>('popular');
   const [selectedProvider, setSelectedProvider] = useState<string>('');
+  const [hideListedItems, setHideListedItems] = useState<boolean>(false);
   const [genresMap, setGenresMap] = useState<Record<number, string>>({});
 
   const [catalogItems, setCatalogItems] = useState<any[]>([]);
@@ -232,6 +239,12 @@ export function App() {
   const lastForYouTypeRef = useRef<string>('all');
   const selectedTypeRef = useRef<string>(selectedType);
   selectedTypeRef.current = selectedType;
+  const activeProfileIdRef = useRef<string>(activeProfileId);
+  activeProfileIdRef.current = activeProfileId;
+  const tasteMapRef = useRef<PersistentTasteMapData>(tasteMap);
+  tasteMapRef.current = tasteMap;
+  const forYouItemsRef = useRef<any[]>(forYouItems);
+  forYouItemsRef.current = forYouItems;
   const hasHydratedLocalEffectRef = useRef(false);
   const applyingRemoteSnapshotRef = useRef(false);
   const localEditedDuringStartupRef = useRef(false);
@@ -349,12 +362,16 @@ export function App() {
     applyingRemoteSnapshotRef.current = true;
     setProfiles(doc.profiles);
     setActiveProfileId(doc.activeProfileId);
+    activeProfileIdRef.current = doc.activeProfileId;
     const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
     setProfileName(active.name);
     setPreferences(active.preferences);
     setSavedItems(active.items);
     const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
     setFavoriteActors(activeFavs);
+    const loadedMap = loadPersistentTasteMap(active.id);
+    tasteMapRef.current = loadedMap;
+    setTasteMap(loadedMap);
     try {
       localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
       localStorage.removeItem(DIRTY_KEY);
@@ -416,12 +433,16 @@ export function App() {
               applyingRemoteSnapshotRef.current = true;
               setProfiles(doc.profiles);
               setActiveProfileId(doc.activeProfileId);
+              activeProfileIdRef.current = doc.activeProfileId;
               const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
               setProfileName(active.name);
               setPreferences(active.preferences);
               setSavedItems(active.items);
               const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
               setFavoriteActors(activeFavs);
+              const loadedMap = loadPersistentTasteMap(active.id);
+              tasteMapRef.current = loadedMap;
+              setTasteMap(loadedMap);
               try {
                 localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
               } catch {}
@@ -564,6 +585,7 @@ export function App() {
         }
 
         if (cat === 'for-you') {
+          const currentProfileId = activeProfileIdRef.current;
           const effectiveType = typeFilter || selectedTypeRef.current || 'all';
           const targetType = effectiveType === 'movie' || effectiveType === 'tv' ? effectiveType : 'all';
 
@@ -571,7 +593,14 @@ export function App() {
           const currentPrefs = preferencesRef.current;
           const currentGenres = genresMapRef.current;
           const currentSig = computeTasteProfileSignature(rawSaved, currentPrefs, favoriteActorsRef.current, { targetType });
-          const storedTasteMap = loadPersistentTasteMap(activeProfileId);
+          const diskTasteMap = loadPersistentTasteMap(currentProfileId);
+          const inMemTasteMap = tasteMapRef.current;
+          const storedTasteMap =
+            inMemTasteMap &&
+            inMemTasteMap.profileId === currentProfileId &&
+            (inMemTasteMap.updatedAt || '') > (diskTasteMap.updatedAt || '')
+              ? inMemTasteMap
+              : diskTasteMap;
 
           // Ana ilke: Kullanıcının zevk profili ve adaylarla eşleşme haritası, yalnızca gerektiğinde güncellensin.
           // Öneri kartları her render olduğunda veya kullanıcı uygulamada başka bir alana geçtiğinde tüm adaylar yeniden puanlanmasın.
@@ -591,7 +620,17 @@ export function App() {
             );
             if (restored.length > 0) {
               lastForYouTypeRef.current = targetType;
-              setForYouExplanation(storedTasteMap.lastExplanation || '');
+              // Vitrinde gösterilen grubun lastRecommendedKeys ve shownCount kaydının eksiksiz olduğundan emin ol
+              const impressionSync = recordDisplayedRecommendations(storedTasteMap, restored, {
+                targetType,
+              });
+              const activeMap = impressionSync.tasteMap;
+              if (impressionSync.changed) {
+                savePersistentTasteMap(currentProfileId, activeMap);
+              }
+              tasteMapRef.current = activeMap;
+
+              setForYouExplanation(activeMap.lastExplanation || '');
               const reasonsMap = new Map<string, string>();
               restored.forEach((entry: any) => {
                 const cand = entry.candidate || entry;
@@ -602,7 +641,7 @@ export function App() {
                 restored.map((e: any) => {
                   const cand = e.candidate || e;
                   const key = makeMediaKey(cand);
-                  const mapEntry = storedTasteMap.entries[key];
+                  const mapEntry = activeMap.entries[key];
                   const tasteScore = mapEntry?.tasteScore ?? mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.tasteScore || e.tasteScore || e.score) || 75)));
                   const priorityScore = mapEntry?.priorityScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.priorityScore || e.priorityScore || e.score) || 75)));
                   return {
@@ -617,7 +656,7 @@ export function App() {
                   };
                 })
               );
-              setTasteMap(storedTasteMap);
+              setTasteMap(activeMap);
               setCatalogTotalPages(1);
               setCatalogPage(1);
               setForYouProgressStep('');
@@ -627,7 +666,7 @@ export function App() {
           }
 
           // If already loaded for the current type and not explicitly force-refreshed, reuse cached recommendations
-          if (forYouItems.length > 0 && !forceRefresh && lastForYouTypeRef.current === targetType) {
+          if (forYouItemsRef.current.length > 0 && !forceRefresh && lastForYouTypeRef.current === targetType) {
             setIsLoading(false);
             return;
           }
@@ -717,22 +756,44 @@ export function App() {
           );
 
           // Sorun B çözümü: 500 + 500 Bağımsız Aday Havuzu Mimarisini Çalıştır
-          // 'all' modunda film ve diziler ayrı ayrı yönetilir, bağımsız puanlanır ve
-          // en az 10 film + 10 dizi garantisi sağlanır.
+          // Havuzda zaten yeterli sayıda taze (lastRecommendedKeys dışı ring0) aday varsa her yenilemede
+          // gereksiz tam havuz değişimi yapılmaz; taze aday azaldığında (<= 60 veya POOL_LOW_WATERMARK altı) yenilenir.
+          const shouldForcePoolForType = (mType: 'movie' | 'tv'): boolean => {
+            if (!forceRefresh) return false;
+            const existingPool = loadPersistentPoolData(currentProfileId, mType);
+            const eligibleNonRing1 = filterOutLastRecommendedCandidates(
+              existingPool.items.filter(
+                (it) => it.media_type === mType && isCandidateEligibleInPool(it, rawSaved, currentPrefs)
+              ),
+              storedTasteMap.lastRecommendedKeys
+            );
+            const ring0Count = eligibleNonRing1.filter((it) => {
+              const key = makeMediaKey(it);
+              const mapEntry = storedTasteMap.entries?.[key];
+              return (
+                (it.shownCount || 0) === 0 &&
+                (it.skippedCount || 0) === 0 &&
+                (mapEntry?.shownCount || 0) === 0 &&
+                (mapEntry?.skippedCount || 0) === 0
+              );
+            }).length;
+            return existingPool.items.length <= POOL_LOW_WATERMARK || ring0Count < 60;
+          };
+
           let movieCandidates: any[] = [];
           let tvCandidates: any[] = [];
 
           setForYouProgressStep('Aday havuzu güncelleniyor…');
           if (targetType === 'movie') {
             const moviePool = await replenishCandidatePool({
-              profileId: activeProfileId,
+              profileId: currentProfileId,
               mediaType: 'movie',
               savedItems: rawSaved,
               preferences: currentPrefs,
               favoriteActors: favoriteActorsRef.current,
               fetchTmdbFn: fetchTmdbCached,
               signal: ticket.signal,
-              force: forceRefresh,
+              force: shouldForcePoolForType('movie'),
               onProgress: (step) => {
                 if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
               },
@@ -742,14 +803,14 @@ export function App() {
             );
           } else if (targetType === 'tv') {
             const tvPool = await replenishCandidatePool({
-              profileId: activeProfileId,
+              profileId: currentProfileId,
               mediaType: 'tv',
               savedItems: rawSaved,
               preferences: currentPrefs,
               favoriteActors: favoriteActorsRef.current,
               fetchTmdbFn: fetchTmdbCached,
               signal: ticket.signal,
-              force: forceRefresh,
+              force: shouldForcePoolForType('tv'),
               onProgress: (step) => {
                 if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
               },
@@ -761,27 +822,27 @@ export function App() {
             // 'all': Her iki bağımsız havuz (500 + 500) ayrı yönetilir
             const [moviePool, tvPool] = await Promise.all([
               replenishCandidatePool({
-                profileId: activeProfileId,
+                profileId: currentProfileId,
                 mediaType: 'movie',
                 savedItems: rawSaved,
                 preferences: currentPrefs,
                 favoriteActors: favoriteActorsRef.current,
                 fetchTmdbFn: fetchTmdbCached,
                 signal: ticket.signal,
-                force: forceRefresh,
+                force: shouldForcePoolForType('movie'),
                 onProgress: (step) => {
                   if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
                 },
               }),
               replenishCandidatePool({
-                profileId: activeProfileId,
+                profileId: currentProfileId,
                 mediaType: 'tv',
                 savedItems: rawSaved,
                 preferences: currentPrefs,
                 favoriteActors: favoriteActorsRef.current,
                 fetchTmdbFn: fetchTmdbCached,
                 signal: ticket.signal,
-                force: forceRefresh,
+                force: shouldForcePoolForType('tv'),
               }),
             ]);
             movieCandidates = moviePool.items.filter((item) =>
@@ -793,9 +854,18 @@ export function App() {
           }
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          // Bağımsız puanlama ve sıralama (Sorun D: Kalıcı Zevk Haritası ve Halka Geriletmesi entegrasyonu):
-          // 'all' modunda filmler ve diziler ayrı ayrı puanlanır ve ayrı ayrı sıralanır
-          const tasteMap = loadPersistentTasteMap(activeProfileId);
+          // En güncel Zevk Haritası durumunu al (bellek içi en son kayıt varsa koru)
+          const latestDiskMap = loadPersistentTasteMap(currentProfileId);
+          const tasteMap =
+            tasteMapRef.current &&
+            tasteMapRef.current.profileId === currentProfileId &&
+            (tasteMapRef.current.updatedAt || '') >= (latestDiskMap.updatedAt || '') &&
+            (tasteMapRef.current.lastRecommendedKeys?.length || 0) >=
+              (latestDiskMap.lastRecommendedKeys?.length || 0)
+              ? tasteMapRef.current
+              : latestDiskMap;
+          const prevRecommendedKeys = tasteMap.lastRecommendedKeys || [];
+
           let movieScored: any[] = [];
           let tvScored: any[] = [];
           if (movieCandidates.length > 0) {
@@ -816,10 +886,11 @@ export function App() {
           }
 
           // Adayları ayrıntılı bilgilerle zenginleştirme:
-          // Halka 1 (dinlendirilen son öneriler) hariç tutulur; önce taze Halka 0 adayları, yetersizse Halka 2 adayları zenginleştirilir
+          // Halka 1 (lastRecommendedKeys / önceki turda gösterilenler) kesinlikle filtrelenir!
           const buildEnrichmentShortlist = (scoredList: any[], count: number) => {
-            const ring0Items = scoredList.filter((e) => e.ring === 'ring0');
-            const ring2Items = scoredList.filter((e) => e.ring === 'ring2');
+            const withoutLastBatch = filterOutLastRecommendedCandidates(scoredList, prevRecommendedKeys);
+            const ring0Items = withoutLastBatch.filter((e) => e.ring === 'ring0');
+            const ring2Items = withoutLastBatch.filter((e) => e.ring === 'ring2');
             return [...ring0Items, ...ring2Items].slice(0, count);
           };
 
@@ -860,61 +931,69 @@ export function App() {
           });
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          // Zenginleştirilmiş adayları bağımsız olarak yeniden puanla
+          // Zenginleştirilmiş adayları bağımsız olarak yeniden puanla ve lastRecommendedKeys'i süz
           let enrichedMovieScored: any[] = [];
           let enrichedTvScored: any[] = [];
 
           if (movieShortlist.length > 0) {
-            enrichedMovieScored = scoreCandidatesV3(
-              movieShortlist.map((e) => e.candidate),
-              tasteProfile,
-              {
-                weights: RECOMMENDATION_WEIGHTS_V3,
-                genreNames: currentGenres,
-                mood: currentPrefs.mood,
-                tasteMap,
-              }
+            enrichedMovieScored = filterOutLastRecommendedCandidates(
+              scoreCandidatesV3(
+                movieShortlist.map((e) => e.candidate),
+                tasteProfile,
+                {
+                  weights: RECOMMENDATION_WEIGHTS_V3,
+                  genreNames: currentGenres,
+                  mood: currentPrefs.mood,
+                  tasteMap,
+                }
+              ),
+              prevRecommendedKeys
             )
               .filter((entry) => isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs))
               .sort((a, b) => b.score - a.score);
           }
 
           if (tvShortlist.length > 0) {
-            enrichedTvScored = scoreCandidatesV3(
-              tvShortlist.map((e) => e.candidate),
-              tasteProfile,
-              {
-                weights: RECOMMENDATION_WEIGHTS_V3,
-                genreNames: currentGenres,
-                mood: currentPrefs.mood,
-                tasteMap,
-              }
+            enrichedTvScored = filterOutLastRecommendedCandidates(
+              scoreCandidatesV3(
+                tvShortlist.map((e) => e.candidate),
+                tasteProfile,
+                {
+                  weights: RECOMMENDATION_WEIGHTS_V3,
+                  genreNames: currentGenres,
+                  mood: currentPrefs.mood,
+                  tasteMap,
+                }
+              ),
+              prevRecommendedKeys
             )
               .filter((entry) => isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs))
               .sort((a, b) => b.score - a.score);
           }
 
-          // Kalan havuz adayları (kısa listeye girmeyen ancak havuzda bulunan yedek adaylar)
+          // Kalan havuz adayları (kısa listeye girmeyen yedek adaylardan da lastRecommendedKeys kesinlikle elenir)
           const movieShortlistKeys = new Set(movieShortlist.map((e) => makeMediaKey(e.candidate)));
           const tvShortlistKeys = new Set(tvShortlist.map((e) => makeMediaKey(e.candidate)));
-          const remainingMovieScored = movieScored.filter(
+          const remainingMovieScored = filterOutLastRecommendedCandidates(movieScored, prevRecommendedKeys).filter(
             (entry) =>
               !movieShortlistKeys.has(makeMediaKey(entry.candidate)) &&
               isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs)
           );
-          const remainingTvScored = tvScored.filter(
+          const remainingTvScored = filterOutLastRecommendedCandidates(tvScored, prevRecommendedKeys).filter(
             (entry) =>
               !tvShortlistKeys.has(makeMediaKey(entry.candidate)) &&
               isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs)
           );
 
-          // Dengeli nihai seçim: 10 film + 10 dizi garantisi, sessiz doldurma yok
+          // Dengeli nihai seçim: 10 film + 10 dizi garantisi, lastRecommendedKeys (Halka 1) kesinlikle hariç!
           const balancedResult = selectBalancedRecommendations({
             targetType,
             scoredMovies: enrichedMovieScored,
             scoredTv: enrichedTvScored,
             remainingMovies: remainingMovieScored,
             remainingTv: remainingTvScored,
+            lastRecommendedKeys: prevRecommendedKeys,
+            tasteMap,
             targetTotal: TARGET_RECOMMENDATION_COUNT,
             minPerTypeInAll: 10,
           });
@@ -924,8 +1003,7 @@ export function App() {
           setForYouExplanation(explanationText);
 
           // Sorun D & Zevk Haritası: Kalıcı Zevk Haritası ve Tam Aday Haritası güncellemesi
-          // 500 film + 500 dizi havuzundaki tüm adaylar haritaya kaydedilir;
-          // gösterim geçmişi (shownCount, lastShownAt, impressionHistory) yalnızca seçilen 20 içerik için güncellenir.
+          // Gösterilen yeni grubun mediaKey anahtarları lastRecommendedKeys dizisine kaydedilir ve shownCount artırılır.
           const tasteSummary = buildTasteProfileSummary(tasteProfile, tasteMap, currentGenres);
           const allPoolCandidates = [...movieScored, ...tvScored];
           const updatedTasteMap = updateTasteMapWithBatch({
@@ -942,7 +1020,8 @@ export function App() {
             isFilterChange: false,
             normalizeLegacyRings: true,
           });
-          savePersistentTasteMap(activeProfileId, updatedTasteMap);
+          savePersistentTasteMap(currentProfileId, updatedTasteMap);
+          tasteMapRef.current = updatedTasteMap;
           setTasteMap(updatedTasteMap);
 
           const reasonsMap = new Map<string, string>();
@@ -1214,10 +1293,12 @@ export function App() {
 
     // Sorun D: Kalıcı Zevk Haritasında yapımı 'saved' olarak işaretle
     try {
-      const currentTasteMap = loadPersistentTasteMap(activeProfileId);
+      const currentTasteMap = loadPersistentTasteMap(activeProfileIdRef.current);
       markTasteMapItemStatus(currentTasteMap, itemKey, 'saved');
-      savePersistentTasteMap(activeProfileId, currentTasteMap);
-      setTasteMap({ ...currentTasteMap });
+      savePersistentTasteMap(activeProfileIdRef.current, currentTasteMap);
+      const nextMap = { ...currentTasteMap };
+      tasteMapRef.current = nextMap;
+      setTasteMap(nextMap);
     } catch {}
 
     const title = displayTitle(item);
@@ -1318,10 +1399,12 @@ export function App() {
     });
 
     try {
-      const currentTasteMap = loadPersistentTasteMap(activeProfileId);
+      const currentTasteMap = loadPersistentTasteMap(activeProfileIdRef.current);
       markTasteMapItemStatus(currentTasteMap, itemKey, 'active');
-      savePersistentTasteMap(activeProfileId, currentTasteMap);
-      setTasteMap({ ...currentTasteMap });
+      savePersistentTasteMap(activeProfileIdRef.current, currentTasteMap);
+      const nextMap = { ...currentTasteMap };
+      tasteMapRef.current = nextMap;
+      setTasteMap(nextMap);
     } catch {}
 
     showToast(`"${displayTitle(item)}" listeden kaldırıldı.`);
@@ -1364,10 +1447,12 @@ export function App() {
 
       // Sorun D: Kalıcı Zevk Haritasında yapımı 'disliked' veya 'active' olarak güncelle
       try {
-        const currentTasteMap = loadPersistentTasteMap(activeProfileId);
+        const currentTasteMap = loadPersistentTasteMap(activeProfileIdRef.current);
         markTasteMapItemStatus(currentTasteMap, key, isCurrentlyDisliked ? 'active' : 'disliked');
-        savePersistentTasteMap(activeProfileId, currentTasteMap);
-        setTasteMap({ ...currentTasteMap });
+        savePersistentTasteMap(activeProfileIdRef.current, currentTasteMap);
+        const nextMap = { ...currentTasteMap };
+        tasteMapRef.current = nextMap;
+        setTasteMap(nextMap);
       } catch {}
 
       return { ...prev, disliked };
@@ -1471,11 +1556,26 @@ export function App() {
 
   const getDisplayedItems = () => {
     if (tab === 'discover') {
-      const source = category === 'for-you' ? forYouItems : catalogItems;
-      const filtered = source.filter((item) => {
+      const rawSource = category === 'for-you' ? forYouItems : catalogItems;
+      const shouldHideUserRegistered =
+        !query.trim() &&
+        hideListedItems &&
+        (HIDE_LISTED_CATEGORIES as readonly string[]).includes(category);
+
+      const preFiltered = shouldHideUserRegistered
+        ? filterHiddenUserRegisteredItems(rawSource, {
+            savedItems,
+            preferences,
+            tasteMap,
+            hideListedItems: true,
+          })
+        : rawSource;
+
+      const filtered = preFiltered.filter((item) => {
         const itemType = item.media_type || (item.title ? 'movie' : 'tv');
         const key = makeMediaKey(itemType, item.id);
         if (preferences.disliked.includes(key)) return false;
+        if (preferences.hidden?.includes(key)) return false;
 
         // In Sana Özel (recommendations), strictly filter out items already in the user's list
         if (category === 'for-you') {
@@ -1616,6 +1716,7 @@ export function App() {
   const handleSwitchProfile = (newId: string) => {
     if (newId === activeProfileId) return;
     setActiveProfileId(newId);
+    activeProfileIdRef.current = newId;
     const target = profiles.find((p) => p.id === newId);
     setProfileName(target?.name || 'Profilim');
     const items = target?.items?.length ? target.items : loadProfileItems(newId);
@@ -1623,7 +1724,9 @@ export function App() {
     setPreferences(target?.preferences || loadProfilePreferences(newId));
     const favs = target?.favoriteActors?.length ? target.favoriteActors : loadFavoriteActors(newId);
     setFavoriteActors(favs);
-    setTasteMap(loadPersistentTasteMap(newId));
+    const nextTasteMap = loadPersistentTasteMap(newId);
+    tasteMapRef.current = nextTasteMap;
+    setTasteMap(nextTasteMap);
     setForYouItems([]);
     setForYouReasons(new Map());
     setQuery('');
@@ -1643,11 +1746,14 @@ export function App() {
     };
     setProfiles((prev) => [...prev, newProf]);
     setActiveProfileId(newId);
+    activeProfileIdRef.current = newId;
     setProfileName(name);
     setSavedItems([]);
     setPreferences(newProf.preferences);
     setFavoriteActors([]);
-    setTasteMap(loadPersistentTasteMap(newId));
+    const nextTasteMap = loadPersistentTasteMap(newId);
+    tasteMapRef.current = nextTasteMap;
+    setTasteMap(nextTasteMap);
     setForYouItems([]);
     setForYouReasons(new Map());
     setProfileOpen(false);
@@ -1776,6 +1882,7 @@ export function App() {
       case 'clear-filters':
         setSelectedGenre('');
         setSelectedType('all');
+        setHideListedItems(false);
         break;
       case 'trending':
         setQuery('');
@@ -1851,6 +1958,8 @@ export function App() {
           onProviderChange={setSelectedProvider}
           listStatus={listStatus}
           onListStatusChange={setListStatus}
+          hideListedItems={hideListedItems}
+          onHideListedItemsChange={setHideListedItems}
         />
 
         {tab === 'relationships' ? (

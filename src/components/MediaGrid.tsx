@@ -290,10 +290,10 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   </button>
                 </div>
               </>
-            ) : tab === 'discover' && category !== 'trending' ? (
+            ) : tab === 'discover' ? (
               <>
-                <strong>Bu filtrelerle sonuç yok</strong>
-                Seçili tür filtresi bu kategorideki içerikleri gizliyor olabilir.
+                <strong>Bu filtrelerle sonuç bulunamadı</strong>
+                Seçili tür veya &ldquo;Listemdekileri Gizle&rdquo; filtresi bu kategorideki içerikleri gizliyor olabilir.
                 <div className="message-actions">
                   <button
                     className="btn"
@@ -302,20 +302,15 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   >
                     Filtreleri temizle
                   </button>
-                </div>
-              </>
-            ) : tab === 'discover' ? (
-              <>
-                <strong>Bu kategoride içerik bulunamadı</strong>
-                Başka bir kategoriye geçebilir veya katalogda arama yapabilirsiniz.
-                <div className="message-actions">
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => onEmptyAction('trending')}
-                  >
-                    Gündemde olanlara dön
-                  </button>
+                  {category !== 'trending' && (
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => onEmptyAction('trending')}
+                    >
+                      Gündemde olanlara dön
+                    </button>
+                  )}
                 </div>
               </>
             ) : listStatus === 'disliked' ? (

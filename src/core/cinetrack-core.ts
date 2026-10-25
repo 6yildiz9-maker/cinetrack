@@ -1579,7 +1579,12 @@ export function inferLifecycleRing(
     | null,
   lastRecommendedKeys: string[] = []
 ): LifecycleRing {
-  if (Array.isArray(lastRecommendedKeys) && lastRecommendedKeys.includes(mediaKey)) {
+  const canonicalTarget = canonicalizeMediaKey(mediaKey);
+  if (
+    canonicalTarget &&
+    Array.isArray(lastRecommendedKeys) &&
+    lastRecommendedKeys.some((k) => canonicalizeMediaKey(k) === canonicalTarget)
+  ) {
     return 'ring1';
   }
 
@@ -1589,6 +1594,23 @@ export function inferLifecycleRing(
     Boolean(entry?.lastShownAt);
 
   return hasBeenShown ? 'ring2' : 'ring0';
+}
+
+export function filterOutLastRecommendedCandidates<T>(
+  candidates: T[],
+  lastRecommendedKeys?: string[] | null
+): T[] {
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  const excluded = new Set(canonicalizeMediaKeyList(lastRecommendedKeys || []));
+  if (excluded.size === 0) return [...candidates];
+
+  return candidates.filter((item: any) => {
+    if (!item) return false;
+    const cand = item.candidate && typeof item.candidate === 'object' ? item.candidate : item;
+    if (cand.id == null) return false;
+    const key = canonicalizeMediaKey(makeMediaKey(cand));
+    return !excluded.has(key);
+  });
 }
 
 export function normalizeTasteRing(
@@ -1704,19 +1726,92 @@ export function createDefaultTasteMapData(profileId: string): PersistentTasteMap
   };
 }
 
+const MAX_ARCHIVED_TASTE_ENTRIES = 250;
+const inMemoryTasteMapFallback = new Map<string, { storageRef: Storage | null; raw: string }>();
+
+function pruneArchivedTasteEntries(
+  archived: Record<string, TasteMapEntry>,
+  maxEntries = MAX_ARCHIVED_TASTE_ENTRIES
+): Record<string, TasteMapEntry> {
+  const keys = Object.keys(archived || {});
+  if (keys.length <= maxEntries) return archived;
+
+  const sortedKeys = keys.sort((ka, kb) => {
+    const a = archived[ka];
+    const b = archived[kb];
+    const aImportant =
+      (a?.status && a.status !== 'active' ? 4 : 0) +
+      ((a?.shownCount || 0) > 0 ? 2 : 0) +
+      ((a?.skippedCount || 0) > 0 ? 1 : 0);
+    const bImportant =
+      (b?.status && b.status !== 'active' ? 4 : 0) +
+      ((b?.shownCount || 0) > 0 ? 2 : 0) +
+      ((b?.skippedCount || 0) > 0 ? 1 : 0);
+    if (bImportant !== aImportant) return bImportant - aImportant;
+    const ta = String(a?.lastShownAt || a?.lastScoredAt || '');
+    const tb = String(b?.lastShownAt || b?.lastScoredAt || '');
+    return tb.localeCompare(ta);
+  });
+
+  const trimmed: Record<string, TasteMapEntry> = {};
+  for (const k of sortedKeys.slice(0, maxEntries)) {
+    trimmed[k] = archived[k];
+  }
+  return trimmed;
+}
+
+function compactTasteMapForQuota(data: PersistentTasteMapData): PersistentTasteMapData {
+  const lastKeysSet = new Set(canonicalizeMediaKeyList(data.lastRecommendedKeys || []));
+  const compactEntries: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(data.entries || {})) {
+    if (!v) continue;
+    compactEntries[k] = {
+      ...v,
+      overview: lastKeysSet.has(k)
+        ? (v.overview || '').slice(0, 320)
+        : (v.overview || '').slice(0, 120),
+      impressionHistory: Array.isArray(v.impressionHistory) ? v.impressionHistory.slice(-10) : [],
+    };
+  }
+
+  const prunedArchived = pruneArchivedTasteEntries(data.archivedEntries || {}, 100);
+  const compactArchived: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(prunedArchived)) {
+    if (!v) continue;
+    if (v.status === 'active' && (v.shownCount || 0) === 0 && (v.skippedCount || 0) === 0) {
+      continue;
+    }
+    compactArchived[k] = {
+      ...v,
+      overview: '',
+      impressionHistory: Array.isArray(v.impressionHistory) ? v.impressionHistory.slice(-5) : [],
+    };
+  }
+
+  return {
+    ...data,
+    entries: compactEntries,
+    archivedEntries: compactArchived,
+  };
+}
+
 export function loadPersistentTasteMap(profileId: string): PersistentTasteMapData {
   try {
     if (typeof localStorage !== 'undefined') {
       const key = getTasteMapStorageKey(profileId);
-      const raw = localStorage.getItem(key);
+      const fallback = inMemoryTasteMapFallback.get(key);
+      let raw = localStorage.getItem(key);
+      if (fallback && fallback.storageRef === localStorage) {
+        raw = fallback.raw;
+      } else if (fallback && fallback.storageRef !== localStorage) {
+        inMemoryTasteMapFallback.delete(key);
+      }
       if (raw) {
         const rawParsed = JSON.parse(raw);
         if (rawParsed && typeof rawParsed.entries === 'object') {
           const migration = migratePersistentTasteMapData(rawParsed, MAX_IMPRESSION_HISTORY_PER_ENTRY);
           const parsed = migration.data;
-          const lastRecommendedKeys: string[] = Array.isArray(parsed.lastRecommendedKeys)
-            ? parsed.lastRecommendedKeys
-            : [];
+          const lastRecommendedKeys: string[] = canonicalizeMediaKeyList(parsed.lastRecommendedKeys || []);
           let needsMigrationWrite = migration.changed;
 
           const sanitizedEntries: Record<string, TasteMapEntry> = {};
@@ -1775,9 +1870,7 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
           };
 
           if (needsMigrationWrite) {
-            try {
-              localStorage.setItem(key, JSON.stringify(loadedData));
-            } catch {}
+            savePersistentTasteMap(profileId, loadedData);
           }
 
           return loadedData;
@@ -1789,12 +1882,35 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
 }
 
 export function savePersistentTasteMap(profileId: string, data: PersistentTasteMapData): void {
+  const key = getTasteMapStorageKey(profileId);
+  const normalizedData: PersistentTasteMapData = {
+    ...data,
+    lastRecommendedKeys: canonicalizeMediaKeyList(data.lastRecommendedKeys || []),
+    archivedEntries: pruneArchivedTasteEntries(data.archivedEntries || {}),
+  };
+
+  if (typeof localStorage === 'undefined') return;
+
+  const serialized = JSON.stringify(normalizedData);
   try {
-    if (typeof localStorage !== 'undefined') {
-      const key = getTasteMapStorageKey(profileId);
-      localStorage.setItem(key, JSON.stringify(data));
+    localStorage.setItem(key, serialized);
+    inMemoryTasteMapFallback.delete(key);
+    return;
+  } catch {
+    // Tarayıcı localStorage kotası dolduysa özetleri ve arşivi sıkıştırarak tekrar dene;
+    // böylece lastRecommendedKeys ve shownCount asla kaybolmaz.
+    const compacted = compactTasteMapForQuota(normalizedData);
+    const compactSerialized = JSON.stringify(compacted);
+    try {
+      localStorage.setItem(key, compactSerialized);
+      inMemoryTasteMapFallback.delete(key);
+    } catch {
+      inMemoryTasteMapFallback.set(key, {
+        storageRef: localStorage,
+        raw: compactSerialized,
+      });
     }
-  } catch {}
+  }
 }
 
 export function markTasteMapItemStatus(
@@ -1835,6 +1951,7 @@ export interface UpdateTasteMapWithBatchParams {
   reason?: 'filter_change' | 'refresh' | 'navigation' | 'initial';
   normalizeLegacyRings?: boolean;
   pruneInactiveCandidates?: boolean;
+  preserveImpressionsWhenEmpty?: boolean;
 }
 
 export function updateTasteMapWithBatch({
@@ -1853,15 +1970,16 @@ export function updateTasteMapWithBatch({
   reason,
   normalizeLegacyRings = false,
   pruneInactiveCandidates = true,
+  preserveImpressionsWhenEmpty = false,
 }: UpdateTasteMapWithBatchParams): PersistentTasteMapData {
-  const prevKeys = Array.isArray(tasteMap.lastRecommendedKeys) ? tasteMap.lastRecommendedKeys : [];
+  const prevKeys = canonicalizeMediaKeyList(tasteMap.lastRecommendedKeys || []);
   let updatedEntries: Record<string, TasteMapEntry> = {};
   for (const [k, v] of Object.entries(tasteMap.entries || {})) {
-    if (v) updatedEntries[k] = { ...v };
+    if (v) updatedEntries[canonicalizeMediaKey(k)] = { ...v };
   }
   let updatedArchivedEntries: Record<string, TasteMapEntry> = {};
   for (const [k, v] of Object.entries(tasteMap.archivedEntries || {})) {
-    if (v) updatedArchivedEntries[k] = { ...v };
+    if (v) updatedArchivedEntries[canonicalizeMediaKey(k)] = { ...v };
   }
 
   if (normalizeLegacyRings) {
@@ -1871,13 +1989,17 @@ export function updateTasteMapWithBatch({
   const newKeys = new Set<string>();
 
   for (const item of newRecommendedItems || []) {
-    const cand = item.candidate || item;
-    if (cand && cand.id) {
-      const key = makeMediaKey(cand);
-      newKeys.add(key);
+    const cand = item?.candidate || item;
+    if (cand && cand.id != null) {
+      const key = canonicalizeMediaKey(makeMediaKey(cand));
+      if (parseMediaKey(key)) {
+        newKeys.add(key);
+      }
     }
   }
-  const newKeysArray = Array.from(newKeys);
+  const shouldKeepExistingImpressions = preserveImpressionsWhenEmpty && newKeys.size === 0;
+  const effectiveNewKeysArray = shouldKeepExistingImpressions ? prevKeys : Array.from(newKeys);
+  const newKeysArray = effectiveNewKeysArray;
 
   // 1. Önceki vitrinde (lastRecommendedKeys) gösterilmiş olan yapımları değerlendir:
   // Filtre değişikliğini “atlandı” sayma kuralı:
@@ -1886,7 +2008,9 @@ export function updateTasteMapWithBatch({
   // - Adayın türü mevcut targetType filtre kapsamına uymuyorsa (ör. kullanıcı sadece film filtrelediğinde önceki diziler)
   // Bu yapımlar kullanıcı tarafından "atlanmış" (skipped) sayılmaz; sayaç ve ceza artırılmaz!
   const isTargetTypeChanged = Boolean(targetType && tasteMap.lastTargetType && targetType !== tasteMap.lastTargetType);
-  const isFilterTriggered = Boolean(isFilterChange || reason === 'filter_change' || isTargetTypeChanged);
+  const isFilterTriggered = Boolean(
+    shouldKeepExistingImpressions || isFilterChange || reason === 'filter_change' || isTargetTypeChanged
+  );
 
   for (const prevKey of prevKeys) {
     const entry = updatedEntries[prevKey] || updatedArchivedEntries[prevKey];
@@ -2220,7 +2344,9 @@ export function updateTasteMapWithBatch({
     weightsSignature,
   };
 
-  const preservedBalancedItems = Array.isArray(newRecommendedItems)
+  const preservedBalancedItems = shouldKeepExistingImpressions
+    ? tasteMap.cachedBalancedItems
+    : Array.isArray(newRecommendedItems)
     ? newRecommendedItems.map((entry: any) => {
         if (!entry || typeof entry !== 'object') return entry;
         const cand = entry.candidate || entry;
@@ -2244,13 +2370,170 @@ export function updateTasteMapWithBatch({
     weightsSignature,
     updatedAt: now,
     entries: updatedEntries,
-    archivedEntries: updatedArchivedEntries,
-    lastRecommendedKeys: Array.from(newKeys),
-    lastBatchTimestamp: now,
+    archivedEntries: pruneArchivedTasteEntries(updatedArchivedEntries),
+    lastRecommendedKeys: effectiveNewKeysArray,
+    lastBatchTimestamp: shouldKeepExistingImpressions ? tasteMap.lastBatchTimestamp : now,
     cachedBalancedItems: preservedBalancedItems,
     lastTargetType: targetType || tasteMap.lastTargetType || 'all',
     lastExplanation: explanation || tasteMap.lastExplanation || '',
     summary: summary || tasteMap.summary,
+  };
+}
+
+/**
+ * UI'da bir öneri grubu gösterildiğinde (önbellekten yüklense dahi eksik gösterim kaydı varsa)
+ * tüm içeriklerin mediaKey anahtarlarını lastRecommendedKeys dizisine kaydeder ve shownCount değerlerini artırır.
+ * Aynı öneri grubu zaten lastRecommendedKeys olarak kayıtlıysa idempotenttir (mükerrer shownCount artışı yapmaz).
+ */
+export function recordDisplayedRecommendations(
+  tasteMap: PersistentTasteMapData,
+  displayedItems: any[],
+  {
+    now = new Date().toISOString(),
+    targetType = 'all',
+  }: { now?: string; targetType?: string } = {}
+): { tasteMap: PersistentTasteMapData; changed: boolean } {
+  if (!tasteMap || !Array.isArray(displayedItems) || displayedItems.length === 0) {
+    return { tasteMap, changed: false };
+  }
+
+  const displayedKeys: string[] = [];
+  const seen = new Set<string>();
+  const itemByKey = new Map<string, any>();
+
+  for (const item of displayedItems) {
+    const cand = item?.candidate || item;
+    if (!cand || cand.id == null) continue;
+    const key = canonicalizeMediaKey(makeMediaKey(cand));
+    if (!parseMediaKey(key) || seen.has(key)) continue;
+    seen.add(key);
+    displayedKeys.push(key);
+    itemByKey.set(key, item);
+  }
+
+  if (displayedKeys.length === 0) {
+    return { tasteMap, changed: false };
+  }
+
+  const existingLastKeys = canonicalizeMediaKeyList(tasteMap.lastRecommendedKeys || []);
+  const existingLastSet = new Set(existingLastKeys);
+  const sameBatch =
+    existingLastKeys.length === displayedKeys.length &&
+    displayedKeys.every((k) => existingLastSet.has(k));
+
+  const allAlreadyRecorded =
+    sameBatch &&
+    displayedKeys.every((k) => {
+      const entry = tasteMap.entries?.[k];
+      return Boolean(entry && (entry.shownCount || 0) >= 1 && entry.ring === 'ring1');
+    });
+
+  if (allAlreadyRecorded) {
+    return { tasteMap, changed: false };
+  }
+
+  const nextEntries: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(tasteMap.entries || {})) {
+    if (v) nextEntries[canonicalizeMediaKey(k)] = { ...v };
+  }
+  const nextArchived: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(tasteMap.archivedEntries || {})) {
+    if (v) nextArchived[canonicalizeMediaKey(k)] = { ...v };
+  }
+
+  for (let i = 0; i < displayedKeys.length; i++) {
+    const key = displayedKeys[i];
+    const rawItem = itemByKey.get(key);
+    const cand = rawItem?.candidate || rawItem;
+    const existing = nextEntries[key] || nextArchived[key];
+    if (nextArchived[key]) delete nextArchived[key];
+
+    const alreadyCountedInCurrentBatch = Boolean(
+      sameBatch && existing && (existing.shownCount || 0) >= 1
+    );
+    const nextShownCount = alreadyCountedInCurrentBatch
+      ? existing.shownCount
+      : (existing?.shownCount || 0) + 1;
+
+    const { history: impressionHistory, archivedCount: archivedImpressionCount } =
+      alreadyCountedInCurrentBatch
+        ? {
+            history: existing?.impressionHistory || [],
+            archivedCount: existing?.archivedImpressionCount || 0,
+          }
+        : appendBoundedImpression(
+            existing?.impressionHistory,
+            { shownAt: now, targetType, rank: i + 1 },
+            existing?.archivedImpressionCount || 0,
+            MAX_IMPRESSION_HISTORY_PER_ENTRY
+          );
+
+    const mediaType: 'movie' | 'tv' = cand?.media_type === 'tv' ? 'tv' : 'movie';
+    const rawScore = Number(
+      rawItem?.rawScore ?? rawItem?.tasteScore ?? rawItem?.score ?? cand?.tasteScore ?? existing?.rawScore ?? 75
+    );
+    const tasteScore = Math.max(1, Math.min(100, Math.round(rawScore)));
+    const demotionPenalty = Math.max(0, Number(existing?.demotionPenalty) || 0);
+    const priorityScore = Math.max(1, Math.min(100, Math.round(tasteScore - demotionPenalty)));
+
+    nextEntries[key] = {
+      mediaKey: key,
+      mediaType,
+      id: Number(cand?.id ?? existing?.id ?? 0),
+      title: String(cand?.title || cand?.name || existing?.title || ''),
+      poster_path: cand?.poster_path || existing?.poster_path || null,
+      backdrop_path: cand?.backdrop_path || existing?.backdrop_path || null,
+      vote_average: Number(cand?.vote_average ?? existing?.vote_average ?? 0),
+      popularity: Number(cand?.popularity ?? existing?.popularity ?? 0),
+      genre_ids: Array.isArray(cand?.genre_ids) ? cand.genre_ids : existing?.genre_ids || [],
+      release_date: cand?.release_date || existing?.release_date,
+      first_air_date: cand?.first_air_date || existing?.first_air_date,
+      overview: cand?.overview || existing?.overview || '',
+      matchScore: tasteScore,
+      tasteScore,
+      priorityScore,
+      rawScore,
+      ring: 'ring1',
+      initialRing: 'ring0',
+      pillars: existing?.pillars || calculateTastePillars(rawItem?.parts || existing?.parts || {}),
+      parts: rawItem?.parts || existing?.parts || {},
+      tags: Array.isArray(rawItem?.tags) ? rawItem.tags : existing?.tags || [],
+      shownCount: nextShownCount,
+      skippedCount: existing?.skippedCount || 0,
+      ringDemotions: existing?.ringDemotions || 0,
+      demotionPenalty,
+      firstShownAt: existing?.firstShownAt || now,
+      lastShownAt: alreadyCountedInCurrentBatch ? existing?.lastShownAt || now : now,
+      lastScoredAt: existing?.lastScoredAt || now,
+      archivedImpressionCount,
+      impressionHistory,
+      status: existing?.status || 'active',
+      isArchived: false,
+      archivedAt: null,
+      scoreCoverage: existing?.scoreCoverage || 'basic',
+      confidenceLevel: existing?.confidenceLevel || 'standard',
+    };
+  }
+
+  for (const [k, entry] of Object.entries(nextEntries)) {
+    entry.ring = inferLifecycleRing(entry.mediaKey || k, entry, displayedKeys);
+    entry.initialRing = 'ring0';
+  }
+  for (const [k, entry] of Object.entries(nextArchived)) {
+    entry.ring = inferLifecycleRing(entry.mediaKey || k, entry, displayedKeys);
+    entry.initialRing = 'ring0';
+  }
+
+  return {
+    changed: true,
+    tasteMap: {
+      ...tasteMap,
+      updatedAt: now,
+      entries: nextEntries,
+      archivedEntries: pruneArchivedTasteEntries(nextArchived),
+      lastRecommendedKeys: displayedKeys,
+      lastBatchTimestamp: now,
+    },
   };
 }
 
@@ -2371,6 +2654,7 @@ export function recordTasteMapPoolScores({
     profileSignature,
     targetType,
     normalizeLegacyRings,
+    preserveImpressionsWhenEmpty: true,
   });
 }
 
@@ -2529,6 +2813,8 @@ export function scoreCandidatesV3(
   const actorOf = (id: any) => profile.actors?.[String(id)] || null;
   const directorOf = (id: any) => profile.directors?.[String(id)] || null;
   const topGenreSet = new Set(profile.positiveGenres.slice(0, 4));
+  const canonicalLastRecommendedKeys = canonicalizeMediaKeyList(tasteMap?.lastRecommendedKeys ?? []);
+  const lastRecommendedKeySet = new Set(canonicalLastRecommendedKeys);
 
   return (Array.isArray(candidates) ? candidates : []).map((candidate) => {
     const genreIds = (Array.isArray(candidate.genre_ids) ? candidate.genre_ids : []).map(String);
@@ -2765,19 +3051,23 @@ export function scoreCandidatesV3(
     }
 
     // Sorun D & Zevk Haritası: Yaşam Döngüsü Halkaları (ring0 / ring1 / ring2) ve Geriletme Cezası Entegrasyonu
-    const key = makeMediaKey(candidate);
+    const key = canonicalizeMediaKey(makeMediaKey(candidate));
+    const legacyKey = `${candidate.media_type === 'tv' ? 'tv' : 'movie'}-${candidate.id}`;
     const tasteEntry =
-      (tasteMap?.entries ? tasteMap.entries[key] : undefined) ??
-      (tasteMap?.archivedEntries ? tasteMap.archivedEntries[key] : undefined);
+      (tasteMap?.entries ? tasteMap.entries[key] || tasteMap.entries[legacyKey] : undefined) ??
+      (tasteMap?.archivedEntries
+        ? tasteMap.archivedEntries[key] || tasteMap.archivedEntries[legacyKey]
+        : undefined);
 
-    const lastRecommendedKeys = tasteMap?.lastRecommendedKeys ?? [];
-    const inLastBatch = Boolean(lastRecommendedKeys.includes(key));
+    const inLastBatch = lastRecommendedKeySet.has(key);
     const shownCount = tasteEntry?.shownCount || 0;
     const skippedCount = tasteEntry?.skippedCount || 0;
     const ringDemotions = tasteEntry?.ringDemotions || 0;
     const lastShownAt = tasteEntry?.lastShownAt || null;
 
-    const ring: LifecycleRing = inferLifecycleRing(key, tasteEntry, lastRecommendedKeys);
+    const ring: LifecycleRing = inLastBatch
+      ? 'ring1'
+      : inferLifecycleRing(key, tasteEntry, canonicalLastRecommendedKeys);
     const demotionPenalty = inLastBatch
       ? 0
       : Math.max(0, Number(tasteEntry?.demotionPenalty) || 0);
@@ -3819,6 +4109,92 @@ export function filterEligiblePoolItems(
   return items.filter((item) => isCandidateEligibleInPool(item, savedItems, preferences));
 }
 
+export const HIDE_LISTED_CATEGORIES = ['trending', 'top-rated', 'gems'] as const;
+
+export interface UserRegisteredFilterContext {
+  savedItems?: SavedItem[] | null;
+  preferences?: Preferences | null;
+  tasteMap?: PersistentTasteMapData | null;
+}
+
+/**
+ * 'Listemdekileri Gizle' veri katmanı kontrolü:
+ * Kullanıcının Profilinde veya Zevk Haritasında kayıtlı olan
+ * (İzlendi / completed, İzlenecek / watchlist, İzliyorum / watching,
+ * İlgilenmiyorum / disliked veya Gizle / hidden) içerikleri saptar.
+ */
+export function isMediaRegisteredInUserProfile(
+  item: any,
+  { savedItems, preferences, tasteMap }: UserRegisteredFilterContext
+): boolean {
+  const cand = item?.candidate && typeof item.candidate === 'object' ? item.candidate : item;
+  if (!cand || cand.id == null) return false;
+
+  const mediaType: 'movie' | 'tv' =
+    cand.media_type === 'tv'
+      ? 'tv'
+      : cand.media_type === 'movie'
+      ? 'movie'
+      : cand.title
+      ? 'movie'
+      : 'tv';
+  const key = canonicalizeMediaKey(makeMediaKey(mediaType, cand.id));
+  const legacyKey = `${mediaType}-${cand.id}`;
+
+  // 1, 2, 3: İzlendi (completed), İzlenecek (watchlist), İzliyorum (watching)
+  if (Array.isArray(savedItems) && savedItems.length > 0) {
+    if (isItemSaved(savedItems, cand, mediaType)) {
+      return true;
+    }
+  }
+
+  // 4: İlgilenmiyorum (disliked)
+  if (Array.isArray(preferences?.disliked) && preferences.disliked.length > 0) {
+    if (
+      preferences.disliked.some(
+        (d) => d === key || d === legacyKey || canonicalizeMediaKey(d) === key
+      )
+    ) {
+      return true;
+    }
+  }
+
+  // 5: Gizle (hidden)
+  if (Array.isArray(preferences?.hidden) && preferences.hidden.length > 0) {
+    if (
+      preferences.hidden.some(
+        (h) => h === key || h === legacyKey || canonicalizeMediaKey(h) === key
+      )
+    ) {
+      return true;
+    }
+  }
+
+  // Zevk Haritası (aktif veya arşiv kayıtlarında saved / disliked / hidden durumu)
+  const mapEntry =
+    tasteMap?.entries?.[key] ??
+    tasteMap?.entries?.[legacyKey] ??
+    tasteMap?.archivedEntries?.[key] ??
+    tasteMap?.archivedEntries?.[legacyKey];
+  if (
+    mapEntry &&
+    (mapEntry.status === 'saved' || mapEntry.status === 'disliked' || mapEntry.status === 'hidden')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function filterHiddenUserRegisteredItems<T>(
+  items: T[],
+  context: UserRegisteredFilterContext & { hideListedItems?: boolean }
+): T[] {
+  if (!Array.isArray(items)) return [];
+  if (!context.hideListedItems) return items;
+  return items.filter((item) => !isMediaRegisteredInUserProfile(item, context));
+}
+
 /**
  * Dönem, popülerlik ve tür gibi çeşitlilik boyutlarını dengeli dağıtan havuz dengeleyici.
  */
@@ -3999,6 +4375,8 @@ export interface SelectBalancedRecommendationsOptions {
   scoredTv?: any[];
   remainingMovies?: any[];
   remainingTv?: any[];
+  lastRecommendedKeys?: string[];
+  tasteMap?: PersistentTasteMapData | null;
   targetTotal?: number;
   minPerTypeInAll?: number;
   maxPerGenre?: number;
@@ -4030,6 +4408,8 @@ export function selectBalancedRecommendations({
   scoredTv = [],
   remainingMovies = [],
   remainingTv = [],
+  lastRecommendedKeys,
+  tasteMap = null,
   targetTotal = TARGET_RECOMMENDATION_COUNT,
   minPerTypeInAll = 10,
   maxPerGenre,
@@ -4037,12 +4417,17 @@ export function selectBalancedRecommendations({
   maxPerTier,
 }: SelectBalancedRecommendationsOptions): BalancedRecommendationResult {
   const normTarget = targetType === 'movie' || targetType === 'tv' ? targetType : 'all';
+  const excludedLastRecommended = new Set(
+    canonicalizeMediaKeyList(lastRecommendedKeys ?? tasteMap?.lastRecommendedKeys ?? [])
+  );
 
   const resolveCandidateLifecycleRing = (e: any): LifecycleRing => {
+    const cand = e?.candidate || e;
+    const canonicalKey = canonicalizeMediaKey(makeMediaKey(cand));
+    if (excludedLastRecommended.has(canonicalKey)) return 'ring1';
     const rawRing = e?.ring ?? e?.candidate?.ring;
     if (rawRing === 'ring1') return 'ring1';
     if (rawRing === 'ring2') return 'ring2';
-    const cand = e?.candidate || e;
     const shownCount = Number(e?.shownCount ?? cand?.shownCount ?? 0);
     const skippedCount = Number(e?.skippedCount ?? cand?.skippedCount ?? 0);
     const lastShownAt = e?.lastShownAt ?? cand?.lastShownAt ?? null;
@@ -4068,11 +4453,12 @@ export function selectBalancedRecommendations({
     const primarySeen = new Set<string>();
     const ring2Map = new Map<string, any>();
 
-    // 1 & 2: Ana adaylardan ring1 olanları kesinlikle ele; ring0 ve ring2 adaylarını ayır
+    // 1 & 2: Ana adaylardan lastRecommendedKeys / ring1 olanları kesinlikle ele; ring0 ve ring2 adaylarını ayır
     for (const item of primaryScored || []) {
       if (!item) continue;
       const cand = item.candidate || item;
-      const key = makeMediaKey(cand);
+      const key = canonicalizeMediaKey(makeMediaKey(cand));
+      if (excludedLastRecommended.has(key)) continue;
       const r = resolveCandidateLifecycleRing(item);
       if (r === 'ring1') continue;
       if (r === 'ring0') {
@@ -4087,12 +4473,13 @@ export function selectBalancedRecommendations({
       }
     }
 
-    // Kalan havuzdan da ring1 olanları ele; ring0 ve ring2 adaylarını birbirine karıştırmadan ayır
+    // Kalan havuzdan da lastRecommendedKeys / ring1 olanları ele; ring0 ve ring2 adaylarını birbirine karıştırmadan ayır
     const remainingRing0: any[] = [];
     for (const rem of remainingPool || []) {
       if (!rem) continue;
       const cand = rem.candidate || rem;
-      const key = makeMediaKey(cand);
+      const key = canonicalizeMediaKey(makeMediaKey(cand));
+      if (excludedLastRecommended.has(key)) continue;
       const r = resolveCandidateLifecycleRing(rem);
       if (r === 'ring1') continue;
       if (r === 'ring0') {
@@ -4392,20 +4779,36 @@ export function savePersistentPoolData(
   profileId: string,
   data: PersistentCandidatePoolData
 ): void {
+  if (typeof localStorage === 'undefined') return;
+  const key = `cinetrack_pool_${data.mediaType}_${profileId}`;
+  const updatedAt = new Date().toISOString();
+  const sliced = data.items.slice(0, POOL_TARGET_CAPACITY);
   try {
-    if (typeof localStorage !== 'undefined') {
-      const key = `cinetrack_pool_${data.mediaType}_${profileId}`;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        mediaType: data.mediaType,
+        updatedAt,
+        items: sliced,
+        cursors: data.cursors,
+      })
+    );
+  } catch {
+    try {
       localStorage.setItem(
         key,
         JSON.stringify({
           mediaType: data.mediaType,
-          updatedAt: new Date().toISOString(),
-          items: data.items.slice(0, POOL_TARGET_CAPACITY),
+          updatedAt,
+          items: sliced.map((it) => ({
+            ...it,
+            overview: (it.overview || '').slice(0, 160),
+          })),
           cursors: data.cursors,
         })
       );
-    }
-  } catch {}
+    } catch {}
+  }
 }
 
 export interface ReplenishCandidatePoolParams {

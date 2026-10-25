@@ -26,6 +26,8 @@ interface ControlsProps {
   onProviderChange: (p: string) => void;
   listStatus: string;
   onListStatusChange: (status: string) => void;
+  hideListedItems?: boolean;
+  onHideListedItemsChange?: (checked: boolean) => void;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -51,6 +53,8 @@ export const Controls: React.FC<ControlsProps> = ({
   onProviderChange,
   listStatus,
   onListStatusChange,
+  hideListedItems = false,
+  onHideListedItemsChange,
 }) => {
   // If in taste-map or relationships tab, those views provide their own dedicated toolbars
   if (tab === 'taste-map' || tab === 'relationships') {
@@ -268,6 +272,25 @@ export const Controls: React.FC<ControlsProps> = ({
             <option value="title">Başlık (A-Z)</option>
           </select>
         </div>
+
+        {/* Listemdekileri Gizle (Gündemdekiler, Yüksek Puanlılar, Gizli Cevherler) */}
+        {tab === 'discover' &&
+          !isSearchActive &&
+          (selectedCategory === 'trending' ||
+            selectedCategory === 'top-rated' ||
+            selectedCategory === 'gems') && (
+            <label
+              className={`filter-checkbox-control ${hideListedItems ? 'is-active' : ''}`}
+            >
+              <input
+                type="checkbox"
+                className="filter-checkbox-input"
+                checked={hideListedItems}
+                onChange={(e) => onHideListedItemsChange?.(e.target.checked)}
+              />
+              <span>Listemdekileri Gizle</span>
+            </label>
+          )}
       </div>
     </div>
   );
