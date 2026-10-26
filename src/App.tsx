@@ -44,6 +44,7 @@ import {
   FavoriteActorInfo,
   normalizeFavoriteActors,
   replenishCandidatePool,
+  normalizePoolCandidate,
   isCandidateEligibleInPool,
   selectBalancedRecommendations,
   CURRENT_SCHEMA_VERSION,
@@ -238,8 +239,11 @@ export function App() {
   const requestGateRef = useRef(createRequestGate());
   const toastTimerRef = useRef<any>(null);
   const lastForYouTypeRef = useRef<string>('all');
+  const lastForYouGenreRef = useRef<string>('');
   const selectedTypeRef = useRef<string>(selectedType);
   selectedTypeRef.current = selectedType;
+  const selectedGenreRef = useRef<string>(selectedGenre);
+  selectedGenreRef.current = selectedGenre;
   const activeProfileIdRef = useRef<string>(activeProfileId);
   activeProfileIdRef.current = activeProfileId;
   const tasteMapRef = useRef<PersistentTasteMapData>(tasteMap);
@@ -551,6 +555,47 @@ export function App() {
     };
   }, [checkReleaseReminders]);
 
+  const enrichItemsWithPersonalizedTaste = (items: any[]): any[] => {
+    if (!items || items.length === 0) return items;
+    try {
+      const currentProfileId = activeProfileIdRef.current;
+      const currentSaved = savedItemsRef.current;
+      const currentPrefs = preferencesRef.current;
+      const currentGenres = genresMapRef.current;
+      const currentTasteMap = tasteMapRef.current || loadPersistentTasteMap(currentProfileId);
+      const tasteProfile = buildTasteProfileV3(currentSaved, {
+        lambda: 1,
+        dislikedKeys: currentPrefs.disliked,
+      });
+      const scored = scoreCandidatesV3(items, tasteProfile, {
+        weights: RECOMMENDATION_WEIGHTS_V3,
+        genreNames: currentGenres,
+        mood: currentPrefs.mood,
+        tasteMap: currentTasteMap,
+      });
+      return scored.map((s) => {
+        const cand = s.candidate || s;
+        const key = makeMediaKey(cand);
+        const mapEntry = currentTasteMap?.entries?.[key];
+        const tasteScore =
+          mapEntry?.tasteScore ??
+          mapEntry?.matchScore ??
+          Math.max(1, Math.min(100, Math.round(Number(s.score || s.rawScore || cand.tasteScore) || 75)));
+        return {
+          ...cand,
+          tasteScore,
+          matchScore: tasteScore,
+          priorityScore: mapEntry?.priorityScore ?? tasteScore,
+          tags: s.tags || cand.tags || [],
+          ring: mapEntry?.ring || (s.ring === 'ring2' ? 'ring2' : 'ring0'),
+          tasteMapEntry: mapEntry,
+        };
+      });
+    } catch {
+      return items;
+    }
+  };
+
   // Load Catalog Data (Trending, For-You, Gems, Upcoming, etc.)
   const loadCategoryResults = useCallback(
     async (
@@ -560,7 +605,8 @@ export function App() {
       currentQuery = query,
       provider = selectedProvider,
       forceRefresh = false,
-      typeFilter?: string
+      typeFilter?: string,
+      genreFilter?: string
     ) => {
       const ticket = requestGateRef.current.begin();
       if (!append) {
@@ -569,6 +615,10 @@ export function App() {
       } else {
         setLoadingMore(true);
       }
+
+      const activeGenre = genreFilter !== undefined ? genreFilter : selectedGenreRef.current;
+      const effectiveType = typeFilter || selectedTypeRef.current || 'all';
+      const targetType = effectiveType === 'movie' || effectiveType === 'tv' ? effectiveType : 'all';
 
       try {
         if (currentQuery.trim()) {
@@ -581,31 +631,37 @@ export function App() {
           const items = (res.results || []).filter(
             (item: any) => item.media_type === 'movie' || item.media_type === 'tv'
           );
-          setCatalogItems((prev) => (append ? [...prev, ...items] : items));
+          const enriched = enrichItemsWithPersonalizedTaste(items);
+          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
           setCatalogTotalPages(res.total_pages || 1);
           setCatalogPage(p);
           return;
         }
 
         if (provider && cat !== 'for-you') {
-          const [movies, tvs] = await Promise.all([
-            fetchTmdb(
-              '/discover/movie',
-              { with_watch_providers: provider, watch_region: 'TR', sort_by: 'popularity.desc', page: String(p) },
-              ticket.signal
-            ),
-            fetchTmdb(
-              '/discover/tv',
-              { with_watch_providers: provider, watch_region: 'TR', sort_by: 'popularity.desc', page: String(p) },
-              ticket.signal
-            ),
-          ]);
+          const commonParams: any = {
+            with_watch_providers: provider,
+            watch_region: 'TR',
+            sort_by: 'popularity.desc',
+            page: String(p),
+          };
+          if (activeGenre) commonParams.with_genres = activeGenre;
+          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+          if (targetType === 'all' || targetType === 'movie') {
+            moviesPromise = fetchTmdb('/discover/movie', commonParams, ticket.signal);
+          }
+          if (targetType === 'all' || targetType === 'tv') {
+            tvsPromise = fetchTmdb('/discover/tv', commonParams, ticket.signal);
+          }
+          const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
           const combined = [
             ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
             ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
           ];
-          setCatalogItems((prev) => (append ? [...prev, ...combined] : combined));
+          const enriched = enrichItemsWithPersonalizedTaste(combined);
+          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
           setCatalogTotalPages(Math.max(movies.total_pages || 1, tvs.total_pages || 1));
           setCatalogPage(p);
           return;
@@ -613,9 +669,6 @@ export function App() {
 
         if (cat === 'for-you') {
           const currentProfileId = activeProfileIdRef.current;
-          const effectiveType = typeFilter || selectedTypeRef.current || 'all';
-          const targetType = effectiveType === 'movie' || effectiveType === 'tv' ? effectiveType : 'all';
-
           const rawSaved = savedItemsRef.current;
           const currentPrefs = preferencesRef.current;
           const currentGenres = genresMapRef.current;
@@ -630,8 +683,9 @@ export function App() {
               : diskTasteMap;
 
           // Ana ilke: Kullanıcının zevk profili ve adaylarla eşleşme haritası, yalnızca gerektiğinde güncellensin.
-          // Öneri kartları her render olduğunda veya kullanıcı uygulamada başka bir alana geçtiğinde tüm adaylar yeniden puanlanmasın.
+          // Belirli bir tür filtresi (activeGenre) seçilmemişse genel önbelleği kontrol et.
           if (
+            !activeGenre &&
             isTasteMapCacheValid({
               tasteMap: storedTasteMap,
               currentSig,
@@ -647,6 +701,7 @@ export function App() {
             );
             if (restored.length > 0) {
               lastForYouTypeRef.current = targetType;
+              lastForYouGenreRef.current = '';
               // Vitrinde gösterilen grubun lastRecommendedKeys ve shownCount kaydının eksiksiz olduğundan emin ol
               const impressionSync = recordDisplayedRecommendations(storedTasteMap, restored, {
                 targetType,
@@ -692,12 +747,18 @@ export function App() {
             }
           }
 
-          // If already loaded for the current type and not explicitly force-refreshed, reuse cached recommendations
-          if (forYouItemsRef.current.length > 0 && !forceRefresh && lastForYouTypeRef.current === targetType) {
+          // If already loaded for the current type & genre and not explicitly force-refreshed, reuse cached recommendations
+          if (
+            forYouItemsRef.current.length > 0 &&
+            !forceRefresh &&
+            lastForYouTypeRef.current === targetType &&
+            lastForYouGenreRef.current === activeGenre
+          ) {
             setIsLoading(false);
             return;
           }
           lastForYouTypeRef.current = targetType;
+          lastForYouGenreRef.current = activeGenre;
 
           // Film önerisi istendiğinde dizi geçmişini ilgi profili hesabının dışında bırak; yalnızca film geçmişini ve film tercihlerini değerlendir.
           const currentSaved = filterHistoryByType(rawSaved, targetType);
@@ -881,6 +942,65 @@ export function App() {
           }
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
+          if (activeGenre) {
+            const gId = Number(activeGenre);
+            movieCandidates = movieCandidates.filter((item) => (item.genre_ids || []).includes(gId));
+            tvCandidates = tvCandidates.filter((item) => (item.genre_ids || []).includes(gId));
+
+            const minNeeded = targetType === 'all' ? 15 : 25;
+            if ((targetType === 'all' || targetType === 'movie') && movieCandidates.length < minNeeded) {
+              try {
+                const extraMoviesRes = await fetchTmdb(
+                  '/discover/movie',
+                  {
+                    with_genres: activeGenre,
+                    sort_by: 'popularity.desc',
+                    'vote_count.gte': '25',
+                    page: '1',
+                  },
+                  ticket.signal
+                );
+                const extraMovies = (extraMoviesRes?.results || [])
+                  .map((m: any) => normalizePoolCandidate(m, 'movie', 'genre_discover', `Tür Keşfi: ${activeGenre}`))
+                  .filter((c: any) => c && isCandidateEligibleInPool(c, rawSaved, currentPrefs));
+
+                const seen = new Set(movieCandidates.map((m: any) => m.id));
+                for (const m of extraMovies) {
+                  if (!seen.has(m.id)) {
+                    seen.add(m.id);
+                    movieCandidates.push(m);
+                  }
+                }
+              } catch {}
+            }
+
+            if ((targetType === 'all' || targetType === 'tv') && tvCandidates.length < minNeeded) {
+              try {
+                const extraTvRes = await fetchTmdb(
+                  '/discover/tv',
+                  {
+                    with_genres: activeGenre,
+                    sort_by: 'popularity.desc',
+                    'vote_count.gte': '15',
+                    page: '1',
+                  },
+                  ticket.signal
+                );
+                const extraTv = (extraTvRes?.results || [])
+                  .map((t: any) => normalizePoolCandidate(t, 'tv', 'genre_discover', `Tür Keşfi: ${activeGenre}`))
+                  .filter((c: any) => c && isCandidateEligibleInPool(c, rawSaved, currentPrefs));
+
+                const seen = new Set(tvCandidates.map((t: any) => t.id));
+                for (const t of extraTv) {
+                  if (!seen.has(t.id)) {
+                    seen.add(t.id);
+                    tvCandidates.push(t);
+                  }
+                }
+              } catch {}
+            }
+          }
+
           // En güncel Zevk Haritası durumunu al (bellek içi en son kayıt varsa koru)
           const latestDiskMap = loadPersistentTasteMap(currentProfileId);
           const tasteMap =
@@ -1023,6 +1143,7 @@ export function App() {
             tasteMap,
             targetTotal: TARGET_RECOMMENDATION_COUNT,
             minPerTypeInAll: 10,
+            maxPerGenre: activeGenre ? TARGET_RECOMMENDATION_COUNT : undefined,
           });
 
           const picked = balancedResult.items;
@@ -1080,74 +1201,182 @@ export function App() {
           setCatalogTotalPages(1);
           setCatalogPage(1);
           setForYouProgressStep('');
+          lastForYouTypeRef.current = targetType;
+          lastForYouGenreRef.current = activeGenre;
           if (forceRefresh) showToast(explanationText);
           return;
         }
 
         if (cat === 'gems') {
           const cutoffDate = dateYearsAgo(15);
-          const common = {
+          const common: any = {
             'vote_average.gte': '7',
             'vote_count.gte': '200',
             'vote_count.lte': '3000',
             sort_by: 'popularity.asc',
             page: String(p),
           };
-          const [movies, tvs] = await Promise.all([
-            fetchTmdb('/discover/movie', { ...common, 'primary_release_date.gte': cutoffDate }, ticket.signal),
-            fetchTmdb('/discover/tv', { ...common, 'first_air_date.gte': cutoffDate }, ticket.signal),
-          ]);
+          if (activeGenre) common.with_genres = activeGenre;
+          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+          if (targetType === 'all' || targetType === 'movie') {
+            moviesPromise = fetchTmdb('/discover/movie', { ...common, 'primary_release_date.gte': cutoffDate }, ticket.signal);
+          }
+          if (targetType === 'all' || targetType === 'tv') {
+            tvsPromise = fetchTmdb('/discover/tv', { ...common, 'first_air_date.gte': cutoffDate }, ticket.signal);
+          }
+          const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
           const combined = [
             ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
             ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
           ];
-          setCatalogItems((prev) => (append ? [...prev, ...combined] : combined));
+          const enriched = enrichItemsWithPersonalizedTaste(combined);
+          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
           setCatalogTotalPages(Math.max(movies.total_pages || 1, tvs.total_pages || 1));
           setCatalogPage(p);
           return;
         }
 
         if (cat === 'upcoming') {
-          const [movies, tvs] = await Promise.all([
-            fetchTmdb('/movie/upcoming', { page: String(p) }, ticket.signal),
-            fetchTmdb('/tv/on_the_air', { page: String(p) }, ticket.signal),
-          ]);
+          const todayStr = new Date().toISOString().slice(0, 10);
+          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+          if (targetType === 'all' || targetType === 'movie') {
+            moviesPromise = activeGenre
+              ? fetchTmdb('/discover/movie', { 'primary_release_date.gte': todayStr, with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) }, ticket.signal)
+              : fetchTmdb('/movie/upcoming', { page: String(p) }, ticket.signal);
+          }
+          if (targetType === 'all' || targetType === 'tv') {
+            tvsPromise = activeGenre
+              ? fetchTmdb('/discover/tv', { 'first_air_date.gte': todayStr, with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) }, ticket.signal)
+              : fetchTmdb('/tv/on_the_air', { page: String(p) }, ticket.signal);
+          }
+          const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
           const combined = [
             ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
             ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
           ];
-          setCatalogItems((prev) => (append ? [...prev, ...combined] : combined));
+          const enriched = enrichItemsWithPersonalizedTaste(combined);
+          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
           setCatalogTotalPages(Math.max(movies.total_pages || 1, tvs.total_pages || 1));
           setCatalogPage(p);
           return;
         }
 
-        const endpointMap: Record<string, string> = {
-          trending: '/trending/all/day',
-          'popular-movies': '/movie/popular',
-          'popular-tv': '/tv/popular',
-          'top-rated': '/movie/top_rated',
-        };
-        const endpoint = endpointMap[cat] || '/trending/all/day';
-        const res = await fetchTmdb(endpoint, { page: String(p) }, ticket.signal);
-        if (!requestGateRef.current.isCurrent(ticket.id)) return;
+        let rawItems: any[] = [];
+        let totalPages = 1;
 
-        const defaultType = endpoint.startsWith('/movie')
-          ? 'movie'
-          : endpoint.startsWith('/tv')
-          ? 'tv'
-          : '';
-        const items = (res.results || []).map((item: any) =>
-          item.media_type ? item : { ...item, media_type: defaultType || (item.title ? 'movie' : 'tv') }
-        );
+        if (activeGenre) {
+          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
 
-        if (cat === 'trending' && !append && items[0]) {
-          setTrendingTop(items[0]);
+          if (cat === 'top-rated') {
+            const common = {
+              with_genres: activeGenre,
+              sort_by: 'vote_average.desc',
+              'vote_count.gte': '200',
+              page: String(p),
+            };
+            if (targetType === 'all' || targetType === 'movie') {
+              moviesPromise = fetchTmdb('/discover/movie', common, ticket.signal);
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              tvsPromise = fetchTmdb('/discover/tv', common, ticket.signal);
+            }
+          } else if (cat === 'popular-movies') {
+            moviesPromise = fetchTmdb(
+              '/discover/movie',
+              { with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) },
+              ticket.signal
+            );
+          } else if (cat === 'popular-tv') {
+            tvsPromise = fetchTmdb(
+              '/discover/tv',
+              { with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) },
+              ticket.signal
+            );
+          } else {
+            const common = {
+              with_genres: activeGenre,
+              sort_by: 'popularity.desc',
+              page: String(p),
+            };
+            if (targetType === 'all' || targetType === 'movie') {
+              moviesPromise = fetchTmdb('/discover/movie', common, ticket.signal);
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              tvsPromise = fetchTmdb('/discover/tv', common, ticket.signal);
+            }
+          }
+
+          const [mRes, tRes] = await Promise.all([moviesPromise, tvsPromise]);
+          if (!requestGateRef.current.isCurrent(ticket.id)) return;
+          rawItems = [
+            ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+            ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+          ];
+          totalPages = Math.max(mRes.total_pages || 1, tRes.total_pages || 1);
+        } else {
+          if (cat === 'popular-movies') {
+            const res = await fetchTmdb('/movie/popular', { page: String(p) }, ticket.signal);
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+            rawItems = (res.results || []).map((m: any) => ({ ...m, media_type: 'movie' }));
+            totalPages = res.total_pages || 1;
+          } else if (cat === 'popular-tv') {
+            const res = await fetchTmdb('/tv/popular', { page: String(p) }, ticket.signal);
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+            rawItems = (res.results || []).map((t: any) => ({ ...t, media_type: 'tv' }));
+            totalPages = res.total_pages || 1;
+          } else if (cat === 'top-rated') {
+            if (targetType === 'tv') {
+              const res = await fetchTmdb('/tv/top_rated', { page: String(p) }, ticket.signal);
+              if (!requestGateRef.current.isCurrent(ticket.id)) return;
+              rawItems = (res.results || []).map((t: any) => ({ ...t, media_type: 'tv' }));
+              totalPages = res.total_pages || 1;
+            } else if (targetType === 'movie') {
+              const res = await fetchTmdb('/movie/top_rated', { page: String(p) }, ticket.signal);
+              if (!requestGateRef.current.isCurrent(ticket.id)) return;
+              rawItems = (res.results || []).map((m: any) => ({ ...m, media_type: 'movie' }));
+              totalPages = res.total_pages || 1;
+            } else {
+              const [mRes, tRes] = await Promise.all([
+                fetchTmdb('/movie/top_rated', { page: String(p) }, ticket.signal),
+                fetchTmdb('/tv/top_rated', { page: String(p) }, ticket.signal),
+              ]);
+              if (!requestGateRef.current.isCurrent(ticket.id)) return;
+              rawItems = [
+                ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              ];
+              totalPages = Math.max(mRes.total_pages || 1, tRes.total_pages || 1);
+            }
+          } else {
+            const trendEndpoint =
+              targetType === 'movie'
+                ? '/trending/movie/day'
+                : targetType === 'tv'
+                ? '/trending/tv/day'
+                : '/trending/all/day';
+            const res = await fetchTmdb(trendEndpoint, { page: String(p) }, ticket.signal);
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+            rawItems = (res.results || []).map((item: any) =>
+              item.media_type
+                ? item
+                : { ...item, media_type: targetType !== 'all' ? targetType : item.title ? 'movie' : 'tv' }
+            );
+            totalPages = res.total_pages || 1;
+          }
         }
-        setCatalogItems((prev) => (append ? [...prev, ...items] : items));
-        setCatalogTotalPages(res.total_pages || 1);
+
+        const enriched = enrichItemsWithPersonalizedTaste(rawItems);
+
+        if (cat === 'trending' && !append && enriched[0]) {
+          setTrendingTop(enriched[0]);
+        }
+        setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
+        setCatalogTotalPages(totalPages);
         setCatalogPage(p);
       } catch (err: any) {
         if (!ticket.signal.aborted) {
@@ -1167,12 +1396,12 @@ export function App() {
   );
 
   const handleRefreshForYou = useCallback(() => {
-    loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType);
-  }, [loadCategoryResults, selectedProvider, selectedType]);
+    loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType, selectedGenre);
+  }, [loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
 
   const handleRefreshTasteMap = useCallback(() => {
-    loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType);
-  }, [loadCategoryResults, selectedProvider, selectedType]);
+    loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType, selectedGenre);
+  }, [loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
 
   const handleLoadRelationshipCandidates = useCallback(
     async (mediaFilter: 'all' | 'movie' | 'tv'): Promise<PoolCandidateItem[]> => {
@@ -1204,40 +1433,62 @@ export function App() {
     (newType: string) => {
       setSelectedType(newType);
       selectedTypeRef.current = newType;
-      if (tab === 'discover' && category === 'for-you') {
-        loadCategoryResults('for-you', 1, false, query, selectedProvider, false, newType);
+      if (tab === 'discover') {
+        if (category === 'for-you') {
+          lastForYouTypeRef.current = newType;
+        }
+        loadCategoryResults(category, 1, false, query, selectedProvider, false, newType, selectedGenre);
       }
     },
-    [tab, category, query, selectedProvider, loadCategoryResults]
+    [tab, category, query, selectedProvider, selectedGenre, loadCategoryResults]
+  );
+
+  const handleSelectGenre = useCallback(
+    (newGenre: string) => {
+      setSelectedGenre(newGenre);
+      selectedGenreRef.current = newGenre;
+      if (tab === 'discover') {
+        if (category === 'for-you') {
+          lastForYouGenreRef.current = newGenre;
+        }
+        loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, newGenre);
+      }
+    },
+    [tab, category, query, selectedProvider, selectedType, loadCategoryResults]
   );
 
   useEffect(() => {
     if (tab === 'taste-map') {
       const stored = loadPersistentTasteMap(activeProfileId);
       if (Object.keys(stored.entries || {}).length === 0 && !isLoading) {
-        loadCategoryResults('for-you', 1, false, '', selectedProvider, false, selectedType);
+        loadCategoryResults('for-you', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
       }
     }
-  }, [tab, activeProfileId, isLoading, loadCategoryResults, selectedProvider, selectedType]);
+  }, [tab, activeProfileId, isLoading, loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
 
   useEffect(() => {
     if (tab === 'discover') {
       if (category === 'for-you') {
-        if (lastForYouTypeRef.current === selectedType && forYouItems.length > 0) {
+        if (
+          lastForYouTypeRef.current === selectedType &&
+          lastForYouGenreRef.current === selectedGenre &&
+          forYouItems.length > 0
+        ) {
           return;
         }
         lastForYouTypeRef.current = selectedType;
-        loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType);
+        lastForYouGenreRef.current = selectedGenre;
+        loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, selectedGenre);
         return;
       }
-      loadCategoryResults(category, 1, false, query, selectedProvider);
+      loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, selectedGenre);
     }
-  }, [tab, category, query, selectedProvider, selectedType, loadCategoryResults, forYouItems.length]);
+  }, [tab, category, query, selectedProvider, selectedType, selectedGenre, loadCategoryResults, forYouItems.length]);
 
   // Load more pagination
   const handleLoadMore = () => {
     if (tab === 'discover' && category !== 'for-you' && catalogPage < catalogTotalPages) {
-      loadCategoryResults(category, catalogPage + 1, true, query, selectedProvider);
+      loadCategoryResults(category, catalogPage + 1, true, query, selectedProvider, false, selectedType, selectedGenre);
     }
   };
 
@@ -1742,7 +1993,9 @@ export function App() {
         title: 'Sana özel',
         description:
           forYouExplanation ||
-          (selectedType === 'movie'
+          (selectedGenre && genresMap[Number(selectedGenre)]
+            ? `${genresMap[Number(selectedGenre)]} türünde zevk profiline göre oluşturulan 20 öneri`
+            : selectedType === 'movie'
             ? 'Film izleme geçmişin ve kişisel puanlarından oluşturulan 20 film önerisi'
             : selectedType === 'tv'
             ? 'Dizi izleme geçmişin ve kişisel puanlarından oluşturulan 20 dizi önerisi'
@@ -1785,6 +2038,8 @@ export function App() {
     const nextTasteMap = loadPersistentTasteMap(newId);
     tasteMapRef.current = nextTasteMap;
     setTasteMap(nextTasteMap);
+    lastForYouGenreRef.current = '';
+    lastForYouTypeRef.current = 'all';
     setForYouItems([]);
     setForYouReasons(new Map());
     setQuery('');
@@ -2005,7 +2260,7 @@ export function App() {
           completedCount={completedCount}
           genres={genresMap}
           selectedGenre={selectedGenre}
-          onGenreChange={setSelectedGenre}
+          onGenreChange={handleSelectGenre}
           selectedType={selectedType}
           onTypeChange={handleSelectType}
           selectedCategory={category}

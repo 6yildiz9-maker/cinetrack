@@ -61,6 +61,20 @@ const { app, storage, persistentStore } = createCineTrackApp({
   ...(optionalAuthToken ? { authToken: optionalAuthToken } : {}),
 });
 
+// Başlangıçta mevcut izleme listesi ve profillerdeki yapımları kalıcı kataloğa aktar
+try {
+  const initialData = storage.readData();
+  const allItems: any[] = [];
+  for (const p of initialData.profiles || []) {
+    if (Array.isArray(p.items)) allItems.push(...p.items);
+  }
+  if (allItems.length > 0) {
+    persistentStore.upsertCatalogItems(allItems);
+  }
+} catch (e: any) {
+  console.warn('[Catalog] Başlangıç indeksleme uyarısı:', e?.message || e);
+}
+
 // Setup Vite middleware (explicit --dev only) or static dist serving (production default)
 async function startServer() {
   const isDevMode = process.env.NODE_ENV !== 'production' && process.argv.includes('--dev');
