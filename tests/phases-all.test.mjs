@@ -18,19 +18,28 @@ import {
   buildTasteProfileSummary,
   buildTasteProfileV3,
   computeTasteProfileSignature,
+  createDefaultPoolData,
   createDefaultTasteMapData,
   filterHiddenUserRegisteredItems,
   filterOutLastRecommendedCandidates,
+  hydratePoolFromCatalog,
   isMediaRegisteredInUserProfile,
   isTasteMapCacheValid,
+  loadPersistentPoolData,
   loadPersistentTasteMap,
+  matchesSelectedGenre,
+  normalizeDataDocument,
+  parseBackupText,
   recordDisplayedRecommendations,
   recordTasteMapPoolScores,
+  resolveDiscoverGenreParam,
+  savePersistentPoolData,
   savePersistentTasteMap,
+  scoreActorRecommendations,
   scoreCandidatesV3,
   selectBalancedRecommendations,
+  topUpFilteredCandidates,
   updateTasteMapWithBatch,
-  normalizeDataDocument,
 } from '../src/core/cinetrack-core.ts';
 import {
   RELATIONSHIP_MODEL_VERSION,
@@ -837,10 +846,10 @@ test('Yerel mimari güvenceleri: bun.lock yoktur, VITE_ sırrı yoktur, CINETRAC
   const apiTs = fs.readFileSync(path.join(repoRoot, 'src/services/api.ts'), 'utf8');
   assert.equal(apiTs.includes('VITE_CINETRACK_TOKEN'), false, 'İstemci kodunda VITE_CINETRACK_TOKEN bulunmamalı');
 
-  // 3. server.ts içinde CINETRACK_HOST = '127.0.0.1' ve maxDataBytes = 2_000_000 sabiti korunmalı
+  // 3. server.ts içinde CINETRACK_HOST = '127.0.0.1' ve maxDataBytes = 100_000_000 sabiti korunmalı
   const serverTs = fs.readFileSync(path.join(repoRoot, 'server.ts'), 'utf8');
   assert.ok(serverTs.includes("const CINETRACK_HOST = '127.0.0.1'"), 'CINETRACK_HOST sabiti 127.0.0.1 olmalı');
-  assert.ok(serverTs.includes('const maxDataBytes = 2_000_000;'), 'maxDataBytes sabiti 2_000_000 olmalı');
+  assert.ok(serverTs.includes('const maxDataBytes = 100_000_000;'), 'maxDataBytes sabiti 100_000_000 olmalı');
   assert.equal(serverTs.includes('CINETRACK_MAX_DATA_BYTE'), false, 'maxDataBytes ortam değişkenine bağlanmamalı');
 
   // 4. Sıfır güvenlik seçeneği ile (varsayılan localhost) token istemeden yazma ve hız sınırı olmadan TMDB erişimi çalışmalı
@@ -1249,5 +1258,410 @@ test("Keşfet - 'Listemdekileri Gizle' filtresi: Gündemdekiler, Yüksek Puanlı
   assert.ok(controlsTsx.includes('type="checkbox"'), 'Controls.tsx içinde checkbox kontrolü bulunmalı');
   assert.ok(appTsx.includes('filterHiddenUserRegisteredItems'), 'App.tsx veri katmanında filterHiddenUserRegisteredItems kullanmalı');
 });
+
+// ============================================================================
+// >2 MB YEDEK YÜKLEME, 500+500 KULLANICI HAVUZ İŞLEME VE FAVORİ OYUNCULAR 2 SEKME TESTLERİ
+// ============================================================================
+test('>2 MB Yedek Yükleme Desteği: 2 MB üzeri büyük yedek dosyaları istemci ve sunucu katmanlarında kesintisiz kabul edilir ve kaydedilir', async () => {
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const profileModalTsx = fs.readFileSync(path.join(repoRoot, 'src/components/ProfileModal.tsx'), 'utf8');
+  assert.equal(
+    profileModalTsx.includes('2_000_000'),
+    false,
+    'ProfileModal.tsx içinde 2 MB dosya boyutu engeli bulunmamalı'
+  );
+
+  // >2.6 MB boyutunda (6000 öğeli + uzun açıklamalı) gerçekçi bir yedek belgesi üret
+  const largeItems = Array.from({ length: 6000 }, (_, idx) => ({
+    id: 100_000 + idx,
+    media_type: idx % 4 === 0 ? 'tv' : 'movie',
+    title: idx % 4 === 0 ? undefined : `Büyük Yedek Filmi #${idx + 1}`,
+    name: idx % 4 === 0 ? `Büyük Yedek Dizisi #${idx + 1}` : undefined,
+    overview: `Bu içerik 2 MB üzeri yedekleme sınırının kaldırıldığını doğrulamak için oluşturulmuş detaylı özet metnidir (${idx + 1}). `.repeat(4),
+    genre_ids: [14, 878, 18],
+    vote_average: 7.8,
+    vote_count: 1400,
+    popularity: 45.2,
+    status: idx % 3 === 0 ? 'watchlist' : 'completed',
+    personal_rating: idx % 3 === 0 ? '' : 8,
+    addedAt: '2026-03-01T12:00:00.000Z',
+    updatedAt: '2026-03-01T12:00:00.000Z',
+  }));
+
+  const backupDoc = {
+    version: 3,
+    activeProfileId: 'profile-ibrahim',
+    profiles: [makeSampleProfile('profile-ibrahim', largeItems)],
+  };
+  const serializedBackup = JSON.stringify(backupDoc);
+  const byteSize = Buffer.byteLength(serializedBackup, 'utf8');
+  assert.ok(byteSize > 2_500_000, `Test yedeği 2.5 MB üzerinde olmalı (gerçekleşen: ${byteSize} bayt)`);
+
+  // parseBackupText 5000 sınırına takılmadan 6000 öğenin tamamını korumalı
+  const parsed = parseBackupText(serializedBackup);
+  assert.equal(parsed.items.length, 6000, '6000 öğenin tamamı kırpılmadan içe aktarılmalı');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cinetrack-large-backup-'));
+  try {
+    await withServer({ dataDir: tmpDir }, async (baseUrl) => {
+      const putRes = await fetch(`${baseUrl}/api/data`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: serializedBackup,
+      });
+      assert.equal(putRes.status, 200, '>2 MB yedek PUT /api/data isteği 200 OK dönmeli');
+
+      const getRes = await fetch(`${baseUrl}/api/data`);
+      assert.equal(getRes.status, 200);
+      const savedDoc = await getRes.json();
+      assert.equal(savedDoc.profiles[0].items.length, 6000, 'Sunucudan geri okunan yedekte 6000 öğe korunmalı');
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('500 Film + 500 Dizi İndirilmiş Havuz İşleme & Filtreli 20 Öneri Garantisi: Katalog kullanıcı zevk haritasına göre puanlanır ve Sana Özel - Film - Fantastik gibi dar filtrelerde 20 içerik döner', async () => {
+  const prevStorage = globalThis.localStorage;
+  const memStorage = createMemoryLocalStorage();
+  globalThis.localStorage = memStorage;
+
+  try {
+    const profileId = 'ibrahim-pool-test';
+
+    // Çapraz tür eşleştirme doğrulaması (Fantastik/Bilim Kurgu 14/878 <-> TV 10765, Aksiyon/Macera 28/12 <-> TV 10759)
+    assert.equal(matchesSelectedGenre({ media_type: 'movie', genre_ids: [14, 12] }, '14'), true);
+    assert.equal(matchesSelectedGenre({ media_type: 'tv', genre_ids: [10765, 18] }, '14'), true);
+    assert.equal(matchesSelectedGenre({ media_type: 'movie', genre_ids: [878] }, '10765'), true);
+    assert.equal(resolveDiscoverGenreParam('14', 'movie'), '14');
+    assert.equal(resolveDiscoverGenreParam('14', 'tv'), '10765');
+    assert.equal(resolveDiscoverGenreParam('28', 'tv'), '10759');
+
+    // Kullanıcının izlediği referans geçmiş (Fantastik & Bilim Kurgu seven profil)
+    const savedItems = Array.from({ length: 40 }, (_, idx) => ({
+      id: 10 + idx,
+      media_type: idx % 2 === 0 ? 'movie' : 'tv',
+      title: idx % 2 === 0 ? `İzlenen Fantastik Film ${idx}` : undefined,
+      name: idx % 2 === 1 ? `İzlenen Fantastik Dizi ${idx}` : undefined,
+      genre_ids: idx % 2 === 0 ? [14, 878, 12] : [10765, 18],
+      vote_average: 8.4,
+      status: 'completed',
+      personal_rating: 9,
+    }));
+    const preferences = { disliked: ['movie:99001'], hidden: ['tv:99002'], providers: [], mood: '', reminders: false, notified: [] };
+
+    // Sunucuda indirilmiş 500 Film + 500 Dizi ham katalog verisi (sadece 4 tanesi Fantastik 14, geri kalanı farklı türlerde)
+    const rawMovieCatalog = {};
+    for (let i = 0; i < 500; i++) {
+      const id = 50_000 + i;
+      rawMovieCatalog[`movie:${id}`] = {
+        id,
+        media_type: 'movie',
+        title: i < 4 ? `Katalog Fantastik Film ${i + 1}` : `Katalog Genel Film ${i + 1}`,
+        overview: 'Büyülü krallık ejderha kehanet ve destansı yolculuk.',
+        genre_ids: i < 4 ? [14, 12] : [18, 53],
+        vote_average: 7.4 + (i % 15) * 0.1,
+        vote_count: 800 + i * 5,
+        popularity: 60 + (i % 40),
+        release_date: `${2010 + (i % 15)}-06-15`,
+      };
+    }
+    const rawTvCatalog = {};
+    for (let i = 0; i < 500; i++) {
+      const id = 70_000 + i;
+      rawTvCatalog[`tv:${id}`] = {
+        id,
+        media_type: 'tv',
+        name: `Katalog Dizi ${i + 1}`,
+        overview: 'Paralel evren gizem ve karakter çatışması.',
+        genre_ids: i < 25 ? [10765, 18] : [18, 80],
+        vote_average: 7.6 + (i % 12) * 0.1,
+        vote_count: 650 + i * 4,
+        popularity: 55 + (i % 35),
+        first_air_date: `${2012 + (i % 13)}-09-10`,
+      };
+    }
+
+    // 1. İndirilmiş katalogdan 500 film + 500 dizi havuzunu kullanıcıya göre süzerek yükle
+    const hydratedMovies = hydratePoolFromCatalog(createDefaultPoolData('movie'), rawMovieCatalog, savedItems, preferences);
+    const hydratedTv = hydratePoolFromCatalog(createDefaultPoolData('tv'), rawTvCatalog, savedItems, preferences);
+    assert.equal(hydratedMovies.poolData.items.length, 500, 'Film havuzu 500 öğeye tamamlanmalı');
+    assert.equal(hydratedTv.poolData.items.length, 500, 'Dizi havuzu 500 öğeye tamamlanmalı');
+
+    savePersistentPoolData(profileId, hydratedMovies.poolData);
+    savePersistentPoolData(profileId, hydratedTv.poolData);
+
+    // 2. Tüm 500 film + 500 diziyi kullanıcının zevk haritasına göre işle ve kaydet
+    const movieTasteProfile = buildTasteProfileV3(savedItems.filter((s) => s.media_type === 'movie'), { lambda: 1 });
+    const tvTasteProfile = buildTasteProfileV3(savedItems.filter((s) => s.media_type === 'tv'), { lambda: 1 });
+    const initialMap = createDefaultTasteMapData(profileId);
+    const sig = computeTasteProfileSignature(savedItems, preferences, [], { targetType: 'all' });
+
+    const allScoredMovies = scoreCandidatesV3(hydratedMovies.poolData.items, movieTasteProfile, { tasteMap: initialMap });
+    const allScoredTv = scoreCandidatesV3(hydratedTv.poolData.items, tvTasteProfile, { tasteMap: initialMap });
+    assert.equal(allScoredMovies.length, 500);
+    assert.equal(allScoredTv.length, 500);
+
+    const balancedDefault = selectBalancedRecommendations({
+      targetType: 'all',
+      scoredMovies: allScoredMovies,
+      scoredTv: allScoredTv,
+      remainingMovies: allScoredMovies,
+      remainingTv: allScoredTv,
+      lastRecommendedKeys: [],
+      tasteMap: initialMap,
+      targetTotal: 20,
+      minPerTypeInAll: 10,
+    });
+    assert.equal(balancedDefault.items.length, 20);
+
+    const mapWithFullPool = updateTasteMapWithBatch({
+      tasteMap: initialMap,
+      newRecommendedItems: balancedDefault.items,
+      allPoolCandidates: [...allScoredMovies, ...allScoredTv],
+      savedItems,
+      preferences,
+      profileSignature: sig,
+      targetType: 'all',
+      isFilteredView: false,
+      pruneInactiveCandidates: true,
+    });
+    assert.equal(
+      Object.keys(mapWithFullPool.entries).length,
+      1000,
+      '500 film + 500 dizi = 1000 işlenmiş adayın tamamı kullanıcının Zevk Haritasında (entries) bulunmalı'
+    );
+    assert.equal(mapWithFullPool.cachedBalancedItems?.length, 20);
+
+    // 3. Kullanıcı "Sana Özel -> Film -> Fantastik (14)" filtresini uygular.
+    // Yerel havuzda yalnızca 4 Fantastik film olmasına rağmen topUpFilteredCandidates çok sayfalı tarama yapıp
+    // kullanıcının izlemediği Fantastik filmleri bularak 20 adet puanlanmış film dönmesini garanti etmeli!
+    const mockFetchTmdb = async (endpointPath, params) => {
+      assert.equal(endpointPath, '/discover/movie');
+      assert.equal(params.with_genres, '14');
+      const pageNum = Number(params.page) || 1;
+      const results = Array.from({ length: 12 }, (_, idx) => ({
+        id: 80_000 + pageNum * 100 + idx,
+        media_type: 'movie',
+        title: `Keşfedilen Fantastik Film S${pageNum}-${idx + 1}`,
+        overview: 'Kadim büyü krallık ve fantastik macera.',
+        genre_ids: [14, 12],
+        vote_average: 7.9 - (idx % 5) * 0.1,
+        vote_count: 950 + idx * 30,
+        popularity: 72 - idx,
+        release_date: '2023-11-20',
+      }));
+      return { page: pageNum, total_pages: 10, results };
+    };
+
+    const topUpResult = await topUpFilteredCandidates({
+      profileId,
+      mediaType: 'movie',
+      existingCandidates: hydratedMovies.poolData.items,
+      savedItems,
+      preferences,
+      lastRecommendedKeys: mapWithFullPool.lastRecommendedKeys,
+      selectedGenre: '14',
+      minFreshRequired: 25,
+      fetchTmdbFn: mockFetchTmdb,
+    });
+
+    assert.ok(
+      topUpResult.filteredCandidates.length >= 25,
+      `Fantastik film adayları en az 25'e tamamlanmalı (gerçekleşen: ${topUpResult.filteredCandidates.length})`
+    );
+    assert.ok(topUpResult.newlyDiscovered.length >= 20, 'Eksik adaylar TMDB discover üzerinden tamamlanmalı');
+
+    // Tamamlanan Fantastik filmleri kullanıcı zevk profiline göre puanla ve 20 film seç
+    const scoredFantasyMovies = scoreCandidatesV3(topUpResult.filteredCandidates, movieTasteProfile, {
+      tasteMap: mapWithFullPool,
+      lastRecommendedKeys: mapWithFullPool.lastRecommendedKeys,
+    });
+    const freshFantasy = filterOutLastRecommendedCandidates(scoredFantasyMovies, mapWithFullPool.lastRecommendedKeys);
+    const fantasySelection = selectBalancedRecommendations({
+      targetType: 'movie',
+      scoredMovies: freshFantasy,
+      scoredTv: [],
+      remainingMovies: freshFantasy,
+      remainingTv: [],
+      lastRecommendedKeys: mapWithFullPool.lastRecommendedKeys,
+      tasteMap: mapWithFullPool,
+      targetTotal: 20,
+    });
+
+    assert.equal(
+      fantasySelection.items.length,
+      20,
+      'Sana Özel - Film - Fantastik filtresinde 1-2 veya 5 içerik yerine tam 20 adet kullanıcıya göre işlenmiş film gösterilmeli'
+    );
+    for (const entry of fantasySelection.items) {
+      const cand = entry.candidate || entry;
+      assert.equal(cand.media_type, 'movie');
+      assert.ok(cand.genre_ids.includes(14), 'Seçilen tüm filmler Fantastik (14) türünde olmalı');
+      assert.ok(Number(entry.tasteScore ?? cand.tasteScore) >= 60, 'Seçilen filmler kullanıcı zevk haritasına göre puanlanmış olmalı');
+    }
+
+    // 4. Filtreli görünüm sonrasında updateTasteMapWithBatch çağrıldığında:
+    // - 1000+ işlenmiş havuz kaydı silinmemeli (pruneInactiveCandidates: false)
+    // - Filtresiz vitrin önbelleği (cachedBalancedItems) ezilmemeli (isFilteredView: true)
+    const mapAfterFiltered = updateTasteMapWithBatch({
+      tasteMap: mapWithFullPool,
+      newRecommendedItems: fantasySelection.items,
+      allPoolCandidates: [...allScoredMovies, ...allScoredTv, ...scoredFantasyMovies],
+      savedItems,
+      preferences,
+      profileSignature: sig,
+      targetType: 'movie',
+      isFilterChange: true,
+      isFilteredView: true,
+      pruneInactiveCandidates: false,
+    });
+
+    assert.ok(
+      Object.keys(mapAfterFiltered.entries).length >= 1000,
+      'Filtreli görünüm sonrasında 500+500 işlenmiş havuz Zevk Haritasından budanmamalı'
+    );
+    assert.equal(
+      mapAfterFiltered.cachedBalancedItems?.length,
+      20,
+      'Filtresiz ana vitrin önbelleği (cachedBalancedItems) korunmalı'
+    );
+    assert.equal(mapAfterFiltered.lastTargetType, 'all', 'Filtreli görünüm ana lastTargetType değerini ezmemeli');
+
+    // QuotaExceededError altında bile savePersistentPoolData / loadPersistentPoolData 500 öğeyi kaybetmemeli
+    const blockedStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('QuotaExceededError');
+      },
+      removeItem: () => {},
+      clear: () => {},
+    };
+    globalThis.localStorage = blockedStorage;
+    savePersistentPoolData(profileId, hydratedMovies.poolData);
+    const recoveredPool = loadPersistentPoolData(profileId, 'movie');
+    assert.equal(recoveredPool.items.length, 500, 'localStorage kotası dolsa bile bellek yedeği 500 havuz öğesini korumalı');
+  } finally {
+    globalThis.localStorage = prevStorage;
+  }
+});
+
+test('Listem > Favori Oyuncular 2 Sekmeli Yapı (Oyuncular & Öneriler) ve Taşınan Filtre Barı: Öneriler sekmesi tür, medya tipi ve sıralama filtrelerini çeşitlendirmeden önce uygular', () => {
+  const favoriteActors = [{ id: 500, name: 'Tom Cruise' }];
+  const actorCreditsMap = {
+    500: [
+      {
+        id: 9001,
+        media_type: 'movie',
+        title: 'Edge of Tomorrow',
+        genre_ids: [878, 28],
+        vote_average: 7.9,
+        vote_count: 14000,
+        popularity: 65,
+        release_date: '2014-06-06',
+        order: 0,
+      },
+      {
+        id: 9002,
+        media_type: 'movie',
+        title: 'Legend',
+        genre_ids: [14, 12],
+        vote_average: 6.4,
+        vote_count: 1200,
+        popularity: 22,
+        release_date: '1985-08-28',
+        order: 0,
+      },
+      {
+        id: 9003,
+        media_type: 'tv',
+        name: 'Sci-Fi Anthology Show',
+        genre_ids: [10765, 18],
+        vote_average: 8.6,
+        vote_count: 900,
+        popularity: 30,
+        first_air_date: '2024-02-10',
+        order: 1,
+      },
+    ],
+  };
+
+  // Medya tipi filtresi: yalnızca Dizi ('tv')
+  const tvOnly = scoreActorRecommendations({
+    favoriteActors,
+    actorCreditsMap,
+    savedItems: [],
+    mediaTypeFilter: 'tv',
+  });
+  assert.equal(tvOnly.length, 1);
+  assert.equal(tvOnly[0].id, 9003);
+
+  // Tür filtresi: Fantastik ('14') -> hem film 14 hem dizi 10765 eşleşmeli; medya tipi 'movie' seçilirse yalnızca 9002 dönmeli
+  const fantasyAll = scoreActorRecommendations({
+    favoriteActors,
+    actorCreditsMap,
+    savedItems: [],
+    mediaTypeFilter: 'all',
+    genreFilter: '14',
+  });
+  assert.deepEqual(
+    fantasyAll.map((r) => r.id).sort((a, b) => a - b),
+    [9002, 9003]
+  );
+
+  const fantasyMoviesOnly = scoreActorRecommendations({
+    favoriteActors,
+    actorCreditsMap,
+    savedItems: [],
+    mediaTypeFilter: 'movie',
+    genreFilter: '14',
+  });
+  assert.deepEqual(
+    fantasyMoviesOnly.map((r) => r.id),
+    [9002]
+  );
+
+  // Sıralama filtresi: 'rating' (TMDB Puanı) ve 'recent' (En Yeni)
+  const byRating = scoreActorRecommendations({
+    favoriteActors,
+    actorCreditsMap,
+    savedItems: [],
+    sortBy: 'rating',
+  });
+  assert.deepEqual(
+    byRating.map((r) => r.id),
+    [9003, 9001, 9002]
+  );
+
+  const byRecent = scoreActorRecommendations({
+    favoriteActors,
+    actorCreditsMap,
+    savedItems: [],
+    sortBy: 'recent',
+  });
+  assert.deepEqual(
+    byRecent.map((r) => r.id),
+    [9003, 9001, 9002]
+  );
+
+  // UI bileşen doğrulaması: Controls.tsx Favori Oyuncular sekmesinde alt filtre barını gizlemeli,
+  // MediaGrid.tsx ise 'Oyuncular' ve 'Öneriler' 2 sekmeli yapıyı ve Öneriler alt barını sunmalı
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const controlsTsx = fs.readFileSync(path.join(repoRoot, 'src/components/Controls.tsx'), 'utf8');
+  const mediaGridTsx = fs.readFileSync(path.join(repoRoot, 'src/components/MediaGrid.tsx'), 'utf8');
+
+  assert.ok(
+    controlsTsx.includes("const hideSecondaryToolbar = tab === 'list' && listStatus === 'actors';"),
+    'Controls.tsx Favori Oyuncular sekmesinde ikincil filtre barını ayırmalı'
+  );
+  assert.ok(mediaGridTsx.includes('actors-subtabs-bar'), 'MediaGrid.tsx içinde 2 sekmeli Oyuncular/Öneriler barı bulunmalı');
+  assert.ok(mediaGridTsx.includes('Oyuncular'), 'MediaGrid.tsx içinde Oyuncular sekmesi bulunmalı');
+  assert.ok(mediaGridTsx.includes('Öneriler'), 'MediaGrid.tsx içinde Öneriler sekmesi bulunmalı');
+  assert.ok(
+    mediaGridTsx.includes('actors-recommendations-toolbar'),
+    'MediaGrid.tsx içinde Öneriler sekmesine taşınmış filtre alt barı bulunmalı'
+  );
+});
+
 
 

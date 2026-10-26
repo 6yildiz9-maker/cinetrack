@@ -364,10 +364,13 @@ export class PersistentDataStore {
     // Merge items keyed deterministically
     const mergedItems: Record<string, DerivedProfileItem> = existing ? { ...existing.items } : {};
     for (const [mediaKey, item] of Object.entries(items)) {
+      const normalizedRing =
+        item.lifecycleRing ||
+        ((item as any).ring === 'ring1' || (item as any).ring === 'ring2' ? (item as any).ring : 'ring0');
       mergedItems[mediaKey] = {
         mediaKey,
-        matchScore: item.matchScore,
-        lifecycleRing: item.lifecycleRing,
+        matchScore: Number(item.matchScore ?? (item as any).tasteScore ?? 75),
+        lifecycleRing: normalizedRing,
         signals: item.signals,
         reasons: item.reasons,
         calculatedAt: item.calculatedAt || new Date().toISOString(),
@@ -402,10 +405,17 @@ export class PersistentDataStore {
       profilesCount = 0;
     }
 
+    const hasTargetRepo = Boolean(this.githubOwner && this.githubRepo);
+    const missingReason = !configured
+      ? hasTargetRepo
+        ? `Hedef depo (${this.githubOwner}/${this.githubRepo} · ${this.githubBranch}) tanımlı; CINETRACK_GITHUB_PAT ortam değişkeni bekleniyor`
+        : 'GitHub token veya hedef repository yapılandırılmadı'
+      : undefined;
+
     return {
       configured,
       mode: configured ? 'github' : 'local_only',
-      reason: !configured ? 'GitHub token veya hedef repository yapılandırılmadı' : undefined,
+      reason: missingReason,
       isPublicRepo: this.isPublicRepo,
       lastSyncAt: this.lastSyncAt,
       catalogCounts: {
@@ -413,7 +423,7 @@ export class PersistentDataStore {
         tv: Object.keys(tv).length,
       },
       profilesCount,
-      remoteTarget: configured
+      remoteTarget: hasTargetRepo
         ? {
             owner: this.githubOwner!,
             repo: this.githubRepo!,
@@ -550,10 +560,30 @@ export class PersistentDataStore {
       }
     }
 
-    // Sync Derived Profiles (SECURITY RULE: NEVER sync profile data to public repo)
+    // Sync Derived Profiles & Main Private Watchlist Data (SECURITY RULE: NEVER sync profile data to public repo)
     if (this.isPublicRepo) {
       result.filesBlockedPublic.push('data/profiles/* (Public repo: kişisel profil verisi güvenliği için senkron engellendi)');
     } else {
+      const mainDataFile = path.join(this.dataDir, 'cinetrack-data.json');
+      if (existsSync(mainDataFile)) {
+        const mainContent = readFileSync(mainDataFile, 'utf8');
+        const mainCommit = await this.commitFileToGitHub(
+          'data/cinetrack-data.json',
+          mainContent,
+          'chore(data): sync cinetrack-data.json [skip ci]'
+        );
+        if (mainCommit.ok) {
+          if (mainCommit.skippedNoop) {
+            result.filesSkipped.push('data/cinetrack-data.json');
+          } else {
+            result.filesCommitted.push('data/cinetrack-data.json');
+          }
+        } else {
+          result.errors.push(`data/cinetrack-data.json: ${mainCommit.error}`);
+          result.ok = false;
+        }
+      }
+
       if (existsSync(this.profilesDir)) {
         const profileFiles = readdirSync(this.profilesDir);
         for (const file of profileFiles) {

@@ -23,6 +23,9 @@ interface ActorRecommendationsSectionProps {
   genresMap: Record<number, string>;
   preferredProviders?: string[];
   providerIndex?: Record<string, Array<{ id: number | string; name?: string }>>;
+  selectedType?: string;
+  selectedGenre?: string;
+  selectedSort?: string;
   onOpenDetails: (item: TmdbItem | ActorRecommendationItem) => void;
   onQuickAdd: (item: TmdbItem | ActorRecommendationItem) => void;
   onSetStatus: (
@@ -51,6 +54,9 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   genresMap,
   preferredProviders = [],
   providerIndex = {},
+  selectedType = 'all',
+  selectedGenre = '',
+  selectedSort = 'popular',
   onOpenDetails,
   onQuickAdd,
   onSetStatus,
@@ -65,8 +71,6 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
   const [actorCreditsMap, setActorCreditsMap] = useState<Record<number, TmdbPersonCreditItem[]>>({});
   const [actorStatuses, setActorStatuses] = useState<Record<number, ActorFetchStatus>>({});
   const [isLoading, setIsLoading] = useState<boolean>(() => validFavoriteActors.length > 0);
-  const [sortMode, setSortMode] = useState<'best_match' | 'newest' | 'hidden_gems'>('best_match');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
   const [enableDiversity, setEnableDiversity] = useState<boolean>(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -199,8 +203,16 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     void loadCredits();
   }, [loadCredits]);
 
-  const rawRecommendations = useMemo(() => {
+  const filteredRecommendations = useMemo(() => {
     if (validFavoriteActors.length === 0) return [];
+    const effectiveType =
+      selectedType === 'movie' || selectedType === 'tv' ? selectedType : 'all';
+    const mappedSortMode: 'best_match' | 'newest' | 'hidden_gems' =
+      selectedSort === 'recent'
+        ? 'newest'
+        : selectedSort === 'gems'
+        ? 'hidden_gems'
+        : 'best_match';
     return scoreActorRecommendations({
       favoriteActors: validFavoriteActors,
       actorCreditsMap,
@@ -209,7 +221,10 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       genresMap,
       providerIndex,
       preferredProviders,
-      sortMode,
+      sortMode: mappedSortMode,
+      sortBy: selectedSort || 'popular',
+      mediaTypeFilter: effectiveType,
+      genreFilter: selectedGenre || '',
       enableDiversity,
       maxPerGenre: 4,
     });
@@ -221,14 +236,11 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     genresMap,
     providerIndex,
     preferredProviders,
-    sortMode,
+    selectedType,
+    selectedGenre,
+    selectedSort,
     enableDiversity,
   ]);
-
-  const filteredRecommendations = useMemo(() => {
-    if (typeFilter === 'all') return rawRecommendations;
-    return rawRecommendations.filter((item) => item.media_type === typeFilter);
-  }, [rawRecommendations, typeFilter]);
 
   // Map recommendations per actor
   const actorItemsMap = useMemo(() => {
@@ -251,55 +263,15 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       <div className="actor-recs-head">
         <div>
           <div className="actor-recs-title">
-            <span className="badge badge-kind">Kadro Keşfi</span>
-            <h3 id="actorRecsHeading">Favori Oyuncularımdan Öneriler</h3>
+            <h3 id="actorRecsHeading">Favori Oyuncularımdan Öneriler ({filteredRecommendations.length})</h3>
           </div>
           <p className="actor-recs-sub">
-            Favori oyuncularının yer aldığı, kişisel puanlarına ve kadro sırasına göre seçilmiş yapımlar.
+            Favori oyuncularının yer aldığı, kişisel puanlarına, seçili filtrelere ve kadro sırasına göre seçilmiş yapımlar.
           </p>
         </div>
 
         <div className="actor-recs-controls">
-          <button
-            type="button"
-            className={`actor-recs-tab-btn ${sortMode === 'best_match' ? 'active' : ''}`}
-            onClick={() => setSortMode('best_match')}
-            aria-pressed={sortMode === 'best_match'}
-            title="En güçlü eşleşen yapımları öne çıkarır"
-          >
-            En Güçlü Eşleşmeler
-          </button>
-          <button
-            type="button"
-            className={`actor-recs-tab-btn ${sortMode === 'hidden_gems' ? 'active' : ''}`}
-            onClick={() => setSortMode('hidden_gems')}
-            aria-pressed={sortMode === 'hidden_gems'}
-            title="Gözden kaçmış, yüksek puanlı yapımları keşfeder"
-          >
-            Gizli Cevherler
-          </button>
-          <button
-            type="button"
-            className={`actor-recs-tab-btn ${sortMode === 'newest' ? 'active' : ''}`}
-            onClick={() => setSortMode('newest')}
-            aria-pressed={sortMode === 'newest'}
-            title="En yeni yapımları gösterir"
-          >
-            En Yeniler
-          </button>
-
-          <select
-            className="actor-recs-type-select"
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as 'all' | 'movie' | 'tv')}
-            aria-label="Öneri içerik türü"
-          >
-            <option value="all">Tümü ({rawRecommendations.length})</option>
-            <option value="movie">Sadece Filmler</option>
-            <option value="tv">Sadece Diziler</option>
-          </select>
-
-          {sortMode === 'best_match' && (
+          {(!selectedSort || selectedSort === 'popular') && !selectedGenre && (
             <button
               type="button"
               className={`actor-recs-tab-btn ${enableDiversity ? 'active' : ''}`}

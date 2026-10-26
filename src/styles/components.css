@@ -1622,4 +1622,60 @@
   .detail-recommendations {
     min-height: 120px;
   }
+
+  /* --- 13. Favori Oyuncular 2 Sekmeli Yapı (Oyuncular & Öneriler) --- */
+  .actors-subtabs-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding: var(--space-2);
+    margin-bottom: var(--space-4);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .actors-subtab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 40px;
+    padding: var(--space-2) var(--space-4);
+    background-color: var(--bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  }
+
+  .actors-subtab-btn:hover {
+    background-color: var(--bg-elevated);
+    color: var(--text-1);
+  }
+
+  .actors-subtab-btn.is-active {
+    background-color: var(--bg-elevated);
+    border-color: var(--accent);
+    color: var(--text-1);
+  }
+
+  .actors-subtab-count {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  .actors-recommendations-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .actors-recommendations-toolbar {
+    margin-bottom: 0;
+  }
 }

@@ -595,7 +595,7 @@ export function normalizePreferences(
 
 export function normalizeProfile(
   raw: any,
-  { maxItems = 5000, knownMoods = null }: { maxItems?: number; knownMoods?: string[] | null } = {}
+  { maxItems = 100_000, knownMoods = null }: { maxItems?: number; knownMoods?: string[] | null } = {}
 ): Profile | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   if (typeof raw.id !== 'string' || !PROFILE_ID_PATTERN.test(raw.id)) return null;
@@ -615,7 +615,7 @@ export function normalizeProfile(
 
 export function normalizeDataDocument(
   raw: any,
-  { maxProfiles = 20, maxItems = 5000 }: { maxProfiles?: number; maxItems?: number } = {}
+  { maxProfiles = 20, maxItems = 100_000 }: { maxProfiles?: number; maxItems?: number } = {}
 ): DataDocument | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   let candidates: any[];
@@ -1948,6 +1948,7 @@ export interface UpdateTasteMapWithBatchParams {
   explanation?: string;
   summary?: TasteProfileSummary;
   isFilterChange?: boolean;
+  isFilteredView?: boolean;
   reason?: 'filter_change' | 'refresh' | 'navigation' | 'initial';
   normalizeLegacyRings?: boolean;
   pruneInactiveCandidates?: boolean;
@@ -1967,6 +1968,7 @@ export function updateTasteMapWithBatch({
   explanation,
   summary,
   isFilterChange = false,
+  isFilteredView = false,
   reason,
   normalizeLegacyRings = false,
   pruneInactiveCandidates = true,
@@ -2344,8 +2346,14 @@ export function updateTasteMapWithBatch({
     weightsSignature,
   };
 
-  const preservedBalancedItems = shouldKeepExistingImpressions
+  const shouldPreserveBalancedCache =
+    shouldKeepExistingImpressions ||
+    (isFilteredView && Array.isArray(tasteMap.cachedBalancedItems) && tasteMap.cachedBalancedItems.length > 0);
+
+  const preservedBalancedItems = shouldPreserveBalancedCache
     ? tasteMap.cachedBalancedItems
+    : isFilteredView
+    ? undefined
     : Array.isArray(newRecommendedItems)
     ? newRecommendedItems.map((entry: any) => {
         if (!entry || typeof entry !== 'object') return entry;
@@ -2364,8 +2372,10 @@ export function updateTasteMapWithBatch({
 
   return {
     profileId: tasteMap.profileId,
-    profileSignature: profileSignature ?? tasteMap.profileSignature ?? '',
-    profileSnapshot,
+    profileSignature: isFilteredView
+      ? tasteMap.profileSignature || profileSignature || ''
+      : profileSignature ?? tasteMap.profileSignature ?? '',
+    profileSnapshot: isFilteredView && tasteMap.profileSnapshot ? tasteMap.profileSnapshot : profileSnapshot,
     algorithmVersion,
     weightsSignature,
     updatedAt: now,
@@ -2374,7 +2384,9 @@ export function updateTasteMapWithBatch({
     lastRecommendedKeys: effectiveNewKeysArray,
     lastBatchTimestamp: shouldKeepExistingImpressions ? tasteMap.lastBatchTimestamp : now,
     cachedBalancedItems: preservedBalancedItems,
-    lastTargetType: targetType || tasteMap.lastTargetType || 'all',
+    lastTargetType: isFilteredView
+      ? tasteMap.lastTargetType || targetType || 'all'
+      : targetType || tasteMap.lastTargetType || 'all',
     lastExplanation: explanation || tasteMap.lastExplanation || '',
     summary: summary || tasteMap.summary,
   };
@@ -3177,8 +3189,12 @@ export interface ScoreActorRecommendationsOptions {
   providerIndex?: Record<string, any[]>;
   preferredProviders?: string[];
   sortMode?: 'best_match' | 'newest' | 'hidden_gems';
+  sortBy?: string;
+  mediaTypeFilter?: 'all' | 'movie' | 'tv' | string;
+  genreFilter?: string;
   enableDiversity?: boolean;
   maxPerGenre?: number;
+  limit?: number;
   now?: number;
 }
 
@@ -3487,8 +3503,12 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
     providerIndex = {},
     preferredProviders = [],
     sortMode = 'best_match',
+    sortBy,
+    mediaTypeFilter = 'all',
+    genreFilter = '',
     enableDiversity = true,
     maxPerGenre = 3,
+    limit,
     now = Date.now(),
   } = options;
 
@@ -3561,6 +3581,15 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
     for (const credit of credits) {
       if (!credit || !credit.id) continue;
       const mediaType: 'movie' | 'tv' = credit.media_type === 'tv' ? 'tv' : 'movie';
+      if (
+        (mediaTypeFilter === 'movie' || mediaTypeFilter === 'tv') &&
+        mediaType !== mediaTypeFilter
+      ) {
+        continue;
+      }
+      if (genreFilter && !matchesSelectedGenre({ ...credit, media_type: mediaType }, genreFilter)) {
+        continue;
+      }
       const key = makeMediaKey(mediaType, credit.id);
 
       const title = String(credit.title || credit.name || '').trim();
@@ -3831,7 +3860,15 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
   }
 
   // 5. Sıralama Modları
-  if (sortMode === 'newest') {
+  const effectiveSort = sortBy || sortMode;
+  if (effectiveSort === 'rating') {
+    results.sort((a, b) => {
+      const diff = (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0);
+      return diff !== 0 ? diff : b.matchScore - a.matchScore;
+    });
+  } else if (effectiveSort === 'title') {
+    results.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'tr'));
+  } else if (effectiveSort === 'recent' || effectiveSort === 'newest') {
     results.sort((a, b) => {
       const dateA = a.release_date || a.first_air_date || '';
       const dateB = b.release_date || b.first_air_date || '';
@@ -3841,7 +3878,7 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
       const cmp = dateB.localeCompare(dateA);
       return cmp !== 0 ? cmp : b.matchScore - a.matchScore;
     });
-  } else if (sortMode === 'hidden_gems') {
+  } else if (effectiveSort === 'gems' || effectiveSort === 'hidden_gems') {
     // Gizli Cevherler: Yüksek izleyici puanına (vote_average >= 7) sahip fakat ana akım aşırı popüler olmayan yapımlar
     results.sort((a, b) => {
       const bayesA = bayesianRating(a.vote_average, a.vote_count, { prior: 6.5, minVotes: 50 });
@@ -3852,7 +3889,7 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
       return b.matchScore - a.matchScore;
     });
   } else {
-    // 'best_match' (en güçlü eşleşmeler)
+    // 'best_match' / 'popular' (en güçlü eşleşmeler)
     results.sort((a, b) => {
       if (b.matchScore !== a.matchScore) {
         return b.matchScore - a.matchScore;
@@ -3860,13 +3897,14 @@ export function scoreActorRecommendations(options: ScoreActorRecommendationsOpti
       return (b.popularity || 0) - (a.popularity || 0);
     });
 
-    // Tür çeşitliliği uygula
-    if (enableDiversity) {
-      return diversifyActorRecommendations(results, { maxPerGenre });
+    // Tür çeşitliliği uygula (belirli bir tür filtresi seçilmediğinde)
+    if (enableDiversity && !genreFilter) {
+      const effectiveLimit = limit ?? Math.max(50, favoriteActors.length * 10);
+      return diversifyActorRecommendations(results, { maxPerGenre, limit: effectiveLimit });
     }
   }
 
-  return results;
+  return typeof limit === 'number' && limit > 0 ? results.slice(0, limit) : results;
 }
 
 /* ============================================================================
@@ -4746,6 +4784,318 @@ export class PoolReplenishmentLock {
 
 export const poolReplenishmentLock = new PoolReplenishmentLock();
 
+const inMemoryPoolFallback = new Map<string, { storageRef: unknown; raw: string }>();
+
+/**
+ * TMDB film ve dizi tür kimlikleri arasındaki çapraz eşdeğerliği denetler.
+ * Örn: Film Fantastik (14) / Bilim Kurgu (878) <-> Dizi Bilim Kurgu & Fantazi (10765),
+ * Film Aksiyon (28) / Macera (12) <-> Dizi Aksiyon & Macera (10759),
+ * Film Savaş (10752) <-> Dizi Savaş & Politik (10768).
+ */
+export function matchesSelectedGenre(
+  item: any,
+  selectedGenre?: string | number | null
+): boolean {
+  if (selectedGenre === undefined || selectedGenre === null || selectedGenre === '') {
+    return true;
+  }
+  const gId = Number(selectedGenre);
+  if (!Number.isFinite(gId) || gId <= 0) return true;
+
+  const cand = item?.candidate && typeof item.candidate === 'object' ? item.candidate : item;
+  if (!cand || typeof cand !== 'object') return false;
+
+  const rawGenres: number[] = Array.isArray(cand.genre_ids)
+    ? cand.genre_ids.map(Number).filter((n: number) => Number.isFinite(n))
+    : Array.isArray(cand.genres)
+    ? cand.genres
+        .map((g: any) => Number(typeof g === 'object' ? g?.id : g))
+        .filter((n: number) => Number.isFinite(n))
+    : [];
+
+  if (rawGenres.includes(gId)) return true;
+
+  const mediaType =
+    cand.media_type === 'tv' || cand.mediaType === 'tv'
+      ? 'tv'
+      : cand.media_type === 'movie' || cand.mediaType === 'movie'
+      ? 'movie'
+      : cand.title && !cand.first_air_date
+      ? 'movie'
+      : 'tv';
+
+  if (mediaType === 'tv') {
+    if ((gId === 14 || gId === 878) && rawGenres.includes(10765)) return true;
+    if ((gId === 28 || gId === 12) && rawGenres.includes(10759)) return true;
+    if (gId === 10752 && rawGenres.includes(10768)) return true;
+  } else {
+    if (gId === 10765 && (rawGenres.includes(14) || rawGenres.includes(878))) return true;
+    if (gId === 10759 && (rawGenres.includes(28) || rawGenres.includes(12))) return true;
+    if (gId === 10768 && rawGenres.includes(10752)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * TMDB /discover/{movie|tv} uç noktası için çapraz tür parametresini çözümler.
+ */
+export function resolveDiscoverGenreParam(
+  selectedGenre: string | number | undefined | null,
+  mediaType: 'movie' | 'tv'
+): string {
+  if (selectedGenre === undefined || selectedGenre === null || selectedGenre === '') {
+    return '';
+  }
+  const gId = Number(selectedGenre);
+  if (!Number.isFinite(gId) || gId <= 0) return '';
+
+  if (mediaType === 'tv') {
+    if (gId === 14 || gId === 878) return '10765';
+    if (gId === 28 || gId === 12) return '10759';
+    if (gId === 10752) return '10768';
+    return String(gId);
+  }
+
+  if (gId === 10765) return '878|14';
+  if (gId === 10759) return '28|12';
+  if (gId === 10768) return '10752';
+  return String(gId);
+}
+
+/**
+ * Sunucudaki kalıcı katalog (data/catalog/movies.json & data/catalog/tv.json)
+ * kayıtlarını kullanıcının 500+500 aday havuzuna aktarır (beş kullanıcı durumunu süzerek).
+ */
+export function hydratePoolFromCatalog(
+  poolData: PersistentCandidatePoolData,
+  rawCatalog: Record<string, any> | any[] | null | undefined,
+  savedItems: SavedItem[] | undefined | null,
+  preferences: Preferences | undefined | null
+): { poolData: PersistentCandidatePoolData; addedCount: number } {
+  if (!rawCatalog) return { poolData, addedCount: 0 };
+  const rawList = Array.isArray(rawCatalog)
+    ? rawCatalog
+    : typeof rawCatalog === 'object'
+    ? Object.values(rawCatalog)
+    : [];
+  if (rawList.length === 0) return { poolData, addedCount: 0 };
+
+  const eligibleExisting = filterEligiblePoolItems(poolData.items || [], savedItems, preferences);
+  const existingKeys = new Set(eligibleExisting.map((it) => makeMediaKey(it)));
+  let addedCount = 0;
+
+  for (const rawItem of rawList) {
+    if (!rawItem || typeof rawItem !== 'object') continue;
+    const normalizedInput = {
+      ...rawItem,
+      media_type: rawItem.media_type || rawItem.mediaType || poolData.mediaType,
+    };
+    if (!isCandidateEligibleInPool(normalizedInput, savedItems, preferences)) continue;
+    const candidate = normalizePoolCandidate(
+      normalizedInput,
+      poolData.mediaType,
+      'popular',
+      'İndirilmiş katalog havuzundan'
+    );
+    if (!candidate) continue;
+    const key = makeMediaKey(candidate);
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    eligibleExisting.push(candidate);
+    addedCount += 1;
+  }
+
+  const balanced = balanceCandidatePool(eligibleExisting, POOL_TARGET_CAPACITY);
+  return {
+    poolData: {
+      ...poolData,
+      items: balanced,
+      updatedAt: addedCount > 0 ? new Date().toISOString() : poolData.updatedAt,
+    },
+    addedCount,
+  };
+}
+
+export interface TopUpFilteredCandidatesParams {
+  profileId: string;
+  mediaType: 'movie' | 'tv';
+  existingCandidates: PoolCandidateItem[];
+  savedItems: SavedItem[];
+  preferences: Preferences;
+  lastRecommendedKeys?: string[];
+  selectedGenre?: string;
+  selectedProvider?: string;
+  minFreshRequired?: number;
+  maxPagesToScan?: number;
+  fetchTmdbFn: (path: string, params?: Record<string, string>, signal?: AbortSignal) => Promise<any>;
+  signal?: AbortSignal;
+}
+
+/**
+ * Tür, medya tipi veya platform filtresi uygulandığında havuzdaki uygun taze (Ring 1 dışı) aday sayısı
+ * 20'lik öneri listesini doldurmaya yetmiyorsa, TMDB /discover kaynağından çok sayfalı tarama yaparak
+ * kullanıcının izlemediği adaylarla havuzu tamamlar.
+ */
+export async function topUpFilteredCandidates({
+  profileId,
+  mediaType,
+  existingCandidates,
+  savedItems,
+  preferences,
+  lastRecommendedKeys = [],
+  selectedGenre = '',
+  selectedProvider = '',
+  minFreshRequired = 28,
+  maxPagesToScan = 12,
+  fetchTmdbFn,
+  signal,
+}: TopUpFilteredCandidatesParams): Promise<{
+  filteredCandidates: PoolCandidateItem[];
+  newlyDiscovered: PoolCandidateItem[];
+}> {
+  const matching: PoolCandidateItem[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const item of existingCandidates || []) {
+    if (!item || item.media_type !== mediaType) continue;
+    if (!isCandidateEligibleInPool(item, savedItems, preferences)) continue;
+    if (selectedGenre && !matchesSelectedGenre(item, selectedGenre)) continue;
+    if (selectedProvider) {
+      const rawProv = (item as any).watch_providers || (item as any).providers;
+      if (!Array.isArray(rawProv)) continue;
+      const hasProv = rawProv.some(
+        (p: any) => String(p?.id ?? p?.provider_id ?? p) === String(selectedProvider)
+      );
+      if (!hasProv) continue;
+    }
+    const key = makeMediaKey(item);
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      matching.push(item);
+    }
+  }
+
+  const countFresh = (list: PoolCandidateItem[]) =>
+    filterOutLastRecommendedCandidates(list, lastRecommendedKeys).length;
+
+  if (countFresh(matching) >= minFreshRequired) {
+    return { filteredCandidates: matching, newlyDiscovered: [] };
+  }
+
+  const poolData = loadPersistentPoolData(profileId, mediaType);
+  const cursors = poolData.cursors || (poolData.cursors = createDefaultPoolCursors());
+  cursors.genre_discover = cursors.genre_discover || {};
+
+  const discoverGenre = resolveDiscoverGenreParam(selectedGenre, mediaType);
+  const cursorKey = `filter:${discoverGenre || 'all'}:prov:${selectedProvider || 'all'}`;
+  const currentPage = Math.max(1, Number(cursors.genre_discover[cursorKey]) || 1);
+  const newlyDiscovered: PoolCandidateItem[] = [];
+  const visitedPages = new Set<string>();
+
+  const strategies: Array<{ sortBy: string; minVotes: string }> = [
+    { sortBy: 'popularity.desc', minVotes: mediaType === 'movie' ? '25' : '15' },
+    { sortBy: 'vote_average.desc', minVotes: mediaType === 'movie' ? '60' : '30' },
+  ];
+
+  let pagesScanned = 0;
+
+  for (let stratIdx = 0; stratIdx < strategies.length; stratIdx++) {
+    const strat = strategies[stratIdx];
+    let page = stratIdx === 0 ? currentPage : 1;
+    let wrappedAround = false;
+
+    while (pagesScanned < maxPagesToScan && countFresh(matching) < minFreshRequired) {
+      if (signal?.aborted) break;
+      const visitToken = `${strat.sortBy}:${page}`;
+      if (visitedPages.has(visitToken)) {
+        page += 1;
+        if (page > 50) break;
+        continue;
+      }
+      visitedPages.add(visitToken);
+      pagesScanned += 1;
+
+      const params: Record<string, string> = {
+        sort_by: strat.sortBy,
+        'vote_count.gte': strat.minVotes,
+        page: String(page),
+      };
+      if (discoverGenre) {
+        params.with_genres = discoverGenre;
+      }
+      if (selectedProvider) {
+        params.with_watch_providers = String(selectedProvider);
+        params.watch_region = 'TR';
+      }
+
+      try {
+        const data = await fetchTmdbFn(`/discover/${mediaType}`, params, signal);
+        const results = Array.isArray(data?.results) ? data.results : [];
+        const totalPages = Math.max(1, Math.min(50, Number(data?.total_pages) || 1));
+
+        for (const raw of results) {
+          if (!isCandidateEligibleInPool({ ...raw, media_type: mediaType }, savedItems, preferences)) {
+            continue;
+          }
+          const cand = normalizePoolCandidate(
+            raw,
+            mediaType,
+            'genre_discover',
+            discoverGenre ? 'Seçili tür keşfinden' : 'Filtreli keşif havuzundan'
+          );
+          if (!cand) continue;
+          if (selectedProvider) {
+            (cand as any).providers = [{ id: String(selectedProvider) }];
+          }
+          const key = makeMediaKey(cand);
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            matching.push(cand);
+            newlyDiscovered.push(cand);
+          }
+        }
+
+        if (stratIdx === 0) {
+          cursors.genre_discover[cursorKey] = page < totalPages ? page + 1 : 1;
+        }
+
+        if (page < totalPages) {
+          page += 1;
+        } else if (stratIdx === 0 && currentPage > 1 && !wrappedAround) {
+          wrappedAround = true;
+          page = 1;
+        } else {
+          break;
+        }
+      } catch {
+        break;
+      }
+    }
+
+    if (countFresh(matching) >= minFreshRequired) break;
+  }
+
+  if (newlyDiscovered.length > 0) {
+    const poolKeys = new Set(poolData.items.map((it) => makeMediaKey(it)));
+    for (const item of newlyDiscovered) {
+      const k = makeMediaKey(item);
+      if (!poolKeys.has(k)) {
+        poolKeys.add(k);
+        poolData.items.push(item);
+      }
+    }
+    poolData.items = balanceCandidatePool(
+      filterEligiblePoolItems(poolData.items, savedItems, preferences),
+      POOL_TARGET_CAPACITY
+    );
+    poolData.updatedAt = new Date().toISOString();
+    savePersistentPoolData(profileId, poolData);
+  }
+
+  return { filteredCandidates: matching, newlyDiscovered };
+}
+
 export function loadPersistentPoolData(
   profileId: string,
   mediaType: 'movie' | 'tv'
@@ -4753,7 +5103,13 @@ export function loadPersistentPoolData(
   try {
     if (typeof localStorage !== 'undefined') {
       const key = `cinetrack_pool_${mediaType}_${profileId}`;
-      const raw = localStorage.getItem(key);
+      const fallback = inMemoryPoolFallback.get(key);
+      let raw = localStorage.getItem(key);
+      if (fallback && fallback.storageRef === localStorage) {
+        raw = fallback.raw;
+      } else if (fallback && fallback.storageRef !== localStorage) {
+        inMemoryPoolFallback.delete(key);
+      }
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && parsed.mediaType === mediaType && Array.isArray(parsed.items)) {
@@ -4783,31 +5139,34 @@ export function savePersistentPoolData(
   const key = `cinetrack_pool_${data.mediaType}_${profileId}`;
   const updatedAt = new Date().toISOString();
   const sliced = data.items.slice(0, POOL_TARGET_CAPACITY);
+  const fullPayload = JSON.stringify({
+    mediaType: data.mediaType,
+    updatedAt,
+    items: sliced,
+    cursors: data.cursors,
+  });
   try {
-    localStorage.setItem(
-      key,
-      JSON.stringify({
-        mediaType: data.mediaType,
-        updatedAt,
-        items: sliced,
-        cursors: data.cursors,
-      })
-    );
+    localStorage.setItem(key, fullPayload);
+    inMemoryPoolFallback.delete(key);
   } catch {
+    const compactPayload = JSON.stringify({
+      mediaType: data.mediaType,
+      updatedAt,
+      items: sliced.map((it) => ({
+        ...it,
+        overview: (it.overview || '').slice(0, 140),
+      })),
+      cursors: data.cursors,
+    });
     try {
-      localStorage.setItem(
-        key,
-        JSON.stringify({
-          mediaType: data.mediaType,
-          updatedAt,
-          items: sliced.map((it) => ({
-            ...it,
-            overview: (it.overview || '').slice(0, 160),
-          })),
-          cursors: data.cursors,
-        })
-      );
-    } catch {}
+      localStorage.setItem(key, compactPayload);
+      inMemoryPoolFallback.delete(key);
+    } catch {
+      inMemoryPoolFallback.set(key, {
+        storageRef: localStorage,
+        raw: compactPayload,
+      });
+    }
   }
 }
 

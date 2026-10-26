@@ -16,9 +16,9 @@ const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3
 const host = process.env.CINETRACK_HOST || process.env.HOST || '0.0.0.0';
 
 const dataDir = path.join(root, 'data');
-const maxDataBytes = 2_000_000;
+const maxDataBytes = 100_000_000;
 const maxProfiles = 20;
-const maxItemsPerProfile = 5000;
+const maxItemsPerProfile = 100_000;
 
 // Read local .env or .env.local if present
 const localEnv: Record<string, string> = {};
@@ -42,10 +42,10 @@ for (const envFileName of ['.env.local', '.env']) {
 const tmdbApiKey = process.env.TMDB_API_KEY || localEnv.TMDB_API_KEY || '';
 const optionalAuthToken = process.env.CINETRACK_TOKEN || localEnv.CINETRACK_TOKEN || '';
 const githubToken = process.env.CINETRACK_GITHUB_TOKEN || process.env.CINETRACK_GITHUB_PAT || localEnv.CINETRACK_GITHUB_TOKEN || localEnv.CINETRACK_GITHUB_PAT || '';
-const githubOwner = process.env.CINETRACK_DATA_OWNER || localEnv.CINETRACK_DATA_OWNER || '';
-const githubRepo = process.env.CINETRACK_DATA_REPO || localEnv.CINETRACK_DATA_REPO || '';
+const githubOwner = process.env.CINETRACK_DATA_OWNER || localEnv.CINETRACK_DATA_OWNER || '6yildiz9-maker';
+const githubRepo = process.env.CINETRACK_DATA_REPO || localEnv.CINETRACK_DATA_REPO || 'cinetrack-private-data';
 const githubBranch = process.env.CINETRACK_DATA_BRANCH || localEnv.CINETRACK_DATA_BRANCH || 'main';
-const isPublicRepo = (process.env.CINETRACK_DATA_REPO_IS_PUBLIC || localEnv.CINETRACK_DATA_REPO_IS_PUBLIC || '').toLowerCase() === 'true';
+const isPublicRepo = (process.env.CINETRACK_DATA_REPO_IS_PUBLIC || localEnv.CINETRACK_DATA_REPO_IS_PUBLIC || 'false').toLowerCase() === 'true';
 
 const { app, storage, persistentStore } = createCineTrackApp({
   dataDir,

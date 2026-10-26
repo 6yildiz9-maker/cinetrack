@@ -345,7 +345,7 @@ export function fetchTmdbCached(
 
 export async function fetchServerData(): Promise<DataDocument | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4000);
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch('/api/data', {
       cache: 'no-store',
@@ -536,7 +536,30 @@ export function getTmdbSourceDescription(source: TmdbDataSource, staleReason?: s
 
 export async function fetchSyncStatus(): Promise<any> {
   try {
-    const res = await fetch('/api/sync/status');
+    const res = await fetch('/api/sync/status', { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function triggerGitHubSync(): Promise<any> {
+  try {
+    const res = await fetch('/api/sync/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return await res.json();
+  } catch (e: any) {
+    return { ok: false, errors: [e?.message || 'GitHub eşitleme isteği başarısız oldu.'] };
+  }
+}
+
+export async function fetchCatalogItems(type?: 'movie' | 'tv'): Promise<any> {
+  try {
+    const query = type ? `?type=${encodeURIComponent(type)}` : '';
+    const res = await fetch(`/api/catalog${query}`, { cache: 'no-store' });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -551,6 +574,19 @@ export async function pushCatalogItems(items: any[]): Promise<any> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchDerivedProfileData(profileId: string): Promise<any> {
+  if (!profileId) return null;
+  try {
+    const res = await fetch(`/api/profiles/derived/${encodeURIComponent(profileId)}`, {
+      cache: 'no-store',
     });
     if (!res.ok) return null;
     return await res.json();

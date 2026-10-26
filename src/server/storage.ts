@@ -68,7 +68,7 @@ export function createDataStorage(options: StorageOptions) {
   const dataBackupFile = path.join(dataDir, 'cinetrack-data.bak.json');
   const backupsDir = path.join(dataDir, 'backups');
   const maxProfiles = options.maxProfiles ?? 20;
-  const maxItemsPerProfile = options.maxItemsPerProfile ?? 5000;
+  const maxItemsPerProfile = options.maxItemsPerProfile ?? 100_000;
   const maxSnapshots = Math.max(1, options.maxSnapshots ?? 7);
 
   function emptyDocument(): DataDocument {

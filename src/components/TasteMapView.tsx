@@ -8,6 +8,7 @@ import {
   inferLifecycleRing,
   normalizeTasteRing,
   makeMediaKey,
+  matchesSelectedGenre,
 } from '../core/cinetrack-core';
 import { MediaCard } from './MediaCard';
 
@@ -45,6 +46,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   const [activeViewTab, setActiveViewTab] = useState<'active' | 'archived'>('active');
   const [selectedRing, setSelectedRing] = useState<TasteRing>('ring0');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'movie' | 'tv'>('all');
+  const [genreFilter, setGenreFilter] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'score' | 'title' | 'recent'>('score');
 
   const entriesList = useMemo(() => {
@@ -95,8 +97,9 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
           const norm = inferLifecycleRing(key, e, lastKeys);
           if (norm !== targetNorm) return false;
         }
-        if (mediaFilter === 'all') return true;
-        return e.mediaType === mediaFilter;
+        if (mediaFilter !== 'all' && e.mediaType !== mediaFilter) return false;
+        if (genreFilter && !matchesSelectedGenre(e, genreFilter)) return false;
+        return true;
       })
       .sort((a, b) => {
         if (sortOrder === 'score') {
@@ -107,7 +110,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
         }
         return (b.lastShownAt || '').localeCompare(a.lastShownAt || '');
       });
-  }, [activeViewTab, entriesList, archivedList, selectedRing, mediaFilter, sortOrder, lastKeys]);
+  }, [activeViewTab, entriesList, archivedList, selectedRing, mediaFilter, genreFilter, sortOrder, lastKeys]);
 
   const strongestGenre = useMemo(() => {
     if (summary?.topGenres && summary.topGenres.length > 0 && summary.topGenres[0]?.name) {
@@ -278,6 +281,20 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               Dizi
             </button>
           </div>
+
+          <select
+            className="taste-sort-select"
+            value={genreFilter}
+            onChange={(e) => setGenreFilter(e.target.value)}
+            aria-label="Zevk haritası tür filtresi"
+          >
+            <option value="">Tüm Türler</option>
+            {Object.entries(genresMap).map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
 
           <select
             className="taste-sort-select"

@@ -44,7 +44,6 @@ import {
   FavoriteActorInfo,
   normalizeFavoriteActors,
   replenishCandidatePool,
-  normalizePoolCandidate,
   isCandidateEligibleInPool,
   selectBalancedRecommendations,
   CURRENT_SCHEMA_VERSION,
@@ -61,6 +60,12 @@ import {
   recordDisplayedRecommendations,
   filterOutLastRecommendedCandidates,
   loadPersistentPoolData,
+  savePersistentPoolData,
+  hydratePoolFromCatalog,
+  topUpFilteredCandidates,
+  matchesSelectedGenre,
+  resolveDiscoverGenreParam,
+  ALGORITHM_VERSION,
   POOL_LOW_WATERMARK,
   HIDE_LISTED_CATEGORIES,
   filterHiddenUserRegisteredItems,
@@ -72,6 +77,9 @@ import {
   subscribeTmdbSource,
   checkServerTmdbStatus,
   fetchSyncStatus,
+  fetchCatalogItems,
+  pushCatalogItems,
+  pushDerivedProfileData,
   TmdbSourceMeta,
   ServerConflictDetail,
 } from './services/api';
@@ -238,12 +246,14 @@ export function App() {
 
   const requestGateRef = useRef(createRequestGate());
   const toastTimerRef = useRef<any>(null);
-  const lastForYouTypeRef = useRef<string>('all');
-  const lastForYouGenreRef = useRef<string>('');
+  const lastForYouQueryKeyRef = useRef<string>('');
+  const confirmNextBulkSyncRef = useRef<boolean>(false);
   const selectedTypeRef = useRef<string>(selectedType);
   selectedTypeRef.current = selectedType;
   const selectedGenreRef = useRef<string>(selectedGenre);
   selectedGenreRef.current = selectedGenre;
+  const hideListedItemsRef = useRef<boolean>(hideListedItems);
+  hideListedItemsRef.current = hideListedItems;
   const activeProfileIdRef = useRef<string>(activeProfileId);
   activeProfileIdRef.current = activeProfileId;
   const tasteMapRef = useRef<PersistentTasteMapData>(tasteMap);
@@ -297,31 +307,54 @@ export function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Sync to localStorage (only when data references actually change — no render-time JSON.stringify)
+  // Sync to localStorage (quota-safe for >2 MB libraries: metadata-only in PROFILES_STORAGE + isolated watchlist write)
   useEffect(() => {
     try {
-      localStorage.setItem(PROFILES_STORAGE, JSON.stringify(profiles));
+      const lightweightProfiles = profiles.map((p) => ({
+        id: p.id,
+        name: p.id === activeProfileId ? profileName : p.name,
+        createdAt: p.createdAt || '',
+        isDemo: Boolean(p.isDemo),
+        favoriteActors: p.id === activeProfileId ? favoriteActors : p.favoriteActors || [],
+        items: [],
+      }));
+      localStorage.setItem(PROFILES_STORAGE, JSON.stringify(lightweightProfiles));
       localStorage.setItem(ACTIVE_PROFILE_STORAGE, activeProfileId);
       localStorage.setItem(PROFILE_STORAGE, profileName);
-      localStorage.setItem(listStorageKey(activeProfileId), JSON.stringify(savedItems));
       localStorage.setItem(preferencesStorageKey(activeProfileId), JSON.stringify(preferences));
       localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(favoriteActors));
-
-      if (!hasHydratedLocalEffectRef.current) {
-        hasHydratedLocalEffectRef.current = true;
-        return;
-      }
-      if (applyingRemoteSnapshotRef.current) {
-        applyingRemoteSnapshotRef.current = false;
-        return;
-      }
-      if (serverSyncReady) {
-        localStorage.setItem(DIRTY_KEY, '1');
-      } else {
-        localEditedDuringStartupRef.current = true;
-      }
     } catch (err) {
-      console.warn('LocalStorage save error:', err);
+      console.warn('LocalStorage metadata save warning:', err);
+    }
+
+    try {
+      localStorage.setItem(listStorageKey(activeProfileId), JSON.stringify(savedItems));
+    } catch {
+      try {
+        const compactSaved = savedItems.map((it) => ({
+          ...it,
+          overview: typeof it.overview === 'string' ? it.overview.slice(0, 120) : '',
+        }));
+        localStorage.setItem(listStorageKey(activeProfileId), JSON.stringify(compactSaved));
+      } catch {
+        // >5 MB yedeklerde tarayıcı localStorage kotası aşılabilir; tam veri React state'te ve data/cinetrack-data.json üzerinde korunur.
+      }
+    }
+
+    if (!hasHydratedLocalEffectRef.current) {
+      hasHydratedLocalEffectRef.current = true;
+      return;
+    }
+    if (applyingRemoteSnapshotRef.current) {
+      applyingRemoteSnapshotRef.current = false;
+      return;
+    }
+    if (serverSyncReady) {
+      try {
+        localStorage.setItem(DIRTY_KEY, '1');
+      } catch {}
+    } else {
+      localEditedDuringStartupRef.current = true;
     }
   }, [
     profiles,
@@ -413,9 +446,13 @@ export function App() {
   // Push server data on changes (with revision guard & offline queue)
   const pushToServer = useCallback(async () => {
     const payload = buildCurrentPayload();
-    const res = await syncDocument(payload);
+    const confirmBulkDelete = confirmNextBulkSyncRef.current;
+    const res = await syncDocument(payload, confirmBulkDelete ? { confirmBulkDelete: true } : undefined);
     if (res.ok) {
-      localStorage.removeItem(DIRTY_KEY);
+      confirmNextBulkSyncRef.current = false;
+      try {
+        localStorage.removeItem(DIRTY_KEY);
+      } catch {}
       setServerConflict(null);
       setSyncStatus('Kayıt yeri: data/cinetrack-data.json (bu bilgisayarda, tüm profiller).');
     } else if (res.queued) {
@@ -638,40 +675,284 @@ export function App() {
           return;
         }
 
-        if (provider && cat !== 'for-you') {
-          const commonParams: any = {
-            with_watch_providers: provider,
-            watch_region: 'TR',
-            sort_by: 'popularity.desc',
-            page: String(p),
+        const fetchDiscoverPageByCategory = async (pageNum: number): Promise<{ rawItems: any[]; totalPages: number }> => {
+          const movieGenreParam = resolveDiscoverGenreParam(activeGenre, 'movie');
+          const tvGenreParam = resolveDiscoverGenreParam(activeGenre, 'tv');
+
+          if (provider && cat !== 'for-you') {
+            const baseParams = {
+              with_watch_providers: provider,
+              watch_region: 'TR',
+              sort_by: 'popularity.desc',
+              page: String(pageNum),
+            };
+            let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+            let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+            if (targetType === 'all' || targetType === 'movie') {
+              moviesPromise = fetchTmdb(
+                '/discover/movie',
+                movieGenreParam ? { ...baseParams, with_genres: movieGenreParam } : baseParams,
+                ticket.signal
+              );
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              tvsPromise = fetchTmdb(
+                '/discover/tv',
+                tvGenreParam ? { ...baseParams, with_genres: tvGenreParam } : baseParams,
+                ticket.signal
+              );
+            }
+            const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
+            return {
+              rawItems: [
+                ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              ],
+              totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
+            };
+          }
+
+          if (cat === 'gems') {
+            const cutoffDate = dateYearsAgo(15);
+            const common: Record<string, string> = {
+              'vote_average.gte': '7',
+              'vote_count.gte': '200',
+              'vote_count.lte': '3000',
+              sort_by: 'popularity.asc',
+              page: String(pageNum),
+            };
+            let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+            let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+            if (targetType === 'all' || targetType === 'movie') {
+              moviesPromise = fetchTmdb(
+                '/discover/movie',
+                {
+                  ...common,
+                  'primary_release_date.gte': cutoffDate,
+                  ...(movieGenreParam ? { with_genres: movieGenreParam } : {}),
+                },
+                ticket.signal
+              );
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              tvsPromise = fetchTmdb(
+                '/discover/tv',
+                {
+                  ...common,
+                  'first_air_date.gte': cutoffDate,
+                  ...(tvGenreParam ? { with_genres: tvGenreParam } : {}),
+                },
+                ticket.signal
+              );
+            }
+            const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
+            return {
+              rawItems: [
+                ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              ],
+              totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
+            };
+          }
+
+          if (cat === 'upcoming') {
+            const todayIso = new Date().toISOString().slice(0, 10);
+            let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+            let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+            if (targetType === 'all' || targetType === 'movie') {
+              moviesPromise = movieGenreParam
+                ? fetchTmdb(
+                    '/discover/movie',
+                    {
+                      'primary_release_date.gte': todayIso,
+                      with_genres: movieGenreParam,
+                      sort_by: 'popularity.desc',
+                      page: String(pageNum),
+                    },
+                    ticket.signal
+                  )
+                : fetchTmdb('/movie/upcoming', { page: String(pageNum) }, ticket.signal);
+            }
+            if (targetType === 'all' || targetType === 'tv') {
+              tvsPromise = tvGenreParam
+                ? fetchTmdb(
+                    '/discover/tv',
+                    {
+                      'first_air_date.gte': todayIso,
+                      with_genres: tvGenreParam,
+                      sort_by: 'popularity.desc',
+                      page: String(pageNum),
+                    },
+                    ticket.signal
+                  )
+                : fetchTmdb('/tv/on_the_air', { page: String(pageNum) }, ticket.signal);
+            }
+            const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
+            return {
+              rawItems: [
+                ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              ],
+              totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
+            };
+          }
+
+          if (activeGenre) {
+            let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
+            let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+
+            if (cat === 'top-rated') {
+              if (targetType === 'all' || targetType === 'movie') {
+                moviesPromise = fetchTmdb(
+                  '/discover/movie',
+                  {
+                    ...(movieGenreParam ? { with_genres: movieGenreParam } : {}),
+                    sort_by: 'vote_average.desc',
+                    'vote_count.gte': '200',
+                    page: String(pageNum),
+                  },
+                  ticket.signal
+                );
+              }
+              if (targetType === 'all' || targetType === 'tv') {
+                tvsPromise = fetchTmdb(
+                  '/discover/tv',
+                  {
+                    ...(tvGenreParam ? { with_genres: tvGenreParam } : {}),
+                    sort_by: 'vote_average.desc',
+                    'vote_count.gte': '150',
+                    page: String(pageNum),
+                  },
+                  ticket.signal
+                );
+              }
+            } else if (cat === 'popular-movies') {
+              moviesPromise = fetchTmdb(
+                '/discover/movie',
+                {
+                  ...(movieGenreParam ? { with_genres: movieGenreParam } : {}),
+                  sort_by: 'popularity.desc',
+                  page: String(pageNum),
+                },
+                ticket.signal
+              );
+            } else if (cat === 'popular-tv') {
+              tvsPromise = fetchTmdb(
+                '/discover/tv',
+                {
+                  ...(tvGenreParam ? { with_genres: tvGenreParam } : {}),
+                  sort_by: 'popularity.desc',
+                  page: String(pageNum),
+                },
+                ticket.signal
+              );
+            } else {
+              if (targetType === 'all' || targetType === 'movie') {
+                moviesPromise = fetchTmdb(
+                  '/discover/movie',
+                  {
+                    ...(movieGenreParam ? { with_genres: movieGenreParam } : {}),
+                    sort_by: 'popularity.desc',
+                    page: String(pageNum),
+                  },
+                  ticket.signal
+                );
+              }
+              if (targetType === 'all' || targetType === 'tv') {
+                tvsPromise = fetchTmdb(
+                  '/discover/tv',
+                  {
+                    ...(tvGenreParam ? { with_genres: tvGenreParam } : {}),
+                    sort_by: 'popularity.desc',
+                    page: String(pageNum),
+                  },
+                  ticket.signal
+                );
+              }
+            }
+
+            const [mRes, tRes] = await Promise.all([moviesPromise, tvsPromise]);
+            return {
+              rawItems: [
+                ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              ],
+              totalPages: Math.max(mRes.total_pages || 1, tRes.total_pages || 1),
+            };
+          }
+
+          if (cat === 'popular-movies') {
+            const res = await fetchTmdb('/movie/popular', { page: String(pageNum) }, ticket.signal);
+            return {
+              rawItems: (res.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+              totalPages: res.total_pages || 1,
+            };
+          }
+          if (cat === 'popular-tv') {
+            const res = await fetchTmdb('/tv/popular', { page: String(pageNum) }, ticket.signal);
+            return {
+              rawItems: (res.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              totalPages: res.total_pages || 1,
+            };
+          }
+          if (cat === 'top-rated') {
+            if (targetType === 'tv') {
+              const res = await fetchTmdb('/tv/top_rated', { page: String(pageNum) }, ticket.signal);
+              return {
+                rawItems: (res.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+                totalPages: res.total_pages || 1,
+              };
+            }
+            if (targetType === 'movie') {
+              const res = await fetchTmdb('/movie/top_rated', { page: String(pageNum) }, ticket.signal);
+              return {
+                rawItems: (res.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                totalPages: res.total_pages || 1,
+              };
+            }
+            const [mRes, tRes] = await Promise.all([
+              fetchTmdb('/movie/top_rated', { page: String(pageNum) }, ticket.signal),
+              fetchTmdb('/tv/top_rated', { page: String(pageNum) }, ticket.signal),
+            ]);
+            return {
+              rawItems: [
+                ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
+                ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
+              ],
+              totalPages: Math.max(mRes.total_pages || 1, tRes.total_pages || 1),
+            };
+          }
+
+          const trendEndpoint =
+            targetType === 'movie'
+              ? '/trending/movie/day'
+              : targetType === 'tv'
+              ? '/trending/tv/day'
+              : '/trending/all/day';
+          const res = await fetchTmdb(trendEndpoint, { page: String(pageNum) }, ticket.signal);
+          return {
+            rawItems: (res.results || []).map((item: any) =>
+              item.media_type
+                ? item
+                : { ...item, media_type: targetType !== 'all' ? targetType : item.title ? 'movie' : 'tv' }
+            ),
+            totalPages: res.total_pages || 1,
           };
-          if (activeGenre) commonParams.with_genres = activeGenre;
-          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
-          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
-          if (targetType === 'all' || targetType === 'movie') {
-            moviesPromise = fetchTmdb('/discover/movie', commonParams, ticket.signal);
-          }
-          if (targetType === 'all' || targetType === 'tv') {
-            tvsPromise = fetchTmdb('/discover/tv', commonParams, ticket.signal);
-          }
-          const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
-          if (!requestGateRef.current.isCurrent(ticket.id)) return;
-          const combined = [
-            ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-            ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-          ];
-          const enriched = enrichItemsWithPersonalizedTaste(combined);
-          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
-          setCatalogTotalPages(Math.max(movies.total_pages || 1, tvs.total_pages || 1));
-          setCatalogPage(p);
-          return;
-        }
+        };
 
         if (cat === 'for-you') {
           const currentProfileId = activeProfileIdRef.current;
           const rawSaved = savedItemsRef.current;
           const currentPrefs = preferencesRef.current;
           const currentGenres = genresMapRef.current;
+          const isFilteredView = Boolean(activeGenre || provider);
+          const forYouQueryKey = `${currentProfileId}|${targetType}|${activeGenre || ''}|${provider || ''}`;
+          const isFilterTriggeredRun = Boolean(
+            !forceRefresh &&
+            lastForYouQueryKeyRef.current &&
+            lastForYouQueryKeyRef.current !== forYouQueryKey
+          );
+
           const currentSig = computeTasteProfileSignature(rawSaved, currentPrefs, favoriteActorsRef.current, { targetType });
           const diskTasteMap = loadPersistentTasteMap(currentProfileId);
           const inMemTasteMap = tasteMapRef.current;
@@ -682,10 +963,11 @@ export function App() {
               ? inMemTasteMap
               : diskTasteMap;
 
-          // Ana ilke: Kullanıcının zevk profili ve adaylarla eşleşme haritası, yalnızca gerektiğinde güncellensin.
-          // Belirli bir tür filtresi (activeGenre) seçilmemişse genel önbelleği kontrol et.
+          // 500 + 500 havuz Zevk Haritasında zaten işlenmişse (>= 400 kayıt) ve filtre yoksa önbellekten hızlı yükle
+          const processedEntriesCount = Object.keys(storedTasteMap.entries || {}).length;
           if (
-            !activeGenre &&
+            !isFilteredView &&
+            processedEntriesCount >= 400 &&
             isTasteMapCacheValid({
               tasteMap: storedTasteMap,
               currentSig,
@@ -699,10 +981,7 @@ export function App() {
             const restored = (storedTasteMap.cachedBalancedItems || []).filter((item: any) =>
               isCandidateEligibleInPool(item.candidate || item, rawSaved, currentPrefs)
             );
-            if (restored.length > 0) {
-              lastForYouTypeRef.current = targetType;
-              lastForYouGenreRef.current = '';
-              // Vitrinde gösterilen grubun lastRecommendedKeys ve shownCount kaydının eksiksiz olduğundan emin ol
+            if (restored.length >= TARGET_RECOMMENDATION_COUNT) {
               const impressionSync = recordDisplayedRecommendations(storedTasteMap, restored, {
                 targetType,
               });
@@ -738,6 +1017,7 @@ export function App() {
                   };
                 })
               );
+              lastForYouQueryKeyRef.current = forYouQueryKey;
               setTasteMap(activeMap);
               setCatalogTotalPages(1);
               setCatalogPage(1);
@@ -747,51 +1027,51 @@ export function App() {
             }
           }
 
-          // If already loaded for the current type & genre and not explicitly force-refreshed, reuse cached recommendations
+          // Aynı profil + tür + kategori + platform sorgusu halihazırda 20 öneriyle yüklüyse ve manuel yenileme istenmediyse koru
           if (
-            forYouItemsRef.current.length > 0 &&
+            forYouItemsRef.current.length >= TARGET_RECOMMENDATION_COUNT &&
             !forceRefresh &&
-            lastForYouTypeRef.current === targetType &&
-            lastForYouGenreRef.current === activeGenre
+            processedEntriesCount >= 400 &&
+            lastForYouQueryKeyRef.current === forYouQueryKey
           ) {
             setIsLoading(false);
             return;
           }
-          lastForYouTypeRef.current = targetType;
-          lastForYouGenreRef.current = activeGenre;
 
-          // Film önerisi istendiğinde dizi geçmişini ilgi profili hesabının dışında bırak; yalnızca film geçmişini ve film tercihlerini değerlendir.
-          const currentSaved = filterHistoryByType(rawSaved, targetType);
-          const currentDislikedKeys = filterDislikedByType(currentPrefs.disliked, targetType);
+          // Hem film hem dizi zevk profillerini kullanıcının geçmişinden hesapla (500 film + 500 dizi tam işleme için)
+          const selectTopSeeds = (list: SavedItem[], watchedCap: number, watchlistCap: number) => {
+            const watched = list
+              .filter(
+                (item) =>
+                  item.status === 'completed' ||
+                  item.status === 'watching' ||
+                  Number(item.personal_rating) >= 7
+              )
+              .sort(
+                (a, b) =>
+                  Number(b.personal_rating || (b.status === 'completed' ? 7 : 5)) -
+                  Number(a.personal_rating || (a.status === 'completed' ? 7 : 5))
+              )
+              .slice(0, watchedCap);
+            const wlist = list
+              .filter(
+                (item) =>
+                  item.status === 'watchlist' &&
+                  (item.personal_rating === '' || Number(item.personal_rating) < 7)
+              )
+              .slice(0, watchlistCap);
+            return [...watched, ...wlist];
+          };
 
-          // Sana Özel v3:
-          // Watched & Completed items have highest importance (2.5x / 1.6x)
-          // Watchlist items have auxiliary influence (0.35x)
-          const watchedSeeds = currentSaved
-            .filter(
-              (item) =>
-                item.status === 'completed' ||
-                item.status === 'watching' ||
-                Number(item.personal_rating) >= 7
-            )
-            .sort(
-              (a, b) =>
-                Number(b.personal_rating || (b.status === 'completed' ? 7 : 5)) -
-                Number(a.personal_rating || (a.status === 'completed' ? 7 : 5))
-            )
-            .slice(0, 10);
+          const rawMovieSaved = filterHistoryByType(rawSaved, 'movie');
+          const rawTvSaved = filterHistoryByType(rawSaved, 'tv');
+          const seeds = [
+            ...selectTopSeeds(rawMovieSaved, 8, 2),
+            ...selectTopSeeds(rawTvSaved, 8, 2),
+          ];
 
-          const watchlistSeeds = currentSaved
-            .filter(
-              (item) =>
-                item.status === 'watchlist' &&
-                (item.personal_rating === '' || Number(item.personal_rating) < 7)
-            )
-            .slice(0, 4);
-
-          const seeds = [...watchedSeeds, ...watchlistSeeds];
-          const _moodGenres = MOOD_GENRES[currentPrefs.mood] || [];
-          const dislikedSeeds = currentDislikedKeys
+          const allDislikedKeys = filterDislikedByType(currentPrefs.disliked, 'all');
+          const dislikedSeeds = allDislikedKeys
             .map((key) => {
               const [mediaType, id] = key.split(':');
               if (!/^\d+$/.test(id) || !['movie', 'tv'].includes(mediaType)) return undefined;
@@ -831,21 +1111,83 @@ export function App() {
             historyCredits.map((entry) => [makeMediaKey(entry), entry])
           );
 
-          // Build Taste Profile V3 with smoothing lambda = 1 and time decay
-          const tasteProfile = buildTasteProfileV3(
+          const generalTasteProfile = buildTasteProfileV3(
             [
-              ...currentSaved.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
+              ...rawSaved.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
               ...dislikedSeeds.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
             ],
             {
               lambda: 1,
-              dislikedKeys: currentDislikedKeys,
+              dislikedKeys: allDislikedKeys,
             }
           );
 
-          // Sorun B çözümü: 500 + 500 Bağımsız Aday Havuzu Mimarisini Çalıştır
-          // Havuzda zaten yeterli sayıda taze (lastRecommendedKeys dışı ring0) aday varsa her yenilemede
-          // gereksiz tam havuz değişimi yapılmaz; taze aday azaldığında (<= 60 veya POOL_LOW_WATERMARK altı) yenilenir.
+          const movieDislikedSeeds = dislikedSeeds.filter((it) => it.media_type === 'movie');
+          const tvDislikedSeeds = dislikedSeeds.filter((it) => it.media_type === 'tv');
+
+          const movieTasteProfile =
+            rawMovieSaved.length > 0
+              ? buildTasteProfileV3(
+                  [
+                    ...rawMovieSaved.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
+                    ...movieDislikedSeeds.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
+                  ],
+                  {
+                    lambda: 1,
+                    dislikedKeys: filterDislikedByType(currentPrefs.disliked, 'movie'),
+                  }
+                )
+              : generalTasteProfile;
+
+          const tvTasteProfile =
+            rawTvSaved.length > 0
+              ? buildTasteProfileV3(
+                  [
+                    ...rawTvSaved.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
+                    ...tvDislikedSeeds.map((item) => creditsByKey.get(makeMediaKey(item)) || item),
+                  ],
+                  {
+                    lambda: 1,
+                    dislikedKeys: filterDislikedByType(currentPrefs.disliked, 'tv'),
+                  }
+                )
+              : generalTasteProfile;
+
+          // Sunucuda indirilmiş katalog (data/catalog/movies.json & tv.json) varsa yerel havuzları önce besle
+          const preMoviePool = loadPersistentPoolData(currentProfileId, 'movie');
+          const preTvPool = loadPersistentPoolData(currentProfileId, 'tv');
+          if (
+            preMoviePool.items.length <= POOL_LOW_WATERMARK ||
+            preTvPool.items.length <= POOL_LOW_WATERMARK
+          ) {
+            const serverCatalog = await fetchCatalogItems();
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+            if (serverCatalog) {
+              if (preMoviePool.items.length <= POOL_LOW_WATERMARK && serverCatalog.movies) {
+                const hydratedMovies = hydratePoolFromCatalog(
+                  preMoviePool,
+                  serverCatalog.movies,
+                  rawSaved,
+                  currentPrefs
+                );
+                if (hydratedMovies.addedCount > 0) {
+                  savePersistentPoolData(currentProfileId, hydratedMovies.poolData);
+                }
+              }
+              if (preTvPool.items.length <= POOL_LOW_WATERMARK && serverCatalog.tv) {
+                const hydratedTv = hydratePoolFromCatalog(
+                  preTvPool,
+                  serverCatalog.tv,
+                  rawSaved,
+                  currentPrefs
+                );
+                if (hydratedTv.addedCount > 0) {
+                  savePersistentPoolData(currentProfileId, hydratedTv.poolData);
+                }
+              }
+            }
+          }
+
           const shouldForcePoolForType = (mType: 'movie' | 'tv'): boolean => {
             if (!forceRefresh) return false;
             const existingPool = loadPersistentPoolData(currentProfileId, mType);
@@ -868,12 +1210,10 @@ export function App() {
             return existingPool.items.length <= POOL_LOW_WATERMARK || ring0Count < 60;
           };
 
-          let movieCandidates: any[] = [];
-          let tvCandidates: any[] = [];
-
-          setForYouProgressStep('Aday havuzu güncelleniyor…');
-          if (targetType === 'movie') {
-            const moviePool = await replenishCandidatePool({
+          // Her koşuda hem 500 film hem 500 dizi havuzu tam kapasitede tutulur ve kullanıcıya göre işlenir
+          setForYouProgressStep('500 film + 500 dizi aday havuzu kullanıcı zevk haritasına göre işleniyor…');
+          const [moviePool, tvPool] = await Promise.all([
+            replenishCandidatePool({
               profileId: currentProfileId,
               mediaType: 'movie',
               savedItems: rawSaved,
@@ -885,12 +1225,8 @@ export function App() {
               onProgress: (step) => {
                 if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
               },
-            });
-            movieCandidates = moviePool.items.filter((item) =>
-              item.media_type === 'movie' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
-            );
-          } else if (targetType === 'tv') {
-            const tvPool = await replenishCandidatePool({
+            }),
+            replenishCandidatePool({
               profileId: currentProfileId,
               mediaType: 'tv',
               savedItems: rawSaved,
@@ -899,109 +1235,18 @@ export function App() {
               fetchTmdbFn: fetchTmdbCached,
               signal: ticket.signal,
               force: shouldForcePoolForType('tv'),
-              onProgress: (step) => {
-                if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
-              },
-            });
-            tvCandidates = tvPool.items.filter((item) =>
-              item.media_type === 'tv' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
-            );
-          } else {
-            // 'all': Her iki bağımsız havuz (500 + 500) ayrı yönetilir
-            const [moviePool, tvPool] = await Promise.all([
-              replenishCandidatePool({
-                profileId: currentProfileId,
-                mediaType: 'movie',
-                savedItems: rawSaved,
-                preferences: currentPrefs,
-                favoriteActors: favoriteActorsRef.current,
-                fetchTmdbFn: fetchTmdbCached,
-                signal: ticket.signal,
-                force: shouldForcePoolForType('movie'),
-                onProgress: (step) => {
-                  if (requestGateRef.current.isCurrent(ticket.id)) setForYouProgressStep(step);
-                },
-              }),
-              replenishCandidatePool({
-                profileId: currentProfileId,
-                mediaType: 'tv',
-                savedItems: rawSaved,
-                preferences: currentPrefs,
-                favoriteActors: favoriteActorsRef.current,
-                fetchTmdbFn: fetchTmdbCached,
-                signal: ticket.signal,
-                force: shouldForcePoolForType('tv'),
-              }),
-            ]);
-            movieCandidates = moviePool.items.filter((item) =>
-              item.media_type === 'movie' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
-            );
-            tvCandidates = tvPool.items.filter((item) =>
-              item.media_type === 'tv' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
-            );
-          }
+            }),
+          ]);
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-          if (activeGenre) {
-            const gId = Number(activeGenre);
-            movieCandidates = movieCandidates.filter((item) => (item.genre_ids || []).includes(gId));
-            tvCandidates = tvCandidates.filter((item) => (item.genre_ids || []).includes(gId));
+          const fullMovieCandidates = moviePool.items.filter(
+            (item) => item.media_type === 'movie' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
+          );
+          const fullTvCandidates = tvPool.items.filter(
+            (item) => item.media_type === 'tv' && isCandidateEligibleInPool(item, rawSaved, currentPrefs)
+          );
 
-            const minNeeded = targetType === 'all' ? 15 : 25;
-            if ((targetType === 'all' || targetType === 'movie') && movieCandidates.length < minNeeded) {
-              try {
-                const extraMoviesRes = await fetchTmdb(
-                  '/discover/movie',
-                  {
-                    with_genres: activeGenre,
-                    sort_by: 'popularity.desc',
-                    'vote_count.gte': '25',
-                    page: '1',
-                  },
-                  ticket.signal
-                );
-                const extraMovies = (extraMoviesRes?.results || [])
-                  .map((m: any) => normalizePoolCandidate(m, 'movie', 'genre_discover', `Tür Keşfi: ${activeGenre}`))
-                  .filter((c: any) => c && isCandidateEligibleInPool(c, rawSaved, currentPrefs));
-
-                const seen = new Set(movieCandidates.map((m: any) => m.id));
-                for (const m of extraMovies) {
-                  if (!seen.has(m.id)) {
-                    seen.add(m.id);
-                    movieCandidates.push(m);
-                  }
-                }
-              } catch {}
-            }
-
-            if ((targetType === 'all' || targetType === 'tv') && tvCandidates.length < minNeeded) {
-              try {
-                const extraTvRes = await fetchTmdb(
-                  '/discover/tv',
-                  {
-                    with_genres: activeGenre,
-                    sort_by: 'popularity.desc',
-                    'vote_count.gte': '15',
-                    page: '1',
-                  },
-                  ticket.signal
-                );
-                const extraTv = (extraTvRes?.results || [])
-                  .map((t: any) => normalizePoolCandidate(t, 'tv', 'genre_discover', `Tür Keşfi: ${activeGenre}`))
-                  .filter((c: any) => c && isCandidateEligibleInPool(c, rawSaved, currentPrefs));
-
-                const seen = new Set(tvCandidates.map((t: any) => t.id));
-                for (const t of extraTv) {
-                  if (!seen.has(t.id)) {
-                    seen.add(t.id);
-                    tvCandidates.push(t);
-                  }
-                }
-              } catch {}
-            }
-          }
-
-          // En güncel Zevk Haritası durumunu al (bellek içi en son kayıt varsa koru)
+          // En güncel Zevk Haritası durumunu al
           const latestDiskMap = loadPersistentTasteMap(currentProfileId);
           const tasteMap =
             tasteMapRef.current &&
@@ -1013,27 +1258,107 @@ export function App() {
               : latestDiskMap;
           const prevRecommendedKeys = tasteMap.lastRecommendedKeys || [];
 
-          let movieScored: any[] = [];
-          let tvScored: any[] = [];
-          if (movieCandidates.length > 0) {
-            movieScored = scoreCandidatesV3(movieCandidates, tasteProfile, {
-              weights: RECOMMENDATION_WEIGHTS_V3,
-              genreNames: currentGenres,
-              mood: currentPrefs.mood,
-              tasteMap,
-            }).sort((a, b) => b.score - a.score);
+          // Daraltılmış filtrelerde (örn. Sana Özel -> Film -> Fantastik) 20 öneriyi garantilemek için çok sayfalı tamamlama
+          let movieCandidates = fullMovieCandidates;
+          let tvCandidates = fullTvCandidates;
+          const extraCatalogItemsToPersist: PoolCandidateItem[] = [];
+
+          if (isFilteredView || fullMovieCandidates.length < TARGET_RECOMMENDATION_COUNT || fullTvCandidates.length < TARGET_RECOMMENDATION_COUNT) {
+            const minNeeded = targetType === 'all' ? 16 : 28;
+            if (targetType === 'all' || targetType === 'movie') {
+              setForYouProgressStep('Seçili filtrelere uygun film adayları tamamlanıyor…');
+              const topUpMovies = await topUpFilteredCandidates({
+                profileId: currentProfileId,
+                mediaType: 'movie',
+                existingCandidates: fullMovieCandidates,
+                savedItems: rawSaved,
+                preferences: currentPrefs,
+                lastRecommendedKeys: prevRecommendedKeys,
+                selectedGenre: activeGenre,
+                selectedProvider: provider,
+                minFreshRequired: minNeeded,
+                fetchTmdbFn: fetchTmdbCached,
+                signal: ticket.signal,
+              });
+              movieCandidates = topUpMovies.filteredCandidates;
+              extraCatalogItemsToPersist.push(...topUpMovies.newlyDiscovered);
+            } else {
+              movieCandidates = [];
+            }
+
+            if (targetType === 'all' || targetType === 'tv') {
+              setForYouProgressStep('Seçili filtrelere uygun dizi adayları tamamlanıyor…');
+              const topUpTv = await topUpFilteredCandidates({
+                profileId: currentProfileId,
+                mediaType: 'tv',
+                existingCandidates: fullTvCandidates,
+                savedItems: rawSaved,
+                preferences: currentPrefs,
+                lastRecommendedKeys: prevRecommendedKeys,
+                selectedGenre: activeGenre,
+                selectedProvider: provider,
+                minFreshRequired: minNeeded,
+                fetchTmdbFn: fetchTmdbCached,
+                signal: ticket.signal,
+              });
+              tvCandidates = topUpTv.filteredCandidates;
+              extraCatalogItemsToPersist.push(...topUpTv.newlyDiscovered);
+            } else {
+              tvCandidates = [];
+            }
           }
-          if (tvCandidates.length > 0) {
-            tvScored = scoreCandidatesV3(tvCandidates, tasteProfile, {
-              weights: RECOMMENDATION_WEIGHTS_V3,
-              genreNames: currentGenres,
-              mood: currentPrefs.mood,
-              tasteMap,
-            }).sort((a, b) => b.score - a.score);
+          if (!requestGateRef.current.isCurrent(ticket.id)) return;
+
+          // İndirilmiş tüm 500 film + 500 dizi (+ filtre keşifleri) kalıcı kataloğa senkronize edilir
+          void pushCatalogItems([
+            ...fullMovieCandidates,
+            ...fullTvCandidates,
+            ...extraCatalogItemsToPersist,
+          ]);
+
+          // Tüm 500 film + 500 dizi havuzunu kullanıcının kendi zevk profiline göre puanla
+          const allMoviesUnionMap = new Map<string, PoolCandidateItem>();
+          for (const m of [...fullMovieCandidates, ...movieCandidates]) {
+            allMoviesUnionMap.set(makeMediaKey(m), m);
+          }
+          const allTvUnionMap = new Map<string, PoolCandidateItem>();
+          for (const t of [...fullTvCandidates, ...tvCandidates]) {
+            allTvUnionMap.set(makeMediaKey(t), t);
           }
 
-          // Adayları ayrıntılı bilgilerle zenginleştirme:
-          // Halka 1 (lastRecommendedKeys / önceki turda gösterilenler) kesinlikle filtrelenir!
+          const fullMovieScored = scoreCandidatesV3(
+            Array.from(allMoviesUnionMap.values()),
+            movieTasteProfile,
+            {
+              weights: RECOMMENDATION_WEIGHTS_V3,
+              genreNames: currentGenres,
+              mood: currentPrefs.mood,
+              tasteMap,
+            }
+          ).sort((a, b) => b.score - a.score);
+
+          const fullTvScored = scoreCandidatesV3(
+            Array.from(allTvUnionMap.values()),
+            tvTasteProfile,
+            {
+              weights: RECOMMENDATION_WEIGHTS_V3,
+              genreNames: currentGenres,
+              mood: currentPrefs.mood,
+              tasteMap,
+            }
+          ).sort((a, b) => b.score - a.score);
+
+          const activeMovieKeys = new Set(movieCandidates.map((m) => makeMediaKey(m)));
+          const activeTvKeys = new Set(tvCandidates.map((t) => makeMediaKey(t)));
+
+          const movieScored = isFilteredView
+            ? fullMovieScored.filter((entry) => activeMovieKeys.has(makeMediaKey(entry.candidate)))
+            : fullMovieScored;
+          const tvScored = isFilteredView
+            ? fullTvScored.filter((entry) => activeTvKeys.has(makeMediaKey(entry.candidate)))
+            : fullTvScored;
+
+          // Adayları ayrıntılı bilgilerle zenginleştirme (Halka 1 kesinlikle hariç)
           const buildEnrichmentShortlist = (scoredList: any[], count: number) => {
             const withoutLastBatch = filterOutLastRecommendedCandidates(scoredList, prevRecommendedKeys);
             const ring0Items = withoutLastBatch.filter((e) => e.ring === 'ring0');
@@ -1046,8 +1371,8 @@ export function App() {
           let tvShortlist: any[] = [];
 
           if (targetType === 'all') {
-            movieShortlist = buildEnrichmentShortlist(movieScored, 20);
-            tvShortlist = buildEnrichmentShortlist(tvScored, 20);
+            movieShortlist = buildEnrichmentShortlist(movieScored, 24);
+            tvShortlist = buildEnrichmentShortlist(tvScored, 24);
             shortlist = [...movieShortlist, ...tvShortlist];
           } else if (targetType === 'movie') {
             movieShortlist = buildEnrichmentShortlist(movieScored, 40);
@@ -1086,7 +1411,7 @@ export function App() {
             enrichedMovieScored = filterOutLastRecommendedCandidates(
               scoreCandidatesV3(
                 movieShortlist.map((e) => e.candidate),
-                tasteProfile,
+                movieTasteProfile,
                 {
                   weights: RECOMMENDATION_WEIGHTS_V3,
                   genreNames: currentGenres,
@@ -1104,7 +1429,7 @@ export function App() {
             enrichedTvScored = filterOutLastRecommendedCandidates(
               scoreCandidatesV3(
                 tvShortlist.map((e) => e.candidate),
-                tasteProfile,
+                tvTasteProfile,
                 {
                   weights: RECOMMENDATION_WEIGHTS_V3,
                   genreNames: currentGenres,
@@ -1118,7 +1443,6 @@ export function App() {
               .sort((a, b) => b.score - a.score);
           }
 
-          // Kalan havuz adayları (kısa listeye girmeyen yedek adaylardan da lastRecommendedKeys kesinlikle elenir)
           const movieShortlistKeys = new Set(movieShortlist.map((e) => makeMediaKey(e.candidate)));
           const tvShortlistKeys = new Set(tvShortlist.map((e) => makeMediaKey(e.candidate)));
           const remainingMovieScored = filterOutLastRecommendedCandidates(movieScored, prevRecommendedKeys).filter(
@@ -1132,7 +1456,6 @@ export function App() {
               isCandidateEligibleInPool(entry.candidate, rawSaved, currentPrefs)
           );
 
-          // Dengeli nihai seçim: 10 film + 10 dizi garantisi, lastRecommendedKeys (Halka 1) kesinlikle hariç!
           const balancedResult = selectBalancedRecommendations({
             targetType,
             scoredMovies: enrichedMovieScored,
@@ -1143,17 +1466,47 @@ export function App() {
             tasteMap,
             targetTotal: TARGET_RECOMMENDATION_COUNT,
             minPerTypeInAll: 10,
-            maxPerGenre: activeGenre ? TARGET_RECOMMENDATION_COUNT : undefined,
+            maxPerGenre: isFilteredView ? TARGET_RECOMMENDATION_COUNT : undefined,
           });
 
-          const picked = balancedResult.items;
+          const picked = [...balancedResult.items];
+          // Dar bir tür/platform filtresinde 'all' seçiliyken bir medya tipi 10 adedin altında kalırsa 20'ye tamamla
+          if (isFilteredView && targetType === 'all' && picked.length < TARGET_RECOMMENDATION_COUNT) {
+            const pickedKeys = new Set(picked.map((e: any) => makeMediaKey(e.candidate || e)));
+            const overflowPool = [
+              ...enrichedMovieScored,
+              ...enrichedTvScored,
+              ...remainingMovieScored,
+              ...remainingTvScored,
+            ].sort((a, b) => b.score - a.score);
+            for (const candidateEntry of overflowPool) {
+              if (picked.length >= TARGET_RECOMMENDATION_COUNT) break;
+              const k = makeMediaKey(candidateEntry.candidate || candidateEntry);
+              if (!pickedKeys.has(k)) {
+                pickedKeys.add(k);
+                picked.push(candidateEntry);
+              }
+            }
+          }
+
           const explanationText = balancedResult.explanation;
           setForYouExplanation(explanationText);
 
-          // Sorun D & Zevk Haritası: Kalıcı Zevk Haritası ve Tam Aday Haritası güncellemesi
-          // Gösterilen yeni grubun mediaKey anahtarları lastRecommendedKeys dizisine kaydedilir ve shownCount artırılır.
-          const tasteSummary = buildTasteProfileSummary(tasteProfile, tasteMap, currentGenres);
-          const allPoolCandidates = [...movieScored, ...tvScored];
+          // Tam 500 film + 500 dizi kullanıcı puanlarını tek bir haritada birleştir (hiçbir filtre havuz kayıtlarını silmez!)
+          const fullPoolScoredMap = new Map<string, any>();
+          for (const entry of [...fullMovieScored, ...fullTvScored, ...enrichedMovieScored, ...enrichedTvScored]) {
+            fullPoolScoredMap.set(makeMediaKey(entry.candidate || entry), entry);
+          }
+          const allPoolCandidates = Array.from(fullPoolScoredMap.values());
+
+          const summaryProfile =
+            targetType === 'movie'
+              ? movieTasteProfile
+              : targetType === 'tv'
+              ? tvTasteProfile
+              : generalTasteProfile;
+          const tasteSummary = buildTasteProfileSummary(summaryProfile, tasteMap, currentGenres);
+
           const updatedTasteMap = updateTasteMapWithBatch({
             tasteMap,
             newRecommendedItems: picked,
@@ -1165,12 +1518,42 @@ export function App() {
             targetType,
             explanation: explanationText,
             summary: tasteSummary,
-            isFilterChange: false,
+            isFilterChange: isFilterTriggeredRun,
+            isFilteredView,
+            pruneInactiveCandidates: !isFilteredView,
             normalizeLegacyRings: true,
           });
           savePersistentTasteMap(currentProfileId, updatedTasteMap);
           tasteMapRef.current = updatedTasteMap;
           setTasteMap(updatedTasteMap);
+
+          // Kullanıcının işlenmiş 500+500 Zevk Haritası verisini sunucudaki data/profiles/<profileId>.derived.json dosyasına yaz
+          const derivedItemsPayload: Record<string, any> = {};
+          for (const [entryKey, entryVal] of Object.entries(updatedTasteMap.entries || {})) {
+            derivedItemsPayload[entryKey] = {
+              mediaKey: entryKey,
+              tasteScore: entryVal.tasteScore,
+              priorityScore: entryVal.priorityScore,
+              matchScore: entryVal.matchScore,
+              lifecycleRing: entryVal.ring || 'ring0',
+              ring: entryVal.ring,
+              shownCount: entryVal.shownCount,
+              skippedCount: entryVal.skippedCount,
+              demotionPenalty: entryVal.demotionPenalty,
+              lastShownAt: entryVal.lastShownAt,
+              lastScoredAt: entryVal.lastScoredAt,
+              calculatedAt: entryVal.lastScoredAt || new Date().toISOString(),
+              status: entryVal.status,
+              scoreCoverage: entryVal.scoreCoverage,
+              pillars: entryVal.pillars,
+            };
+          }
+          void pushDerivedProfileData({
+            profileId: currentProfileId,
+            algorithmVersion: ALGORITHM_VERSION,
+            profileFingerprint: currentSig,
+            items: derivedItemsPayload,
+          });
 
           const reasonsMap = new Map<string, string>();
           picked.forEach((entry) => {
@@ -1198,186 +1581,79 @@ export function App() {
               };
             })
           );
+          lastForYouQueryKeyRef.current = forYouQueryKey;
           setCatalogTotalPages(1);
           setCatalogPage(1);
           setForYouProgressStep('');
-          lastForYouTypeRef.current = targetType;
-          lastForYouGenreRef.current = activeGenre;
           if (forceRefresh) showToast(explanationText);
           return;
         }
 
-        if (cat === 'gems') {
-          const cutoffDate = dateYearsAgo(15);
-          const common: any = {
-            'vote_average.gte': '7',
-            'vote_count.gte': '200',
-            'vote_count.lte': '3000',
-            sort_by: 'popularity.asc',
-            page: String(p),
-          };
-          if (activeGenre) common.with_genres = activeGenre;
-          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
-          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
-          if (targetType === 'all' || targetType === 'movie') {
-            moviesPromise = fetchTmdb('/discover/movie', { ...common, 'primary_release_date.gte': cutoffDate }, ticket.signal);
-          }
-          if (targetType === 'all' || targetType === 'tv') {
-            tvsPromise = fetchTmdb('/discover/tv', { ...common, 'first_air_date.gte': cutoffDate }, ticket.signal);
-          }
-          const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
-          if (!requestGateRef.current.isCurrent(ticket.id)) return;
-          const combined = [
-            ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-            ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-          ];
-          const enriched = enrichItemsWithPersonalizedTaste(combined);
-          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
-          setCatalogTotalPages(Math.max(movies.total_pages || 1, tvs.total_pages || 1));
-          setCatalogPage(p);
-          return;
-        }
+        // Diğer Keşfet kategorileri (Gündemdekiler, Yüksek Puanlılar, Gizli Cevherler, Yakında, Platform):
+        // 'Listemdekileri Gizle' veya beğenilmeyenler nedeniyle sonuç 20'nin altına düşerse sonraki sayfalardan 20'ye tamamla
+        const firstPage = await fetchDiscoverPageByCategory(p);
+        if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-        if (cat === 'upcoming') {
-          const todayStr = new Date().toISOString().slice(0, 10);
-          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
-          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
-          if (targetType === 'all' || targetType === 'movie') {
-            moviesPromise = activeGenre
-              ? fetchTmdb('/discover/movie', { 'primary_release_date.gte': todayStr, with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) }, ticket.signal)
-              : fetchTmdb('/movie/upcoming', { page: String(p) }, ticket.signal);
-          }
-          if (targetType === 'all' || targetType === 'tv') {
-            tvsPromise = activeGenre
-              ? fetchTmdb('/discover/tv', { 'first_air_date.gte': todayStr, with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) }, ticket.signal)
-              : fetchTmdb('/tv/on_the_air', { page: String(p) }, ticket.signal);
-          }
-          const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
-          if (!requestGateRef.current.isCurrent(ticket.id)) return;
-          const combined = [
-            ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-            ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-          ];
-          const enriched = enrichItemsWithPersonalizedTaste(combined);
-          setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
-          setCatalogTotalPages(Math.max(movies.total_pages || 1, tvs.total_pages || 1));
-          setCatalogPage(p);
-          return;
-        }
+        const combinedRawItems = [...firstPage.rawItems];
+        const totalPages = firstPage.totalPages;
+        let effectiveLastPage = p;
 
-        let rawItems: any[] = [];
-        let totalPages = 1;
+        if (!append) {
+          const seenKeys = new Set(combinedRawItems.map((it) => makeMediaKey(it)));
+          const shouldHideListed =
+            hideListedItemsRef.current &&
+            (HIDE_LISTED_CATEGORIES as readonly string[]).includes(cat);
 
-        if (activeGenre) {
-          let moviesPromise = Promise.resolve({ results: [], total_pages: 1 });
-          let tvsPromise = Promise.resolve({ results: [], total_pages: 1 });
+          const countVisibleItems = (list: any[]) =>
+            list.filter((it) => {
+              const mType = it.media_type || (it.title ? 'movie' : 'tv');
+              const k = makeMediaKey(mType, it.id);
+              if (preferencesRef.current.disliked.includes(k)) return false;
+              if (preferencesRef.current.hidden?.includes(k)) return false;
+              if (targetType !== 'all' && mType !== targetType) return false;
+              if (activeGenre && !matchesSelectedGenre(it, activeGenre)) return false;
+              if (
+                shouldHideListed &&
+                filterHiddenUserRegisteredItems([it], {
+                  savedItems: savedItemsRef.current,
+                  preferences: preferencesRef.current,
+                  tasteMap: tasteMapRef.current,
+                  hideListedItems: true,
+                }).length === 0
+              ) {
+                return false;
+              }
+              return true;
+            }).length;
 
-          if (cat === 'top-rated') {
-            const common = {
-              with_genres: activeGenre,
-              sort_by: 'vote_average.desc',
-              'vote_count.gte': '200',
-              page: String(p),
-            };
-            if (targetType === 'all' || targetType === 'movie') {
-              moviesPromise = fetchTmdb('/discover/movie', common, ticket.signal);
-            }
-            if (targetType === 'all' || targetType === 'tv') {
-              tvsPromise = fetchTmdb('/discover/tv', common, ticket.signal);
-            }
-          } else if (cat === 'popular-movies') {
-            moviesPromise = fetchTmdb(
-              '/discover/movie',
-              { with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) },
-              ticket.signal
-            );
-          } else if (cat === 'popular-tv') {
-            tvsPromise = fetchTmdb(
-              '/discover/tv',
-              { with_genres: activeGenre, sort_by: 'popularity.desc', page: String(p) },
-              ticket.signal
-            );
-          } else {
-            const common = {
-              with_genres: activeGenre,
-              sort_by: 'popularity.desc',
-              page: String(p),
-            };
-            if (targetType === 'all' || targetType === 'movie') {
-              moviesPromise = fetchTmdb('/discover/movie', common, ticket.signal);
-            }
-            if (targetType === 'all' || targetType === 'tv') {
-              tvsPromise = fetchTmdb('/discover/tv', common, ticket.signal);
-            }
-          }
-
-          const [mRes, tRes] = await Promise.all([moviesPromise, tvsPromise]);
-          if (!requestGateRef.current.isCurrent(ticket.id)) return;
-          rawItems = [
-            ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-            ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-          ];
-          totalPages = Math.max(mRes.total_pages || 1, tRes.total_pages || 1);
-        } else {
-          if (cat === 'popular-movies') {
-            const res = await fetchTmdb('/movie/popular', { page: String(p) }, ticket.signal);
+          let extraScans = 0;
+          while (
+            countVisibleItems(combinedRawItems) < TARGET_RECOMMENDATION_COUNT &&
+            effectiveLastPage < totalPages &&
+            extraScans < 5
+          ) {
+            extraScans += 1;
+            effectiveLastPage += 1;
+            const nextRes = await fetchDiscoverPageByCategory(effectiveLastPage);
             if (!requestGateRef.current.isCurrent(ticket.id)) return;
-            rawItems = (res.results || []).map((m: any) => ({ ...m, media_type: 'movie' }));
-            totalPages = res.total_pages || 1;
-          } else if (cat === 'popular-tv') {
-            const res = await fetchTmdb('/tv/popular', { page: String(p) }, ticket.signal);
-            if (!requestGateRef.current.isCurrent(ticket.id)) return;
-            rawItems = (res.results || []).map((t: any) => ({ ...t, media_type: 'tv' }));
-            totalPages = res.total_pages || 1;
-          } else if (cat === 'top-rated') {
-            if (targetType === 'tv') {
-              const res = await fetchTmdb('/tv/top_rated', { page: String(p) }, ticket.signal);
-              if (!requestGateRef.current.isCurrent(ticket.id)) return;
-              rawItems = (res.results || []).map((t: any) => ({ ...t, media_type: 'tv' }));
-              totalPages = res.total_pages || 1;
-            } else if (targetType === 'movie') {
-              const res = await fetchTmdb('/movie/top_rated', { page: String(p) }, ticket.signal);
-              if (!requestGateRef.current.isCurrent(ticket.id)) return;
-              rawItems = (res.results || []).map((m: any) => ({ ...m, media_type: 'movie' }));
-              totalPages = res.total_pages || 1;
-            } else {
-              const [mRes, tRes] = await Promise.all([
-                fetchTmdb('/movie/top_rated', { page: String(p) }, ticket.signal),
-                fetchTmdb('/tv/top_rated', { page: String(p) }, ticket.signal),
-              ]);
-              if (!requestGateRef.current.isCurrent(ticket.id)) return;
-              rawItems = [
-                ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-                ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-              ];
-              totalPages = Math.max(mRes.total_pages || 1, tRes.total_pages || 1);
+            for (const item of nextRes.rawItems) {
+              const k = makeMediaKey(item);
+              if (!seenKeys.has(k)) {
+                seenKeys.add(k);
+                combinedRawItems.push(item);
+              }
             }
-          } else {
-            const trendEndpoint =
-              targetType === 'movie'
-                ? '/trending/movie/day'
-                : targetType === 'tv'
-                ? '/trending/tv/day'
-                : '/trending/all/day';
-            const res = await fetchTmdb(trendEndpoint, { page: String(p) }, ticket.signal);
-            if (!requestGateRef.current.isCurrent(ticket.id)) return;
-            rawItems = (res.results || []).map((item: any) =>
-              item.media_type
-                ? item
-                : { ...item, media_type: targetType !== 'all' ? targetType : item.title ? 'movie' : 'tv' }
-            );
-            totalPages = res.total_pages || 1;
           }
         }
 
-        const enriched = enrichItemsWithPersonalizedTaste(rawItems);
+        const enriched = enrichItemsWithPersonalizedTaste(combinedRawItems);
 
         if (cat === 'trending' && !append && enriched[0]) {
           setTrendingTop(enriched[0]);
         }
         setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
         setCatalogTotalPages(totalPages);
-        setCatalogPage(p);
+        setCatalogPage(effectiveLastPage);
       } catch (err: any) {
         if (!ticket.signal.aborted) {
           console.warn('Catalog load error:', err.message);
@@ -1429,38 +1705,20 @@ export function App() {
     [activeProfileId, savedItems, preferences, favoriteActors]
   );
 
-  const handleSelectType = useCallback(
-    (newType: string) => {
-      setSelectedType(newType);
-      selectedTypeRef.current = newType;
-      if (tab === 'discover') {
-        if (category === 'for-you') {
-          lastForYouTypeRef.current = newType;
-        }
-        loadCategoryResults(category, 1, false, query, selectedProvider, false, newType, selectedGenre);
-      }
-    },
-    [tab, category, query, selectedProvider, selectedGenre, loadCategoryResults]
-  );
+  const handleSelectType = useCallback((newType: string) => {
+    setSelectedType(newType);
+    selectedTypeRef.current = newType;
+  }, []);
 
-  const handleSelectGenre = useCallback(
-    (newGenre: string) => {
-      setSelectedGenre(newGenre);
-      selectedGenreRef.current = newGenre;
-      if (tab === 'discover') {
-        if (category === 'for-you') {
-          lastForYouGenreRef.current = newGenre;
-        }
-        loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, newGenre);
-      }
-    },
-    [tab, category, query, selectedProvider, selectedType, loadCategoryResults]
-  );
+  const handleSelectGenre = useCallback((newGenre: string) => {
+    setSelectedGenre(newGenre);
+    selectedGenreRef.current = newGenre;
+  }, []);
 
   useEffect(() => {
     if (tab === 'taste-map') {
       const stored = loadPersistentTasteMap(activeProfileId);
-      if (Object.keys(stored.entries || {}).length === 0 && !isLoading) {
+      if (Object.keys(stored.entries || {}).length < 400 && !isLoading) {
         loadCategoryResults('for-you', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
       }
     }
@@ -1469,21 +1727,21 @@ export function App() {
   useEffect(() => {
     if (tab === 'discover') {
       if (category === 'for-you') {
+        const currentForYouKey = `${activeProfileId}|${
+          selectedType === 'movie' || selectedType === 'tv' ? selectedType : 'all'
+        }|${selectedGenre || ''}|${selectedProvider || ''}`;
         if (
-          lastForYouTypeRef.current === selectedType &&
-          lastForYouGenreRef.current === selectedGenre &&
-          forYouItems.length > 0
+          lastForYouQueryKeyRef.current === currentForYouKey &&
+          forYouItemsRef.current.length >= TARGET_RECOMMENDATION_COUNT
         ) {
           return;
         }
-        lastForYouTypeRef.current = selectedType;
-        lastForYouGenreRef.current = selectedGenre;
         loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, selectedGenre);
         return;
       }
       loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, selectedGenre);
     }
-  }, [tab, category, query, selectedProvider, selectedType, selectedGenre, loadCategoryResults, forYouItems.length]);
+  }, [tab, category, query, selectedProvider, selectedType, selectedGenre, hideListedItems, loadCategoryResults]);
 
   // Load more pagination
   const handleLoadMore = () => {
@@ -1814,7 +2072,7 @@ export function App() {
     let filtered = items.filter((item) => {
       if (item.media_type !== 'movie' && item.media_type !== 'tv') return false;
       if (selectedType !== 'all' && item.media_type !== selectedType) return false;
-      if (selectedGenre && !(item.genre_ids || []).includes(Number(selectedGenre))) return false;
+      if (selectedGenre && !matchesSelectedGenre(item, selectedGenre)) return false;
       return true;
     });
 
@@ -2038,8 +2296,7 @@ export function App() {
     const nextTasteMap = loadPersistentTasteMap(newId);
     tasteMapRef.current = nextTasteMap;
     setTasteMap(nextTasteMap);
-    lastForYouGenreRef.current = '';
-    lastForYouTypeRef.current = 'all';
+    lastForYouQueryKeyRef.current = '';
     setForYouItems([]);
     setForYouReasons(new Map());
     setQuery('');
@@ -2067,6 +2324,7 @@ export function App() {
     const nextTasteMap = loadPersistentTasteMap(newId);
     tasteMapRef.current = nextTasteMap;
     setTasteMap(nextTasteMap);
+    lastForYouQueryKeyRef.current = '';
     setForYouItems([]);
     setForYouReasons(new Map());
     setProfileOpen(false);
@@ -2153,9 +2411,15 @@ export function App() {
 
   const handleConfirmImport = (mode: 'overwrite' | 'merge') => {
     if (!pendingBackup) return;
+    if (mode === 'overwrite') {
+      confirmNextBulkSyncRef.current = true;
+    }
     const importedItems =
       mode === 'merge' ? dedupeItems([...savedItems, ...pendingBackup.items]) : pendingBackup.items;
+    savedItemsRef.current = importedItems;
     setSavedItems(importedItems);
+    lastForYouQueryKeyRef.current = '';
+    setForYouItems([]);
     if (pendingBackup.profileName) {
       handleSaveProfileName(pendingBackup.profileName);
     }
@@ -2184,7 +2448,7 @@ export function App() {
 
     setPendingBackup(null);
     setProfileOpen(false);
-    showToast('Yedek başarıyla içe aktarıldı!');
+    showToast(`Yedek başarıyla içe aktarıldı (${importedItems.length} içerik)!`);
   };
 
   const handleEmptyAction = (act: string) => {
@@ -2400,6 +2664,12 @@ export function App() {
               forYouProgressStep={forYouProgressStep}
               tmdbSource={tmdbSourceMeta.source}
               tmdbStaleReason={tmdbSourceMeta.staleReason}
+              selectedType={selectedType}
+              onTypeChange={handleSelectType}
+              selectedGenre={selectedGenre}
+              onGenreChange={handleSelectGenre}
+              selectedSort={selectedSort}
+              onSortChange={setSelectedSort}
             />
           </ErrorBoundary>
         )}

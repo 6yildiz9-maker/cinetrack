@@ -9,7 +9,9 @@ import {
 } from '../core/exporters';
 import {
   fetchServerBackups,
+  fetchSyncStatus,
   restoreServerBackup,
+  triggerGitHubSync,
   type ServerBackupMetadata,
 } from '../services/api';
 import { PROVIDER_OPTIONS, calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
@@ -88,6 +90,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [serverBackups, setServerBackups] = useState<ServerBackupMetadata[]>([]);
   const [loadingBackups, setLoadingBackups] = useState(false);
   const [backupMessage, setBackupMessage] = useState('');
+  const [remoteSyncInfo, setRemoteSyncInfo] = useState<any>(null);
+  const [syncingGitHub, setSyncingGitHub] = useState(false);
+  const [gitHubSyncMessage, setGitHubSyncMessage] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useDialogAccessibility(isOpen, onClose);
@@ -105,6 +110,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setImportStatus('');
       setCsvStatus('');
       setBackupMessage('');
+      setGitHubSyncMessage('');
+      void fetchSyncStatus().then((info) => {
+        if (info) setRemoteSyncInfo(info);
+      });
       if (otherProfiles.length > 0 && !otherProfiles.some((p) => p.id === compareProfileId)) {
         setCompareProfileId(otherProfiles[0].id);
       }
@@ -236,10 +245,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 2_000_000) {
-        setImportStatus('Yedek dosyası 2 MB sınırını aşamaz.');
-        return;
-      }
+      setImportStatus('');
       onImportBackupFile(file);
     }
     e.target.value = '';
@@ -261,10 +267,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (file.size > 2_000_000) {
-      setCsvStatus('CSV dosyası 2 MB sınırını aşamaz.');
-      return;
-    }
     try {
       const text = await file.text();
       const result = importItemsFromCsv(text);
@@ -280,6 +282,28 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       );
     } catch {
       setCsvStatus('CSV dosyası okunamadı.');
+    }
+  };
+
+  const handleTriggerGitHubSync = async () => {
+    setSyncingGitHub(true);
+    setGitHubSyncMessage('');
+    try {
+      const res = await triggerGitHubSync();
+      if (res?.ok) {
+        const committedCount = Array.isArray(res.filesCommitted) ? res.filesCommitted.length : 0;
+        const skippedCount = Array.isArray(res.filesSkipped) ? res.filesSkipped.length : 0;
+        setGitHubSyncMessage(
+          `GitHub eşitlemesi tamamlandı (${committedCount} dosya güncellendi, ${skippedCount} dosya zaten güncel).`
+        );
+      } else {
+        const errText = Array.isArray(res?.errors) && res.errors.length > 0 ? res.errors[0] : res?.error || 'Eşitleme yapılamadı.';
+        setGitHubSyncMessage(errText);
+      }
+      const updatedInfo = await fetchSyncStatus();
+      if (updatedInfo) setRemoteSyncInfo(updatedInfo);
+    } finally {
+      setSyncingGitHub(false);
     }
   };
 
@@ -958,6 +982,32 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     ))}
                   </div>
                 )}
+              </div>
+
+              {/* GitHub Uzak Veri Deposu Durumu */}
+              <div className="profile-tools-section">
+                <strong className="profile-tools-heading">GitHub Uzak Veri Deposu</strong>
+                {remoteSyncInfo?.remoteTarget && (
+                  <p className="provider-message">
+                    Hedef: {remoteSyncInfo.remoteTarget.owner}/{remoteSyncInfo.remoteTarget.repo} ({remoteSyncInfo.remoteTarget.branch} · {remoteSyncInfo.isPublicRepo ? 'Açık Depo' : 'Özel Depo'})
+                  </p>
+                )}
+                <p className="provider-message">
+                  {remoteSyncInfo?.configured
+                    ? `Durum: Bağlı (${remoteSyncInfo.catalogCounts?.movies ?? 0} film, ${remoteSyncInfo.catalogCounts?.tv ?? 0} dizi, ${remoteSyncInfo.profilesCount ?? 0} profil türevi)`
+                    : remoteSyncInfo?.reason || 'GitHub eşitleme durumu kontrol ediliyor…'}
+                </p>
+                <div className="csv-actions-row">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={syncingGitHub || !remoteSyncInfo?.configured}
+                    onClick={handleTriggerGitHubSync}
+                  >
+                    {syncingGitHub ? 'GitHub ile eşitleniyor…' : 'GitHub ile Şimdi Eşitle'}
+                  </button>
+                </div>
+                {gitHubSyncMessage && <p className="provider-message">{gitHubSyncMessage}</p>}
               </div>
 
               <button type="submit" className="btn btn-primary">

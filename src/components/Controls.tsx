@@ -61,8 +61,9 @@ export const Controls: React.FC<ControlsProps> = ({
     return null;
   }
 
-  const disableProviderFilters = isSearchActive || selectedCategory === 'for-you';
+  const disableProviderFilters = isSearchActive;
   const totalListCount = myListCount || watchingCount + watchlistCount + completedCount;
+  const hideSecondaryToolbar = tab === 'list' && listStatus === 'actors';
 
   return (
     <div className="section-controls-wrap">
@@ -171,7 +172,8 @@ export const Controls: React.FC<ControlsProps> = ({
         </div>
       )}
 
-      {/* İkincil Araç Çubuğu: Kategori, Tür, Sıralama */}
+      {/* İkincil Araç Çubuğu: Kategori, Tür, Sıralama (Favori Oyuncular sekmesinde Öneriler alt sekmesine taşındı) */}
+      {!hideSecondaryToolbar && (
       <div className="secondary-toolbar">
         {/* Keşfet Kategorileri */}
         {tab === 'discover' && !isSearchActive && (
@@ -264,7 +266,11 @@ export const Controls: React.FC<ControlsProps> = ({
             onChange={(e) => onSortChange(e.target.value)}
             aria-label="Sıralama ölçütü"
           >
-            <option value="popular">Popülerlik (Varsayılan)</option>
+            <option value="popular">
+              {tab === 'discover' && selectedCategory === 'for-you'
+                ? 'Zevk Uyumu (Varsayılan)'
+                : 'Popülerlik (Varsayılan)'}
+            </option>
             <option value="rating">Puan (Yüksekten Düşüğe)</option>
             <option value="recent">
               {tab === 'list' ? 'Eklenme Tarihi (Yeni)' : 'Yayın Tarihi (Yeni)'}
@@ -292,6 +298,7 @@ export const Controls: React.FC<ControlsProps> = ({
             </label>
           )}
       </div>
+      )}
     </div>
   );
 };

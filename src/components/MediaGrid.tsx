@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { MediaCard } from './MediaCard';
 import { ActorRecommendationsSection } from './ActorRecommendationsSection';
 import { SeasonCalendarSection } from './SeasonCalendarSection';
@@ -46,6 +46,12 @@ interface MediaGridProps {
   forYouProgressStep?: string;
   tmdbSource?: string;
   tmdbStaleReason?: string;
+  selectedType?: string;
+  onTypeChange?: (t: string) => void;
+  selectedGenre?: string;
+  onGenreChange?: (g: string) => void;
+  selectedSort?: string;
+  onSortChange?: (s: string) => void;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -81,12 +87,20 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   forYouProgressStep,
   tmdbSource = 'live',
   tmdbStaleReason,
+  selectedType = 'all',
+  onTypeChange,
+  selectedGenre = '',
+  onGenreChange,
+  selectedSort = 'popular',
+  onSortChange,
 }) => {
+  const [actorsSubTab, setActorsSubTab] = useState<'actors' | 'recommendations'>('actors');
   const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
   const safeFavoriteActors = useMemo(
     () => normalizeFavoriteActors(favoriteActors),
     [favoriteActors]
   );
+  const isActorsListMode = tab === 'list' && listStatus === 'actors';
 
   return (
     <section aria-labelledby="catalogTitle">
@@ -157,6 +171,125 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         />
       )}
 
+      {isActorsListMode && (
+        <div className="actors-subtabs-bar" role="tablist" aria-label="Favori oyuncular görünümü">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={actorsSubTab === 'actors'}
+            className={`actors-subtab-btn ${actorsSubTab === 'actors' ? 'is-active' : ''}`}
+            onClick={() => setActorsSubTab('actors')}
+          >
+            <span>Oyuncular</span>{' '}
+            <strong className="actors-subtab-count tabular-nums">{safeFavoriteActors.length}</strong>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={actorsSubTab === 'recommendations'}
+            className={`actors-subtab-btn ${actorsSubTab === 'recommendations' ? 'is-active' : ''}`}
+            onClick={() => setActorsSubTab('recommendations')}
+          >
+            <span>Öneriler</span>
+          </button>
+        </div>
+      )}
+
+      {isActorsListMode && actorsSubTab === 'recommendations' ? (
+        <div className="actors-recommendations-panel">
+          <div className="secondary-toolbar actors-recommendations-toolbar">
+            <div className="segmented-control" role="group" aria-label="İçerik türü filtresi">
+              <button
+                type="button"
+                className={`segmented-btn ${selectedType === 'all' ? 'active' : ''}`}
+                onClick={() => onTypeChange?.('all')}
+              >
+                Tümü
+              </button>
+              <button
+                type="button"
+                className={`segmented-btn ${selectedType === 'movie' ? 'active' : ''}`}
+                onClick={() => onTypeChange?.('movie')}
+              >
+                Film
+              </button>
+              <button
+                type="button"
+                className={`segmented-btn ${selectedType === 'tv' ? 'active' : ''}`}
+                onClick={() => onTypeChange?.('tv')}
+              >
+                Dizi
+              </button>
+            </div>
+
+            <div className="filter-select-wrap">
+              <select
+                className="filter-select"
+                value={selectedGenre}
+                onChange={(e) => onGenreChange?.(e.target.value)}
+                aria-label="Tür filtresi"
+              >
+                <option value="">Tüm Türler</option>
+                {Object.entries(genres).map(([id, name]) => (
+                  <option key={id} value={id}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="filter-select-wrap">
+              <select
+                className="filter-select"
+                value={selectedSort}
+                onChange={(e) => onSortChange?.(e.target.value)}
+                aria-label="Sıralama ölçütü"
+              >
+                <option value="popular">Uyum Puanı (Varsayılan)</option>
+                <option value="rating">Puan (Yüksekten Düşüğe)</option>
+                <option value="recent">Yayın Tarihi (Yeni)</option>
+                <option value="gems">Gizli Cevherler</option>
+                <option value="title">Başlık (A-Z)</option>
+              </select>
+            </div>
+          </div>
+
+          {safeFavoriteActors.length === 0 ? (
+            <div className="empty-message">
+              <strong>Öneri oluşturmak için henüz favori oyuncu yok</strong>
+              Film ve dizi detaylarındaki oyuncu fotoğraflarının üzerindeki kalp butonuna basarak favori oyuncularınızı ekleyebilirsiniz.
+              <div className="message-actions">
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => onEmptyAction('discover')}
+                >
+                  Keşfet&apos;e git
+                </button>
+              </div>
+            </div>
+          ) : (
+            <ErrorBoundary sectionName="Favori Oyuncu Önerileri">
+              <ActorRecommendationsSection
+                favoriteActors={safeFavoriteActors}
+                savedItems={savedItems}
+                dislikedKeys={dislikedKeys}
+                genresMap={genres}
+                preferredProviders={preferredProviders}
+                providerIndex={providerIndex}
+                selectedType={selectedType}
+                selectedGenre={selectedGenre}
+                selectedSort={selectedSort}
+                onOpenDetails={onOpenDetails}
+                onQuickAdd={onQuickAdd}
+                onSetStatus={onSetStatus}
+                onQuickSave={onQuickSave}
+                onOpenPerson={onOpenPerson}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+      ) : (
       <div id="catalogGrid" className="grid">
         {isLoading ? (
           Array.from({ length: 8 }).map((_, i) => (
@@ -377,7 +510,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 showMatch={tab === 'discover' && Boolean(item.tasteScore ?? item.matchScore)}
                 matchScore={item.tasteScore ?? item.matchScore}
                 showRing={tab === 'discover' && category === 'for-you'}
-                selectionRing={item.ring || item.lifecycleRing}
+                selectionRing={item.ring}
                 onOpenDetails={onOpenDetails}
                 onQuickAdd={onQuickAdd}
                 onSetStatus={onSetStatus}
@@ -388,23 +521,6 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           })
         )}
       </div>
-
-      {tab === 'list' && listStatus === 'actors' && safeFavoriteActors.length > 0 && (
-        <ErrorBoundary sectionName="Favori Oyuncu Önerileri">
-          <ActorRecommendationsSection
-            favoriteActors={safeFavoriteActors}
-            savedItems={savedItems}
-            dislikedKeys={dislikedKeys}
-            genresMap={genres}
-            preferredProviders={preferredProviders}
-            providerIndex={providerIndex}
-            onOpenDetails={onOpenDetails}
-            onQuickAdd={onQuickAdd}
-            onSetStatus={onSetStatus}
-            onQuickSave={onQuickSave}
-            onOpenPerson={onOpenPerson}
-          />
-        </ErrorBoundary>
       )}
 
       {tab === 'discover' && category === 'for-you' && items.length > 0 && onRefreshForYou && (

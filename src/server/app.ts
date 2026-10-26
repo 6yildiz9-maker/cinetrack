@@ -52,7 +52,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   tmdbProxy: ReturnType<typeof createTmdbProxyService>;
   persistentStore: PersistentDataStore;
 } {
-  const maxDataBytes = options.maxDataBytes ?? 2_000_000;
+  const maxDataBytes = options.maxDataBytes ?? 100_000_000;
   const storage = createDataStorage(options);
   const tmdbProxy = createTmdbProxyService(options);
   const persistentStore = new PersistentDataStore({
