@@ -3,6 +3,7 @@ import {
   PersistentTasteMapData,
   TasteRing,
   TasteProfileSummary,
+  SavedItem,
   getTasteRingLabel,
   inferLifecycleRing,
   normalizeTasteRing,
@@ -14,6 +15,7 @@ interface TasteMapViewProps {
   tasteMap: PersistentTasteMapData;
   summary: TasteProfileSummary | null;
   genresMap: Record<number, string>;
+  savedItems?: SavedItem[];
   onOpenDetails: (item: any) => void;
   onQuickSave: (item: any) => void;
   onSetStatus: (item: any, status: 'watching' | 'watchlist' | 'completed') => void;
@@ -29,6 +31,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   tasteMap,
   summary,
   genresMap,
+  savedItems = [],
   onOpenDetails,
   onQuickSave,
   onSetStatus,
@@ -64,6 +67,21 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
     }
     return counts;
   }, [entriesList, lastKeys]);
+
+  // Fast map to match saved items for active status badges
+  const savedItemMap = useMemo(() => {
+    const map = new Map<string, SavedItem>();
+    for (const item of savedItems) {
+      const key = makeMediaKey(item);
+      map.set(key, item);
+      const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+      if (item.id != null) {
+        map.set(`${mediaType}:${item.id}`, item);
+        map.set(String(item.id), item);
+      }
+    }
+    return map;
+  }, [savedItems]);
 
   // Filtered & sorted entries
   const displayedEntries = useMemo(() => {
@@ -136,6 +154,10 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               <span>Demo</span>
             </div>
           )}
+          <div className="taste-summary-pill taste-sync-pill" title="Kalıcı veri deposu ve profiller her 5 dakikada bir arka planda otomatik senkronize edilir">
+            <span className="ring-chip-dot dot-sync" aria-hidden="true" />
+            <span>Oto-Sync (5 dk)</span>
+          </div>
         </div>
 
         <div className="taste-strip-actions">
@@ -270,6 +292,30 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
         </div>
       </div>
 
+      {/* Halka Açıklama ve Bilgilendirme Kutusu */}
+      <div className="taste-filter-hint-box" role="status">
+        <span className="hint-icon" aria-hidden="true">💡</span>
+        <div className="hint-text">
+          <strong>
+            {activeViewTab === 'archived'
+              ? 'Arşiv Havuzu'
+              : selectedRing === 'ring0'
+              ? 'Yeni Eşleşme (Ring 0)'
+              : selectedRing === 'ring1'
+              ? 'Son Öneri (Ring 1 - Gösterim Hafızası)'
+              : 'Yedek Halka (Ring 2)'}
+            :
+          </strong>{' '}
+          {activeViewTab === 'archived'
+            ? 'Daha önceki zevk haritası turlarında önerilen ancak yeni turlarla güncel halkalardan rotasyona uğrayarak arşive kaldırılmış geçmiş öneriler.'
+            : selectedRing === 'ring0'
+            ? 'Zevk profiline en yüksek uyum sağlayan ve henüz ana ekranda sana önerilmemiş taze keşifler.'
+            : selectedRing === 'ring1'
+            ? 'Bir önceki keşif turunda veya Sana Özel listesinde önerilmiş, gösterim hafızasında tutulan yapımlar.'
+            : 'Yüksek uyumlu fakat öncelikli halkalarda yer kalmadığında devreye giren zengin alternatifler.'}
+        </div>
+      </div>
+
       {/* Akıcı Poster Duvarı: minmax(148px, 1fr) -> 8 kolon @ 1440px */}
       {displayedEntries.length === 0 ? (
         <div className="message" role="status">
@@ -284,6 +330,11 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
         <div className="taste-poster-wall" role="region" aria-label="Zevk Haritası Poster Duvarı">
           {displayedEntries.map((entry) => {
             const key = entry.mediaKey || makeMediaKey(entry);
+            const matchedSaved =
+              savedItemMap.get(key) ||
+              savedItemMap.get(`${entry.mediaType}:${entry.id}`) ||
+              savedItemMap.get(String(entry.id));
+
             const rawItem = {
               id: entry.id,
               media_type: entry.mediaType,
@@ -296,13 +347,14 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
               first_air_date: entry.first_air_date,
               matchScore: entry.matchScore,
               ring: activeViewTab === 'active' ? inferLifecycleRing(key, entry, lastKeys) : undefined,
-              status: entry.status,
+              status: matchedSaved?.status || entry.status,
             };
 
             return (
               <div key={key} className="taste-wall-card-wrap">
                 <MediaCard
                   item={rawItem}
+                  savedItem={matchedSaved}
                   size="md"
                   context="taste"
                   showRing={true}
@@ -310,6 +362,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                   genres={genresMap}
                   onOpenDetails={onOpenDetails}
                   onQuickSave={onQuickSave}
+                  onQuickAdd={(item) => onSetStatus(item, 'watchlist')}
                   onSetStatus={onSetStatus}
                   onToggleDislike={onToggleDislike}
                   matchScore={entry.matchScore}

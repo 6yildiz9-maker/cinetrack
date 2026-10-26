@@ -70,6 +70,7 @@ import {
   fetchServerData,
   subscribeTmdbSource,
   checkServerTmdbStatus,
+  fetchSyncStatus,
   TmdbSourceMeta,
   ServerConflictDetail,
 } from './services/api';
@@ -327,6 +328,32 @@ export function App() {
     favoriteActors,
     serverSyncReady,
   ]);
+
+  // 5 dakikada bir otomatik arka plan senkronizasyonu (300.000 ms)
+  useEffect(() => {
+    let isMounted = true;
+    const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+
+    const performBackgroundSync = async () => {
+      try {
+        const status = await fetchSyncStatus();
+        if (status && status.configured) {
+          const res = await fetch('/api/sync/trigger', { method: 'POST' });
+          if (res.ok && isMounted) {
+            console.log('[Auto-Sync] 5 dakikalık periyodik veri senkronizasyonu tamamlandı.');
+          }
+        }
+      } catch {
+        // Sessiz devam et
+      }
+    };
+
+    const timer = setInterval(performBackgroundSync, AUTO_SYNC_INTERVAL_MS);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   const buildCurrentPayload = useCallback((): DataDocument => {
     return {
@@ -2052,6 +2079,7 @@ export function App() {
                     tasteMap={tasteMap}
                     summary={tasteSummary}
                     genresMap={genresMap}
+                    savedItems={savedItems}
                     onOpenDetails={(item) => setDetailItem(item)}
                     onQuickSave={(item) => setQuickSaveItem(item)}
                     onSetStatus={(item, status) => handleSetStatus(item, status)}

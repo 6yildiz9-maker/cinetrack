@@ -105,6 +105,30 @@ async function startServer() {
     if (!tmdbApiKey) {
       console.log('TMDB_API_KEY is not configured; running in fallback demo mode.');
     }
+
+    // 5 dakikada bir otomatik arka plan senkronizasyonu (300.000 ms)
+    const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+    const autoSyncTimer = setInterval(async () => {
+      try {
+        const currentStatus = persistentStore.getSyncStatus();
+        if (currentStatus.configured) {
+          const syncRes = await persistentStore.syncToGitHub();
+          if (syncRes.ok) {
+            console.log(
+              `[Auto-Sync] 5 dakikalık periyodik senkronizasyon tamamlandı (${syncRes.filesCommitted.length} dosya işlendi, ${syncRes.filesSkipped.length} no-op atlandı).`
+            );
+          } else if (syncRes.errors.length > 0) {
+            console.warn('[Auto-Sync] Senkronizasyon uyarısı:', syncRes.errors.join('; '));
+          }
+        }
+      } catch (err: any) {
+        console.error('[Auto-Sync] Otomatik senkronizasyon hatası:', err?.message || err);
+      }
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    if (typeof autoSyncTimer.unref === 'function') {
+      autoSyncTimer.unref();
+    }
   });
 }
 
