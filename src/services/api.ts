@@ -1,4 +1,5 @@
 import { type DataDocument } from '../core/cinetrack-core';
+import type { BidirectionalSyncReport, SyncOperationKind } from '../core/sync-display';
 
 export type TmdbDataSource = 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
 
@@ -541,6 +542,137 @@ export async function fetchSyncStatus(): Promise<any> {
     return await res.json();
   } catch {
     return null;
+  }
+}
+
+function buildClientNetworkErrorReport(
+  operation: SyncOperationKind,
+  message: string
+): BidirectionalSyncReport {
+  const now = new Date().toISOString();
+  const emptySide = {
+    inspectedAt: now,
+    catalogMovieCount: 0,
+    catalogTvCount: 0,
+    catalogRawMovieRecords: 0,
+    catalogRawTvRecords: 0,
+    catalogContentHash: null,
+    catalogSemanticHash: null,
+    manifestPresent: false,
+    manifestValid: false,
+    manifestMovieCount: null,
+    manifestTvCount: null,
+    manifestContentHash: null,
+    userDataPresent: false,
+    userProfilesCount: 0,
+    userTotalSavedItemsCount: 0,
+    userUniqueSavedItemsCount: 0,
+    userDataSemanticHash: null,
+    userDataRawHash: null,
+    derivedProfileFilesCount: 0,
+    derivedProfileTotalRecordsCount: 0,
+    files: {},
+  };
+  return {
+    ok: false,
+    partialFailure: false,
+    operation,
+    startedAt: now,
+    completedAt: now,
+    isPublicRepo: false,
+    localBefore: emptySide,
+    remoteBefore: null,
+    localAfter: emptySide,
+    remoteAfter: null,
+    comparison: null,
+    filesDownloaded: [],
+    filesUploaded: [],
+    filesUnchanged: [],
+    filesMerged: [],
+    filesFailed: [],
+    filesPending: [],
+    filesBlockedPublic: [],
+    recordsAdded: 0,
+    recordsUpdated: 0,
+    recordsConflicted: 0,
+    conflicts: [],
+    warnings: [],
+    errors: [{ category: 'network_error', message }],
+    verifiedEqual: false,
+  };
+}
+
+export async function inspectGitHubSync(): Promise<BidirectionalSyncReport> {
+  try {
+    const res = await fetch('/api/sync/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    return (await res.json()) as BidirectionalSyncReport;
+  } catch (e: any) {
+    return buildClientNetworkErrorReport(
+      'inspect',
+      e?.message || 'GitHub durum denetimi isteği başarısız oldu.'
+    );
+  }
+}
+
+export async function pullGitHubSync(
+  conflictStrategy: 'ask' | 'merge' | 'overwrite_with_remote' = 'ask'
+): Promise<BidirectionalSyncReport> {
+  try {
+    const res = await fetch('/api/sync/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conflictStrategy }),
+    });
+    const report = (await res.json()) as BidirectionalSyncReport;
+    if (typeof report?.serverRevision === 'number') {
+      setLastKnownServerRevision(report.serverRevision);
+    }
+    return report;
+  } catch (e: any) {
+    return buildClientNetworkErrorReport(
+      'pull',
+      e?.message || 'GitHub indirme isteği başarısız oldu.'
+    );
+  }
+}
+
+export async function pushGitHubSync(): Promise<BidirectionalSyncReport> {
+  try {
+    const res = await fetch('/api/sync/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    return (await res.json()) as BidirectionalSyncReport;
+  } catch (e: any) {
+    return buildClientNetworkErrorReport(
+      'push',
+      e?.message || 'GitHub yükleme isteği başarısız oldu.'
+    );
+  }
+}
+
+export async function reconcileGitHubSync(): Promise<BidirectionalSyncReport> {
+  try {
+    const res = await fetch('/api/sync/reconcile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const report = (await res.json()) as BidirectionalSyncReport;
+    if (typeof report?.serverRevision === 'number') {
+      setLastKnownServerRevision(report.serverRevision);
+    }
+    return report;
+  } catch (e: any) {
+    return buildClientNetworkErrorReport(
+      'reconcile',
+      e?.message || 'İki yönlü eşitleme isteği başarısız oldu.'
+    );
   }
 }
 

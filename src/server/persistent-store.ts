@@ -17,6 +17,13 @@ import {
   type DerivedPillarsRecord,
   type DerivedProfileValidationResult,
 } from '../core/derived-profile-cache.ts';
+import type {
+  BidirectionalSyncReport,
+  SyncComparisonSummary,
+  SyncSideSummary,
+} from '../core/sync-display.ts';
+import { GitHubBidirectionalSyncManager } from './github-bidirectional-sync.ts';
+import type { createDataStorage } from './storage.ts';
 
 export interface CatalogRecord {
   key: string;
@@ -76,6 +83,7 @@ export interface DerivedProfileDocument {
 
 export interface PersistentStoreOptions {
   dataDir: string;
+  maxDataBytes?: number;
   githubToken?: string;
   githubOwner?: string;
   githubRepo?: string;
@@ -117,11 +125,28 @@ export interface SyncStatus {
   repoVisibilityWarning?: string;
   corruptionWarnings?: string[];
   lastSyncAt: string | null;
+  syncInProgress?: boolean;
+  initialReconcileCompleted?: boolean;
+  lastError?: string | null;
   catalogCounts: {
     movies: number;
     tv: number;
   };
   profilesCount: number;
+  localSummary?: SyncSideSummary;
+  lastRemoteSummary?: SyncSideSummary | null;
+  lastComparison?: SyncComparisonSummary | null;
+  lastSyncReport?: Omit<BidirectionalSyncReport, 'updatedDataDocument'> | null;
+  fileSummaryCounts?: {
+    pending: number;
+    syncing: number;
+    succeeded: number;
+    skipped: number;
+    downloaded: number;
+    uploaded: number;
+    merged: number;
+    failed: number;
+  };
   fileStates: Record<string, SyncFileStateRecord>;
   remoteTarget?: {
     owner: string;
@@ -329,9 +354,17 @@ export class PersistentDataStore {
   private manifestFile: string;
   private syncStateFile: string;
   private lastSyncAt: string | null = null;
+  private lastError: string | null = null;
+  private lastRemoteSummary: SyncSideSummary | null = null;
+  private lastComparison: SyncComparisonSummary | null = null;
+  private lastSyncReport: Omit<BidirectionalSyncReport, 'updatedDataDocument'> | null = null;
+  private persistedInitialReconcile = false;
   private repoVisibilityWarning?: string;
   private fileStates: Record<string, SyncFileStateRecord> = {};
   private writeSerializer = new FileWriteSerializer();
+  private maxDataBytes?: number;
+  private attachedStorage?: ReturnType<typeof createDataStorage>;
+  private bidirectionalManager: GitHubBidirectionalSyncManager;
 
   private githubToken?: string;
   private githubOwner?: string;
@@ -341,6 +374,7 @@ export class PersistentDataStore {
 
   constructor(options: PersistentStoreOptions) {
     this.dataDir = options.dataDir;
+    this.maxDataBytes = options.maxDataBytes;
     this.catalogDir = path.join(this.dataDir, 'catalog');
     this.profilesDir = path.join(this.dataDir, 'profiles');
     this.moviesFile = path.join(this.catalogDir, 'movies.json');
@@ -356,6 +390,115 @@ export class PersistentDataStore {
 
     this.initDirectories();
     this.loadPersistedSyncState();
+    this.bidirectionalManager = this.createBidirectionalManager();
+  }
+
+  private createBidirectionalManager(): GitHubBidirectionalSyncManager {
+    return new GitHubBidirectionalSyncManager({
+      dataDir: this.dataDir,
+      maxDataBytes: this.maxDataBytes,
+      store: this,
+      storage: this.attachedStorage,
+      getGitHubConfig: () => ({
+        token: this.githubToken,
+        owner: this.githubOwner,
+        repo: this.githubRepo,
+        branch: this.githubBranch,
+        isPublicRepo: this.isPublicRepo,
+      }),
+      onSyncCompleted: ({ report, lastRemoteSummary, lastComparison }) => {
+        this.recordBidirectionalOutcome(report, lastRemoteSummary, lastComparison);
+      },
+    });
+  }
+
+  public attachDataStorage(
+    storage: ReturnType<typeof createDataStorage>,
+    maxDataBytes?: number
+  ): void {
+    this.attachedStorage = storage;
+    if (typeof maxDataBytes === 'number' && maxDataBytes > 0) {
+      this.maxDataBytes = maxDataBytes;
+    }
+    this.bidirectionalManager = this.createBidirectionalManager();
+  }
+
+  public isSyncBusy(): boolean {
+    return this.bidirectionalManager.isBusy();
+  }
+
+  public hasCompletedInitialReconcile(): boolean {
+    return this.persistedInitialReconcile || this.bidirectionalManager.hasCompletedInitialReconcile();
+  }
+
+  private recordBidirectionalOutcome(
+    report: BidirectionalSyncReport,
+    lastRemoteSummary: SyncSideSummary | null,
+    lastComparison: SyncComparisonSummary | null
+  ): void {
+    if (lastRemoteSummary) {
+      this.lastRemoteSummary = lastRemoteSummary;
+    }
+    if (lastComparison) {
+      this.lastComparison = lastComparison;
+    }
+    if (report.repoVisibilityWarning) {
+      this.repoVisibilityWarning = report.repoVisibilityWarning;
+    }
+
+    if (
+      report.operation !== 'inspect' &&
+      report.ok &&
+      !report.requiresConfirmation &&
+      report.errors.length === 0
+    ) {
+      this.lastSyncAt = report.completedAt;
+      this.lastError = null;
+    } else if (report.errors.length > 0) {
+      this.lastError = redactSecrets(
+        report.errors.map((e) => e.message).join(' | '),
+        [this.githubToken]
+      );
+    } else if (report.ok) {
+      this.lastError = null;
+    }
+
+    if (report.operation === 'reconcile' && report.verifiedEqual) {
+      this.persistedInitialReconcile = true;
+    }
+
+    // Dosya bazlı durum tablosunu güncel tut
+    for (const p of report.filesPending) {
+      this.setFileSyncStage(p, 'pending', { error: undefined, errorCategory: undefined });
+    }
+    for (const p of [
+      ...report.filesDownloaded,
+      ...report.filesUploaded,
+      ...report.filesMerged,
+      ...report.filesUnchanged,
+    ]) {
+      if (!report.filesPending.includes(p) && !report.filesFailed.includes(p)) {
+        const localHash = report.localAfter.files[p]?.rawFileHash || undefined;
+        this.setFileSyncStage(p, 'succeeded', {
+          localContentHash: localHash,
+          noop: report.filesUnchanged.includes(p),
+          error: undefined,
+          errorCategory: undefined,
+        });
+      }
+    }
+    for (const p of report.filesFailed) {
+      const matchingErr = report.errors.find((e) => e.repoPath === p);
+      this.setFileSyncStage(p, 'failed', {
+        error: matchingErr?.message || `${p} senkronizasyon hatası`,
+        errorCategory: (matchingErr?.category as GitHubSyncErrorCategory) || 'http_error',
+      });
+    }
+
+    const { updatedDataDocument: _omittedDoc, ...compactReport } = report;
+    void _omittedDoc;
+    this.lastSyncReport = compactReport;
+    this.persistSyncState();
   }
 
   private initDirectories() {
@@ -373,12 +516,22 @@ export class PersistentDataStore {
     if (!existsSync(this.syncStateFile)) return;
     const parsed = tryParseValidJson<{
       lastSyncAt?: string | null;
+      lastError?: string | null;
       repoVisibilityWarning?: string;
+      persistedInitialReconcile?: boolean;
+      lastRemoteSummary?: SyncSideSummary | null;
+      lastComparison?: SyncComparisonSummary | null;
+      lastSyncReport?: Omit<BidirectionalSyncReport, 'updatedDataDocument'> | null;
       fileStates?: Record<string, SyncFileStateRecord>;
     }>(this.syncStateFile, (raw) => (isPlainRecordObject(raw) ? raw : null));
     if (parsed.ok) {
       this.lastSyncAt = parsed.data.lastSyncAt ?? null;
+      this.lastError = parsed.data.lastError ?? null;
       this.repoVisibilityWarning = parsed.data.repoVisibilityWarning;
+      this.persistedInitialReconcile = Boolean(parsed.data.persistedInitialReconcile);
+      this.lastRemoteSummary = parsed.data.lastRemoteSummary ?? null;
+      this.lastComparison = parsed.data.lastComparison ?? null;
+      this.lastSyncReport = parsed.data.lastSyncReport ?? null;
       if (isPlainRecordObject(parsed.data.fileStates)) {
         this.fileStates = { ...parsed.data.fileStates };
       }
@@ -389,7 +542,12 @@ export class PersistentDataStore {
     try {
       const payload = {
         lastSyncAt: this.lastSyncAt,
+        lastError: this.lastError,
+        persistedInitialReconcile: this.persistedInitialReconcile,
         ...(this.repoVisibilityWarning ? { repoVisibilityWarning: this.repoVisibilityWarning } : {}),
+        ...(this.lastRemoteSummary ? { lastRemoteSummary: this.lastRemoteSummary } : {}),
+        ...(this.lastComparison ? { lastComparison: this.lastComparison } : {}),
+        ...(this.lastSyncReport ? { lastSyncReport: this.lastSyncReport } : {}),
         fileStates: this.fileStates,
       };
       writeJsonFileAtomic(this.syncStateFile, stringifyDeterministic(payload), {
@@ -787,10 +945,39 @@ export class PersistentDataStore {
     let profilesCount = 0;
     try {
       const dirContents = existsSync(this.profilesDir) ? readdirSync(this.profilesDir) : [];
-      profilesCount = dirContents.filter((f: string) => f.endsWith('.json')).length;
+      profilesCount = dirContents.filter(
+        (f: string) =>
+          f.endsWith('.json') &&
+          !f.endsWith('.bak.json') &&
+          !f.includes('.corrupt.') &&
+          !f.endsWith('.tmp')
+      ).length;
     } catch {
       profilesCount = 0;
     }
+
+    let localSummary: SyncSideSummary | undefined;
+    try {
+      localSummary = this.bidirectionalManager.inspectLocalSide().summary;
+    } catch {
+      localSummary = undefined;
+    }
+
+    const stateValues = Object.values(this.fileStates);
+    const pendingFromStates = stateValues.filter((s) => s.status === 'pending').length;
+    const pendingFromDiff = this.lastComparison?.differentFilesCount ?? 0;
+    const fileSummaryCounts = {
+      pending: Math.max(pendingFromStates, pendingFromDiff),
+      syncing: stateValues.filter((s) => s.status === 'syncing').length,
+      succeeded: stateValues.filter((s) => s.status === 'succeeded').length,
+      skipped:
+        this.lastSyncReport?.filesUnchanged.length ??
+        stateValues.filter((s) => s.status === 'succeeded' && s.noop).length,
+      downloaded: this.lastSyncReport?.filesDownloaded.length ?? 0,
+      uploaded: this.lastSyncReport?.filesUploaded.length ?? 0,
+      merged: this.lastSyncReport?.filesMerged.length ?? 0,
+      failed: stateValues.filter((s) => s.status === 'failed').length,
+    };
 
     const hasTargetRepo = Boolean(this.githubOwner && this.githubRepo);
     const missingReason = !configured
@@ -807,11 +994,19 @@ export class PersistentDataStore {
       ...(this.repoVisibilityWarning ? { repoVisibilityWarning: this.repoVisibilityWarning } : {}),
       ...(corruptionWarnings.length > 0 ? { corruptionWarnings } : {}),
       lastSyncAt: this.lastSyncAt,
+      syncInProgress: this.isSyncBusy(),
+      initialReconcileCompleted: this.hasCompletedInitialReconcile(),
+      lastError: this.lastError,
       catalogCounts: {
         movies: movieCount,
         tv: tvCount,
       },
       profilesCount,
+      ...(localSummary ? { localSummary } : {}),
+      lastRemoteSummary: this.lastRemoteSummary,
+      lastComparison: this.lastComparison,
+      lastSyncReport: this.lastSyncReport,
+      fileSummaryCounts,
       fileStates: { ...this.fileStates },
       remoteTarget: hasTargetRepo
         ? {
@@ -821,6 +1016,24 @@ export class PersistentDataStore {
           }
         : undefined,
     };
+  }
+
+  public inspectGitHub(): Promise<BidirectionalSyncReport> {
+    return this.bidirectionalManager.inspect();
+  }
+
+  public pullFromGitHub(
+    options: { conflictStrategy?: 'ask' | 'merge' | 'overwrite_with_remote' } = {}
+  ): Promise<BidirectionalSyncReport> {
+    return this.bidirectionalManager.pull(options);
+  }
+
+  public pushToGitHub(): Promise<BidirectionalSyncReport> {
+    return this.bidirectionalManager.push();
+  }
+
+  public reconcileWithGitHub(): Promise<BidirectionalSyncReport> {
+    return this.bidirectionalManager.reconcile();
   }
 
   /**
@@ -928,8 +1141,51 @@ export class PersistentDataStore {
           };
         }
         remoteSha = fileData.sha;
-        if (typeof fileData.content === 'string') {
+        if (
+          typeof fileData.content === 'string' &&
+          fileData.encoding !== 'none' &&
+          (fileData.content.length > 0 || fileData.size === 0)
+        ) {
           remoteContent = Buffer.from(fileData.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+        }
+      } else if (getRes.status === 403) {
+        const errBody: any = await getRes.json().catch(() => ({}));
+        const rawMsg = String(errBody?.message || '');
+        const isTooLarge =
+          Array.isArray(errBody?.errors) &&
+          errBody.errors.some((e: any) => e?.code === 'too_large');
+        if (isTooLarge) {
+          // >1 MB dosyalarda SHA değerini üst dizin listesinden al
+          const parentDir = path.posix.dirname(repoPath);
+          const baseName = path.posix.basename(repoPath);
+          const dirRes = await fetch(
+            `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/${parentDir}?ref=${encodeURIComponent(
+              this.githubBranch
+            )}`,
+            { headers: baseHeaders }
+          );
+          if (dirRes.status === 200) {
+            const list = await dirRes.json().catch(() => null);
+            if (Array.isArray(list)) {
+              const found = list.find(
+                (it: any) => it && it.name === baseName && typeof it.sha === 'string'
+              );
+              if (found) {
+                remoteSha = found.sha;
+              }
+            }
+          }
+        }
+        if (!remoteSha) {
+          const category = classifyHttpFailure(getRes.status, getRes.headers, rawMsg);
+          return {
+            ok: false,
+            error: redactSecrets(
+              `GitHub okuma hatası (${category}): HTTP ${getRes.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
+              [this.githubToken]
+            ),
+            errorCategory: category,
+          };
         }
       } else if (getRes.status !== 404) {
         const errBody = await getRes.json().catch(() => ({}));
@@ -1066,7 +1322,12 @@ export class PersistentDataStore {
    * Kısmi hata durumunda başarılı dosyaları korur, başarısız olanları açıkça raporlar
    * ve sonraki denemede kaldığı yerden devam eder.
    */
-  public async syncToGitHub(options: { forceAll?: boolean } = {}): Promise<SyncResult> {
+  public async syncToGitHub(
+    options: {
+      forceAll?: boolean;
+      verifiedRemoteHashes?: Record<string, string | null>;
+    } = {}
+  ): Promise<SyncResult> {
     const result: SyncResult = {
       ok: true,
       partialFailure: false,
@@ -1130,7 +1391,13 @@ export class PersistentDataStore {
 
       if (existsSync(this.profilesDir)) {
         const profileFiles = readdirSync(this.profilesDir)
-          .filter((f) => f.endsWith('.json'))
+          .filter(
+            (f) =>
+              f.endsWith('.json') &&
+              !f.endsWith('.bak.json') &&
+              !f.includes('.corrupt.') &&
+              !f.endsWith('.tmp')
+          )
           .sort((a, b) => a.localeCompare(b));
         for (const file of profileFiles) {
           plannedFiles.push({
@@ -1165,12 +1432,14 @@ export class PersistentDataStore {
       const content = readFileSync(item.localPath, 'utf8');
       const localHash = hashContent(content.trim());
       const prevRecord = this.fileStates[item.repoPath];
-      const alreadySyncedUnchanged = Boolean(
-        !options.forceAll &&
-          prevRecord &&
-          prevRecord.status === 'succeeded' &&
-          prevRecord.localContentHash === localHash
-      );
+      const alreadySyncedUnchanged = options.verifiedRemoteHashes
+        ? options.verifiedRemoteHashes[item.repoPath] === localHash
+        : Boolean(
+            !options.forceAll &&
+              prevRecord &&
+              prevRecord.status === 'succeeded' &&
+              prevRecord.localContentHash === localHash
+          );
 
       preparedContents.set(item.repoPath, {
         content,

@@ -59,12 +59,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   const tmdbProxy = createTmdbProxyService(options);
   const persistentStore = new PersistentDataStore({
     dataDir: options.dataDir,
+    maxDataBytes,
     githubToken: options.githubToken,
     githubOwner: options.githubOwner,
     githubRepo: options.githubRepo,
     githubBranch: options.githubBranch,
     isPublicRepo: options.isPublicRepo,
   });
+  persistentStore.attachDataStorage(storage, maxDataBytes);
 
   const originGuard = createOriginMiddleware(options);
   const tokenGuard = createTokenAuthMiddleware(options);
@@ -204,10 +206,167 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     });
   });
 
-  // --- Kalıcı Veri Deposu (Katalog ve Profil İşlenmiş Veri Deposu) ---
+  // --- Kalıcı Veri Deposu & Çift Yönlü GitHub Senkronizasyonu ---
   app.get('/api/sync/status', (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(persistentStore.getSyncStatus());
+  });
+
+  app.post('/api/sync/inspect', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.body?.rejectIfBusy === true && persistentStore.isSyncBusy()) {
+      res.status(409).json({
+        ok: false,
+        operation: 'inspect',
+        code: 'sync_in_progress',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'sync_in_progress',
+            message: 'Başka bir GitHub senkronizasyon işlemi devam ediyor.',
+          },
+        ],
+      });
+      return;
+    }
+    try {
+      const report = await persistentStore.inspectGitHub();
+      res.json(report);
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        operation: 'inspect',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'http_error',
+            message: redactSecrets(e?.message || 'GitHub durum denetimi başarısız oldu.', [
+              options.githubToken,
+            ]),
+          },
+        ],
+      });
+    }
+  });
+
+  app.post('/api/sync/pull', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.body?.rejectIfBusy === true && persistentStore.isSyncBusy()) {
+      res.status(409).json({
+        ok: false,
+        operation: 'pull',
+        code: 'sync_in_progress',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'sync_in_progress',
+            message: 'Başka bir GitHub senkronizasyon işlemi devam ediyor.',
+          },
+        ],
+      });
+      return;
+    }
+    try {
+      const rawStrategy = req.body?.conflictStrategy;
+      const conflictStrategy: 'ask' | 'merge' | 'overwrite_with_remote' =
+        rawStrategy === 'merge' || rawStrategy === 'overwrite_with_remote' ? rawStrategy : 'ask';
+      const report = await persistentStore.pullFromGitHub({ conflictStrategy });
+      if (typeof report.serverRevision === 'number') {
+        res.setHeader('ETag', `"rev-${report.serverRevision}"`);
+      }
+      res.json(report);
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        operation: 'pull',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'http_error',
+            message: redactSecrets(e?.message || 'GitHub indirme işlemi başarısız oldu.', [
+              options.githubToken,
+            ]),
+          },
+        ],
+      });
+    }
+  });
+
+  app.post('/api/sync/push', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.body?.rejectIfBusy === true && persistentStore.isSyncBusy()) {
+      res.status(409).json({
+        ok: false,
+        operation: 'push',
+        code: 'sync_in_progress',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'sync_in_progress',
+            message: 'Başka bir GitHub senkronizasyon işlemi devam ediyor.',
+          },
+        ],
+      });
+      return;
+    }
+    try {
+      const report = await persistentStore.pushToGitHub();
+      res.json(report);
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        operation: 'push',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'http_error',
+            message: redactSecrets(e?.message || 'GitHub yükleme işlemi başarısız oldu.', [
+              options.githubToken,
+            ]),
+          },
+        ],
+      });
+    }
+  });
+
+  app.post('/api/sync/reconcile', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.body?.rejectIfBusy === true && persistentStore.isSyncBusy()) {
+      res.status(409).json({
+        ok: false,
+        operation: 'reconcile',
+        code: 'sync_in_progress',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'sync_in_progress',
+            message: 'Başka bir GitHub senkronizasyon işlemi devam ediyor.',
+          },
+        ],
+      });
+      return;
+    }
+    try {
+      const report = await persistentStore.reconcileWithGitHub();
+      if (typeof report.serverRevision === 'number') {
+        res.setHeader('ETag', `"rev-${report.serverRevision}"`);
+      }
+      res.json(report);
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        operation: 'reconcile',
+        verifiedEqual: false,
+        errors: [
+          {
+            category: 'http_error',
+            message: redactSecrets(e?.message || 'İki yönlü eşitleme işlemi başarısız oldu.', [
+              options.githubToken,
+            ]),
+          },
+        ],
+      });
+    }
   });
 
   app.post('/api/sync/trigger', originGuard, tokenGuard, async (_req: Request, res: Response) => {

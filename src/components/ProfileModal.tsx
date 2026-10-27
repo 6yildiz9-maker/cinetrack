@@ -10,10 +10,20 @@ import {
 import {
   fetchServerBackups,
   fetchSyncStatus,
+  inspectGitHubSync,
+  pullGitHubSync,
+  pushGitHubSync,
+  reconcileGitHubSync,
   restoreServerBackup,
-  triggerGitHubSync,
   type ServerBackupMetadata,
 } from '../services/api';
+import {
+  deriveSyncUiBanner,
+  type BidirectionalSyncReport,
+  type SyncComparisonSummary,
+  type SyncOperationKind,
+  type SyncSideSummary,
+} from '../core/sync-display';
 import { PROVIDER_OPTIONS, calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits';
@@ -92,8 +102,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [loadingBackups, setLoadingBackups] = useState(false);
   const [backupMessage, setBackupMessage] = useState('');
   const [remoteSyncInfo, setRemoteSyncInfo] = useState<any>(null);
-  const [syncingGitHub, setSyncingGitHub] = useState(false);
-  const [gitHubSyncMessage, setGitHubSyncMessage] = useState('');
+  const [activeSyncOp, setActiveSyncOp] = useState<SyncOperationKind | null>(null);
+  const [latestSyncReport, setLatestSyncReport] = useState<BidirectionalSyncReport | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useDialogAccessibility(isOpen, onClose);
@@ -111,7 +121,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setImportStatus('');
       setCsvStatus('');
       setBackupMessage('');
-      setGitHubSyncMessage('');
+      setLatestSyncReport(null);
       void fetchSyncStatus().then((info) => {
         if (info) setRemoteSyncInfo(info);
       });
@@ -293,37 +303,94 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  const handleTriggerGitHubSync = async () => {
-    setSyncingGitHub(true);
-    setGitHubSyncMessage('');
-    try {
-      const res = await triggerGitHubSync();
-      if (res?.ok) {
-        const committedCount = Array.isArray(res.filesCommitted) ? res.filesCommitted.length : 0;
-        const skippedCount = Array.isArray(res.filesSkipped) ? res.filesSkipped.length : 0;
-        const warnSuffix = res.repoVisibilityWarning ? ` · ${res.repoVisibilityWarning}` : '';
-        setGitHubSyncMessage(
-          `GitHub eşitlemesi tamamlandı (${committedCount} dosya güncellendi, ${skippedCount} dosya zaten güncel)${warnSuffix}`
-        );
-      } else {
-        const failedCount = Array.isArray(res?.filesFailed) ? res.filesFailed.length : 0;
-        const committedCount = Array.isArray(res?.filesCommitted) ? res.filesCommitted.length : 0;
-        const errText =
-          Array.isArray(res?.errors) && res.errors.length > 0
-            ? res.errors.join(' | ')
-            : res?.error || 'Eşitleme yapılamadı.';
-        setGitHubSyncMessage(
-          res?.partialFailure
-            ? `Kısmi hata (${committedCount} başarılı, ${failedCount} başarısız): ${errText}`
-            : errText
-        );
-      }
-      const updatedInfo = await fetchSyncStatus();
-      if (updatedInfo) setRemoteSyncInfo(updatedInfo);
-    } finally {
-      setSyncingGitHub(false);
+  const applyCompletedSyncReport = async (report: BidirectionalSyncReport) => {
+    setLatestSyncReport(report);
+    if (report.updatedDataDocument) {
+      onApplyRestoredDocument?.(report.updatedDataDocument);
+    }
+    const updatedInfo = await fetchSyncStatus();
+    if (updatedInfo) {
+      setRemoteSyncInfo(updatedInfo);
     }
   };
+
+  const handleInspectGitHub = async () => {
+    if (activeSyncOp !== null) return;
+    setActiveSyncOp('inspect');
+    try {
+      const report = await inspectGitHubSync();
+      await applyCompletedSyncReport(report);
+    } finally {
+      setActiveSyncOp(null);
+    }
+  };
+
+  const handlePullFromGitHub = async (
+    strategy: 'ask' | 'merge' | 'overwrite_with_remote' = 'ask'
+  ) => {
+    if (activeSyncOp !== null) return;
+    setActiveSyncOp('pull');
+    try {
+      const report = await pullGitHubSync(strategy);
+      await applyCompletedSyncReport(report);
+    } finally {
+      setActiveSyncOp(null);
+    }
+  };
+
+  const handlePushToGitHub = async () => {
+    if (activeSyncOp !== null) return;
+    setActiveSyncOp('push');
+    try {
+      const report = await pushGitHubSync();
+      await applyCompletedSyncReport(report);
+    } finally {
+      setActiveSyncOp(null);
+    }
+  };
+
+  const handleReconcileWithGitHub = async () => {
+    if (activeSyncOp !== null) return;
+    setActiveSyncOp('reconcile');
+    try {
+      const report = await reconcileGitHubSync();
+      await applyCompletedSyncReport(report);
+    } finally {
+      setActiveSyncOp(null);
+    }
+  };
+
+  const syncBanner = deriveSyncUiBanner(remoteSyncInfo, latestSyncReport);
+  const localSide: SyncSideSummary | null =
+    latestSyncReport?.localAfter || remoteSyncInfo?.localSummary || null;
+  const remoteSide: SyncSideSummary | null =
+    latestSyncReport?.remoteAfter ??
+    latestSyncReport?.remoteBefore ??
+    remoteSyncInfo?.lastRemoteSummary ??
+    null;
+  const activeComparison: SyncComparisonSummary | null =
+    latestSyncReport?.comparison ?? remoteSyncInfo?.lastComparison ?? null;
+
+  const pendingFilesCount =
+    latestSyncReport?.filesPending.length ?? remoteSyncInfo?.fileSummaryCounts?.pending ?? 0;
+  const downloadedFilesCount =
+    latestSyncReport?.filesDownloaded.length ?? remoteSyncInfo?.fileSummaryCounts?.downloaded ?? 0;
+  const uploadedFilesCount =
+    latestSyncReport?.filesUploaded.length ?? remoteSyncInfo?.fileSummaryCounts?.uploaded ?? 0;
+  const mergedFilesCount =
+    latestSyncReport?.filesMerged.length ?? remoteSyncInfo?.fileSummaryCounts?.merged ?? 0;
+  const skippedFilesCount =
+    latestSyncReport?.filesUnchanged.length ?? remoteSyncInfo?.fileSummaryCounts?.skipped ?? 0;
+  const failedFilesCount =
+    latestSyncReport?.filesFailed.length ?? remoteSyncInfo?.fileSummaryCounts?.failed ?? 0;
+
+  const lastErrorDescription: string | null =
+    latestSyncReport && latestSyncReport.errors.length > 0
+      ? latestSyncReport.errors.map((e) => e.message).join(' | ')
+      : remoteSyncInfo?.lastError || null;
+
+  const isSyncActionDisabled =
+    activeSyncOp !== null || Boolean(remoteSyncInfo?.syncInProgress) || !remoteSyncInfo?.configured;
 
   const handleLoadServerBackups = async () => {
     setLoadingBackups(true);
@@ -1002,33 +1069,246 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 )}
               </div>
 
-              {/* GitHub Uzak Veri Deposu Durumu */}
-              <div className="profile-tools-section">
-                <strong className="profile-tools-heading">GitHub Uzak Veri Deposu</strong>
-                {remoteSyncInfo?.remoteTarget && (
-                  <p className="provider-message">
-                    Hedef: {remoteSyncInfo.remoteTarget.owner}/{remoteSyncInfo.remoteTarget.repo} ({remoteSyncInfo.remoteTarget.branch} · {remoteSyncInfo.isPublicRepo ? 'Açık Depo' : 'Özel Depo'})
-                  </p>
-                )}
-                <p className="provider-message">
-                  {remoteSyncInfo?.configured
-                    ? `Durum: Bağlı (${remoteSyncInfo.catalogCounts?.movies ?? 0} film, ${remoteSyncInfo.catalogCounts?.tv ?? 0} dizi, ${remoteSyncInfo.profilesCount ?? 0} profil türevi)`
-                    : remoteSyncInfo?.reason || 'GitHub eşitleme durumu kontrol ediliyor…'}
-                </p>
+              {/* GitHub Çift Yönlü Senkronizasyon ve Doğrulama Paneli */}
+              <div className="profile-tools-section github-sync-panel">
+                <div className="github-sync-header">
+                  <strong className="profile-tools-heading">GitHub Çift Yönlü Senkronizasyon</strong>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={isSyncActionDisabled}
+                    onClick={handleInspectGitHub}
+                  >
+                    {activeSyncOp === 'inspect' ? 'Durum denetleniyor…' : 'Durumu denetle'}
+                  </button>
+                </div>
+
+                {/* Bağlı hedef depo ve son başarılı senkronizasyon metaverisi */}
+                <div className="github-sync-target-meta tabular-nums">
+                  {remoteSyncInfo?.remoteTarget ? (
+                    <>
+                      <span>
+                        Hedef: <strong>{remoteSyncInfo.remoteTarget.owner}/{remoteSyncInfo.remoteTarget.repo}</strong>
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>Dal: {remoteSyncInfo.remoteTarget.branch}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{remoteSyncInfo.isPublicRepo ? 'Açık Depo' : 'Özel Depo'}</span>
+                    </>
+                  ) : (
+                    <span>Hedef GitHub deposu tanımlanmadı</span>
+                  )}
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    Son başarılı senkronizasyon:{' '}
+                    {remoteSyncInfo?.lastSyncAt
+                      ? formatSyncTimestamp(remoteSyncInfo.lastSyncAt)
+                      : 'Henüz yok'}
+                  </span>
+                </div>
+
+                {/* Doğrulama ve durum bildirimi (verifiedEqual olmadan asla eşitlendi demez) */}
+                <div
+                  className={`github-sync-banner tone-${syncBanner.tone}`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div className="github-sync-banner-title">{syncBanner.headline}</div>
+                  <p className="github-sync-banner-detail">{syncBanner.detail}</p>
+                </div>
+
                 {remoteSyncInfo?.repoVisibilityWarning && (
-                  <p className="provider-message">{remoteSyncInfo.repoVisibilityWarning}</p>
+                  <p className="github-sync-warning">{remoteSyncInfo.repoVisibilityWarning}</p>
                 )}
-                <div className="csv-actions-row">
+
+                {/* Pull sırasında yerel veri ezilmesini önleyen onay kutusu */}
+                {latestSyncReport?.requiresConfirmation && latestSyncReport.conflictSummary && (
+                  <div className="github-sync-confirm-box" role="alert">
+                    <div className="github-sync-confirm-title">
+                      Yerel kullanıcı verisinde farklı kayıtlar algılandı
+                    </div>
+                    <p className="github-sync-confirm-desc tabular-nums">
+                      Yerelde {latestSyncReport.conflictSummary.localItemsCount} benzersiz yapım (
+                      {latestSyncReport.conflictSummary.localOnlyItemsCount} tanesi GitHub&apos;da yok),
+                      GitHub&apos;da {latestSyncReport.conflictSummary.remoteItemsCount} benzersiz yapım bulunuyor.
+                    </p>
+                    <div className="github-sync-confirm-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={activeSyncOp !== null}
+                        onClick={() => handlePullFromGitHub('merge')}
+                      >
+                        Kayıpsız Birleştirerek İndir
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={activeSyncOp !== null}
+                        onClick={() => handlePullFromGitHub('overwrite_with_remote')}
+                      >
+                        Yedek Al ve GitHub Sürümünü Uygula
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={activeSyncOp !== null}
+                        onClick={() => setLatestSyncReport(null)}
+                      >
+                        Vazgeç
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Üç ayrı senkronizasyon eylemi */}
+                <div className="github-sync-actions">
                   <button
                     type="button"
                     className="btn"
-                    disabled={syncingGitHub || !remoteSyncInfo?.configured}
-                    onClick={handleTriggerGitHubSync}
+                    disabled={isSyncActionDisabled}
+                    onClick={() => handlePullFromGitHub('ask')}
                   >
-                    {syncingGitHub ? 'GitHub ile eşitleniyor…' : 'GitHub ile Şimdi Eşitle'}
+                    {activeSyncOp === 'pull' ? "GitHub'dan indiriliyor…" : "GitHub'dan indir"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={isSyncActionDisabled}
+                    onClick={handlePushToGitHub}
+                  >
+                    {activeSyncOp === 'push' ? "GitHub'a yükleniyor…" : "GitHub'a yükle"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={isSyncActionDisabled}
+                    onClick={handleReconcileWithGitHub}
+                  >
+                    {activeSyncOp === 'reconcile' ? 'İki yönlü eşitleniyor…' : 'İki yönlü eşitle'}
                   </button>
                 </div>
-                {gitHubSyncMessage && <p className="provider-message">{gitHubSyncMessage}</p>}
+
+                {/* Yerel vs GitHub metrik karşılaştırma tablosu */}
+                <div className="github-sync-metrics tabular-nums" aria-label="Yerel ve GitHub veri karşılaştırması">
+                  <div className="github-sync-metrics-head">
+                    <span>Veri Katmanı ve Ölçüt</span>
+                    <span>Yerel Depo</span>
+                    <span>GitHub ({remoteSyncInfo?.remoteTarget?.branch || 'main'})</span>
+                  </div>
+
+                  <div className="github-sync-metrics-row">
+                    <span>Film kataloğu (benzersiz film kaydı)</span>
+                    <strong>{localSide?.catalogMovieCount ?? remoteSyncInfo?.catalogCounts?.movies ?? 0} film</strong>
+                    <strong>
+                      {remoteSide ? `${remoteSide.catalogMovieCount} film` : 'Denetlenmedi'}
+                    </strong>
+                  </div>
+
+                  <div className="github-sync-metrics-row">
+                    <span>Dizi kataloğu (benzersiz dizi kaydı)</span>
+                    <strong>{localSide?.catalogTvCount ?? remoteSyncInfo?.catalogCounts?.tv ?? 0} dizi</strong>
+                    <strong>
+                      {remoteSide ? `${remoteSide.catalogTvCount} dizi` : 'Denetlenmedi'}
+                    </strong>
+                  </div>
+
+                  <div className="github-sync-metrics-row">
+                    <span>Kullanıcı verisi (profil / benzersiz kayıt)</span>
+                    <strong>
+                      {localSide
+                        ? `${localSide.userProfilesCount} profil / ${localSide.userUniqueSavedItemsCount} kayıt`
+                        : `${profiles.length} profil / ${savedItems.length} kayıt`}
+                    </strong>
+                    <strong>
+                      {remoteSide
+                        ? remoteSyncInfo?.isPublicRepo
+                          ? 'Açık depo koruması'
+                          : `${remoteSide.userProfilesCount} profil / ${remoteSide.userUniqueSavedItemsCount} kayıt`
+                        : 'Denetlenmedi'}
+                    </strong>
+                  </div>
+
+                  <div className="github-sync-metrics-row">
+                    <span>İşlenmiş profil (dosya sayısı / toplam kayıt)</span>
+                    <strong>
+                      {localSide
+                        ? `${localSide.derivedProfileFilesCount} dosya / ${localSide.derivedProfileTotalRecordsCount} kayıt`
+                        : `${remoteSyncInfo?.profilesCount ?? 0} dosya`}
+                    </strong>
+                    <strong>
+                      {remoteSide
+                        ? remoteSyncInfo?.isPublicRepo
+                          ? 'Açık depo koruması'
+                          : `${remoteSide.derivedProfileFilesCount} dosya / ${remoteSide.derivedProfileTotalRecordsCount} kayıt`
+                        : 'Denetlenmedi'}
+                    </strong>
+                  </div>
+
+                  <div className="github-sync-metrics-row">
+                    <span>İçerik ve dosya özeti (hash) eşitliği</span>
+                    <span>
+                      Semantik:{' '}
+                      <strong>
+                        {activeComparison
+                          ? activeComparison.semanticEqual
+                            ? 'Eşit'
+                            : 'Farklı'
+                          : 'Belirsiz'}
+                      </strong>
+                    </span>
+                    <span>
+                      Ham dosya:{' '}
+                      <strong>
+                        {activeComparison
+                          ? activeComparison.rawFilesEqual
+                            ? 'Birebir eşit'
+                            : activeComparison.semanticEqual
+                            ? 'Zaman alanı farkı'
+                            : 'Farklı'
+                          : 'Belirsiz'}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Dosya işlem sayaçları (etiketli metin ayracı) */}
+                <div className="github-sync-file-counters tabular-nums">
+                  <span>Bekleyen dosya: <strong>{pendingFilesCount}</strong></span>
+                  <span aria-hidden="true">·</span>
+                  <span>İndirilen: <strong>{downloadedFilesCount}</strong></span>
+                  <span aria-hidden="true">·</span>
+                  <span>Yüklenen: <strong>{uploadedFilesCount}</strong></span>
+                  <span aria-hidden="true">·</span>
+                  <span>Birleştirilen: <strong>{mergedFilesCount}</strong></span>
+                  <span aria-hidden="true">·</span>
+                  <span>Atlanan (değişmeyen): <strong>{skippedFilesCount}</strong></span>
+                  <span aria-hidden="true">·</span>
+                  <span>Hata alan: <strong>{failedFilesCount}</strong></span>
+                </div>
+
+                {/* Farklı dosyaların nedenleri */}
+                {activeComparison && activeComparison.differingFiles.length > 0 && (
+                  <div className="github-sync-diff-list">
+                    <div className="github-sync-subhead">
+                      Farklılık tespit edilen dosyalar ({activeComparison.differingFiles.length} dosya ·{' '}
+                      {activeComparison.differentRecordsCount} kayıt farkı):
+                    </div>
+                    {activeComparison.differingFiles.map((diff) => (
+                      <div key={diff.repoPath} className="github-sync-diff-item tabular-nums">
+                        <span className="github-sync-path">{diff.repoPath}</span>
+                        <span className="github-sync-reason">{diff.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Son hata açıklaması */}
+                {lastErrorDescription && (
+                  <div className="github-sync-error-detail" role="alert">
+                    <strong>Son hata açıklaması:</strong> {lastErrorDescription}
+                  </div>
+                )}
               </div>
 
               <button type="submit" className="btn btn-primary">
@@ -1047,4 +1327,10 @@ function watchedItemsCount(items: SavedItem[], type: 'all' | 'movie' | 'tv'): nu
     if (type !== 'all' && item.media_type !== type) return false;
     return item.status === 'completed' || item.status === 'watching' || Number(item.personal_rating) >= 1;
   }).length;
+}
+
+function formatSyncTimestamp(iso: string): string {
+  const cleaned = String(iso || '').trim();
+  if (!cleaned) return 'Henüz yok';
+  return cleaned.slice(0, 19).replace('T', ' ');
 }

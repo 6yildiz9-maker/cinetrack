@@ -433,6 +433,18 @@ export function createDataStorage(options: StorageOptions) {
     return restoredDoc;
   }
 
+  function createSafetySnapshotSerialized(): Promise<void> {
+    return writeSerializer.run(dataFile, () => {
+      backupExistingData();
+    });
+  }
+
+  function applySyncedDocumentSerialized(rawPayload: unknown): Promise<SaveDataResult> {
+    return writeSerializer.run(dataFile, () =>
+      saveData(rawPayload, { expectedRevision: null, confirmBulkDelete: true })
+    );
+  }
+
   return {
     dataFile,
     dataBackupFile,
@@ -442,6 +454,8 @@ export function createDataStorage(options: StorageOptions) {
     readData,
     saveData,
     saveDataSerialized,
+    createSafetySnapshotSerialized,
+    applySyncedDocumentSerialized,
     listBackups,
     restoreBackup,
   };

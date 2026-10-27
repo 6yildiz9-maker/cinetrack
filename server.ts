@@ -126,21 +126,29 @@ async function startServer() {
       console.log('TMDB_API_KEY is not configured; running in fallback demo mode.');
     }
 
-    // 5 dakikada bir otomatik arka plan senkronizasyonu (300.000 ms)
+    // 5 dakikada bir otomatik arka plan eşitlemesi — ilk çalıştırmada hiçbir tarafı körlemesine ezmemek için
+    // yalnızca kullanıcı ilk kayıpsız çift yönlü eşitlemeyi tamamladıktan sonra devreye girer.
     const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
     const autoSyncTimer = setInterval(async () => {
       try {
         const currentStatus = persistentStore.getSyncStatus();
-        if (currentStatus.configured) {
-          const syncRes = await persistentStore.syncToGitHub();
-          if (syncRes.ok) {
+        if (
+          currentStatus.configured &&
+          persistentStore.hasCompletedInitialReconcile() &&
+          !persistentStore.isSyncBusy()
+        ) {
+          const report = await persistentStore.reconcileWithGitHub();
+          if (report.ok) {
             console.log(
-              `[Auto-Sync] 5 dakikalık periyodik senkronizasyon tamamlandı (${syncRes.filesCommitted.length} dosya işlendi, ${syncRes.filesSkipped.length} no-op atlandı).`
+              `[Auto-Sync] Periyodik kayıpsız iki yönlü eşitleme tamamlandı (indirilen: ${report.filesDownloaded.length}, yüklenen: ${report.filesUploaded.length}, değişmeyen: ${report.filesUnchanged.length}, doğrulandı: ${report.verifiedEqual}).`
             );
-          } else if (syncRes.errors.length > 0) {
+          } else if (report.errors.length > 0) {
             console.warn(
-              '[Auto-Sync] Senkronizasyon uyarısı:',
-              redactSecrets(syncRes.errors.join('; '), [githubToken])
+              '[Auto-Sync] Eşitleme uyarısı:',
+              redactSecrets(
+                report.errors.map((e) => e.message).join('; '),
+                [githubToken]
+              )
             );
           }
         }
