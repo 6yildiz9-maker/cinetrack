@@ -582,12 +582,25 @@ export async function pushCatalogItems(items: any[]): Promise<any> {
   }
 }
 
-export async function fetchDerivedProfileData(profileId: string): Promise<any> {
+export async function fetchDerivedProfileData(
+  profileId: string,
+  expected?: {
+    profileFingerprint?: string;
+    algorithmVersion?: string;
+    sourceCatalogHash?: string;
+  }
+): Promise<any> {
   if (!profileId) return null;
   try {
-    const res = await fetch(`/api/profiles/derived/${encodeURIComponent(profileId)}`, {
-      cache: 'no-store',
-    });
+    const params = new URLSearchParams();
+    if (expected?.profileFingerprint) params.set('profileFingerprint', expected.profileFingerprint);
+    if (expected?.algorithmVersion) params.set('algorithmVersion', expected.algorithmVersion);
+    if (expected?.sourceCatalogHash) params.set('sourceCatalogHash', expected.sourceCatalogHash);
+    const query = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(
+      `/api/profiles/derived/${encodeURIComponent(profileId)}${query}`,
+      { cache: 'no-store' }
+    );
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -599,6 +612,8 @@ export async function pushDerivedProfileData(data: {
   profileId: string;
   algorithmVersion: string;
   profileFingerprint: string;
+  sourceCatalogHash?: string;
+  schemaVersion?: number;
   items: Record<string, any>;
 }): Promise<any> {
   try {

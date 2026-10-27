@@ -1,6 +1,22 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {
+  cleanupStaleTempFiles,
+  CorruptJsonFileError,
+  FileWriteSerializer,
+  readJsonFileWithRecovery,
+  tryParseValidJson,
+  writeJsonFileAtomic,
+} from './atomic-json.ts';
+import {
+  computeDerivedProfileContentHash,
+  DERIVED_PROFILE_SCHEMA_VERSION,
+  normalizeDerivedProfileItem,
+  validateDerivedProfileCache,
+  type DerivedPillarsRecord,
+  type DerivedProfileValidationResult,
+} from '../core/derived-profile-cache.ts';
 
 export interface CatalogRecord {
   key: string;
@@ -33,17 +49,27 @@ export interface CatalogManifest {
 export interface DerivedProfileItem {
   mediaKey: string;
   matchScore: number;
+  tasteScore?: number;
+  priorityScore?: number;
   lifecycleRing: 'ring0' | 'ring1' | 'ring2';
   signals?: Record<string, number>;
   reasons?: string[];
+  shownCount?: number;
+  skippedCount?: number;
+  demotionPenalty?: number;
+  status?: 'active' | 'saved' | 'disliked' | 'hidden';
+  scoreCoverage?: 'basic' | 'enriched';
+  pillars?: DerivedPillarsRecord;
   calculatedAt: string;
 }
 
 export interface DerivedProfileDocument {
-  schemaVersion: 1;
+  schemaVersion: number;
   profileId: string;
   algorithmVersion: string;
   profileFingerprint: string;
+  sourceCatalogHash?: string;
+  contentHash?: string;
   generatedAt: string;
   items: Record<string, DerivedProfileItem>;
 }
@@ -57,17 +83,46 @@ export interface PersistentStoreOptions {
   isPublicRepo?: boolean;
 }
 
+export type SyncFileStage = 'pending' | 'syncing' | 'succeeded' | 'failed';
+
+export type GitHubSyncErrorCategory =
+  | 'config_error'
+  | 'network_error'
+  | 'rate_limit'
+  | 'auth_error'
+  | 'conflict'
+  | 'not_found'
+  | 'malformed_response'
+  | 'corrupt_local_file'
+  | 'http_error';
+
+export interface SyncFileStateRecord {
+  repoPath: string;
+  status: SyncFileStage;
+  statusLabel: 'bekliyor' | 'gönderiliyor' | 'başarılı' | 'başarısız';
+  noop?: boolean;
+  blockedPublic?: boolean;
+  localContentHash?: string;
+  sha?: string;
+  error?: string;
+  errorCategory?: GitHubSyncErrorCategory;
+  updatedAt: string;
+}
+
 export interface SyncStatus {
   configured: boolean;
   mode: 'github' | 'local_only';
   reason?: string;
   isPublicRepo: boolean;
+  repoVisibilityWarning?: string;
+  corruptionWarnings?: string[];
   lastSyncAt: string | null;
   catalogCounts: {
     movies: number;
     tv: number;
   };
   profilesCount: number;
+  fileStates: Record<string, SyncFileStateRecord>;
   remoteTarget?: {
     owner: string;
     repo: string;
@@ -77,22 +132,60 @@ export interface SyncStatus {
 
 export interface SyncResult {
   ok: boolean;
+  partialFailure: boolean;
   filesCommitted: string[];
   filesSkipped: string[];
+  filesFailed: string[];
   filesBlockedPublic: string[];
+  fileStates: Record<string, SyncFileStateRecord>;
+  repoVisibilityWarning?: string;
   errors: string[];
 }
 
+const STAGE_LABELS: Record<SyncFileStage, SyncFileStateRecord['statusLabel']> = {
+  pending: 'bekliyor',
+  syncing: 'gönderiliyor',
+  succeeded: 'başarılı',
+  failed: 'başarısız',
+};
+
 /**
- * Deterministic JSON stringifier that sorts object keys alphabetically.
+ * Hata mesajları veya günlük metinlerinden GitHub token ve Bearer başlıklarını temizler.
+ */
+export function redactSecrets(input: string, extraSecrets: Array<string | undefined> = []): string {
+  if (!input) return '';
+  let sanitized = String(input);
+  for (const secret of extraSecrets) {
+    const trimmed = secret?.trim();
+    if (trimmed && trimmed.length >= 4) {
+      sanitized = sanitized.split(trimmed).join('[REDACTED]');
+    }
+  }
+  sanitized = sanitized
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/token\s+[A-Za-z0-9._-]+/gi, 'token [REDACTED]')
+    .replace(/gh[pousr]_[A-Za-z0-9_]+/g, '[REDACTED]')
+    .replace(/github_pat_[A-Za-z0-9_]+/g, '[REDACTED]');
+  return sanitized;
+}
+
+/**
+ * Deterministic JSON stringifier that sorts object keys recursively and alphabetically.
  */
 export function stringifyDeterministic(obj: any, space = 2): string {
-  const allKeys = new Set<string>();
-  JSON.stringify(obj, (key, value) => {
-    allKeys.add(key);
-    return value;
-  });
-  return JSON.stringify(obj, Array.from(allKeys).sort(), space);
+  const sortRecursively = (val: any): any => {
+    if (val === null || typeof val !== 'object') return val;
+    if (Array.isArray(val)) return val.map(sortRecursively);
+    const sortedKeys = Object.keys(val)
+      .filter((k) => val[k] !== undefined)
+      .sort((a, b) => a.localeCompare(b));
+    const out: Record<string, any> = {};
+    for (const k of sortedKeys) {
+      out[k] = sortRecursively(val[k]);
+    }
+    return out;
+  };
+  return JSON.stringify(sortRecursively(obj), null, space);
 }
 
 /**
@@ -124,11 +217,21 @@ export function mergeCatalogItem(existing: CatalogRecord | undefined, incoming: 
   const now = new Date().toISOString();
 
   const title = (incoming.title || incoming.name || existing?.title || '').trim();
-  const originalTitle = (incoming.original_title || incoming.original_name || existing?.original_title || '').trim();
-  const overview = (typeof incoming.overview === 'string' && incoming.overview.trim()) ? incoming.overview.trim() : (existing?.overview || '');
-  const posterPath = incoming.poster_path !== undefined ? incoming.poster_path : (existing?.poster_path ?? null);
-  const backdropPath = incoming.backdrop_path !== undefined ? incoming.backdrop_path : (existing?.backdrop_path ?? null);
-  
+  const originalTitle = (
+    incoming.original_title ||
+    incoming.original_name ||
+    existing?.original_title ||
+    ''
+  ).trim();
+  const overview =
+    typeof incoming.overview === 'string' && incoming.overview.trim()
+      ? incoming.overview.trim()
+      : existing?.overview || '';
+  const posterPath =
+    incoming.poster_path !== undefined ? incoming.poster_path : existing?.poster_path ?? null;
+  const backdropPath =
+    incoming.backdrop_path !== undefined ? incoming.backdrop_path : existing?.backdrop_path ?? null;
+
   // Merge genre_ids deterministically
   const genreSet = new Set<number>();
   if (Array.isArray(existing?.genre_ids)) {
@@ -139,17 +242,29 @@ export function mergeCatalogItem(existing: CatalogRecord | undefined, incoming: 
   }
   const genreIds = Array.from(genreSet).sort((a, b) => a - b);
 
-  const voteAverage = Number.isFinite(incoming.vote_average) && incoming.vote_average > 0
-    ? Number(incoming.vote_average)
-    : (existing?.vote_average ?? 0);
+  const voteAverage =
+    Number.isFinite(incoming.vote_average) && incoming.vote_average > 0
+      ? Number(incoming.vote_average)
+      : existing?.vote_average ?? 0;
 
-  const voteCount = Number.isSafeInteger(incoming.vote_count) && incoming.vote_count > 0
-    ? Number(incoming.vote_count)
-    : (existing?.vote_count ?? 0);
+  const voteCount =
+    Number.isSafeInteger(incoming.vote_count) && incoming.vote_count > 0
+      ? Number(incoming.vote_count)
+      : existing?.vote_count ?? 0;
 
-  const releaseDate = incoming.release_date || incoming.first_air_date || existing?.release_date || existing?.first_air_date || undefined;
-  const firstAirDate = mediaType === 'tv' ? (incoming.first_air_date || existing?.first_air_date || releaseDate) : undefined;
-  const popularity = Number.isFinite(incoming.popularity) ? Number(incoming.popularity) : (existing?.popularity ?? undefined);
+  const releaseDate =
+    incoming.release_date ||
+    incoming.first_air_date ||
+    existing?.release_date ||
+    existing?.first_air_date ||
+    undefined;
+  const firstAirDate =
+    mediaType === 'tv'
+      ? incoming.first_air_date || existing?.first_air_date || releaseDate
+      : undefined;
+  const popularity = Number.isFinite(incoming.popularity)
+    ? Number(incoming.popularity)
+    : existing?.popularity ?? undefined;
 
   return {
     key,
@@ -180,6 +295,31 @@ export function sanitizeProfileId(profileId: string): string {
   return cleaned.slice(0, 80) || 'default';
 }
 
+function isPlainRecordObject(raw: any): boolean {
+  return Boolean(raw && typeof raw === 'object' && !Array.isArray(raw));
+}
+
+function classifyHttpFailure(status: number, headers: Headers, bodyMessage: string): GitHubSyncErrorCategory {
+  const remaining = headers.get('x-ratelimit-remaining');
+  const lowerMsg = (bodyMessage || '').toLowerCase();
+  if (
+    status === 429 ||
+    (status === 403 && (remaining === '0' || lowerMsg.includes('rate limit')))
+  ) {
+    return 'rate_limit';
+  }
+  if (status === 401 || status === 403) {
+    return 'auth_error';
+  }
+  if (status === 409) {
+    return 'conflict';
+  }
+  if (status === 404) {
+    return 'not_found';
+  }
+  return 'http_error';
+}
+
 export class PersistentDataStore {
   private dataDir: string;
   private catalogDir: string;
@@ -187,7 +327,11 @@ export class PersistentDataStore {
   private moviesFile: string;
   private tvFile: string;
   private manifestFile: string;
+  private syncStateFile: string;
   private lastSyncAt: string | null = null;
+  private repoVisibilityWarning?: string;
+  private fileStates: Record<string, SyncFileStateRecord> = {};
+  private writeSerializer = new FileWriteSerializer();
 
   private githubToken?: string;
   private githubOwner?: string;
@@ -202,6 +346,7 @@ export class PersistentDataStore {
     this.moviesFile = path.join(this.catalogDir, 'movies.json');
     this.tvFile = path.join(this.catalogDir, 'tv.json');
     this.manifestFile = path.join(this.catalogDir, 'manifest.json');
+    this.syncStateFile = path.join(this.dataDir, 'sync-state.json');
 
     this.githubToken = options.githubToken?.trim();
     this.githubOwner = options.githubOwner?.trim();
@@ -210,34 +355,133 @@ export class PersistentDataStore {
     this.isPublicRepo = Boolean(options.isPublicRepo);
 
     this.initDirectories();
+    this.loadPersistedSyncState();
   }
 
   private initDirectories() {
     if (!existsSync(this.dataDir)) mkdirSync(this.dataDir, { recursive: true });
     if (!existsSync(this.catalogDir)) mkdirSync(this.catalogDir, { recursive: true });
     if (!existsSync(this.profilesDir)) mkdirSync(this.profilesDir, { recursive: true });
+
+    // Yarım kalmış geçici dosyaları başlangıçta kontrollü biçimde temizle
+    cleanupStaleTempFiles(this.dataDir);
+    cleanupStaleTempFiles(this.catalogDir);
+    cleanupStaleTempFiles(this.profilesDir);
+  }
+
+  private loadPersistedSyncState() {
+    if (!existsSync(this.syncStateFile)) return;
+    const parsed = tryParseValidJson<{
+      lastSyncAt?: string | null;
+      repoVisibilityWarning?: string;
+      fileStates?: Record<string, SyncFileStateRecord>;
+    }>(this.syncStateFile, (raw) => (isPlainRecordObject(raw) ? raw : null));
+    if (parsed.ok) {
+      this.lastSyncAt = parsed.data.lastSyncAt ?? null;
+      this.repoVisibilityWarning = parsed.data.repoVisibilityWarning;
+      if (isPlainRecordObject(parsed.data.fileStates)) {
+        this.fileStates = { ...parsed.data.fileStates };
+      }
+    }
+  }
+
+  private persistSyncState() {
+    try {
+      const payload = {
+        lastSyncAt: this.lastSyncAt,
+        ...(this.repoVisibilityWarning ? { repoVisibilityWarning: this.repoVisibilityWarning } : {}),
+        fileStates: this.fileStates,
+      };
+      writeJsonFileAtomic(this.syncStateFile, stringifyDeterministic(payload), {
+        validateParsed: isPlainRecordObject,
+      });
+    } catch {}
+  }
+
+  private setFileSyncStage(
+    repoPath: string,
+    status: SyncFileStage,
+    extra: Partial<Omit<SyncFileStateRecord, 'repoPath' | 'status' | 'statusLabel' | 'updatedAt'>> = {}
+  ) {
+    const prev = this.fileStates[repoPath];
+    this.fileStates[repoPath] = {
+      repoPath,
+      status,
+      statusLabel: STAGE_LABELS[status],
+      localContentHash: extra.localContentHash ?? prev?.localContentHash,
+      sha: extra.sha ?? prev?.sha,
+      ...(extra.noop !== undefined ? { noop: extra.noop } : {}),
+      ...(extra.blockedPublic !== undefined ? { blockedPublic: extra.blockedPublic } : {}),
+      ...(extra.error ? { error: redactSecrets(extra.error, [this.githubToken]) } : {}),
+      ...(extra.errorCategory ? { errorCategory: extra.errorCategory } : {}),
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   // --- CATALOG OPERATIONS ---
 
-  public readCatalog(mediaType: 'movie' | 'tv'): Record<string, CatalogRecord> {
+  public readCatalog(
+    mediaType: 'movie' | 'tv',
+    options: { allowEmptyOnCorrupt?: boolean } = {}
+  ): Record<string, CatalogRecord> {
     const file = mediaType === 'movie' ? this.moviesFile : this.tvFile;
-    if (!existsSync(file)) return {};
-    try {
-      const raw = JSON.parse(readFileSync(file, 'utf8'));
-      return typeof raw === 'object' && raw !== null ? raw : {};
-    } catch {
-      return {};
+    const recovery = readJsonFileWithRecovery<Record<string, CatalogRecord>>(file, {
+      backupPaths: [`${file}.bak`],
+      validate: (raw) => (isPlainRecordObject(raw) ? (raw as Record<string, CatalogRecord>) : null),
+      label: path.basename(file),
+      restoreRecoveredToTarget: true,
+    });
+
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
     }
+
+    if (recovery.status === 'corrupt_unrecoverable') {
+      if (options.allowEmptyOnCorrupt) {
+        return {};
+      }
+      throw new CorruptJsonFileError(file, recovery.error);
+    }
+
+    return {};
   }
 
-  public upsertCatalogItems(items: any[]): { inserted: number; updated: number; unchanged: number; total: number } {
-    if (!Array.isArray(items) || items.length === 0) {
-      return { inserted: 0, updated: 0, unchanged: 0, total: 0 };
+  public readCatalogManifest(): CatalogManifest | null {
+    const recovery = readJsonFileWithRecovery<CatalogManifest>(this.manifestFile, {
+      backupPaths: [`${this.manifestFile}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) && typeof raw.contentHash === 'string'
+          ? (raw as CatalogManifest)
+          : null,
+      label: 'manifest.json',
+      restoreRecoveredToTarget: true,
+    });
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
     }
+    return null;
+  }
 
-    const movies = this.readCatalog('movie');
-    const tv = this.readCatalog('tv');
+  public upsertCatalogItems(
+    items: any[],
+    writeOptions: { beforeRenameHook?: (tempFilePath: string) => void } = {}
+  ): { inserted: number; updated: number; unchanged: number; total: number; contentHash: string } {
+    // Önce mevcut katalog dosyalarını oku; kurtarılamayan bozuk JSON varsa CorruptJsonFileError fırlatır ve üzerine yazmaz!
+    const movies = this.readCatalog('movie', { allowEmptyOnCorrupt: false });
+    const tv = this.readCatalog('tv', { allowEmptyOnCorrupt: false });
+
+    if (!Array.isArray(items) || items.length === 0) {
+      const existingManifest = this.readCatalogManifest();
+      return {
+        inserted: 0,
+        updated: 0,
+        unchanged: 0,
+        total: 0,
+        contentHash:
+          existingManifest?.contentHash ||
+          hashContent(stringifyDeterministic(movies) + stringifyDeterministic(tv)),
+      };
+    }
 
     let inserted = 0;
     let updated = 0;
@@ -276,24 +520,36 @@ export class PersistentDataStore {
     }
 
     if (moviesChanged) {
-      writeFileSync(this.moviesFile, stringifyDeterministic(movies), 'utf8');
+      writeJsonFileAtomic(this.moviesFile, stringifyDeterministic(movies), {
+        backupPath: `${this.moviesFile}.bak`,
+        validateParsed: isPlainRecordObject,
+        beforeRenameHook: writeOptions.beforeRenameHook,
+      });
     }
     if (tvChanged) {
-      writeFileSync(this.tvFile, stringifyDeterministic(tv), 'utf8');
+      writeJsonFileAtomic(this.tvFile, stringifyDeterministic(tv), {
+        backupPath: `${this.tvFile}.bak`,
+        validateParsed: isPlainRecordObject,
+        beforeRenameHook: writeOptions.beforeRenameHook,
+      });
     }
 
+    const serializedMovies = stringifyDeterministic(movies);
+    const serializedTv = stringifyDeterministic(tv);
+    const combinedHash = hashContent(serializedMovies + serializedTv);
+
     if (moviesChanged || tvChanged || !existsSync(this.manifestFile)) {
-      const movieCount = Object.keys(movies).length;
-      const tvCount = Object.keys(tv).length;
-      const combinedHash = hashContent(stringifyDeterministic(movies) + stringifyDeterministic(tv));
       const manifest: CatalogManifest = {
         version: 1,
         updatedAt: new Date().toISOString(),
-        movieCount,
-        tvCount,
+        movieCount: Object.keys(movies).length,
+        tvCount: Object.keys(tv).length,
         contentHash: combinedHash,
       };
-      writeFileSync(this.manifestFile, stringifyDeterministic(manifest), 'utf8');
+      writeJsonFileAtomic(this.manifestFile, stringifyDeterministic(manifest), {
+        backupPath: `${this.manifestFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
     }
 
     return {
@@ -301,7 +557,14 @@ export class PersistentDataStore {
       updated,
       unchanged,
       total: inserted + updated + unchanged,
+      contentHash: combinedHash,
     };
+  }
+
+  public upsertCatalogItemsSerialized(
+    items: any[]
+  ): Promise<{ inserted: number; updated: number; unchanged: number; total: number; contentHash: string }> {
+    return this.writeSerializer.run(this.manifestFile, () => this.upsertCatalogItems(items));
   }
 
   // --- DERIVED PROFILE OPERATIONS ---
@@ -311,22 +574,58 @@ export class PersistentDataStore {
     return path.join(this.profilesDir, `${safeId}.json`);
   }
 
-  public readDerivedProfile(profileId: string): DerivedProfileDocument | null {
+  public readDerivedProfile(
+    profileId: string,
+    options: { allowNullOnCorrupt?: boolean } = {}
+  ): DerivedProfileDocument | null {
     const filePath = this.getProfileFilePath(profileId);
-    if (!existsSync(filePath)) return null;
-    try {
-      const raw = JSON.parse(readFileSync(filePath, 'utf8'));
-      if (raw && typeof raw === 'object' && raw.profileId) {
-        // Migration check
-        if (raw.schemaVersion !== 1) {
-          raw.schemaVersion = 1;
-        }
-        return raw as DerivedProfileDocument;
-      }
-      return null;
-    } catch {
-      return null;
+    const recovery = readJsonFileWithRecovery<DerivedProfileDocument>(filePath, {
+      backupPaths: [`${filePath}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) &&
+        typeof raw.profileId === 'string' &&
+        isPlainRecordObject(raw.items)
+          ? (raw as DerivedProfileDocument)
+          : null,
+      label: path.basename(filePath),
+      restoreRecoveredToTarget: true,
+    });
+
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
     }
+
+    if (recovery.status === 'corrupt_unrecoverable') {
+      if (options.allowNullOnCorrupt) return null;
+      throw new CorruptJsonFileError(filePath, recovery.error);
+    }
+
+    return null;
+  }
+
+  /**
+   * Profil cache doğrulamasını şema sürümü, algoritma sürümü, profil imzası ve kaynak katalog imzası ile birlikte yürütür.
+   */
+  public readValidatedDerivedProfile(
+    profileId: string,
+    expected: {
+      profileFingerprint: string;
+      algorithmVersion: string;
+      sourceCatalogHash?: string;
+      expectedSchemaVersion?: number;
+    }
+  ): DerivedProfileValidationResult {
+    const rawDoc = this.readDerivedProfile(profileId, { allowNullOnCorrupt: true });
+    if (!rawDoc) {
+      return { valid: false, reason: 'missing_document' };
+    }
+    return validateDerivedProfileCache(rawDoc, {
+      profileId,
+      profileFingerprint: expected.profileFingerprint,
+      algorithmVersion: expected.algorithmVersion,
+      sourceCatalogHash: expected.sourceCatalogHash,
+      expectedSchemaVersion: expected.expectedSchemaVersion,
+    });
   }
 
   public upsertDerivedProfile(
@@ -334,68 +633,156 @@ export class PersistentDataStore {
       profileId: string;
       algorithmVersion: string;
       profileFingerprint: string;
-      items: Record<string, DerivedProfileItem>;
-    }
-  ): { updated: boolean; count: number } {
+      sourceCatalogHash?: string;
+      items: Record<string, Partial<DerivedProfileItem> & { mediaKey?: string }>;
+    },
+    writeOptions: { beforeRenameHook?: (tempFilePath: string) => void } = {}
+  ): { updated: boolean; count: number; contentHash: string } {
     const { profileId, algorithmVersion, profileFingerprint, items } = input;
-    const existing = this.readDerivedProfile(profileId);
+    const targetSchemaVersion = input.schemaVersion ?? DERIVED_PROFILE_SCHEMA_VERSION;
+    const resolvedSourceCatalogHash =
+      input.sourceCatalogHash !== undefined
+        ? String(input.sourceCatalogHash)
+        : this.readCatalogManifest()?.contentHash || '';
+
+    // Kurtarılamayan bozuk JSON varsa CorruptJsonFileError fırlatır ve mevcut dosyayı ezmez
+    const existing = this.readDerivedProfile(profileId, { allowNullOnCorrupt: false });
     const filePath = this.getProfileFilePath(profileId);
 
-    // No-op check: if algorithmVersion, profileFingerprint, and items didn't change, do not touch file
-    if (
+    const sameContext = Boolean(
       existing &&
-      existing.algorithmVersion === algorithmVersion &&
-      existing.profileFingerprint === profileFingerprint &&
-      Object.keys(existing.items || {}).length === Object.keys(items || {}).length
-    ) {
-      let identical = true;
-      for (const [k, v] of Object.entries(items)) {
-        const ev = existing.items[k];
-        if (!ev || ev.matchScore !== v.matchScore || ev.lifecycleRing !== v.lifecycleRing) {
-          identical = false;
-          break;
+        Number(existing.schemaVersion) === targetSchemaVersion &&
+        existing.algorithmVersion === algorithmVersion &&
+        existing.profileFingerprint === profileFingerprint &&
+        String(existing.sourceCatalogHash || '') === resolvedSourceCatalogHash
+    );
+
+    // Bağlam (şema, algoritma, profil imzası veya kaynak katalog imzası) değiştiyse eski önbellek maddeleri taşınmaz
+    const mergedItems: Record<string, DerivedProfileItem> = {};
+    if (sameContext && existing?.items) {
+      for (const [k, prevVal] of Object.entries(existing.items)) {
+        const normPrev = normalizeDerivedProfileItem(k, prevVal);
+        if (normPrev) {
+          mergedItems[normPrev.mediaKey] = normPrev;
         }
       }
-      if (identical) {
-        return { updated: false, count: Object.keys(existing.items).length };
+    }
+
+    for (const [rawKey, item] of Object.entries(items || {})) {
+      const normalized = normalizeDerivedProfileItem(rawKey, item);
+      if (!normalized) continue;
+      const prevItem = mergedItems[normalized.mediaKey];
+      if (prevItem) {
+        const prevSingleHash = computeDerivedProfileContentHash({
+          schemaVersion: targetSchemaVersion,
+          profileId,
+          algorithmVersion,
+          profileFingerprint,
+          sourceCatalogHash: resolvedSourceCatalogHash,
+          items: { [normalized.mediaKey]: prevItem },
+        });
+        const nextSingleHash = computeDerivedProfileContentHash({
+          schemaVersion: targetSchemaVersion,
+          profileId,
+          algorithmVersion,
+          profileFingerprint,
+          sourceCatalogHash: resolvedSourceCatalogHash,
+          items: { [normalized.mediaKey]: normalized },
+        });
+        if (prevSingleHash === nextSingleHash) {
+          // Anlamlı alanlar aynıysa önceki calculatedAt zaman damgasını koru
+          mergedItems[normalized.mediaKey] = prevItem;
+          continue;
+        }
       }
+      mergedItems[normalized.mediaKey] = normalized;
     }
 
-    // Merge items keyed deterministically
-    const mergedItems: Record<string, DerivedProfileItem> = existing ? { ...existing.items } : {};
-    for (const [mediaKey, item] of Object.entries(items)) {
-      const normalizedRing =
-        item.lifecycleRing ||
-        ((item as any).ring === 'ring1' || (item as any).ring === 'ring2' ? (item as any).ring : 'ring0');
-      mergedItems[mediaKey] = {
-        mediaKey,
-        matchScore: Number(item.matchScore ?? (item as any).tasteScore ?? 75),
-        lifecycleRing: normalizedRing,
-        signals: item.signals,
-        reasons: item.reasons,
-        calculatedAt: item.calculatedAt || new Date().toISOString(),
-      };
-    }
-
-    const doc: DerivedProfileDocument = {
-      schemaVersion: 1,
+    const nextContentHash = computeDerivedProfileContentHash({
+      schemaVersion: targetSchemaVersion,
       profileId,
       algorithmVersion,
       profileFingerprint,
+      sourceCatalogHash: resolvedSourceCatalogHash,
+      items: mergedItems,
+    });
+
+    if (sameContext && existing) {
+      const existingContentHash =
+        existing.contentHash ||
+        computeDerivedProfileContentHash({
+          schemaVersion: Number(existing.schemaVersion) || 1,
+          profileId: existing.profileId,
+          algorithmVersion: existing.algorithmVersion,
+          profileFingerprint: existing.profileFingerprint,
+          sourceCatalogHash: existing.sourceCatalogHash || '',
+          items: existing.items || {},
+        });
+
+      if (
+        existingContentHash === nextContentHash &&
+        Object.keys(existing.items || {}).length === Object.keys(mergedItems).length
+      ) {
+        return {
+          updated: false,
+          count: Object.keys(mergedItems).length,
+          contentHash: existingContentHash,
+        };
+      }
+    }
+
+    const doc: DerivedProfileDocument = {
+      schemaVersion: targetSchemaVersion,
+      profileId,
+      algorithmVersion,
+      profileFingerprint,
+      sourceCatalogHash: resolvedSourceCatalogHash,
+      contentHash: nextContentHash,
       generatedAt: new Date().toISOString(),
       items: mergedItems,
     };
 
-    writeFileSync(filePath, stringifyDeterministic(doc), 'utf8');
-    return { updated: true, count: Object.keys(mergedItems).length };
+    writeJsonFileAtomic(filePath, stringifyDeterministic(doc), {
+      backupPath: `${filePath}.bak`,
+      validateParsed: (parsed) =>
+        isPlainRecordObject(parsed) &&
+        typeof parsed.profileId === 'string' &&
+        isPlainRecordObject(parsed.items),
+      beforeRenameHook: writeOptions.beforeRenameHook,
+    });
+
+    return {
+      updated: true,
+      count: Object.keys(mergedItems).length,
+      contentHash: nextContentHash,
+    };
+  }
+
+  public upsertDerivedProfileSerialized(
+    input: Parameters<PersistentDataStore['upsertDerivedProfile']>[0]
+  ): Promise<{ updated: boolean; count: number; contentHash: string }> {
+    const filePath = this.getProfileFilePath(input.profileId);
+    return this.writeSerializer.run(filePath, () => this.upsertDerivedProfile(input));
   }
 
   // --- SYNC & GITHUB OPERATIONS ---
 
   public getSyncStatus(): SyncStatus {
     const configured = Boolean(this.githubToken && this.githubOwner && this.githubRepo);
-    const movies = this.readCatalog('movie');
-    const tv = this.readCatalog('tv');
+    const corruptionWarnings: string[] = [];
+
+    let movieCount = 0;
+    let tvCount = 0;
+    try {
+      movieCount = Object.keys(this.readCatalog('movie')).length;
+    } catch (err: any) {
+      corruptionWarnings.push(err?.message || 'movies.json okunamadı');
+    }
+    try {
+      tvCount = Object.keys(this.readCatalog('tv')).length;
+    } catch (err: any) {
+      corruptionWarnings.push(err?.message || 'tv.json okunamadı');
+    }
 
     let profilesCount = 0;
     try {
@@ -417,12 +804,15 @@ export class PersistentDataStore {
       mode: configured ? 'github' : 'local_only',
       reason: missingReason,
       isPublicRepo: this.isPublicRepo,
+      ...(this.repoVisibilityWarning ? { repoVisibilityWarning: this.repoVisibilityWarning } : {}),
+      ...(corruptionWarnings.length > 0 ? { corruptionWarnings } : {}),
       lastSyncAt: this.lastSyncAt,
       catalogCounts: {
-        movies: Object.keys(movies).length,
-        tv: Object.keys(tv).length,
+        movies: movieCount,
+        tv: tvCount,
       },
       profilesCount,
+      fileStates: { ...this.fileStates },
       remoteTarget: hasTargetRepo
         ? {
             owner: this.githubOwner!,
@@ -434,15 +824,74 @@ export class PersistentDataStore {
   }
 
   /**
-   * Commit a file to GitHub via Contents API with SHA conflict management.
+   * Uzak GitHub deposunun gerçek `private/public` görünürlüğünü kontrol eder ve
+   * `CINETRACK_DATA_REPO_IS_PUBLIC` ayarıyla uyumsuzluk varsa raporlar.
+   */
+  public async verifyRemoteRepoVisibility(): Promise<{
+    effectiveIsPublicRepo: boolean;
+    warning?: string;
+  }> {
+    if (!this.githubToken || !this.githubOwner || !this.githubRepo) {
+      return { effectiveIsPublicRepo: this.isPublicRepo };
+    }
+
+    const repoUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}`;
+    try {
+      const res = await fetch(repoUrl, {
+        headers: {
+          Authorization: `Bearer ${this.githubToken}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'CineTrack-Sync-Agent',
+        },
+      });
+      if (res.status === 200) {
+        const meta = await res.json().catch(() => null);
+        if (meta && typeof meta.private === 'boolean') {
+          const remoteIsPublic = meta.private === false;
+          if (remoteIsPublic && !this.isPublicRepo) {
+            const warning =
+              'Yapılandırma uyarısı: Uzak GitHub deposu herkese açık (public), ancak CINETRACK_DATA_REPO_IS_PUBLIC=false tanımlanmış. Kişisel izleme listesi ve profil dosyalarının sızmasını önlemek için özel verilerin gönderimi engellendi.';
+            this.repoVisibilityWarning = warning;
+            return { effectiveIsPublicRepo: true, warning };
+          }
+          if (!remoteIsPublic && this.isPublicRepo) {
+            const warning =
+              'Yapılandırma uyarısı: Uzak GitHub deposu özel (private), ancak CINETRACK_DATA_REPO_IS_PUBLIC=true tanımlandığı için kişisel profil dosyaları gönderilmiyor.';
+            this.repoVisibilityWarning = warning;
+            return { effectiveIsPublicRepo: true, warning };
+          }
+          this.repoVisibilityWarning = undefined;
+          return { effectiveIsPublicRepo: remoteIsPublic };
+        }
+      }
+    } catch {
+      // Ağ hatası asıl dosya senkronizasyon adımında sınıflandırılarak raporlanır
+    }
+
+    return { effectiveIsPublicRepo: this.isPublicRepo };
+  }
+
+  /**
+   * Commit a file to GitHub via Contents API with SHA conflict management,
+   * bounded retry, error classification, and token redaction.
    */
   public async commitFileToGitHub(
     repoPath: string,
     contentString: string,
     commitMessage: string
-  ): Promise<{ ok: boolean; sha?: string; error?: string; skippedNoop?: boolean }> {
+  ): Promise<{
+    ok: boolean;
+    sha?: string;
+    error?: string;
+    errorCategory?: GitHubSyncErrorCategory;
+    skippedNoop?: boolean;
+  }> {
     if (!this.githubToken || !this.githubOwner || !this.githubRepo) {
-      return { ok: false, error: 'GitHub configuration missing' };
+      return {
+        ok: false,
+        error: 'GitHub senkronizasyon yapılandırması eksik.',
+        errorCategory: 'config_error',
+      };
     }
 
     const apiUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/${repoPath}`;
@@ -457,28 +906,64 @@ export class PersistentDataStore {
 
     // 1. Fetch current remote file SHA & content
     try {
-      const getRes = await fetch(`${apiUrl}?ref=${this.githubBranch}`, { headers: baseHeaders });
+      const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
+        headers: baseHeaders,
+      });
       if (getRes.status === 200) {
-        const fileData = await getRes.json();
+        let fileData: any = null;
+        try {
+          fileData = await getRes.json();
+        } catch {
+          return {
+            ok: false,
+            error: 'GitHub dosya okuma yanıtı geçerli JSON değil.',
+            errorCategory: 'malformed_response',
+          };
+        }
+        if (!fileData || typeof fileData !== 'object' || typeof fileData.sha !== 'string') {
+          return {
+            ok: false,
+            error: 'GitHub dosya yanıtında geçerli SHA alanı bulunamadı.',
+            errorCategory: 'malformed_response',
+          };
+        }
         remoteSha = fileData.sha;
-        if (fileData.content) {
-          remoteContent = Buffer.from(fileData.content, 'base64').toString('utf8');
+        if (typeof fileData.content === 'string') {
+          remoteContent = Buffer.from(fileData.content.replace(/\s+/g, ''), 'base64').toString('utf8');
         }
       } else if (getRes.status !== 404) {
-        return { ok: false, error: `GitHub API error fetching file: HTTP ${getRes.status}` };
+        const errBody = await getRes.json().catch(() => ({}));
+        const rawMsg = String(errBody?.message || '');
+        const category = classifyHttpFailure(getRes.status, getRes.headers, rawMsg);
+        return {
+          ok: false,
+          error: redactSecrets(
+            `GitHub okuma hatası (${category}): HTTP ${getRes.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
+            [this.githubToken]
+          ),
+          errorCategory: category,
+        };
       }
     } catch (e: any) {
-      return { ok: false, error: `Network error connecting to GitHub: ${e?.message || e}` };
+      return {
+        ok: false,
+        error: redactSecrets(
+          `GitHub ağ bağlantı hatası: ${e?.message || 'bağlantı kurulamadı'}`,
+          [this.githubToken]
+        ),
+        errorCategory: 'network_error',
+      };
     }
 
     // 2. Prevent no-op commit if content is identical
-    if (remoteContent && remoteContent.trim() === contentString.trim()) {
+    if (remoteContent !== undefined && remoteContent.trim() === contentString.trim()) {
       return { ok: true, sha: remoteSha, skippedNoop: true };
     }
 
-    // 3. Put content (with retry on 409 conflict)
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const payload: any = {
+    // 3. Put content (with bounded retry up to 3 attempts on 409 conflict or transient network error)
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const payload: Record<string, any> = {
         message: commitMessage,
         content: Buffer.from(contentString, 'utf8').toString('base64'),
         branch: this.githubBranch,
@@ -493,128 +978,275 @@ export class PersistentDataStore {
         });
 
         if (putRes.status === 200 || putRes.status === 201) {
-          const resData = await putRes.json();
-          return { ok: true, sha: resData.content?.sha };
+          let resData: any = null;
+          try {
+            resData = await putRes.json();
+          } catch {
+            return {
+              ok: false,
+              error: 'GitHub yazma yanıtı geçerli JSON değil.',
+              errorCategory: 'malformed_response',
+            };
+          }
+          if (!resData || typeof resData !== 'object') {
+            return {
+              ok: false,
+              error: 'GitHub yazma yanıtı beklenmeyen biçimde döndü.',
+              errorCategory: 'malformed_response',
+            };
+          }
+          return { ok: true, sha: resData.content?.sha || remoteSha };
         }
 
         if (putRes.status === 409) {
-          // Conflict: re-fetch SHA and retry
-          const refetch = await fetch(`${apiUrl}?ref=${this.githubBranch}`, { headers: baseHeaders });
-          if (refetch.status === 200) {
-            const refetchedData = await refetch.json();
-            remoteSha = refetchedData.sha;
-            continue;
+          if (attempt < maxAttempts) {
+            const refetch = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
+              headers: baseHeaders,
+            });
+            if (refetch.status === 200) {
+              const refetchedData = await refetch.json().catch(() => null);
+              if (refetchedData && typeof refetchedData.sha === 'string') {
+                remoteSha = refetchedData.sha;
+                if (typeof refetchedData.content === 'string') {
+                  const latestRemote = Buffer.from(
+                    refetchedData.content.replace(/\s+/g, ''),
+                    'base64'
+                  ).toString('utf8');
+                  if (latestRemote.trim() === contentString.trim()) {
+                    return { ok: true, sha: remoteSha, skippedNoop: true };
+                  }
+                }
+                continue;
+              }
+            }
           }
+          return {
+            ok: false,
+            error: `GitHub SHA çakışması (HTTP 409): ${maxAttempts} deneme sonunda giderilemedi.`,
+            errorCategory: 'conflict',
+          };
         }
 
         const errJson = await putRes.json().catch(() => ({}));
-        return { ok: false, error: `GitHub commit rejected: HTTP ${putRes.status} ${errJson.message || ''}` };
+        const errDetail = String(errJson?.message || '');
+        const category = classifyHttpFailure(putRes.status, putRes.headers, errDetail);
+        return {
+          ok: false,
+          error: redactSecrets(
+            `GitHub yazma reddedildi (${category}): HTTP ${putRes.status}${
+              errDetail ? ` - ${errDetail}` : ''
+            }`,
+            [this.githubToken]
+          ),
+          errorCategory: category,
+        };
       } catch (e: any) {
-        if (attempt === 3) return { ok: false, error: `Commit attempt failed: ${e?.message || e}` };
+        if (attempt === maxAttempts) {
+          return {
+            ok: false,
+            error: redactSecrets(
+              `GitHub ağ hatası (${maxAttempts} deneme başarısız): ${e?.message || 'bağlantı hatası'}`,
+              [this.githubToken]
+            ),
+            errorCategory: 'network_error',
+          };
+        }
       }
     }
 
-    return { ok: false, error: 'Max commit retries exceeded' };
+    return {
+      ok: false,
+      error: 'GitHub yazma yeniden deneme sınırı aşıldı.',
+      errorCategory: 'conflict',
+    };
   }
 
   /**
-   * Sync catalog and profile data according to security rules.
+   * Çok dosyalı GitHub senkronizasyonunu dosya bazlı durum takibiyle yürütür.
+   * Kısmi hata durumunda başarılı dosyaları korur, başarısız olanları açıkça raporlar
+   * ve sonraki denemede kaldığı yerden devam eder.
    */
-  public async syncToGitHub(): Promise<SyncResult> {
+  public async syncToGitHub(options: { forceAll?: boolean } = {}): Promise<SyncResult> {
     const result: SyncResult = {
       ok: true,
+      partialFailure: false,
       filesCommitted: [],
       filesSkipped: [],
+      filesFailed: [],
       filesBlockedPublic: [],
+      fileStates: {},
       errors: [],
     };
 
     if (!this.githubToken || !this.githubOwner || !this.githubRepo) {
       result.ok = false;
-      result.errors.push('GitHub senkronizasyonu için ortam değişkenleri (token, owner, repo) eksik.');
+      result.errors.push(
+        'GitHub senkronizasyonu için ortam değişkenleri (token, owner, repo) eksik.'
+      );
+      result.fileStates = { ...this.fileStates };
       return result;
     }
 
-    // Sync Catalog files (movies, tv, manifest)
+    const visibility = await this.verifyRemoteRepoVisibility();
+    if (visibility.warning) {
+      result.repoVisibilityWarning = visibility.warning;
+    }
+
+    interface PlannedSyncItem {
+      repoPath: string;
+      localPath: string;
+      commitMessage: string;
+    }
+
+    const plannedFiles: PlannedSyncItem[] = [];
+
     for (const [relPath, filePath] of [
       ['data/catalog/movies.json', this.moviesFile],
       ['data/catalog/tv.json', this.tvFile],
       ['data/catalog/manifest.json', this.manifestFile],
-    ]) {
-      if (!existsSync(filePath)) continue;
-      const content = readFileSync(filePath, 'utf8');
-      const commitRes = await this.commitFileToGitHub(
-        relPath,
-        content,
-        `chore(catalog): sync ${path.basename(relPath)} [skip ci]`
+    ] as const) {
+      if (existsSync(filePath)) {
+        plannedFiles.push({
+          repoPath: relPath,
+          localPath: filePath,
+          commitMessage: `chore(catalog): sync ${path.basename(relPath)} [skip ci]`,
+        });
+      }
+    }
+
+    if (visibility.effectiveIsPublicRepo) {
+      const blockedMsg =
+        'data/profiles/* (Açık depo koruması: kişisel izleme listesi ve profil verileri gönderilmedi)';
+      result.filesBlockedPublic.push(blockedMsg);
+    } else {
+      const mainDataFile = path.join(this.dataDir, 'cinetrack-data.json');
+      if (existsSync(mainDataFile)) {
+        plannedFiles.push({
+          repoPath: 'data/cinetrack-data.json',
+          localPath: mainDataFile,
+          commitMessage: 'chore(data): sync cinetrack-data.json [skip ci]',
+        });
+      }
+
+      if (existsSync(this.profilesDir)) {
+        const profileFiles = readdirSync(this.profilesDir)
+          .filter((f) => f.endsWith('.json'))
+          .sort((a, b) => a.localeCompare(b));
+        for (const file of profileFiles) {
+          plannedFiles.push({
+            repoPath: `data/profiles/${file}`,
+            localPath: path.join(this.profilesDir, file),
+            commitMessage: `chore(profile): sync derived data for ${file} [skip ci]`,
+          });
+        }
+      }
+    }
+
+    // 1. Önce tüm hedef dosyaları 'pending' (veya değişmemiş başarılıysa hazır) olarak işaretle
+    const preparedContents = new Map<
+      string,
+      { content: string; localHash: string; alreadySyncedUnchanged: boolean }
+    >();
+
+    for (const item of plannedFiles) {
+      const validCheck = tryParseValidJson(item.localPath);
+      if (!validCheck.ok) {
+        const errMsg = `Yerel dosya bozuk olduğu için GitHub'a gönderilmedi (${validCheck.error})`;
+        this.setFileSyncStage(item.repoPath, 'failed', {
+          error: errMsg,
+          errorCategory: 'corrupt_local_file',
+        });
+        result.filesFailed.push(item.repoPath);
+        result.errors.push(`${item.repoPath}: ${errMsg}`);
+        result.ok = false;
+        continue;
+      }
+
+      const content = readFileSync(item.localPath, 'utf8');
+      const localHash = hashContent(content.trim());
+      const prevRecord = this.fileStates[item.repoPath];
+      const alreadySyncedUnchanged = Boolean(
+        !options.forceAll &&
+          prevRecord &&
+          prevRecord.status === 'succeeded' &&
+          prevRecord.localContentHash === localHash
       );
+
+      preparedContents.set(item.repoPath, {
+        content,
+        localHash,
+        alreadySyncedUnchanged,
+      });
+
+      if (!alreadySyncedUnchanged) {
+        this.setFileSyncStage(item.repoPath, 'pending', {
+          localContentHash: localHash,
+          noop: undefined,
+          error: undefined,
+          errorCategory: undefined,
+        });
+      }
+    }
+
+    // 2. Her dosyayı sırayla senkronize et; daha önce başarılı ve yerel özeti değişmemiş olanları atla
+    for (const item of plannedFiles) {
+      const prepared = preparedContents.get(item.repoPath);
+      if (!prepared) continue;
+
+      if (prepared.alreadySyncedUnchanged) {
+        this.setFileSyncStage(item.repoPath, 'succeeded', {
+          localContentHash: prepared.localHash,
+          noop: true,
+        });
+        result.filesSkipped.push(item.repoPath);
+        continue;
+      }
+
+      this.setFileSyncStage(item.repoPath, 'syncing', {
+        localContentHash: prepared.localHash,
+      });
+
+      const commitRes = await this.commitFileToGitHub(
+        item.repoPath,
+        prepared.content,
+        item.commitMessage
+      );
+
       if (commitRes.ok) {
+        this.setFileSyncStage(item.repoPath, 'succeeded', {
+          localContentHash: prepared.localHash,
+          sha: commitRes.sha,
+          noop: Boolean(commitRes.skippedNoop),
+        });
         if (commitRes.skippedNoop) {
-          result.filesSkipped.push(relPath);
+          result.filesSkipped.push(item.repoPath);
         } else {
-          result.filesCommitted.push(relPath);
+          result.filesCommitted.push(item.repoPath);
         }
       } else {
-        result.errors.push(`${relPath}: ${commitRes.error}`);
+        const sanitizedErr = redactSecrets(commitRes.error || 'Bilinmeyen senkronizasyon hatası', [
+          this.githubToken,
+        ]);
+        this.setFileSyncStage(item.repoPath, 'failed', {
+          localContentHash: prepared.localHash,
+          error: sanitizedErr,
+          errorCategory: commitRes.errorCategory || 'http_error',
+        });
+        result.filesFailed.push(item.repoPath);
+        result.errors.push(`${item.repoPath}: ${sanitizedErr}`);
         result.ok = false;
       }
     }
 
-    // Sync Derived Profiles & Main Private Watchlist Data (SECURITY RULE: NEVER sync profile data to public repo)
-    if (this.isPublicRepo) {
-      result.filesBlockedPublic.push('data/profiles/* (Public repo: kişisel profil verisi güvenliği için senkron engellendi)');
-    } else {
-      const mainDataFile = path.join(this.dataDir, 'cinetrack-data.json');
-      if (existsSync(mainDataFile)) {
-        const mainContent = readFileSync(mainDataFile, 'utf8');
-        const mainCommit = await this.commitFileToGitHub(
-          'data/cinetrack-data.json',
-          mainContent,
-          'chore(data): sync cinetrack-data.json [skip ci]'
-        );
-        if (mainCommit.ok) {
-          if (mainCommit.skippedNoop) {
-            result.filesSkipped.push('data/cinetrack-data.json');
-          } else {
-            result.filesCommitted.push('data/cinetrack-data.json');
-          }
-        } else {
-          result.errors.push(`data/cinetrack-data.json: ${mainCommit.error}`);
-          result.ok = false;
-        }
-      }
-
-      if (existsSync(this.profilesDir)) {
-        const profileFiles = readdirSync(this.profilesDir);
-        for (const file of profileFiles) {
-          if (!file.endsWith('.json')) continue;
-          const fullPath = path.join(this.profilesDir, file);
-          const relPath = `data/profiles/${file}`;
-          const content = readFileSync(fullPath, 'utf8');
-
-          const commitRes = await this.commitFileToGitHub(
-            relPath,
-            content,
-            `chore(profile): sync derived data for ${file} [skip ci]`
-          );
-          if (commitRes.ok) {
-            if (commitRes.skippedNoop) {
-              result.filesSkipped.push(relPath);
-            } else {
-              result.filesCommitted.push(relPath);
-            }
-          } else {
-            result.errors.push(`${relPath}: ${commitRes.error}`);
-            result.ok = false;
-          }
-        }
-      }
-    }
+    const succeededCount = result.filesCommitted.length + result.filesSkipped.length;
+    result.partialFailure = !result.ok && succeededCount > 0 && result.filesFailed.length > 0;
 
     if (result.ok) {
       this.lastSyncAt = new Date().toISOString();
     }
 
+    this.persistSyncState();
+    result.fileStates = { ...this.fileStates };
     return result;
   }
 }

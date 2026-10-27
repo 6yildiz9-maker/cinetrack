@@ -510,7 +510,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 showMatch={tab === 'discover' && Boolean(item.tasteScore ?? item.matchScore)}
                 matchScore={item.tasteScore ?? item.matchScore}
                 showRing={tab === 'discover' && category === 'for-you'}
-                selectionRing={item.ring}
+                selectionRing={item.lifecycleRing || item.ring}
                 onOpenDetails={onOpenDetails}
                 onQuickAdd={onQuickAdd}
                 onSetStatus={onSetStatus}

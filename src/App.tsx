@@ -78,11 +78,20 @@ import {
   checkServerTmdbStatus,
   fetchSyncStatus,
   fetchCatalogItems,
+  fetchDerivedProfileData,
   pushCatalogItems,
   pushDerivedProfileData,
   TmdbSourceMeta,
   ServerConflictDetail,
 } from './services/api';
+import { computeSourceCatalogSignature } from './core/derived-profile-cache';
+import {
+  buildDerivedProfilePayloadFromTasteMap,
+  enforceStrictMediaTypePool,
+  enrichCatalogItemsWithTaste,
+  hydrateTasteMapWithDerivedCache,
+  mapRecommendationBatchToDisplayItems,
+} from './core/recommendation-orchestrator';
 import { useOfflineSync } from './hooks/useOfflineSync';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 
@@ -596,37 +605,13 @@ export function App() {
     if (!items || items.length === 0) return items;
     try {
       const currentProfileId = activeProfileIdRef.current;
-      const currentSaved = savedItemsRef.current;
-      const currentPrefs = preferencesRef.current;
-      const currentGenres = genresMapRef.current;
       const currentTasteMap = tasteMapRef.current || loadPersistentTasteMap(currentProfileId);
-      const tasteProfile = buildTasteProfileV3(currentSaved, {
-        lambda: 1,
-        dislikedKeys: currentPrefs.disliked,
-      });
-      const scored = scoreCandidatesV3(items, tasteProfile, {
-        weights: RECOMMENDATION_WEIGHTS_V3,
-        genreNames: currentGenres,
-        mood: currentPrefs.mood,
+      return enrichCatalogItemsWithTaste({
+        items,
+        savedItems: savedItemsRef.current,
+        preferences: preferencesRef.current,
+        genresMap: genresMapRef.current,
         tasteMap: currentTasteMap,
-      });
-      return scored.map((s) => {
-        const cand = s.candidate || s;
-        const key = makeMediaKey(cand);
-        const mapEntry = currentTasteMap?.entries?.[key];
-        const tasteScore =
-          mapEntry?.tasteScore ??
-          mapEntry?.matchScore ??
-          Math.max(1, Math.min(100, Math.round(Number(s.score || s.rawScore || cand.tasteScore) || 75)));
-        return {
-          ...cand,
-          tasteScore,
-          matchScore: tasteScore,
-          priorityScore: mapEntry?.priorityScore ?? tasteScore,
-          tags: s.tags || cand.tags || [],
-          ring: mapEntry?.ring || (s.ring === 'ring2' ? 'ring2' : 'ring0'),
-          tasteMapEntry: mapEntry,
-        };
       });
     } catch {
       return items;
@@ -956,12 +941,60 @@ export function App() {
           const currentSig = computeTasteProfileSignature(rawSaved, currentPrefs, favoriteActorsRef.current, { targetType });
           const diskTasteMap = loadPersistentTasteMap(currentProfileId);
           const inMemTasteMap = tasteMapRef.current;
-          const storedTasteMap =
+          let storedTasteMap =
             inMemTasteMap &&
             inMemTasteMap.profileId === currentProfileId &&
             (inMemTasteMap.updatedAt || '') > (diskTasteMap.updatedAt || '')
               ? inMemTasteMap
               : diskTasteMap;
+
+          // Yerel Zevk Haritası henüz soğuksa veya imzası güncellenmişse sunucudaki doğrulanmış türetilmiş profil önbelleğini dene
+          let serverCatalogSnapshot: any = null;
+          if (
+            !forceRefresh &&
+            (Object.keys(storedTasteMap.entries || {}).length < 400 ||
+              storedTasteMap.profileSignature !== currentSig)
+          ) {
+            const [remoteDerived, remoteCatalog] = await Promise.all([
+              fetchDerivedProfileData(currentProfileId, {
+                profileFingerprint: currentSig,
+                algorithmVersion: ALGORITHM_VERSION,
+              }),
+              fetchCatalogItems(),
+            ]);
+            if (!requestGateRef.current.isCurrent(ticket.id)) return;
+            serverCatalogSnapshot = remoteCatalog;
+
+            if (remoteDerived) {
+              const catalogLookup: Record<string, any> = {
+                ...(remoteCatalog?.movies || {}),
+                ...(remoteCatalog?.tv || {}),
+              };
+              const expectedCatalogHash =
+                typeof remoteCatalog?.manifest?.contentHash === 'string'
+                  ? remoteCatalog.manifest.contentHash
+                  : undefined;
+
+              const hydratedCache = hydrateTasteMapWithDerivedCache({
+                tasteMap: storedTasteMap,
+                derivedDoc: remoteDerived,
+                profileId: currentProfileId,
+                profileFingerprint: currentSig,
+                algorithmVersion: ALGORITHM_VERSION,
+                sourceCatalogHash: expectedCatalogHash,
+                savedItems: rawSaved,
+                preferences: currentPrefs,
+                catalogLookup,
+                forceRefresh,
+              });
+
+              if (hydratedCache.cacheHit) {
+                storedTasteMap = hydratedCache.tasteMap;
+                savePersistentTasteMap(currentProfileId, storedTasteMap);
+                tasteMapRef.current = storedTasteMap;
+              }
+            }
+          }
 
           // 500 + 500 havuz Zevk Haritasında zaten işlenmişse (>= 400 kayıt) ve filtre yoksa önbellekten hızlı yükle
           const processedEntriesCount = Object.keys(storedTasteMap.entries || {}).length;
@@ -978,8 +1011,11 @@ export function App() {
               forceRefresh,
             })
           ) {
-            const restored = (storedTasteMap.cachedBalancedItems || []).filter((item: any) =>
-              isCandidateEligibleInPool(item.candidate || item, rawSaved, currentPrefs)
+            const restored = enforceStrictMediaTypePool(
+              (storedTasteMap.cachedBalancedItems || []).filter((item: any) =>
+                isCandidateEligibleInPool(item.candidate || item, rawSaved, currentPrefs)
+              ),
+              targetType
             );
             if (restored.length >= TARGET_RECOMMENDATION_COUNT) {
               const impressionSync = recordDisplayedRecommendations(storedTasteMap, restored, {
@@ -992,31 +1028,13 @@ export function App() {
               tasteMapRef.current = activeMap;
 
               setForYouExplanation(activeMap.lastExplanation || '');
-              const reasonsMap = new Map<string, string>();
-              restored.forEach((entry: any) => {
-                const cand = entry.candidate || entry;
-                reasonsMap.set(makeMediaKey(cand), (entry.tags || []).join(' · '));
-              });
-              setForYouReasons(reasonsMap);
-              setForYouItems(
-                restored.map((e: any) => {
-                  const cand = e.candidate || e;
-                  const key = makeMediaKey(cand);
-                  const mapEntry = activeMap.entries[key];
-                  const tasteScore = mapEntry?.tasteScore ?? mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.tasteScore || e.tasteScore || e.score) || 75)));
-                  const priorityScore = mapEntry?.priorityScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.priorityScore || e.priorityScore || e.score) || 75)));
-                  return {
-                    ...cand,
-                    matchScore: tasteScore,
-                    tasteScore,
-                    priorityScore,
-                    scoreCoverage: mapEntry?.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
-                    confidenceLevel: mapEntry?.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
-                    ring: (e.selectionRing || e.ring) === 'ring2' ? 'ring2' : 'ring0',
-                    tasteMapEntry: mapEntry,
-                  };
-                })
+              const { displayItems, reasonsMap } = mapRecommendationBatchToDisplayItems(
+                restored,
+                activeMap,
+                targetType
               );
+              setForYouReasons(reasonsMap);
+              setForYouItems(displayItems);
               lastForYouQueryKeyRef.current = forYouQueryKey;
               setTasteMap(activeMap);
               setCatalogTotalPages(1);
@@ -1160,7 +1178,7 @@ export function App() {
             preMoviePool.items.length <= POOL_LOW_WATERMARK ||
             preTvPool.items.length <= POOL_LOW_WATERMARK
           ) {
-            const serverCatalog = await fetchCatalogItems();
+            const serverCatalog = serverCatalogSnapshot || (await fetchCatalogItems());
             if (!requestGateRef.current.isCurrent(ticket.id)) return;
             if (serverCatalog) {
               if (preMoviePool.items.length <= POOL_LOW_WATERMARK && serverCatalog.movies) {
@@ -1310,11 +1328,12 @@ export function App() {
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
           // İndirilmiş tüm 500 film + 500 dizi (+ filtre keşifleri) kalıcı kataloğa senkronize edilir
-          void pushCatalogItems([
+          const catalogSyncPayload = [
             ...fullMovieCandidates,
             ...fullTvCandidates,
             ...extraCatalogItemsToPersist,
-          ]);
+          ];
+          const catalogUpsertPromise = pushCatalogItems(catalogSyncPayload);
 
           // Tüm 500 film + 500 dizi havuzunu kullanıcının kendi zevk profiline göre puanla
           const allMoviesUnionMap = new Map<string, PoolCandidateItem>();
@@ -1527,60 +1546,31 @@ export function App() {
           tasteMapRef.current = updatedTasteMap;
           setTasteMap(updatedTasteMap);
 
-          // Kullanıcının işlenmiş 500+500 Zevk Haritası verisini sunucudaki data/profiles/<profileId>.derived.json dosyasına yaz
-          const derivedItemsPayload: Record<string, any> = {};
-          for (const [entryKey, entryVal] of Object.entries(updatedTasteMap.entries || {})) {
-            derivedItemsPayload[entryKey] = {
-              mediaKey: entryKey,
-              tasteScore: entryVal.tasteScore,
-              priorityScore: entryVal.priorityScore,
-              matchScore: entryVal.matchScore,
-              lifecycleRing: entryVal.ring || 'ring0',
-              ring: entryVal.ring,
-              shownCount: entryVal.shownCount,
-              skippedCount: entryVal.skippedCount,
-              demotionPenalty: entryVal.demotionPenalty,
-              lastShownAt: entryVal.lastShownAt,
-              lastScoredAt: entryVal.lastScoredAt,
-              calculatedAt: entryVal.lastScoredAt || new Date().toISOString(),
-              status: entryVal.status,
-              scoreCoverage: entryVal.scoreCoverage,
-              pillars: entryVal.pillars,
-            };
-          }
-          void pushDerivedProfileData({
-            profileId: currentProfileId,
-            algorithmVersion: ALGORITHM_VERSION,
-            profileFingerprint: currentSig,
-            items: derivedItemsPayload,
+          // Kullanıcının işlenmiş 500+500 Zevk Haritası verisini (signals + reasons + katalog özetiyle) sunucudaki data/profiles/<profileId>.json dosyasına yaz
+          const localCatalogSignature = computeSourceCatalogSignature(catalogSyncPayload);
+          void catalogUpsertPromise.then((catalogRes) => {
+            const effectiveCatalogHash =
+              typeof catalogRes?.contentHash === 'string' && catalogRes.contentHash
+                ? catalogRes.contentHash
+                : localCatalogSignature;
+            const derivedPayload = buildDerivedProfilePayloadFromTasteMap({
+              profileId: currentProfileId,
+              tasteMap: updatedTasteMap,
+              profileFingerprint: currentSig,
+              algorithmVersion: ALGORITHM_VERSION,
+              sourceCatalogHash: effectiveCatalogHash,
+            });
+            return pushDerivedProfileData(derivedPayload);
           });
 
-          const reasonsMap = new Map<string, string>();
-          picked.forEach((entry) => {
-            const cand = entry.candidate || entry;
-            reasonsMap.set(makeMediaKey(cand), (entry.tags || []).join(' · '));
-          });
+          const { displayItems, reasonsMap } = mapRecommendationBatchToDisplayItems(
+            picked,
+            updatedTasteMap,
+            targetType
+          );
 
           setForYouReasons(reasonsMap);
-          setForYouItems(
-            picked.map((e) => {
-              const cand = e.candidate || e;
-              const key = makeMediaKey(cand);
-              const mapEntry = updatedTasteMap.entries[key];
-              const tasteScore = mapEntry?.tasteScore ?? mapEntry?.matchScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.tasteScore || e.tasteScore || e.score) || 75)));
-              const priorityScore = mapEntry?.priorityScore ?? Math.max(1, Math.min(100, Math.round(Number(cand.priorityScore || e.priorityScore || e.score) || 75)));
-              return {
-                ...cand,
-                matchScore: tasteScore,
-                tasteScore,
-                priorityScore,
-                scoreCoverage: mapEntry?.scoreCoverage ?? e.scoreCoverage ?? (cand.cast?.length ? 'enriched' : 'basic'),
-                confidenceLevel: mapEntry?.confidenceLevel ?? e.confidenceLevel ?? (cand.cast?.length ? 'high' : 'standard'),
-                ring: (e.selectionRing || e.ring) === 'ring2' ? 'ring2' : 'ring0',
-                tasteMapEntry: mapEntry,
-              };
-            })
-          );
+          setForYouItems(displayItems);
           lastForYouQueryKeyRef.current = forYouQueryKey;
           setCatalogTotalPages(1);
           setCatalogPage(1);

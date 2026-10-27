@@ -846,10 +846,12 @@ test('Yerel mimari güvenceleri: bun.lock yoktur, VITE_ sırrı yoktur, CINETRAC
   const apiTs = fs.readFileSync(path.join(repoRoot, 'src/services/api.ts'), 'utf8');
   assert.equal(apiTs.includes('VITE_CINETRACK_TOKEN'), false, 'İstemci kodunda VITE_CINETRACK_TOKEN bulunmamalı');
 
-  // 3. server.ts içinde CINETRACK_HOST = '127.0.0.1' ve maxDataBytes = 100_000_000 sabiti korunmalı
+  // 3. server.ts içinde CINETRACK_HOST = '127.0.0.1' ve tek kaynaklı DEFAULT_MAX_DATA_BYTES (25 MiB) sabiti korunmalı
   const serverTs = fs.readFileSync(path.join(repoRoot, 'server.ts'), 'utf8');
+  const limitsTs = fs.readFileSync(path.join(repoRoot, 'src/core/limits.ts'), 'utf8');
   assert.ok(serverTs.includes("const CINETRACK_HOST = '127.0.0.1'"), 'CINETRACK_HOST sabiti 127.0.0.1 olmalı');
-  assert.ok(serverTs.includes('const maxDataBytes = 100_000_000;'), 'maxDataBytes sabiti 100_000_000 olmalı');
+  assert.ok(serverTs.includes('const maxDataBytes = DEFAULT_MAX_DATA_BYTES;'), 'server.ts tek kaynaklı DEFAULT_MAX_DATA_BYTES kullanmalı');
+  assert.ok(limitsTs.includes('export const DEFAULT_MAX_DATA_BYTES = 25 * 1024 * 1024;'), 'DEFAULT_MAX_DATA_BYTES 25 MiB olmalı');
   assert.equal(serverTs.includes('CINETRACK_MAX_DATA_BYTE'), false, 'maxDataBytes ortam değişkenine bağlanmamalı');
 
   // 4. Sıfır güvenlik seçeneği ile (varsayılan localhost) token istemeden yazma ve hız sınırı olmadan TMDB erişimi çalışmalı
@@ -1662,6 +1664,200 @@ test('Listem > Favori Oyuncular 2 Sekmeli Yapı (Oyuncular & Öneriler) ve Taş�
     'MediaGrid.tsx içinde Öneriler sekmesine taşınmış filtre alt barı bulunmalı'
   );
 });
+
+test('Spec Faz E & F: Anahtar migrasyonu (lastRecommendedAt dahil), idempotency, UI ring1 gösterim doğruluğu, katı Film/Dizi ayrımı ve forceRefresh önbellek bypass', async () => {
+  const {
+    enforceStrictMediaTypePool,
+    enrichCatalogItemsWithTaste,
+    hydrateTasteMapWithDerivedCache,
+    mapRecommendationBatchToDisplayItems,
+    resolveDisplayedLifecycleRing,
+  } = await import('../src/core/recommendation-orchestrator.ts');
+
+  // 1. Eski (movie-123 / tv-456) ve yeni (movie:123 / tv:456) anahtarların kayıpsız birleştirilmesi + lastRecommendedAt korunumu
+  const rawLegacyTasteMap = {
+    profileId: 'profile-mig-e',
+    entries: {
+      'movie-777': {
+        mediaKey: 'movie-777',
+        mediaType: 'movie',
+        id: 777,
+        title: 'Eski Anahtarlı Film',
+        shownCount: 2,
+        skippedCount: 1,
+        ringDemotions: 1,
+        demotionPenalty: 5,
+        firstShownAt: '2026-01-01T10:00:00.000Z',
+        lastShownAt: '2026-01-05T10:00:00.000Z',
+        lastRecommendedAt: '2026-01-08T12:00:00.000Z',
+        lastScoredAt: '2026-01-05T10:00:00.000Z',
+        status: 'saved',
+        impressionHistory: [
+          { shownAt: '2026-01-01T10:00:00.000Z', ring: 'ring0', matchScore: 88 },
+          { shownAt: '2026-01-05T10:00:00.000Z', ring: 'ring2', matchScore: 88 },
+        ],
+      },
+      'movie:777': {
+        mediaKey: 'movie:777',
+        mediaType: 'movie',
+        id: 777,
+        title: 'Kanonik Anahtarlı Film',
+        shownCount: 2,
+        skippedCount: 2,
+        ringDemotions: 2,
+        demotionPenalty: 10,
+        firstShownAt: '2026-01-03T10:00:00.000Z',
+        lastShownAt: '2026-01-07T10:00:00.000Z',
+        lastRecommendedAt: '2026-01-06T12:00:00.000Z',
+        lastScoredAt: '2026-01-07T10:00:00.000Z',
+        status: 'active',
+        impressionHistory: [
+          // Yinelenen gösterim olayı (çoğaltılmamalı)
+          { shownAt: '2026-01-05T10:00:00.000Z', ring: 'ring2', matchScore: 88 },
+          { shownAt: '2026-01-07T10:00:00.000Z', ring: 'ring2', matchScore: 90 },
+        ],
+      },
+    },
+    archivedEntries: {
+      'tv-888': {
+        mediaKey: 'tv-888',
+        mediaType: 'tv',
+        id: 888,
+        title: 'Arşivdeki Dizi',
+        shownCount: 1,
+        skippedCount: 1,
+        lastShownAt: '2026-01-02T00:00:00.000Z',
+        lastRecommendedAt: '2026-01-02T00:00:00.000Z',
+        isArchived: true,
+        impressionHistory: [{ shownAt: '2026-01-02T00:00:00.000Z', ring: 'ring0', matchScore: 82 }],
+      },
+    },
+    lastRecommendedKeys: ['movie-777', 'tv-888', 'movie:777'],
+  };
+
+  const firstMigration = migratePersistentTasteMapData(rawLegacyTasteMap);
+  assert.equal(firstMigration.changed, true, 'İlk migrasyon değişiklik bildirmeli');
+  assert.equal(Object.keys(firstMigration.data.entries).length, 1);
+  assert.ok(firstMigration.data.entries['movie:777'], 'Kanonik movie:777 oluşturulmalı');
+  assert.equal(firstMigration.data.entries['movie-777'], undefined, 'Eski movie-777 silinmeli');
+  assert.ok(firstMigration.data.archivedEntries['tv:888'], 'Arşivdeki tv-888 -> tv:888 olmalı');
+  assert.deepEqual(firstMigration.data.lastRecommendedKeys, ['movie:777', 'tv:888']);
+
+  const merged777 = firstMigration.data.entries['movie:777'];
+  assert.equal(merged777.impressionHistory.length, 3, 'Yinelenen gösterim çoğaltılmadan 3 benzersiz kayıt kalmalı');
+  assert.equal(merged777.shownCount, 3, 'Tekilleştirilmiş gösterim sayısı korunmalı');
+  assert.equal(merged777.skippedCount, 3, 'skippedCount toplamı korunmalı');
+  assert.equal(merged777.ringDemotions, 2, 'ringDemotions maksimum değeri korumalı');
+  assert.equal(merged777.firstShownAt, '2026-01-01T10:00:00.000Z', 'En eski firstShownAt korunmalı');
+  assert.equal(merged777.lastShownAt, '2026-01-07T10:00:00.000Z', 'En yeni lastShownAt korunmalı');
+  assert.equal(merged777.lastRecommendedAt, '2026-01-08T12:00:00.000Z', 'En yeni lastRecommendedAt korunmalı');
+  assert.equal(merged777.status, 'saved', 'Kullanıcı kaydı (saved) active ile ezilmemeli');
+
+  // 2. İdempotent ikinci çalıştırma
+  const snapshotBeforeSecond = JSON.stringify(firstMigration.data);
+  const secondMigration = migratePersistentTasteMapData(firstMigration.data);
+  assert.equal(secondMigration.changed, false, 'İkinci migrasyon idempotent olmalı (changed=false)');
+  assert.equal(JSON.stringify(secondMigration.data), snapshotBeforeSecond);
+
+  // 3. UI ring1 gösterim doğruluğu: kalıcı haritada ring1 olan öğe asla ring0 olarak ezilmemeli!
+  const tasteMapWithRing1 = {
+    profileId: 'profile-ui-ring',
+    entries: {
+      'movie:901': {
+        mediaKey: 'movie:901',
+        mediaType: 'movie',
+        id: 901,
+        title: 'Son Gruptaki Film',
+        tasteScore: 91,
+        priorityScore: 91,
+        matchScore: 91,
+        ring: 'ring1',
+        shownCount: 1,
+        skippedCount: 0,
+        tags: ['Bilim Kurgu uyumu'],
+      },
+      'movie:902': {
+        mediaKey: 'movie:902',
+        mediaType: 'movie',
+        id: 902,
+        title: 'Yedek Halkadaki Film',
+        tasteScore: 87,
+        priorityScore: 82,
+        matchScore: 87,
+        ring: 'ring2',
+        shownCount: 1,
+        skippedCount: 1,
+        tags: ['Yönetmen uyumu'],
+      },
+    },
+    archivedEntries: {},
+    lastRecommendedKeys: ['movie:901'],
+  };
+
+  assert.equal(
+    resolveDisplayedLifecycleRing({ id: 901, media_type: 'movie', ring: 'ring0' }, tasteMapWithRing1),
+    'ring1',
+    'Kalıcı tasteMap içinde ring1 olan öğe varsayılan ring0 ile ezilmemeli'
+  );
+  assert.equal(
+    resolveDisplayedLifecycleRing({ id: 903, media_type: 'movie', ring: 'ring1' }, null),
+    'ring1',
+    'Açıkça ring1 taşıyan aday ring0 olarak değiştirilmemeli'
+  );
+
+  const enrichedDiscover = enrichCatalogItemsWithTaste({
+    items: [
+      { id: 901, media_type: 'movie', title: 'Son Gruptaki Film', genre_ids: [878], vote_average: 8.2 },
+      { id: 902, media_type: 'movie', title: 'Yedek Halkadaki Film', genre_ids: [878], vote_average: 8.0 },
+    ],
+    savedItems: [],
+    preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+    genresMap: { 878: 'Bilim Kurgu' },
+    tasteMap: tasteMapWithRing1,
+  });
+  assert.equal(enrichedDiscover[0].ring, 'ring1', 'Keşfet zenginleştirmesinde ring1 korunmalı');
+  assert.equal(enrichedDiscover[1].ring, 'ring2', 'Keşfet zenginleştirmesinde ring2 korunmalı');
+
+  const mappedBatch = mapRecommendationBatchToDisplayItems(
+    [{ candidate: { id: 901, media_type: 'movie', title: 'Son Gruptaki Film' }, selectionRing: 'ring0' }],
+    tasteMapWithRing1,
+    'movie'
+  );
+  assert.equal(mappedBatch.displayItems[0].ring, 'ring1', 'Sana Özel kartlarında kalıcı ring1 durumu korunmalı');
+  assert.equal(mappedBatch.displayItems[0].lifecycleRing, 'ring1');
+
+  // 4. Katı Film-only ve TV-only havuz ayrımı + listelenmiş/gizlenmiş öğelerin dışlanması
+  const mixedItems = [
+    { id: 1, media_type: 'movie', title: 'Film 1' },
+    { id: 2, media_type: 'tv', name: 'Dizi 1' },
+    { id: 3, media_type: 'movie', title: 'Film 2' },
+  ];
+  const strictMovies = enforceStrictMediaTypePool(mixedItems, 'movie');
+  const strictTv = enforceStrictMediaTypePool(mixedItems, 'tv');
+  assert.ok(strictMovies.every((it) => it.media_type === 'movie') && strictMovies.length === 2);
+  assert.ok(strictTv.every((it) => it.media_type === 'tv') && strictTv.length === 1);
+
+  // 5. forceRefresh yolunun hem isTasteMapCacheValid hem hydrateTasteMapWithDerivedCache önbelleklerini bypass etmesi
+  const bypassRes = hydrateTasteMapWithDerivedCache({
+    tasteMap: tasteMapWithRing1,
+    derivedDoc: {
+      schemaVersion: 2,
+      profileId: 'profile-ui-ring',
+      algorithmVersion: 'v3.2-lifecycle-rings',
+      profileFingerprint: 'sig-1',
+      sourceCatalogHash: 'cat-1',
+      items: {},
+    },
+    profileId: 'profile-ui-ring',
+    profileFingerprint: 'sig-1',
+    savedItems: [],
+    preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+    forceRefresh: true,
+  });
+  assert.equal(bypassRes.cacheHit, false);
+  assert.equal(bypassRes.reason, 'force_refresh');
+});
+
 
 
 

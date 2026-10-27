@@ -126,6 +126,7 @@ export interface TmdbItem {
   tasteScore?: number;
   priorityScore?: number;
   ring?: string;
+  lifecycleRing?: string;
   stale?: boolean;
   _source?: 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
   _cacheStatus?: 'hit' | 'miss' | 'stale' | 'none';

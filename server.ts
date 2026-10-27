@@ -4,7 +4,13 @@ import { createServer as createHttpServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeDataDocument, CURRENT_SCHEMA_VERSION } from './src/core/cinetrack-core.ts';
+import {
+  DEFAULT_MAX_DATA_BYTES,
+  DEFAULT_MAX_ITEMS_PER_PROFILE,
+  DEFAULT_MAX_PROFILES,
+} from './src/core/limits.ts';
 import { createCineTrackApp } from './src/server/app.ts';
+import { redactSecrets } from './src/server/persistent-store.ts';
 
 void normalizeDataDocument;
 void CURRENT_SCHEMA_VERSION;
@@ -16,9 +22,9 @@ const port = Number(process.env.PORT) || Number(process.env.CINETRACK_PORT) || 3
 const host = process.env.CINETRACK_HOST || process.env.HOST || '0.0.0.0';
 
 const dataDir = path.join(root, 'data');
-const maxDataBytes = 100_000_000;
-const maxProfiles = 20;
-const maxItemsPerProfile = 100_000;
+const maxDataBytes = DEFAULT_MAX_DATA_BYTES;
+const maxProfiles = DEFAULT_MAX_PROFILES;
+const maxItemsPerProfile = DEFAULT_MAX_ITEMS_PER_PROFILE;
 
 // Read local .env or .env.local if present
 const localEnv: Record<string, string> = {};
@@ -132,11 +138,17 @@ async function startServer() {
               `[Auto-Sync] 5 dakikalık periyodik senkronizasyon tamamlandı (${syncRes.filesCommitted.length} dosya işlendi, ${syncRes.filesSkipped.length} no-op atlandı).`
             );
           } else if (syncRes.errors.length > 0) {
-            console.warn('[Auto-Sync] Senkronizasyon uyarısı:', syncRes.errors.join('; '));
+            console.warn(
+              '[Auto-Sync] Senkronizasyon uyarısı:',
+              redactSecrets(syncRes.errors.join('; '), [githubToken])
+            );
           }
         }
       } catch (err: any) {
-        console.error('[Auto-Sync] Otomatik senkronizasyon hatası:', err?.message || err);
+        console.error(
+          '[Auto-Sync] Otomatik senkronizasyon hatası:',
+          redactSecrets(err?.message || String(err), [githubToken])
+        );
       }
     }, AUTO_SYNC_INTERVAL_MS);
 

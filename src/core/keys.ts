@@ -146,6 +146,8 @@ export function mergeTasteMapEntriesOnCollision<T extends Record<string, any>>(
 
   const parsed = parseMediaKey(canonicalKey);
 
+  const latestRecommendedAt = pickLatestIso(first.lastRecommendedAt, second.lastRecommendedAt);
+
   return {
     ...secondary,
     ...primary,
@@ -157,6 +159,7 @@ export function mergeTasteMapEntriesOnCollision<T extends Record<string, any>>(
     demotionPenalty: Math.max(Number(first.demotionPenalty) || 0, Number(second.demotionPenalty) || 0),
     firstShownAt: pickEarliestIso(first.firstShownAt, second.firstShownAt),
     lastShownAt: pickLatestIso(first.lastShownAt, second.lastShownAt),
+    ...(latestRecommendedAt ? { lastRecommendedAt: latestRecommendedAt } : {}),
     lastScoredAt: pickLatestIso(first.lastScoredAt, second.lastScoredAt) || new Date().toISOString(),
     archivedImpressionCount,
     impressionHistory: boundedHistory,

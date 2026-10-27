@@ -3,11 +3,8 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
-  renameSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import {
@@ -16,9 +13,25 @@ import {
   ENGINE_VERSION,
   type DataDocument,
 } from '../core/cinetrack-core.ts';
+import {
+  DEFAULT_MAX_DATA_BYTES,
+  DEFAULT_MAX_ITEMS_PER_PROFILE,
+  DEFAULT_MAX_PROFILES,
+  DEFAULT_MAX_SNAPSHOTS,
+  formatMaxDataLimitMb,
+  measureUtf8Bytes,
+} from '../core/limits.ts';
+import {
+  cleanupStaleTempFiles,
+  FileWriteSerializer,
+  readJsonFileWithRecovery,
+  tryParseValidJson,
+  writeJsonFileAtomic,
+} from './atomic-json.ts';
 
 export interface StorageOptions {
   dataDir: string;
+  maxDataBytes?: number;
   maxProfiles?: number;
   maxItemsPerProfile?: number;
   maxSnapshots?: number;
@@ -47,8 +60,13 @@ export type SaveDataResult =
     }
   | {
       ok: false;
-      status: 400 | 409;
-      code: 'invalid_document' | 'revision_conflict' | 'sudden_item_drop';
+      status: 400 | 409 | 413 | 500;
+      code:
+        | 'invalid_document'
+        | 'revision_conflict'
+        | 'sudden_item_drop'
+        | 'payload_too_large'
+        | 'corrupt_storage';
       message: string;
       currentRevision?: number;
       expectedRevision?: number;
@@ -59,7 +77,10 @@ export type SaveDataResult =
 
 export function countTotalItems(doc: DataDocument | null | undefined): number {
   if (!doc || !Array.isArray(doc.profiles)) return 0;
-  return doc.profiles.reduce((sum, profile) => sum + (Array.isArray(profile.items) ? profile.items.length : 0), 0);
+  return doc.profiles.reduce(
+    (sum, profile) => sum + (Array.isArray(profile.items) ? profile.items.length : 0),
+    0
+  );
 }
 
 export function createDataStorage(options: StorageOptions) {
@@ -67,9 +88,19 @@ export function createDataStorage(options: StorageOptions) {
   const dataFile = path.join(dataDir, 'cinetrack-data.json');
   const dataBackupFile = path.join(dataDir, 'cinetrack-data.bak.json');
   const backupsDir = path.join(dataDir, 'backups');
-  const maxProfiles = options.maxProfiles ?? 20;
-  const maxItemsPerProfile = options.maxItemsPerProfile ?? 100_000;
-  const maxSnapshots = Math.max(1, options.maxSnapshots ?? 7);
+  const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
+  const maxProfiles = options.maxProfiles ?? DEFAULT_MAX_PROFILES;
+  const maxItemsPerProfile = options.maxItemsPerProfile ?? DEFAULT_MAX_ITEMS_PER_PROFILE;
+  const maxSnapshots = Math.max(1, options.maxSnapshots ?? DEFAULT_MAX_SNAPSHOTS);
+  const writeSerializer = new FileWriteSerializer();
+
+  mkdirSync(dataDir, { recursive: true });
+  cleanupStaleTempFiles(dataDir);
+  if (existsSync(backupsDir)) {
+    cleanupStaleTempFiles(backupsDir);
+  }
+
+  let unrecoverableCorruptionError: string | null = null;
 
   function emptyDocument(): DataDocument {
     return {
@@ -83,9 +114,7 @@ export function createDataStorage(options: StorageOptions) {
     };
   }
 
-  function parseNormalizedFile(filePath: string): DataDocument | null {
-    if (!existsSync(filePath)) return null;
-    const raw = JSON.parse(readFileSync(filePath, 'utf8'));
+  function validateRawDocument(raw: any): DataDocument | null {
     const normalized = normalizeDataDocument(raw, {
       maxProfiles,
       maxItems: maxItemsPerProfile,
@@ -93,37 +122,66 @@ export function createDataStorage(options: StorageOptions) {
     if (!normalized) return null;
     const rawRev = Number(raw?.revision);
     normalized.revision = Number.isSafeInteger(rawRev) && rawRev >= 0 ? rawRev : 0;
-    normalized.updatedAt = typeof raw?.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : undefined;
+    normalized.updatedAt =
+      typeof raw?.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : undefined;
     return normalized;
   }
 
-  function readData(): DataDocument {
-    for (const file of [dataFile, dataBackupFile]) {
-      try {
-        const doc = parseNormalizedFile(file);
-        if (doc) return doc;
-      } catch (error: any) {
-        if (error?.code !== 'ENOENT') {
-          console.error(`Veri dosyası okunamadı (${path.basename(file)}):`, error?.message || error);
-        }
-      }
-    }
-    return emptyDocument();
-  }
-
-  function pruneOldSnapshots(): void {
-    if (!existsSync(backupsDir)) return;
+  function listSortedSnapshotPaths(): string[] {
+    if (!existsSync(backupsDir)) return [];
     try {
-      const files = readdirSync(backupsDir)
+      return readdirSync(backupsDir)
         .filter((f) => f.startsWith('cinetrack-') && f.endsWith('.json'))
         .map((fileName) => {
           const fullPath = path.join(backupsDir, fileName);
           const stat = statSync(fullPath);
           return { fileName, fullPath, mtimeMs: stat.mtimeMs };
         })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs || (a.fileName < b.fileName ? 1 : -1))
+        .map((entry) => entry.fullPath);
+    } catch {
+      return [];
+    }
+  }
+
+  function readData(): DataDocument {
+    const candidateBackups = [dataBackupFile, ...listSortedSnapshotPaths()];
+    const recovery = readJsonFileWithRecovery<DataDocument>(dataFile, {
+      backupPaths: candidateBackups,
+      validate: validateRawDocument,
+      label: 'cinetrack-data.json',
+      restoreRecoveredToTarget: true,
+    });
+
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      unrecoverableCorruptionError = null;
+      return recovery.data;
+    }
+
+    if (recovery.status === 'corrupt_unrecoverable') {
+      unrecoverableCorruptionError = recovery.error;
+      return emptyDocument();
+    }
+
+    unrecoverableCorruptionError = null;
+    return emptyDocument();
+  }
+
+  function pruneOldSnapshots(): void {
+    if (!existsSync(backupsDir)) return;
+    try {
+      const validFiles = readdirSync(backupsDir)
+        .filter((f) => f.startsWith('cinetrack-') && f.endsWith('.json'))
+        .map((fileName) => {
+          const fullPath = path.join(backupsDir, fileName);
+          const stat = statSync(fullPath);
+          const check = tryParseValidJson(fullPath, validateRawDocument);
+          return { fileName, fullPath, mtimeMs: stat.mtimeMs, valid: check.ok };
+        })
+        .filter((entry) => entry.valid)
         .sort((a, b) => b.mtimeMs - a.mtimeMs || (a.fileName < b.fileName ? 1 : -1));
 
-      for (const stale of files.slice(maxSnapshots)) {
+      for (const stale of validFiles.slice(maxSnapshots)) {
         try {
           unlinkSync(stale.fullPath);
         } catch {}
@@ -133,20 +191,18 @@ export function createDataStorage(options: StorageOptions) {
 
   function backupExistingData(): void {
     if (!existsSync(dataFile)) return;
-    let worthKeeping = true;
-    let parsedExisting: any = null;
-    try {
-      parsedExisting = JSON.parse(readFileSync(dataFile, 'utf8'));
-      const profiles = Array.isArray(parsedExisting?.profiles) ? parsedExisting.profiles : [];
-      worthKeeping =
-        profiles.length > 0
-          ? profiles.some((profile: any) => Array.isArray(profile?.items) && profile.items.length > 0) ||
-            profiles.length > 1
-          : Boolean(parsedExisting?.profileName) ||
-            (Array.isArray(parsedExisting?.items) && parsedExisting.items.length > 0);
-    } catch {
-      worthKeeping = true;
+    const validCheck = tryParseValidJson(dataFile, validateRawDocument);
+    if (!validCheck.ok) {
+      // Bozuk bir ana dosya asla sağlam .bak veya snapshot yedeğinin üzerine kopyalanmaz!
+      return;
     }
+
+    const parsedExisting = validCheck.data;
+    const profiles = Array.isArray(parsedExisting?.profiles) ? parsedExisting.profiles : [];
+    const worthKeeping =
+      profiles.length > 0 &&
+      (profiles.some((profile) => Array.isArray(profile?.items) && profile.items.length > 0) ||
+        profiles.length > 1);
 
     if (!worthKeeping) return;
 
@@ -155,10 +211,15 @@ export function createDataStorage(options: StorageOptions) {
     try {
       mkdirSync(backupsDir, { recursive: true });
       const dateStamp = new Date().toISOString().slice(0, 10);
-      const rev = Number.isSafeInteger(Number(parsedExisting?.revision)) ? Number(parsedExisting.revision) : 0;
+      const rev = Number.isSafeInteger(Number(parsedExisting.revision))
+        ? Number(parsedExisting.revision)
+        : 0;
       const snapshotName = `cinetrack-${dateStamp}-rev${rev}-${Date.now()}.json`;
       const snapshotPath = path.join(backupsDir, snapshotName);
-      copyFileSync(dataFile, snapshotPath);
+      const serializedExisting = JSON.stringify(parsedExisting, null, 2);
+      writeJsonFileAtomic(snapshotPath, serializedExisting, {
+        validateParsed: (p) => validateRawDocument(p) !== null,
+      });
       pruneOldSnapshots();
     } catch (error: any) {
       console.error('Yedek anlık görüntüsü oluşturulamadı:', error?.message || error);
@@ -168,13 +229,48 @@ export function createDataStorage(options: StorageOptions) {
   function writeDataAtomic(doc: DataDocument): DataDocument {
     mkdirSync(dataDir, { recursive: true });
     backupExistingData();
-    const temporaryFile = `${dataFile}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(temporaryFile, JSON.stringify(doc, null, 2), 'utf8');
-    renameSync(temporaryFile, dataFile);
+    const serialized = JSON.stringify(doc, null, 2);
+    writeJsonFileAtomic(dataFile, serialized, {
+      validateParsed: (p) => validateRawDocument(p) !== null,
+    });
+    unrecoverableCorruptionError = null;
     return doc;
   }
 
   function saveData(rawPayload: unknown, saveOptions: SaveDataOptions = {}): SaveDataResult {
+    // 1. Önce bozuk ve kurtarılamamış bir ana dosya olup olmadığını denetle (sessiz veri kaybını engelle)
+    const current = readData();
+    if (unrecoverableCorruptionError) {
+      return {
+        ok: false,
+        status: 500,
+        code: 'corrupt_storage',
+        message: `Mevcut veri dosyası bozuk olduğu ve geçerli bir yedek bulunamadığı için üzerine yazma engellendi (${unrecoverableCorruptionError}).`,
+      };
+    }
+
+    // 2. Bayt cinsinden boyut kontrolü (karakter uzunluğu değil, UTF-8 bayt boyutu)
+    let rawBytes = 0;
+    try {
+      rawBytes = measureUtf8Bytes(JSON.stringify(rawPayload ?? null));
+    } catch {
+      return {
+        ok: false,
+        status: 400,
+        code: 'invalid_document',
+        message: 'Veri biçimi geçersiz.',
+      };
+    }
+
+    if (rawBytes > maxDataBytes) {
+      return {
+        ok: false,
+        status: 413,
+        code: 'payload_too_large',
+        message: `Gönderilen veri boyutu izin verilen sınırı (${formatMaxDataLimitMb(maxDataBytes)}) aşıyor.`,
+      };
+    }
+
     const normalized = normalizeDataDocument(rawPayload, {
       maxProfiles,
       maxItems: maxItemsPerProfile,
@@ -188,7 +284,6 @@ export function createDataStorage(options: StorageOptions) {
       };
     }
 
-    const current = readData();
     const currentRevision = current.revision ?? 0;
     const expectedRevision = saveOptions.expectedRevision;
 
@@ -238,6 +333,16 @@ export function createDataStorage(options: StorageOptions) {
       updatedAt: nowIso,
     };
 
+    const persistedBytes = measureUtf8Bytes(JSON.stringify(documentToPersist, null, 2));
+    if (persistedBytes > maxDataBytes) {
+      return {
+        ok: false,
+        status: 413,
+        code: 'payload_too_large',
+        message: `Gönderilen veri boyutu izin verilen sınırı (${formatMaxDataLimitMb(maxDataBytes)}) aşıyor.`,
+      };
+    }
+
     writeDataAtomic(documentToPersist);
     return {
       ok: true,
@@ -246,17 +351,27 @@ export function createDataStorage(options: StorageOptions) {
     };
   }
 
+  function saveDataSerialized(
+    rawPayload: unknown,
+    saveOptions: SaveDataOptions = {}
+  ): Promise<SaveDataResult> {
+    return writeSerializer.run(dataFile, () => saveData(rawPayload, saveOptions));
+  }
+
   function listBackups(): BackupMetadata[] {
     const result: BackupMetadata[] = [];
     if (existsSync(backupsDir)) {
       try {
-        const files = readdirSync(backupsDir).filter((f) => f.startsWith('cinetrack-') && f.endsWith('.json'));
+        const files = readdirSync(backupsDir).filter(
+          (f) => f.startsWith('cinetrack-') && f.endsWith('.json')
+        );
         for (const fileName of files) {
           const fullPath = path.join(backupsDir, fileName);
           try {
             const stat = statSync(fullPath);
-            const doc = parseNormalizedFile(fullPath);
-            if (!doc) continue;
+            const check = tryParseValidJson(fullPath, validateRawDocument);
+            if (!check.ok) continue;
+            const doc = check.data;
             result.push({
               id: fileName,
               fileName,
@@ -274,8 +389,9 @@ export function createDataStorage(options: StorageOptions) {
     if (existsSync(dataBackupFile)) {
       try {
         const stat = statSync(dataBackupFile);
-        const doc = parseNormalizedFile(dataBackupFile);
-        if (doc) {
+        const check = tryParseValidJson(dataBackupFile, validateRawDocument);
+        if (check.ok) {
+          const doc = check.data;
           result.push({
             id: 'cinetrack-data.bak.json',
             fileName: 'cinetrack-data.bak.json',
@@ -300,14 +416,12 @@ export function createDataStorage(options: StorageOptions) {
       safeName === 'cinetrack-data.bak.json' ? dataBackupFile : path.join(backupsDir, safeName);
     if (!existsSync(targetPath)) return null;
 
-    let backupDoc: DataDocument | null = null;
-    try {
-      backupDoc = parseNormalizedFile(targetPath);
-    } catch {
-      backupDoc = null;
+    const backupCheck = tryParseValidJson(targetPath, validateRawDocument);
+    if (!backupCheck.ok) {
+      return null;
     }
-    if (!backupDoc) return null;
 
+    const backupDoc = backupCheck.data;
     const current = readData();
     const nextRevision = (current.revision ?? 0) + 1;
     const restoredDoc: DataDocument = {
@@ -323,8 +437,11 @@ export function createDataStorage(options: StorageOptions) {
     dataFile,
     dataBackupFile,
     backupsDir,
+    maxDataBytes,
+    hasUnrecoverableCorruption: () => Boolean(unrecoverableCorruptionError),
     readData,
     saveData,
+    saveDataSerialized,
     listBackups,
     restoreBackup,
   };

@@ -1,3 +1,11 @@
+import {
+  DEFAULT_MAX_DATA_BYTES,
+  DEFAULT_MAX_ITEMS_PER_PROFILE,
+  DEFAULT_MAX_PROFILES,
+  formatMaxDataLimitMb,
+  measureUtf8Bytes,
+} from './limits.ts';
+
 export const REMINDER_WINDOW_DAYS = 3;
 
 export interface NextEpisode {
@@ -469,7 +477,10 @@ export function dedupeItems(items: SavedItem[]): SavedItem[] {
   return [...unique.values()];
 }
 
-export function parseBackupText(text: string): {
+export function parseBackupText(
+  text: string,
+  options: { maxBytes?: number } = {}
+): {
   items: SavedItem[];
   profileName: string;
   preferences: any;
@@ -477,6 +488,12 @@ export function parseBackupText(text: string): {
   isDemo?: boolean;
   schemaVersion: number;
 } {
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_DATA_BYTES;
+  if (typeof text !== 'string' || measureUtf8Bytes(text) > maxBytes) {
+    throw new Error(
+      `Gönderilen yedek dosyası izin verilen sınırı (${formatMaxDataLimitMb(maxBytes)}) aşıyor.`
+    );
+  }
   const backup = JSON.parse(text);
   if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
     throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
@@ -595,7 +612,7 @@ export function normalizePreferences(
 
 export function normalizeProfile(
   raw: any,
-  { maxItems = 100_000, knownMoods = null }: { maxItems?: number; knownMoods?: string[] | null } = {}
+  { maxItems = DEFAULT_MAX_ITEMS_PER_PROFILE, knownMoods = null }: { maxItems?: number; knownMoods?: string[] | null } = {}
 ): Profile | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   if (typeof raw.id !== 'string' || !PROFILE_ID_PATTERN.test(raw.id)) return null;
@@ -615,7 +632,10 @@ export function normalizeProfile(
 
 export function normalizeDataDocument(
   raw: any,
-  { maxProfiles = 20, maxItems = 100_000 }: { maxProfiles?: number; maxItems?: number } = {}
+  {
+    maxProfiles = DEFAULT_MAX_PROFILES,
+    maxItems = DEFAULT_MAX_ITEMS_PER_PROFILE,
+  }: { maxProfiles?: number; maxItems?: number } = {}
 ): DataDocument | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   let candidates: any[];

@@ -16,6 +16,7 @@ import {
 } from '../services/api';
 import { PROVIDER_OPTIONS, calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
+import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -245,6 +246,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > DEFAULT_MAX_DATA_BYTES) {
+        setImportStatus(
+          `Seçilen yedek dosyası izin verilen sınırı (${formatMaxDataLimitMb(DEFAULT_MAX_DATA_BYTES)}) aşıyor.`
+        );
+        e.target.value = '';
+        return;
+      }
       setImportStatus('');
       onImportBackupFile(file);
     }
@@ -293,12 +301,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       if (res?.ok) {
         const committedCount = Array.isArray(res.filesCommitted) ? res.filesCommitted.length : 0;
         const skippedCount = Array.isArray(res.filesSkipped) ? res.filesSkipped.length : 0;
+        const warnSuffix = res.repoVisibilityWarning ? ` · ${res.repoVisibilityWarning}` : '';
         setGitHubSyncMessage(
-          `GitHub eşitlemesi tamamlandı (${committedCount} dosya güncellendi, ${skippedCount} dosya zaten güncel).`
+          `GitHub eşitlemesi tamamlandı (${committedCount} dosya güncellendi, ${skippedCount} dosya zaten güncel)${warnSuffix}`
         );
       } else {
-        const errText = Array.isArray(res?.errors) && res.errors.length > 0 ? res.errors[0] : res?.error || 'Eşitleme yapılamadı.';
-        setGitHubSyncMessage(errText);
+        const failedCount = Array.isArray(res?.filesFailed) ? res.filesFailed.length : 0;
+        const committedCount = Array.isArray(res?.filesCommitted) ? res.filesCommitted.length : 0;
+        const errText =
+          Array.isArray(res?.errors) && res.errors.length > 0
+            ? res.errors.join(' | ')
+            : res?.error || 'Eşitleme yapılamadı.';
+        setGitHubSyncMessage(
+          res?.partialFailure
+            ? `Kısmi hata (${committedCount} başarılı, ${failedCount} başarısız): ${errText}`
+            : errText
+        );
       }
       const updatedInfo = await fetchSyncStatus();
       if (updatedInfo) setRemoteSyncInfo(updatedInfo);
@@ -997,6 +1015,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     ? `Durum: Bağlı (${remoteSyncInfo.catalogCounts?.movies ?? 0} film, ${remoteSyncInfo.catalogCounts?.tv ?? 0} dizi, ${remoteSyncInfo.profilesCount ?? 0} profil türevi)`
                     : remoteSyncInfo?.reason || 'GitHub eşitleme durumu kontrol ediliyor…'}
                 </p>
+                {remoteSyncInfo?.repoVisibilityWarning && (
+                  <p className="provider-message">{remoteSyncInfo.repoVisibilityWarning}</p>
+                )}
                 <div className="csv-actions-row">
                   <button
                     type="button"
