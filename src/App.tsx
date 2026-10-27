@@ -471,6 +471,15 @@ export function App() {
     return () => clearTimeout(timer);
   }, [pushToServer, serverSyncReady, favoriteActors]);
 
+  // Otomatik 5 dakikalık periyodik arka plan senkronizasyonu
+  useEffect(() => {
+    if (!serverSyncReady) return;
+    const interval = setInterval(() => {
+      pushToServer();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [pushToServer, serverSyncReady]);
+
   // Initial startup sync with server & load genres
   useEffect(() => {
     fetchServerData()
@@ -592,6 +601,35 @@ export function App() {
     }
   };
 
+  function mergeDiscoverResults(cat: string, movies: any[], tvs: any[]): any[] {
+    const mList = (movies || []).map((m: any) => ({ ...m, media_type: 'movie' }));
+    const tList = (tvs || []).map((t: any) => ({ ...t, media_type: 'tv' }));
+
+    if (mList.length === 0) return tList;
+    if (tList.length === 0) return mList;
+
+    if (cat === 'top-rated') {
+      return [...mList, ...tList].sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
+    }
+    if (cat === 'upcoming') {
+      return [...mList, ...tList].sort((a, b) => {
+        const dateA = a.release_date || a.first_air_date || '9999';
+        const dateB = b.release_date || b.first_air_date || '9999';
+        return dateA.localeCompare(dateB);
+      });
+    }
+    if (cat === 'gems') {
+      return [...mList, ...tList].sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
+    }
+    const merged: any[] = [];
+    const maxLen = Math.max(mList.length, tList.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (i < mList.length) merged.push(mList[i]);
+      if (i < tList.length) merged.push(tList[i]);
+    }
+    return merged;
+  }
+
   // Load Catalog Data (Trending, For-You, Gems, Upcoming, etc.)
   const loadCategoryResults = useCallback(
     async (
@@ -663,10 +701,7 @@ export function App() {
             }
             const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
             return {
-              rawItems: [
-                ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-                ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-              ],
+              rawItems: mergeDiscoverResults(cat, movies.results || [], tvs.results || []),
               totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
             };
           }
@@ -706,10 +741,7 @@ export function App() {
             }
             const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
             return {
-              rawItems: [
-                ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-                ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-              ],
+              rawItems: mergeDiscoverResults(cat, movies.results || [], tvs.results || []),
               totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
             };
           }
@@ -748,10 +780,7 @@ export function App() {
             }
             const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
             return {
-              rawItems: [
-                ...(movies.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-                ...(tvs.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-              ],
+              rawItems: mergeDiscoverResults(cat, movies.results || [], tvs.results || []),
               totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
             };
           }
@@ -832,10 +861,7 @@ export function App() {
 
             const [mRes, tRes] = await Promise.all([moviesPromise, tvsPromise]);
             return {
-              rawItems: [
-                ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-                ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-              ],
+              rawItems: mergeDiscoverResults(cat, mRes.results || [], tRes.results || []),
               totalPages: Math.max(mRes.total_pages || 1, tRes.total_pages || 1),
             };
           }
@@ -874,10 +900,7 @@ export function App() {
               fetchTmdb('/tv/top_rated', { page: String(pageNum) }, ticket.signal),
             ]);
             return {
-              rawItems: [
-                ...(mRes.results || []).map((m: any) => ({ ...m, media_type: 'movie' })),
-                ...(tRes.results || []).map((t: any) => ({ ...t, media_type: 'tv' })),
-              ],
+              rawItems: mergeDiscoverResults(cat, mRes.results || [], tRes.results || []),
               totalPages: Math.max(mRes.total_pages || 1, tRes.total_pages || 1),
             };
           }
@@ -1615,7 +1638,17 @@ export function App() {
         if (cat === 'trending' && !append && enriched[0]) {
           setTrendingTop(enriched[0]);
         }
-        setCatalogItems((prev) => (append ? [...prev, ...enriched] : enriched));
+        setCatalogItems((prev) => {
+          if (!append) return enriched;
+          const seen = new Set(prev.map((it) => makeMediaKey(it.media_type || (it.title ? 'movie' : 'tv'), it.id)));
+          const fresh = enriched.filter((it) => {
+            const k = makeMediaKey(it.media_type || (it.title ? 'movie' : 'tv'), it.id);
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          });
+          return [...prev, ...fresh];
+        });
         setCatalogTotalPages(totalPages);
         setCatalogPage(effectiveLastPage);
       } catch (err: any) {
@@ -2039,6 +2072,10 @@ export function App() {
       if (selectedGenre && !matchesSelectedGenre(item, selectedGenre)) return false;
       return true;
     });
+
+    if (tab === 'discover' && category !== 'for-you' && selectedSort === 'popular') {
+      return filtered;
+    }
 
     if (selectedSort === 'rating') {
       filtered = [...filtered].sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0));

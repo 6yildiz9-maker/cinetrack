@@ -46,8 +46,10 @@ interface RelationshipExplorerProps {
 
 type RelationFilter = RelationshipType | 'all';
 
-function linkEndpointId(endpoint: string | RelationshipGraphNode): string {
-  return typeof endpoint === 'string' ? endpoint : endpoint.id;
+function linkEndpointId(endpoint: any): string {
+  if (!endpoint) return '';
+  if (typeof endpoint === 'string') return endpoint;
+  return String(endpoint.id || '');
 }
 
 function readLocalPoolForFilter(profileId: string, filter: MediaFilter): PoolCandidateItem[] {
@@ -182,15 +184,37 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
           'graphs',
           latestGraphCacheKey(profileId, mode),
         );
-        if (cancelled || !record) return;
+        if (cancelled) return;
+        if (!record) {
+          const livePool = readLocalPoolForFilter(profileId, mediaFilter);
+          if (livePool.length > 0 || savedItems.length > 0) {
+            setSnapshotCandidates(livePool);
+            const initialGraph = createGraph(livePool);
+            if (initialGraph && initialGraph.nodes.length > 0) {
+              setGraphData(initialGraph);
+              setHasGeneratedGraph(true);
+            }
+          }
+          return;
+        }
 
         const snapshot = record.value;
         if (snapshot.schemaVersion !== RELATIONSHIP_GRAPH_SCHEMA_VERSION) {
-          setCacheNotice('Kayıtlı harita eski şema sürümünde. Güncelleme gerekiyor.');
+          setCacheNotice('Kayıtlı harita güncel şemaya uyarlandı.');
+          const livePool = readLocalPoolForFilter(profileId, mediaFilter);
+          setSnapshotCandidates(livePool);
+          const initialGraph = createGraph(livePool);
+          setGraphData(initialGraph);
+          setHasGeneratedGraph(true);
           return;
         }
         if (snapshot.modelVersion !== RELATIONSHIP_MODEL_VERSION) {
-          setCacheNotice('İlişki algoritması değişti. Haritayı güncelle.');
+          setCacheNotice('İlişki algoritması güncellendi.');
+          const livePool = readLocalPoolForFilter(profileId, mediaFilter);
+          setSnapshotCandidates(livePool);
+          const initialGraph = createGraph(livePool);
+          setGraphData(initialGraph);
+          setHasGeneratedGraph(true);
           return;
         }
 
@@ -204,8 +228,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         if (snapshot.profileId !== profileId || snapshot.mode !== mode) return;
         if (snapshot.profileSignature !== currentSignatureForSnapshot) {
           setCacheNotice(
-            'Kullanıcı listesi, puanları, favori oyuncuları veya tercihleri değişmiş. Haritayı güncelle.',
+            'Kullanıcı tercihleri güncellendiği için harita taze verilerle yenilendi.',
           );
+          const livePool = readLocalPoolForFilter(profileId, mediaFilter);
+          setSnapshotCandidates(livePool);
+          const initialGraph = createGraph(livePool);
+          setGraphData(initialGraph);
+          setHasGeneratedGraph(true);
           return;
         }
 
@@ -213,7 +242,11 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         const livePool = readLocalPoolForFilter(profileId, snapshot.mediaFilter);
         const livePoolSignature = computeRelationshipPoolSignature(livePool);
         if (snapshot.poolSignature !== livePoolSignature) {
-          setCacheNotice('Yerel aday havuzu değişmiş. Haritayı güncelle.');
+          setCacheNotice('Yerel aday havuzu güncellendiği için harita yenilendi.');
+          setSnapshotCandidates(livePool);
+          const initialGraph = createGraph(livePool);
+          setGraphData(initialGraph);
+          setHasGeneratedGraph(true);
           return;
         }
 
@@ -457,6 +490,42 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             (item) => mediaFilter === 'all' || item.media_type === mediaFilter,
           );
 
+    const sanitizedGraph: RelationshipGraphData = {
+      profileSignature: graphData.profileSignature,
+      createdAt: graphData.createdAt,
+      nodes: graphData.nodes.map((node) => ({
+        id: node.id,
+        label: node.label || node.title || '',
+        title: node.title || node.label || '',
+        mediaType: node.mediaType,
+        kind: node.kind,
+        personalScore: Number(node.personalScore) || 50,
+        status: node.status,
+        statusSignal: node.statusSignal,
+        statusWeight: Number(node.statusWeight) || 0,
+        fx: node.fx,
+        fy: node.fy,
+      })),
+      links: graphData.links.map((link) => ({
+        source: linkEndpointId(link.source),
+        target: linkEndpointId(link.target),
+        type: link.type,
+        alsoRelatedBy: Array.isArray(link.alsoRelatedBy) ? [...link.alsoRelatedBy] : [link.type],
+        score: Number(link.score) || 0,
+        confidence: Number(link.confidence) || 0,
+        evidence: Array.isArray(link.evidence) ? [...link.evidence] : [],
+        distance: link.distance,
+        relationshipDetails: Array.isArray(link.relationshipDetails)
+          ? link.relationshipDetails.map((d) => ({
+              type: d.type,
+              score: Number(d.score) || 0,
+              confidence: Number(d.confidence) || 0,
+              evidence: Array.isArray(d.evidence) ? [...d.evidence] : [],
+            }))
+          : undefined,
+      })),
+    };
+
     const snapshot: RelationshipGraphSnapshot = {
       schemaVersion: RELATIONSHIP_GRAPH_SCHEMA_VERSION,
       profileId,
@@ -468,7 +537,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       poolSignature: computeRelationshipPoolSignature(poolForSignature),
       modelVersion: RELATIONSHIP_MODEL_VERSION,
       savedAt: Date.now(),
-      graph: graphData,
+      graph: sanitizedGraph,
       visibleItems: [...visibleByKey.values()],
     };
 
@@ -568,12 +637,14 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     ctx: CanvasRenderingContext2D,
     globalScale: number,
   ) => {
+    if (!rawNode || !ctx) return;
     const node = rawNode as RelationshipGraphNode & { x?: number; y?: number };
-    const x = node.x || 0;
-    const y = node.y || 0;
+    const x = Number(node.x) || 0;
+    const y = Number(node.y) || 0;
+    const personalScore = Number(node.personalScore) || 50;
     const radius =
-      (node.kind === 'profile' || node.kind === 'source' ? 10 : 6 + node.personalScore / 35) +
-      Math.max(0, node.statusWeight || 0) * 1.5;
+      (node.kind === 'profile' || node.kind === 'source' ? 10 : 6 + personalScore / 35) +
+      Math.max(0, Number(node.statusWeight) || 0) * 1.5;
 
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, 2 * Math.PI, false);
@@ -858,14 +929,20 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
                 nodeCanvasObject={nodeCanvasObject}
                 nodeLabel={(rawNode: any) => {
                   const node = rawNode as RelationshipGraphNode;
-                  return `${node.title}\nKişisel uyum: ${node.personalScore}/100`;
+                  const title = node?.title || node?.label || 'İçerik';
+                  const score = Number(node?.personalScore) || 50;
+                  return `${title}\nKişisel uyum: ${score}/100`;
                 }}
                 onNodeClick={(rawNode: any) => setSelectedNode(rawNode as RelationshipGraphNode)}
-                linkColor={(link: any) => getRelationshipLinkColor(link.type)}
-                linkWidth={(link: any) => Math.max(1, Number(link.score || 0) / 42)}
+                linkColor={(link: any) => getRelationshipLinkColor(link?.type)}
+                linkWidth={(link: any) => Math.max(1, Number(link?.score || 0) / 42)}
                 linkLabel={(rawLink: any) => {
                   const link = rawLink as RelationshipGraphLink;
-                  return `${getRelationshipTypeLabel(link.type)} · ${link.score}/100 · Kanıt güveni ${link.confidence}/100\n${link.evidence.join('\n')}`;
+                  const typeLabel = getRelationshipTypeLabel(link?.type) || 'İlişki';
+                  const score = Number(link?.score) || 0;
+                  const confidence = Number(link?.confidence) || 0;
+                  const evidenceText = Array.isArray(link?.evidence) ? link.evidence.join('\n') : '';
+                  return `${typeLabel} · ${score}/100 · Kanıt güveni ${confidence}/100${evidenceText ? `\n${evidenceText}` : ''}`;
                 }}
                 linkDirectionalParticles={prefersReducedMotion ? 0 : 1}
                 linkDirectionalParticleWidth={1.5}
@@ -974,7 +1051,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
                         type: link.type,
                         score: link.score,
                         confidence: link.confidence,
-                        evidence: link.evidence,
+                        evidence: Array.isArray(link.evidence) ? link.evidence : [],
                       },
                     ];
 
@@ -996,7 +1073,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
                       {detail.type === 'semantic' ? ' · Özet ve tür verisine dayalı' : ''}
                     </span>
                     <ul>
-                      {detail.evidence.map((evidence) => (
+                      {(Array.isArray(detail.evidence) ? detail.evidence : []).map((evidence) => (
                         <li key={evidence}>{evidence}</li>
                       ))}
                     </ul>

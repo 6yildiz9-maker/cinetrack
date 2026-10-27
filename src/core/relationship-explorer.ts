@@ -251,11 +251,13 @@ const TYPE_LABELS: Record<RelationshipType, string> = {
 };
 
 export function getRelationshipTypeLabel(type: RelationshipType): string {
-  return TYPE_LABELS[type];
+  return TYPE_LABELS[type] || 'İlişki';
 }
 
-export function relationshipNodeKey(item: Pick<RelationshipContent, 'id' | 'media_type'>): string {
-  return makeMediaKey(item.media_type, item.id);
+export function relationshipNodeKey(item: any): string {
+  if (!item) return '';
+  const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
+  return makeMediaKey(mediaType, item.id);
 }
 
 function clamp(value: number, min = 0, max = 100): number {

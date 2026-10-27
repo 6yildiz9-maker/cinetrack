@@ -485,3 +485,59 @@ test('önbellek anahtarı yardımcıları kanonik sıra üretir ve IndexedDB yok
     /IndexedDB/,
   );
 });
+
+test('buildRelationshipGraph boş verilerle (aday ve kayıtlı liste boş) güvenle çalışır ve çökmez', () => {
+  const resultTaste = buildRelationshipGraph({
+    mode: 'taste-map',
+    profileId: 'empty-user',
+    candidates: [],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'all',
+  });
+  assert.ok(Array.isArray(resultTaste.nodes));
+  assert.ok(Array.isArray(resultTaste.links));
+  assert.equal(resultTaste.nodes.length, 1); // profile node
+  assert.equal(resultTaste.nodes[0]?.kind, 'profile');
+  assert.equal(resultTaste.links.length, 0);
+
+  const resultRel = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'empty-user',
+    candidates: [],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'all',
+    sourceKey: '',
+  });
+  assert.equal(resultRel.nodes.length, 0);
+  assert.equal(resultRel.links.length, 0);
+});
+
+test('buildRelationshipGraph bozuk ve eksik metaverili yapımlarla güvenle çalışır', () => {
+  const malformedCandidates = [
+    { id: 999 }, // missing media_type, title, genres
+    { id: 'bad-1', media_type: 'movie', title: null, genre_ids: null, overview: undefined },
+    { id: 888, media_type: 'tv', title: 'Normal Dizi', genre_ids: [18] },
+  ];
+  const malformedSaved = [
+    { id: 777, media_type: null, title: 'Kayıtlı Eksik', personal_rating: 'invalid' },
+  ];
+
+  const result = buildRelationshipGraph({
+    mode: 'taste-map',
+    profileId: 'malformed-user',
+    candidates: malformedCandidates,
+    savedItems: malformedSaved,
+    preferences,
+    mediaFilter: 'all',
+  });
+
+  assert.ok(result.nodes.length >= 1);
+  assert.ok(Array.isArray(result.links));
+  for (const node of result.nodes) {
+    assert.ok(typeof node.id === 'string' && node.id.length > 0);
+    assert.ok(typeof node.title === 'string');
+    assert.ok(Number.isFinite(node.personalScore));
+  }
+});

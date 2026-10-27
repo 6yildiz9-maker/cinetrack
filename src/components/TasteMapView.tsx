@@ -49,23 +49,27 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   const [genreFilter, setGenreFilter] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'score' | 'title' | 'recent'>('score');
 
+  const safeTasteMap = useMemo(() => tasteMap || { profileId: '', entries: {}, lastRecommendedKeys: [] }, [tasteMap]);
+
   const entriesList = useMemo(() => {
-    return Object.values(tasteMap?.entries || {});
-  }, [tasteMap]);
+    return Object.values(safeTasteMap?.entries || {}).filter(Boolean);
+  }, [safeTasteMap]);
 
   const archivedList = useMemo(() => {
-    return Object.values(tasteMap?.archivedEntries || {});
-  }, [tasteMap]);
+    return Object.values(safeTasteMap?.archivedEntries || {}).filter(Boolean);
+  }, [safeTasteMap]);
 
-  const lastKeys = useMemo(() => tasteMap?.lastRecommendedKeys || [], [tasteMap]);
+  const lastKeys = useMemo(() => safeTasteMap?.lastRecommendedKeys || [], [safeTasteMap]);
 
   // Ring counts for active entries
   const ringCounts = useMemo(() => {
     const counts: Record<string, number> = { ring0: 0, ring1: 0, ring2: 0 };
     for (const e of entriesList) {
+      if (!e) continue;
       const key = e.mediaKey || makeMediaKey(e);
       const norm = inferLifecycleRing(key, e, lastKeys);
-      counts[norm] = (counts[norm] || 0) + 1;
+      const safeRing = norm === 'ring1' ? 'ring1' : norm === 'ring2' ? 'ring2' : 'ring0';
+      counts[safeRing] = (counts[safeRing] || 0) + 1;
     }
     return counts;
   }, [entriesList, lastKeys]);
@@ -73,7 +77,8 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
   // Fast map to match saved items for active status badges
   const savedItemMap = useMemo(() => {
     const map = new Map<string, SavedItem>();
-    for (const item of savedItems) {
+    for (const item of (savedItems || [])) {
+      if (!item) continue;
       const key = makeMediaKey(item);
       map.set(key, item);
       const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
@@ -92,6 +97,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
 
     return list
       .filter((e) => {
+        if (!e) return false;
         if (activeViewTab === 'active') {
           const key = e.mediaKey || makeMediaKey(e);
           const norm = inferLifecycleRing(key, e, lastKeys);
@@ -103,12 +109,12 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
       })
       .sort((a, b) => {
         if (sortOrder === 'score') {
-          return (b.matchScore || 0) - (a.matchScore || 0);
+          return (Number(b.matchScore || b.tasteScore) || 0) - (Number(a.matchScore || a.tasteScore) || 0);
         }
         if (sortOrder === 'title') {
-          return (a.title || '').localeCompare(b.title || '', 'tr');
+          return String(a.title || '').localeCompare(String(b.title || ''), 'tr');
         }
-        return (b.lastShownAt || '').localeCompare(a.lastShownAt || '');
+        return String(b.lastShownAt || '').localeCompare(String(a.lastShownAt || ''));
       });
   }, [activeViewTab, entriesList, archivedList, selectedRing, mediaFilter, genreFilter, sortOrder, lastKeys]);
 
@@ -289,7 +295,7 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
             aria-label="Zevk haritası tür filtresi"
           >
             <option value="">Tüm Türler</option>
-            {Object.entries(genresMap).map(([id, name]) => (
+            {Object.entries(genresMap || {}).map(([id, name]) => (
               <option key={id} value={id}>
                 {name}
               </option>
@@ -346,23 +352,25 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
       ) : (
         <div className="taste-poster-wall" role="region" aria-label="Zevk Haritası Poster Duvarı">
           {displayedEntries.map((entry) => {
+            if (!entry) return null;
             const key = entry.mediaKey || makeMediaKey(entry);
             const matchedSaved =
               savedItemMap.get(key) ||
               savedItemMap.get(`${entry.mediaType}:${entry.id}`) ||
               savedItemMap.get(String(entry.id));
 
+            const matchScore = Number(entry.matchScore || entry.tasteScore) || 75;
             const rawItem = {
               id: entry.id,
-              media_type: entry.mediaType,
-              title: entry.title,
-              name: entry.title,
+              media_type: entry.mediaType || 'movie',
+              title: entry.title || 'Başlıksız',
+              name: entry.title || 'Başlıksız',
               poster_path: entry.poster_path,
-              genre_ids: entry.genre_ids || [],
-              vote_average: entry.vote_average || 0,
+              genre_ids: Array.isArray(entry.genre_ids) ? entry.genre_ids : [],
+              vote_average: Number(entry.vote_average) || 0,
               release_date: entry.release_date,
               first_air_date: entry.first_air_date,
-              matchScore: entry.matchScore,
+              matchScore,
               ring: activeViewTab === 'active' ? inferLifecycleRing(key, entry, lastKeys) : undefined,
               status: matchedSaved?.status || entry.status,
             };
@@ -376,13 +384,13 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
                   context="taste"
                   showRing={true}
                   showMatch={true}
-                  genres={genresMap}
+                  genres={genresMap || {}}
                   onOpenDetails={onOpenDetails}
                   onQuickSave={onQuickSave}
                   onQuickAdd={(item) => onSetStatus(item, 'watchlist')}
                   onSetStatus={onSetStatus}
                   onToggleDislike={onToggleDislike}
-                  matchScore={entry.matchScore}
+                  matchScore={matchScore}
                   selectionRing={activeViewTab === 'active' ? inferLifecycleRing(key, entry, lastKeys) : undefined}
                 />
               </div>
