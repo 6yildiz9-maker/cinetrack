@@ -186,6 +186,14 @@ function createMockGitHubHarness({ isPrivate = true, simulate403TooLargeForOver1
         });
       }
 
+      if (pathname === `${repoPrefix}/branches/${TEST_BRANCH}` && method === 'GET') {
+        return jsonResponse(200, { name: TEST_BRANCH });
+      }
+
+      if (pathname === `${repoPrefix}/branches` && method === 'GET') {
+        return jsonResponse(200, [{ name: TEST_BRANCH }]);
+      }
+
       const blobPrefix = `${repoPrefix}/git/blobs/`;
       if (pathname.startsWith(blobPrefix) && method === 'GET') {
         const sha = decodeURIComponent(pathname.slice(blobPrefix.length));
@@ -1235,3 +1243,386 @@ test('Senaryo 15: Varsayılan silmeme (no-deletion) politikası, >1 MB Git Blob 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ==========================================
+// AŞAMA 5 — HTTP 404 & GİTHUB ENTEGRASYON TESTLERİ
+// ==========================================
+
+test('Aşama 5.1: Özel depoya geçerli token ile erişim', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-1-'));
+  const gh = createMockGitHubHarness({ isPrivate: true });
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    await gh.installAndRun(async () => {
+      const access = await store.verifyRemoteRepoAccess();
+      assert.equal(access.ok, true);
+      assert.equal(access.accessible, true);
+      assert.equal(access.repoExists, true);
+      assert.equal(access.branchExists, true);
+      assert.equal(access.hasPushPermission, true);
+      assert.equal(access.isPrivate, true);
+      assert.equal(access.effectiveIsPublicRepo, false);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.2: Yanlış depo adı veya erişilemeyen özel depo (404 tanı ve yerel verinin korunması)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-2-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    store.upsertCatalogItems([
+      makeMovieRecord(101, { title: 'Yerel Film 101' }),
+      makeMovieRecord(102, { title: 'Yerel Film 102' }),
+    ]);
+
+    gh.setInterceptor(({ pathname, jsonResponse }) => {
+      if (pathname === `/repos/${TEST_OWNER}/${TEST_REPO}`) {
+        return jsonResponse(404, { message: 'Not Found' });
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const access = await store.verifyRemoteRepoAccess();
+      assert.equal(access.ok, false);
+      assert.equal(access.accessible, false);
+      assert.equal(access.repoExists, false);
+      assert.equal(access.errorCategory, 'not_found');
+      assert.ok(access.error && access.error.includes('HTTP 404'));
+      assert.equal(access.error.includes(TEST_SECRET_TOKEN), false, 'Token sızdırılmamalı');
+
+      const pushRes = await store.pushToGitHub();
+      assert.equal(pushRes.ok, false);
+      assert.equal(pushRes.verifiedEqual, false);
+      assert.ok(pushRes.errors.some((e) => e.category === 'not_found'));
+
+      // Yerel verinin silinmediği ve bozulmadığı doğrulanmalı
+      const localMovies = store.readCatalog('movie');
+      assert.equal(Object.keys(localMovies).length, 2);
+      assert.equal(localMovies['movie:101']?.title, 'Yerel Film 101');
+      assert.equal(localMovies['movie:102']?.title, 'Yerel Film 102');
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.3: Geçersiz dal (404) doğru tespit edilir ve varsayılan dal bildirilir', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-3-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    gh.setInterceptor(({ pathname, jsonResponse }) => {
+      if (pathname === `/repos/${TEST_OWNER}/${TEST_REPO}`) {
+        return jsonResponse(200, {
+          private: true,
+          full_name: `${TEST_OWNER}/${TEST_REPO}`,
+          default_branch: 'master',
+        });
+      }
+      if (pathname === `/repos/${TEST_OWNER}/${TEST_REPO}/branches/${TEST_BRANCH}`) {
+        return jsonResponse(404, { message: 'Branch not found' });
+      }
+      if (pathname === `/repos/${TEST_OWNER}/${TEST_REPO}/branches`) {
+        return jsonResponse(200, [{ name: 'master' }]);
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const access = await store.verifyRemoteRepoAccess();
+      assert.equal(access.ok, false);
+      assert.equal(access.branchExists, false);
+      assert.equal(access.errorCategory, 'not_found');
+      assert.ok(access.error && access.error.includes('master'));
+      assert.equal(access.error.includes(TEST_SECRET_TOKEN), false);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.4: Yeni dosya oluşturma (SHA gönderilmez, 201 yanıtı ve geri okuma doğrulaması)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-4-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    let capturedPutBody = null;
+
+    gh.setInterceptor(({ method, pathname, init }) => {
+      if (method === 'PUT' && pathname.endsWith('/contents/data/catalog/movies.json')) {
+        capturedPutBody = JSON.parse(String(init.body || '{}'));
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const content = JSON.stringify({ 'movie:1': makeMovieRecord(1) }, null, 2);
+      const res = await store.commitFileToGitHub(
+        'data/catalog/movies.json',
+        content,
+        'feat: create movies.json'
+      );
+      assert.equal(res.ok, true);
+      assert.equal(res.verifiedReadBack, true);
+      assert.ok(res.sha);
+      assert.equal(capturedPutBody?.sha, undefined, 'Yeni dosya oluşturmada sha alanı bulunmamalı');
+      assert.equal(capturedPutBody?.branch, TEST_BRANCH);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.5: Var olan dosyayı doğru SHA ile güncelleme (200 yanıtı)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-5-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    const initialContent = JSON.stringify({ 'movie:1': makeMovieRecord(1) }, null, 2);
+    const { sha: initialSha } = gh.seedFile('data/catalog/movies.json', initialContent);
+
+    let capturedPutBody = null;
+    gh.setInterceptor(({ method, pathname, init }) => {
+      if (method === 'PUT' && pathname.endsWith('/contents/data/catalog/movies.json')) {
+        capturedPutBody = JSON.parse(String(init.body || '{}'));
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const updatedContent = JSON.stringify(
+        { 'movie:1': makeMovieRecord(1, { title: 'Güncel Dune' }) },
+        null,
+        2
+      );
+      const res = await store.commitFileToGitHub(
+        'data/catalog/movies.json',
+        updatedContent,
+        'chore: update movies.json'
+      );
+      assert.equal(res.ok, true);
+      assert.equal(res.verifiedReadBack, true);
+      assert.equal(capturedPutBody?.sha, initialSha, 'Güncellemede doğru SHA gönderilmeli');
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.6: Yetkisiz yazma girişimi (permissions.push: false veya 403 yazma reddi)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-6-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    gh.setInterceptor(({ pathname, jsonResponse }) => {
+      if (pathname === `/repos/${TEST_OWNER}/${TEST_REPO}`) {
+        return jsonResponse(200, {
+          private: true,
+          full_name: `${TEST_OWNER}/${TEST_REPO}`,
+          default_branch: TEST_BRANCH,
+          permissions: { pull: true, push: false, admin: false },
+        });
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const access = await store.verifyRemoteRepoAccess();
+      assert.equal(access.ok, false);
+      assert.equal(access.hasPushPermission, false);
+      assert.equal(access.errorCategory, 'auth_error');
+      assert.ok(access.error && access.error.includes('yazma (push) yetkisine sahip değil'));
+      assert.equal(access.error.includes(TEST_SECRET_TOKEN), false);
+
+      const pushReport = await store.pushToGitHub();
+      assert.equal(pushReport.ok, false);
+      assert.ok(pushReport.errors.some((e) => e.category === 'auth_error'));
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.7: 404 ve 409 hata yanıtları (404 güvenli durur, 409 SHA yenileyerek çözer)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-7-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    const initialContent = JSON.stringify({ 'movie:1': makeMovieRecord(1) }, null, 2);
+    gh.seedFile('data/catalog/movies.json', initialContent, 'sha-old');
+
+    let putCount = 0;
+    gh.setInterceptor(({ method, pathname, jsonResponse }) => {
+      if (method === 'PUT' && pathname.endsWith('/contents/data/catalog/movies.json')) {
+        putCount++;
+        if (putCount === 1) {
+          // İlk denemede 409 conflict simüle et
+          return jsonResponse(409, { message: 'Conflict: sha-old is outdated' });
+        }
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const newContent = JSON.stringify({ 'movie:1': makeMovieRecord(1, { title: 'Yenilendi' }) }, null, 2);
+      const res = await store.commitFileToGitHub('data/catalog/movies.json', newContent, 'update');
+      assert.equal(res.ok, true);
+      assert.equal(putCount, 2, '409 sonrası güncel SHA alınarak 2. denemede yazılmalı');
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.8: Kısmi başarısızlık ve güvenli tekrar (başarılı dosyalar korunur, sonraki çalışmada atlanır)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-8-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    store.upsertCatalogItems([
+      makeMovieRecord(1, { title: 'Film 1' }),
+      makeTvRecord(1, { title: 'Dizi 1' }),
+    ]);
+
+    let blockTv = true;
+    gh.setInterceptor(({ method, pathname, jsonResponse }) => {
+      if (blockTv && method === 'PUT' && pathname.endsWith('/contents/data/catalog/tv.json')) {
+        return jsonResponse(500, { message: 'Internal Server Error' });
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      // 1. İlk gönderim: movies.json başarılı, tv.json başarısız -> partialFailure
+      const res1 = await store.syncToGitHub();
+      assert.equal(res1.ok, false);
+      assert.equal(res1.partialFailure, true);
+      assert.ok(res1.filesCommitted.includes('data/catalog/movies.json'));
+      assert.ok(res1.filesFailed.includes('data/catalog/tv.json'));
+
+      // 2. İkinci gönderim: engel kalktı; movies.json atlanır (skipped), tv.json tamamlanır
+      blockTv = false;
+      const res2 = await store.syncToGitHub();
+      assert.equal(res2.ok, true);
+      assert.ok(res2.filesSkipped.includes('data/catalog/movies.json'));
+      assert.ok(res2.filesCommitted.includes('data/catalog/tv.json'));
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.9: Yazma sonrası hash doğrulaması (uzak içerik uyuşmazsa dosya başarısız sayılır)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-9-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+
+    let putReceived = false;
+    gh.setInterceptor(({ method, pathname, jsonResponse }) => {
+      // PUT sonrası GET çağrısında bozuk/farklı içerik dön
+      if (putReceived && method === 'GET' && pathname.endsWith('/contents/data/catalog/movies.json')) {
+        return jsonResponse(200, {
+          name: 'movies.json',
+          path: 'data/catalog/movies.json',
+          sha: 'mismatched-sha',
+          size: 100,
+          type: 'file',
+          encoding: 'base64',
+          content: Buffer.from('{"movie:1": {"title": "Bozuk veya farkli içerik"}}', 'utf8').toString('base64'),
+        });
+      }
+      if (method === 'PUT' && pathname.endsWith('/contents/data/catalog/movies.json')) {
+        putReceived = true;
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const validContent = JSON.stringify({ 'movie:1': makeMovieRecord(1) }, null, 2);
+      const res = await store.commitFileToGitHub('data/catalog/movies.json', validContent, 'test write');
+      assert.equal(res.ok, false);
+      assert.equal(res.errorCategory, 'conflict');
+      assert.ok(res.error && res.error.includes('hash doğrulaması'));
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.10: Yerel verinin hiçbir başarısız senaryoda silinmemesi / sıfırlanmaması', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-10-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store, storage } = createIsolatedSyncEnv(tmpDir);
+    // Yerelde 500 film ve kullanıcı kayıtları ekle
+    const sampleMovies = Array.from({ length: 50 }, (_, i) => makeMovieRecord(i + 1));
+    store.upsertCatalogItems(sampleMovies);
+
+    const initialData = storage.readData();
+    assert.equal(Object.keys(store.readCatalog('movie')).length, 50);
+
+    // Uzakta ardışık 404, 500 ve ağ hatası simüle et
+    gh.setInterceptor(({ jsonResponse }) => {
+      return jsonResponse(404, { message: 'Not Found' });
+    });
+
+    await gh.installAndRun(async () => {
+      const resPush = await store.pushToGitHub();
+      assert.equal(resPush.ok, false);
+
+      const resReconcile = await store.reconcileWithGitHub();
+      assert.equal(resReconcile.ok, false);
+
+      const resPull = await store.pullFromGitHub();
+      assert.equal(resPull.ok, false);
+
+      // Yerel katalog ve kullanıcı verisinin eksiksiz korunduğu garanti edilmeli
+      const finalMovies = store.readCatalog('movie');
+      assert.equal(Object.keys(finalMovies).length, 50);
+      for (const m of sampleMovies) {
+        assert.ok(finalMovies[m.key]);
+      }
+
+      const finalData = storage.readData();
+      assert.equal(finalData.profiles.length, initialData.profiles.length);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.11: Başarısız dosyanın yanlışlıkla başarılı sayılmaması (başarı sayacı artmaz)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-11-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    store.upsertCatalogItems([makeMovieRecord(1)]);
+
+    gh.setInterceptor(({ method, pathname, jsonResponse }) => {
+      if (method === 'PUT') {
+        return jsonResponse(404, { message: 'Not Found' });
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const syncRes = await store.syncToGitHub();
+      assert.equal(syncRes.ok, false);
+      assert.equal(syncRes.filesCommitted.length, 0, 'Başarısız dosya committed listesinde yer alamaz');
+      assert.ok(syncRes.filesFailed.includes('data/catalog/movies.json'));
+
+      const syncStatus = store.getSyncStatus();
+      assert.equal(syncStatus.fileSummaryCounts.uploaded, 0);
+      assert.equal(syncStatus.fileSummaryCounts.succeeded, 0);
+      assert.ok(syncStatus.fileSummaryCounts.failed > 0);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+

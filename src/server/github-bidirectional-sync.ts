@@ -2854,7 +2854,47 @@ export class GitHubBidirectionalSyncManager {
         );
       }
 
-      const visibility = await this.deps.store.verifyRemoteRepoVisibility();
+      const access = await this.deps.store.verifyRemoteRepoAccess();
+      if (!access.ok) {
+        return {
+          ok: false,
+          partialFailure: false,
+          operation: 'inspect',
+          startedAt,
+          completedAt: new Date().toISOString(),
+          remoteTarget,
+          isPublicRepo: access.effectiveIsPublicRepo,
+          ...(access.warning ? { repoVisibilityWarning: access.warning } : {}),
+          localBefore: localBefore.summary,
+          remoteBefore: null,
+          localAfter: localBefore.summary,
+          remoteAfter: null,
+          comparison: null,
+          filesDownloaded: [],
+          filesUploaded: [],
+          filesUnchanged: [],
+          filesMerged: [],
+          filesFailed: [],
+          filesPending: [],
+          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          recordsAdded: 0,
+          recordsUpdated: 0,
+          recordsConflicted: 0,
+          conflicts: [],
+          warnings: access.warning ? [access.warning] : [],
+          errors: [
+            {
+              category: access.errorCategory || 'http_error',
+              message: access.error || 'GitHub depo erişim doğrulaması başarısız.',
+            },
+          ],
+          verifiedEqual: false,
+        };
+      }
+      const visibility = {
+        effectiveIsPublicRepo: access.effectiveIsPublicRepo,
+        warning: access.warning,
+      };
       const includePersonal = !visibility.effectiveIsPublicRepo;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
@@ -2955,7 +2995,47 @@ export class GitHubBidirectionalSyncManager {
         );
       }
 
-      const visibility = await this.deps.store.verifyRemoteRepoVisibility();
+      const access = await this.deps.store.verifyRemoteRepoAccess();
+      if (!access.ok) {
+        return {
+          ok: false,
+          partialFailure: false,
+          operation: 'pull',
+          startedAt,
+          completedAt: new Date().toISOString(),
+          remoteTarget,
+          isPublicRepo: access.effectiveIsPublicRepo,
+          ...(access.warning ? { repoVisibilityWarning: access.warning } : {}),
+          localBefore: localBefore.summary,
+          remoteBefore: null,
+          localAfter: localBefore.summary,
+          remoteAfter: null,
+          comparison: null,
+          filesDownloaded: [],
+          filesUploaded: [],
+          filesUnchanged: [],
+          filesMerged: [],
+          filesFailed: [],
+          filesPending: [],
+          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          recordsAdded: 0,
+          recordsUpdated: 0,
+          recordsConflicted: 0,
+          conflicts: [],
+          warnings: access.warning ? [access.warning] : [],
+          errors: [
+            {
+              category: access.errorCategory || 'http_error',
+              message: access.error || 'GitHub depo erişim doğrulaması başarısız.',
+            },
+          ],
+          verifiedEqual: false,
+        };
+      }
+      const visibility = {
+        effectiveIsPublicRepo: access.effectiveIsPublicRepo,
+        warning: access.warning,
+      };
       const includePersonal = !visibility.effectiveIsPublicRepo;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
@@ -3425,7 +3505,47 @@ export class GitHubBidirectionalSyncManager {
         );
       }
 
-      const visibility = await this.deps.store.verifyRemoteRepoVisibility();
+      const access = await this.deps.store.verifyRemoteRepoAccess();
+      if (!access.ok) {
+        return {
+          ok: false,
+          partialFailure: false,
+          operation: 'push',
+          startedAt,
+          completedAt: new Date().toISOString(),
+          remoteTarget,
+          isPublicRepo: access.effectiveIsPublicRepo,
+          ...(access.warning ? { repoVisibilityWarning: access.warning } : {}),
+          localBefore: localBefore.summary,
+          remoteBefore: null,
+          localAfter: localBefore.summary,
+          remoteAfter: null,
+          comparison: null,
+          filesDownloaded: [],
+          filesUploaded: [],
+          filesUnchanged: [],
+          filesMerged: [],
+          filesFailed: [],
+          filesPending: [],
+          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          recordsAdded: 0,
+          recordsUpdated: 0,
+          recordsConflicted: 0,
+          conflicts: [],
+          warnings: access.warning ? [access.warning] : [],
+          errors: [
+            {
+              category: access.errorCategory || 'http_error',
+              message: access.error || 'GitHub depo erişim doğrulaması başarısız.',
+            },
+          ],
+          verifiedEqual: false,
+        };
+      }
+      const visibility = {
+        effectiveIsPublicRepo: access.effectiveIsPublicRepo,
+        warning: access.warning,
+      };
       const includePersonal = !visibility.effectiveIsPublicRepo;
       const warnings: string[] = [];
       if (visibility.warning) warnings.push(visibility.warning);
@@ -3598,7 +3718,53 @@ export class GitHubBidirectionalSyncManager {
         );
       }
 
-      const visibility = await this.deps.store.verifyRemoteRepoVisibility();
+      const access = await this.deps.store.verifyRemoteRepoAccess();
+      if (!access.ok) {
+        const report: BidirectionalSyncReport = {
+          ok: false,
+          partialFailure: false,
+          operation: 'reconcile',
+          startedAt,
+          completedAt: new Date().toISOString(),
+          remoteTarget,
+          isPublicRepo: access.effectiveIsPublicRepo,
+          ...(access.warning ? { repoVisibilityWarning: access.warning } : {}),
+          localBefore: localBefore.summary,
+          remoteBefore: null,
+          localAfter: localBefore.summary,
+          remoteAfter: null,
+          comparison: null,
+          filesDownloaded: [],
+          filesUploaded: [],
+          filesUnchanged: [],
+          filesMerged: [],
+          filesFailed: [],
+          filesPending: [],
+          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          recordsAdded: 0,
+          recordsUpdated: 0,
+          recordsConflicted: 0,
+          conflicts: [],
+          warnings: access.warning ? [access.warning] : [],
+          errors: [
+            {
+              category: access.errorCategory || 'http_error',
+              message: access.error || 'GitHub depo erişim doğrulaması başarısız.',
+            },
+          ],
+          verifiedEqual: false,
+        };
+        this.deps.onSyncCompleted?.({
+          report,
+          lastRemoteSummary: null,
+          lastComparison: null,
+        });
+        return report;
+      }
+      const visibility = {
+        effectiveIsPublicRepo: access.effectiveIsPublicRepo,
+        warning: access.warning,
+      };
       const includePersonal = !visibility.effectiveIsPublicRepo;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
@@ -4167,9 +4333,11 @@ export class GitHubBidirectionalSyncManager {
         const commitRes = await this.deps.store.commitFileToGitHub(
           candidate.repoPath,
           localContent,
-          candidate.commitMsg
+          candidate.commitMsg,
+          { isEmptyRepo: access.isEmptyRepo, branchToUse: cfg.branch }
         );
         if (commitRes.ok) {
+          access.isEmptyRepo = false;
           if (commitRes.skippedNoop) {
             if (
               !filesDownloaded.includes(candidate.repoPath) &&
