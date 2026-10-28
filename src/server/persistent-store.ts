@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -81,14 +81,33 @@ export interface DerivedProfileDocument {
   items: Record<string, DerivedProfileItem>;
 }
 
+export type TokenSourceKind =
+  | 'env:CINETRACK_GITHUB_TOKEN'
+  | 'env:CINETRACK_GITHUB_PAT'
+  | 'file:CINETRACK_GITHUB_TOKEN'
+  | 'file:CINETRACK_GITHUB_PAT'
+  | 'options'
+  | 'none';
+
+export type TokenFormatKind =
+  | 'fine_grained_pat'
+  | 'classic_pat'
+  | 'oauth_or_app'
+  | 'custom'
+  | 'none';
+
 export interface PersistentStoreOptions {
   dataDir: string;
   maxDataBytes?: number;
   githubToken?: string;
+  githubTokenSource?: TokenSourceKind;
   githubOwner?: string;
   githubRepo?: string;
   githubBranch?: string;
   isPublicRepo?: boolean;
+  allowPublicPersonalSync?: boolean;
+  processEnvIsPublicRepo?: string | null;
+  localEnvIsPublicRepo?: string | null;
 }
 
 export type SyncFileStage = 'pending' | 'syncing' | 'succeeded' | 'failed';
@@ -115,6 +134,7 @@ export interface RemoteRepoAccessCheck {
   defaultBranch?: string;
   configuredBranch: string;
   hasPushPermission: boolean;
+  acceptedPermissionsHeader?: string | null;
   warning?: string;
   error?: string;
   errorCategory?: GitHubSyncErrorCategory;
@@ -127,6 +147,8 @@ export interface SyncFileStateRecord {
   noop?: boolean;
   blockedPublic?: boolean;
   localContentHash?: string;
+  readBackHash?: string | null;
+  verifiedReadBack?: boolean;
   sha?: string;
   error?: string;
   errorCategory?: GitHubSyncErrorCategory;
@@ -138,6 +160,24 @@ export interface SyncStatus {
   mode: 'github' | 'local_only';
   reason?: string;
   isPublicRepo: boolean;
+  configuredEnvIsPublicRepo?: boolean;
+  allowPublicPersonalSync?: boolean;
+  personalSyncBlockedByPublicGuard?: boolean;
+  publicConsentUpdatedAt?: string | null;
+  configDiagnostics?: {
+    processEnvIsPublicRepo: string | null;
+    localEnvIsPublicRepo: string | null;
+    effectiveConfiguredIsPublicRepo: boolean;
+    observedRemoteIsPublicRepo: boolean | null;
+    allowPublicPersonalSync: boolean;
+    persistedUserConsent: boolean | null;
+  };
+  tokenDiagnostics?: {
+    configured: boolean;
+    source: TokenSourceKind;
+    format: TokenFormatKind;
+    length: number;
+  };
   repoVisibilityWarning?: string;
   corruptionWarnings?: string[];
   lastSyncAt: string | null;
@@ -183,6 +223,59 @@ export interface SyncResult {
   errors: string[];
 }
 
+export interface StagedFileOutcome {
+  repoPath: string;
+  stage: 'probe' | 'catalog' | 'personal';
+  status: 'succeeded' | 'failed' | 'skipped' | 'blocked';
+  writeStatus:
+    | 'committed'
+    | 'unchanged_noop'
+    | 'failed'
+    | 'skipped_due_to_probe_failure'
+    | 'skipped_due_to_catalog_failure'
+    | 'blocked_public_guard';
+  sizeBytes: number;
+  localHash: string | null;
+  readBackHash: string | null;
+  sha?: string;
+  verifiedReadBack: boolean;
+  error?: string;
+  errorCategory?: GitHubSyncErrorCategory;
+}
+
+export interface StagedSyncReport {
+  ok: boolean;
+  verifiedEqual: boolean;
+  haltedAtStage?: 'probe' | 'catalog' | 'personal';
+  probe: {
+    ok: boolean;
+    repoPath: string;
+    step: string;
+    sizeBytes: number;
+    localHash: string | null;
+    readBackHash: string | null;
+    sha?: string;
+    verifiedReadBack: boolean;
+    error?: string;
+    errorCategory?: GitHubSyncErrorCategory;
+  };
+  catalogStage: {
+    attempted: boolean;
+    ok: boolean;
+  };
+  personalStage: {
+    attempted: boolean;
+    ok: boolean;
+    blockedByPublicGuard?: boolean;
+  };
+  access: RemoteRepoAccessCheck;
+  allowPersonalSync: boolean;
+  repoVisibilityWarning?: string;
+  files: StagedFileOutcome[];
+  fileOutcomes: StagedFileOutcome[];
+  bidirectionalReport?: BidirectionalSyncReport | null;
+}
+
 const STAGE_LABELS: Record<SyncFileStage, SyncFileStateRecord['statusLabel']> = {
   pending: 'bekliyor',
   syncing: 'gönderiliyor',
@@ -204,7 +297,7 @@ export function redactSecrets(input: string, extraSecrets: Array<string | undefi
   }
   sanitized = sanitized
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
-    .replace(/token\s+[A-Za-z0-9._-]+/gi, 'token [REDACTED]')
+    .replace(/\btoken\s+[A-Za-z0-9._-]{16,}/gi, 'token [REDACTED]')
     .replace(/gh[pousr]_[A-Za-z0-9_]+/g, '[REDACTED]')
     .replace(/github_pat_[A-Za-z0-9_]+/g, '[REDACTED]');
   return sanitized;
@@ -361,6 +454,14 @@ function classifyHttpFailure(status: number, headers: Headers, bodyMessage: stri
   return 'http_error';
 }
 
+function classifyTokenFormat(token?: string): TokenFormatKind {
+  if (!token) return 'none';
+  if (token.startsWith('github_pat_')) return 'fine_grained_pat';
+  if (token.startsWith('ghp_')) return 'classic_pat';
+  if (/^gh[ousr]_/.test(token)) return 'oauth_or_app';
+  return 'custom';
+}
+
 export class PersistentDataStore {
   private dataDir: string;
   private catalogDir: string;
@@ -375,6 +476,9 @@ export class PersistentDataStore {
   private lastComparison: SyncComparisonSummary | null = null;
   private lastSyncReport: Omit<BidirectionalSyncReport, 'updatedDataDocument'> | null = null;
   private persistedInitialReconcile = false;
+  private persistedPublicPersonalConsent?: boolean;
+  private publicConsentUpdatedAt: string | null = null;
+  private lastObservedRemotePublic?: boolean;
   private repoVisibilityWarning?: string;
   private fileStates: Record<string, SyncFileStateRecord> = {};
   private writeSerializer = new FileWriteSerializer();
@@ -383,10 +487,14 @@ export class PersistentDataStore {
   private bidirectionalManager: GitHubBidirectionalSyncManager;
 
   private githubToken?: string;
+  private githubTokenSource: TokenSourceKind;
   private githubOwner?: string;
   private githubRepo?: string;
   private githubBranch: string;
   private isPublicRepo: boolean;
+  private allowPublicPersonalSync?: boolean;
+  private processEnvIsPublicRepo: string | null;
+  private localEnvIsPublicRepo: string | null;
 
   constructor(options: PersistentStoreOptions) {
     this.dataDir = options.dataDir;
@@ -399,14 +507,62 @@ export class PersistentDataStore {
     this.syncStateFile = path.join(this.dataDir, 'sync-state.json');
 
     this.githubToken = options.githubToken?.trim();
+    this.githubTokenSource =
+      options.githubTokenSource ?? (this.githubToken ? 'options' : 'none');
     this.githubOwner = options.githubOwner?.trim();
     this.githubRepo = options.githubRepo?.trim();
     this.githubBranch = options.githubBranch?.trim() || 'main';
     this.isPublicRepo = Boolean(options.isPublicRepo);
+    this.allowPublicPersonalSync = options.allowPublicPersonalSync;
+    this.processEnvIsPublicRepo = options.processEnvIsPublicRepo ?? null;
+    this.localEnvIsPublicRepo = options.localEnvIsPublicRepo ?? null;
 
     this.initDirectories();
     this.loadPersistedSyncState();
     this.bidirectionalManager = this.createBidirectionalManager();
+  }
+
+  public getEffectiveConfiguredIsPublicRepo(): boolean {
+    return Boolean(
+      this.isPublicRepo ||
+        this.persistedPublicPersonalConsent === true ||
+        this.allowPublicPersonalSync === true
+    );
+  }
+
+  public isPersonalSyncAllowedForRepo(
+    remoteIsPublic: boolean,
+    perCallOverride?: boolean
+  ): boolean {
+    if (!remoteIsPublic) return true;
+    if (perCallOverride !== undefined) return perCallOverride;
+    if (this.persistedPublicPersonalConsent !== undefined) {
+      return this.persistedPublicPersonalConsent;
+    }
+    if (this.allowPublicPersonalSync !== undefined) {
+      return this.allowPublicPersonalSync;
+    }
+    return Boolean(this.isPublicRepo);
+  }
+
+  public setPublicPersonalSyncConsent(allowPersonalDataInPublicRepo: boolean): {
+    allowPublicPersonalSync: boolean;
+    effectiveConfiguredIsPublicRepo: boolean;
+    updatedAt: string;
+  } {
+    this.persistedPublicPersonalConsent = Boolean(allowPersonalDataInPublicRepo);
+    this.publicConsentUpdatedAt = new Date().toISOString();
+    if (this.lastObservedRemotePublic === true) {
+      this.repoVisibilityWarning = this.persistedPublicPersonalConsent
+        ? 'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi ve kullanıcı profili verileriniz açık onayınız doğrultusunda herkese açık olarak depolanmaktadır.'
+        : 'Bilgi: Uzak GitHub veri deposu herkese açıktır (public). Gizlilik koruması aktif olduğu için yalnızca ortak katalog senkronize edilir; kişisel izleme listesi ve profil verileri gönderilmez.';
+    }
+    this.persistSyncState();
+    return {
+      allowPublicPersonalSync: this.isPersonalSyncAllowedForRepo(true),
+      effectiveConfiguredIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
+      updatedAt: this.publicConsentUpdatedAt,
+    };
   }
 
   private createBidirectionalManager(): GitHubBidirectionalSyncManager {
@@ -420,7 +576,8 @@ export class PersistentDataStore {
         owner: this.githubOwner,
         repo: this.githubRepo,
         branch: this.githubBranch,
-        isPublicRepo: this.isPublicRepo,
+        isPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
+        allowPublicPersonalSync: this.isPersonalSyncAllowedForRepo(true),
       }),
       onSyncCompleted: ({ report, lastRemoteSummary, lastComparison }) => {
         this.recordBidirectionalOutcome(report, lastRemoteSummary, lastComparison);
@@ -495,8 +652,12 @@ export class PersistentDataStore {
     ]) {
       if (!report.filesPending.includes(p) && !report.filesFailed.includes(p)) {
         const localHash = report.localAfter.files[p]?.rawFileHash || undefined;
+        const remoteFile = report.remoteAfter?.files[p];
         this.setFileSyncStage(p, 'succeeded', {
           localContentHash: localHash,
+          readBackHash: remoteFile?.rawFileHash ?? null,
+          verifiedReadBack: Boolean(remoteFile?.exists && remoteFile?.valid && remoteFile?.rawFileHash),
+          sha: remoteFile?.sha,
           noop: report.filesUnchanged.includes(p),
           error: undefined,
           errorCategory: undefined,
@@ -505,7 +666,11 @@ export class PersistentDataStore {
     }
     for (const p of report.filesFailed) {
       const matchingErr = report.errors.find((e) => e.repoPath === p);
+      const localHash = report.localAfter.files[p]?.rawFileHash || undefined;
       this.setFileSyncStage(p, 'failed', {
+        localContentHash: localHash,
+        readBackHash: null,
+        verifiedReadBack: false,
         error: matchingErr?.message || `${p} senkronizasyon hatası`,
         errorCategory: (matchingErr?.category as GitHubSyncErrorCategory) || 'http_error',
       });
@@ -535,6 +700,9 @@ export class PersistentDataStore {
       lastError?: string | null;
       repoVisibilityWarning?: string;
       persistedInitialReconcile?: boolean;
+      persistedPublicPersonalConsent?: boolean;
+      publicConsentUpdatedAt?: string | null;
+      lastObservedRemotePublic?: boolean;
       lastRemoteSummary?: SyncSideSummary | null;
       lastComparison?: SyncComparisonSummary | null;
       lastSyncReport?: Omit<BidirectionalSyncReport, 'updatedDataDocument'> | null;
@@ -545,6 +713,13 @@ export class PersistentDataStore {
       this.lastError = parsed.data.lastError ?? null;
       this.repoVisibilityWarning = parsed.data.repoVisibilityWarning;
       this.persistedInitialReconcile = Boolean(parsed.data.persistedInitialReconcile);
+      if (typeof parsed.data.persistedPublicPersonalConsent === 'boolean') {
+        this.persistedPublicPersonalConsent = parsed.data.persistedPublicPersonalConsent;
+      }
+      this.publicConsentUpdatedAt = parsed.data.publicConsentUpdatedAt ?? null;
+      if (typeof parsed.data.lastObservedRemotePublic === 'boolean') {
+        this.lastObservedRemotePublic = parsed.data.lastObservedRemotePublic;
+      }
       this.lastRemoteSummary = parsed.data.lastRemoteSummary ?? null;
       this.lastComparison = parsed.data.lastComparison ?? null;
       this.lastSyncReport = parsed.data.lastSyncReport ?? null;
@@ -560,6 +735,13 @@ export class PersistentDataStore {
         lastSyncAt: this.lastSyncAt,
         lastError: this.lastError,
         persistedInitialReconcile: this.persistedInitialReconcile,
+        ...(this.persistedPublicPersonalConsent !== undefined
+          ? { persistedPublicPersonalConsent: this.persistedPublicPersonalConsent }
+          : {}),
+        ...(this.publicConsentUpdatedAt ? { publicConsentUpdatedAt: this.publicConsentUpdatedAt } : {}),
+        ...(this.lastObservedRemotePublic !== undefined
+          ? { lastObservedRemotePublic: this.lastObservedRemotePublic }
+          : {}),
         ...(this.repoVisibilityWarning ? { repoVisibilityWarning: this.repoVisibilityWarning } : {}),
         ...(this.lastRemoteSummary ? { lastRemoteSummary: this.lastRemoteSummary } : {}),
         ...(this.lastComparison ? { lastComparison: this.lastComparison } : {}),
@@ -578,12 +760,26 @@ export class PersistentDataStore {
     extra: Partial<Omit<SyncFileStateRecord, 'repoPath' | 'status' | 'statusLabel' | 'updatedAt'>> = {}
   ) {
     const prev = this.fileStates[repoPath];
+    const resolvedReadBackHash =
+      extra.readBackHash !== undefined
+        ? extra.readBackHash
+        : status === 'failed'
+        ? null
+        : prev?.readBackHash;
+    const resolvedVerifiedReadBack =
+      extra.verifiedReadBack !== undefined
+        ? extra.verifiedReadBack
+        : status === 'failed'
+        ? false
+        : prev?.verifiedReadBack;
     this.fileStates[repoPath] = {
       repoPath,
       status,
       statusLabel: STAGE_LABELS[status],
       localContentHash: extra.localContentHash ?? prev?.localContentHash,
-      sha: extra.sha ?? prev?.sha,
+      ...(resolvedReadBackHash !== undefined ? { readBackHash: resolvedReadBackHash } : {}),
+      ...(resolvedVerifiedReadBack !== undefined ? { verifiedReadBack: resolvedVerifiedReadBack } : {}),
+      sha: status === 'failed' ? extra.sha : extra.sha ?? prev?.sha,
       ...(extra.noop !== undefined ? { noop: extra.noop } : {}),
       ...(extra.blockedPublic !== undefined ? { blockedPublic: extra.blockedPublic } : {}),
       ...(extra.error ? { error: redactSecrets(extra.error, [this.githubToken]) } : {}),
@@ -678,21 +874,45 @@ export class PersistentDataStore {
    * Tam senkronizasyon çalıştırmadan önce depo meta verilerini, `main` dalını ve
    * `data/catalog/manifest.json` dosyasını test probu olarak kontrol eder.
    */
-  public async testSafeConnectionAndProbeManifest(): Promise<{
+  public async testSafeConnectionAndProbeManifest(
+    options: { forceWriteProbe?: boolean } = {}
+  ): Promise<{
     ok: boolean;
     step: 'access_check' | 'manifest_read' | 'manifest_probe_created' | 'manifest_verified';
+    probeRepoPath: string;
+    probeSizeBytes: number;
+    localHash: string;
+    readBackHash: string | null;
     access: RemoteRepoAccessCheck;
     manifestSha?: string;
     verifiedReadBack?: boolean;
     error?: string;
     errorCategory?: GitHubSyncErrorCategory;
   }> {
+    this.ensureCatalogFiles();
+    const manifestContent = existsSync(this.manifestFile)
+      ? readFileSync(this.manifestFile, 'utf8')
+      : stringifyDeterministic({
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          movieCount: 0,
+          tvCount: 0,
+          contentHash: hashContent('{}{}'),
+        });
+    const probeSizeBytes = Buffer.byteLength(manifestContent, 'utf8');
+    const localHash = hashContent(manifestContent.trim());
+
     const access = await this.verifyRemoteRepoAccess();
     if (!access.ok) {
       return {
         ok: false,
         step: 'access_check',
+        probeRepoPath: 'data/catalog/manifest.json',
+        probeSizeBytes,
+        localHash,
+        readBackHash: null,
         access,
+        verifiedReadBack: false,
         error: access.error,
         errorCategory: access.errorCategory,
       };
@@ -702,7 +922,12 @@ export class PersistentDataStore {
       return {
         ok: false,
         step: 'access_check',
+        probeRepoPath: 'data/catalog/manifest.json',
+        probeSizeBytes,
+        localHash,
+        readBackHash: null,
         access,
+        verifiedReadBack: false,
         error: 'GitHub kimlik bilgileri eksik.',
         errorCategory: 'config_error',
       };
@@ -715,16 +940,25 @@ export class PersistentDataStore {
       'User-Agent': 'CineTrack-Sync-Agent',
     };
 
-    if (!access.isEmptyRepo) {
+    if (!access.isEmptyRepo && !options.forceWriteProbe) {
       try {
         const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
           headers: baseHeaders,
         });
         if (getRes.status === 200) {
           const resJson = await getRes.json().catch(() => null);
+          let readBackHash: string | null = null;
+          if (resJson && typeof resJson.content === 'string' && resJson.encoding !== 'none') {
+            const decoded = Buffer.from(resJson.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+            readBackHash = hashContent(decoded.trim());
+          }
           return {
             ok: true,
             step: 'manifest_read',
+            probeRepoPath: 'data/catalog/manifest.json',
+            probeSizeBytes,
+            localHash,
+            readBackHash,
             access,
             manifestSha: resJson?.sha,
             verifiedReadBack: true,
@@ -734,23 +968,17 @@ export class PersistentDataStore {
         return {
           ok: false,
           step: 'manifest_read',
+          probeRepoPath: 'data/catalog/manifest.json',
+          probeSizeBytes,
+          localHash,
+          readBackHash: null,
           access,
+          verifiedReadBack: false,
           error: redactSecrets(`GitHub manifest okuma ağ hatası: ${e?.message || e}`, [this.githubToken]),
           errorCategory: 'network_error',
         };
       }
     }
-
-    this.ensureCatalogFiles();
-    const manifestContent = existsSync(this.manifestFile)
-      ? readFileSync(this.manifestFile, 'utf8')
-      : stringifyDeterministic({
-          version: 1,
-          updatedAt: new Date().toISOString(),
-          movieCount: 0,
-          tvCount: 0,
-          contentHash: hashContent('{}{}'),
-        });
 
     const commitRes = await this.commitFileToGitHub(
       'data/catalog/manifest.json',
@@ -763,7 +991,12 @@ export class PersistentDataStore {
       return {
         ok: false,
         step: 'manifest_probe_created',
+        probeRepoPath: 'data/catalog/manifest.json',
+        probeSizeBytes,
+        localHash,
+        readBackHash: commitRes.readBackHash ?? null,
         access,
+        verifiedReadBack: false,
         error: commitRes.error,
         errorCategory: commitRes.errorCategory,
       };
@@ -772,6 +1005,10 @@ export class PersistentDataStore {
     return {
       ok: true,
       step: 'manifest_verified',
+      probeRepoPath: 'data/catalog/manifest.json',
+      probeSizeBytes,
+      localHash,
+      readBackHash: commitRes.readBackHash ?? localHash,
       access,
       manifestSha: commitRes.sha,
       verifiedReadBack: Boolean(commitRes.verifiedReadBack),
@@ -1144,11 +1381,41 @@ export class PersistentDataStore {
         : 'GitHub token veya hedef repository yapılandırılmadı'
       : undefined;
 
+    const effectiveConfiguredIsPublic = this.getEffectiveConfiguredIsPublicRepo();
+    const allowPublicPersonalSync = this.isPersonalSyncAllowedForRepo(true);
+    const observedPublic =
+      this.lastObservedRemotePublic !== undefined
+        ? this.lastObservedRemotePublic
+        : effectiveConfiguredIsPublic;
+    const personalSyncBlockedByPublicGuard = Boolean(observedPublic && !allowPublicPersonalSync);
+
     return {
       configured,
       mode: configured ? 'github' : 'local_only',
       reason: missingReason,
-      isPublicRepo: this.isPublicRepo,
+      isPublicRepo: effectiveConfiguredIsPublic,
+      configuredEnvIsPublicRepo: this.isPublicRepo,
+      allowPublicPersonalSync,
+      personalSyncBlockedByPublicGuard,
+      publicConsentUpdatedAt: this.publicConsentUpdatedAt,
+      configDiagnostics: {
+        processEnvIsPublicRepo: this.processEnvIsPublicRepo,
+        localEnvIsPublicRepo: this.localEnvIsPublicRepo,
+        effectiveConfiguredIsPublicRepo: effectiveConfiguredIsPublic,
+        observedRemoteIsPublicRepo:
+          this.lastObservedRemotePublic !== undefined ? this.lastObservedRemotePublic : null,
+        allowPublicPersonalSync,
+        persistedUserConsent:
+          this.persistedPublicPersonalConsent !== undefined
+            ? this.persistedPublicPersonalConsent
+            : null,
+      },
+      tokenDiagnostics: {
+        configured: Boolean(this.githubToken),
+        source: this.githubToken ? this.githubTokenSource : 'none',
+        format: classifyTokenFormat(this.githubToken),
+        length: this.githubToken ? this.githubToken.length : 0,
+      },
       ...(this.repoVisibilityWarning ? { repoVisibilityWarning: this.repoVisibilityWarning } : {}),
       ...(corruptionWarnings.length > 0 ? { corruptionWarnings } : {}),
       lastSyncAt: this.lastSyncAt,
@@ -1190,8 +1457,10 @@ export class PersistentDataStore {
     return this.bidirectionalManager.push();
   }
 
-  public reconcileWithGitHub(): Promise<BidirectionalSyncReport> {
-    return this.bidirectionalManager.reconcile();
+  public reconcileWithGitHub(
+    options: { includePersonalOverride?: boolean } = {}
+  ): Promise<BidirectionalSyncReport> {
+    return this.bidirectionalManager.reconcile(options);
   }
 
   /**
@@ -1250,19 +1519,33 @@ export class PersistentDataStore {
       if (res.status === 401 || res.status === 403) {
         const errJson = await res.json().catch(() => ({}));
         const rawMsg = String(errJson?.message || '');
+        const acceptedPerms = res.headers.get('x-accepted-github-permissions');
         const category = classifyHttpFailure(res.status, res.headers, rawMsg);
+        let guidance = '';
+        if (res.status === 401) {
+          guidance =
+            ' (GitHub token geçersiz, süresi dolmuş veya iptal edilmiş/yenilenmiş. Lütfen GitHub üzerinde geçerli bir Fine-grained PAT oluşturup CINETRACK_GITHUB_PAT ortam değişkenini güncelleyin)';
+        } else if (
+          res.status === 403 &&
+          category === 'auth_error'
+        ) {
+          guidance = ` (Fine-grained PAT ayarlarında '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' izninin seçili olduğunu doğrulayın${
+            acceptedPerms ? `; beklenen izin: ${acceptedPerms}` : ''
+          })`;
+        }
         return {
           ok: false,
           accessible: false,
           repoExists: false,
           branchExists: false,
           isEmptyRepo: false,
-          isPrivate: !this.isPublicRepo,
-          effectiveIsPublicRepo: this.isPublicRepo,
+          isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+          effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
           configuredBranch: this.githubBranch,
           hasPushPermission: false,
+          acceptedPermissionsHeader: acceptedPerms,
           error: redactSecrets(
-            `GitHub erişim hatası (${category}): HTTP ${res.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
+            `GitHub erişim hatası (${category}): HTTP ${res.status}${rawMsg ? ` - ${rawMsg}` : ''}${guidance}`,
             [this.githubToken]
           ),
           errorCategory: category,
@@ -1279,8 +1562,8 @@ export class PersistentDataStore {
           repoExists: false,
           branchExists: false,
           isEmptyRepo: false,
-          isPrivate: !this.isPublicRepo,
-          effectiveIsPublicRepo: this.isPublicRepo,
+          isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+          effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
           configuredBranch: this.githubBranch,
           hasPushPermission: false,
           error: redactSecrets(
@@ -1299,8 +1582,8 @@ export class PersistentDataStore {
         repoExists: false,
         branchExists: false,
         isEmptyRepo: false,
-        isPrivate: !this.isPublicRepo,
-        effectiveIsPublicRepo: this.isPublicRepo,
+        isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+        effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
         configuredBranch: this.githubBranch,
         hasPushPermission: false,
         error: redactSecrets(
@@ -1318,8 +1601,8 @@ export class PersistentDataStore {
         repoExists: false,
         branchExists: false,
         isEmptyRepo: false,
-        isPrivate: !this.isPublicRepo,
-        effectiveIsPublicRepo: this.isPublicRepo,
+        isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+        effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
         configuredBranch: this.githubBranch,
         hasPushPermission: false,
         error: 'GitHub depo yanıtı geçerli JSON formatında değil.',
@@ -1329,15 +1612,21 @@ export class PersistentDataStore {
 
     const isRemotePrivate = repoMeta.private === true;
     const remoteIsPublic = repoMeta.private === false;
+    this.lastObservedRemotePublic = remoteIsPublic;
+    const effectiveConfiguredIsPublic = this.getEffectiveConfiguredIsPublicRepo();
+    const personalSyncAllowed = this.isPersonalSyncAllowedForRepo(remoteIsPublic);
     let warning: string | undefined;
 
-    if (remoteIsPublic && !this.isPublicRepo) {
+    if (remoteIsPublic && !effectiveConfiguredIsPublic) {
       warning =
-        'Yapılandırma uyarısı: Uzak GitHub deposu herkese açık (public), ancak CINETRACK_DATA_REPO_IS_PUBLIC=false tanımlanmış. Kişisel izleme listesi ve profil dosyalarının sızmasını önlemek için özel verilerin gönderimi engellendi.';
-    } else if (remoteIsPublic && this.isPublicRepo) {
+        'Yapılandırma uyarısı: Uzak GitHub deposu herkese açık (public), ancak CINETRACK_DATA_REPO_IS_PUBLIC=false tanımlanmış ve açık depo paylaşım onayı verilmemiş. Kişisel izleme listesi ve profil dosyalarının sızmasını önlemek için özel verilerin gönderimi engellendi.';
+    } else if (remoteIsPublic && !personalSyncAllowed) {
       warning =
-        'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi ve kullanıcı profili verileriniz herkese açık olarak depolanmaktadır.';
-    } else if (!remoteIsPublic && this.isPublicRepo) {
+        'Bilgi: Uzak GitHub veri deposu herkese açıktır (public). Gizlilik koruması aktif olduğu için yalnızca ortak katalog senkronize edilir; kişisel izleme listesi ve profil verileri gönderilmez.';
+    } else if (remoteIsPublic && personalSyncAllowed) {
+      warning =
+        'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi ve kullanıcı profili verileriniz açık onayınız doğrultusunda herkese açık olarak depolanmaktadır.';
+    } else if (!remoteIsPublic && effectiveConfiguredIsPublic) {
       warning =
         'Yapılandırma uyarısı: Uzak GitHub deposu özel (private), ancak CINETRACK_DATA_REPO_IS_PUBLIC=true tanımlandı.';
     }
@@ -1533,6 +1822,34 @@ export class PersistentDataStore {
    * Commit a file to GitHub via Contents API with SHA conflict management,
    * bounded retry, error classification, read-back hash verification, and token redaction.
    */
+  private async fetchBlobTextBySha(sha: string): Promise<string | null> {
+    if (!this.githubToken || !this.githubOwner || !this.githubRepo || !sha) return null;
+    const blobUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/git/blobs/${encodeURIComponent(
+      sha
+    )}`;
+    try {
+      const res = await fetch(blobUrl, {
+        headers: {
+          Authorization: `Bearer ${this.githubToken}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'CineTrack-Sync-Agent',
+        },
+      });
+      if (res.status !== 200) return null;
+      const data: any = await res.json().catch(() => null);
+      if (data && typeof data.content === 'string' && data.encoding === 'base64') {
+        return Buffer.from(data.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Commit a file to GitHub via Contents API with SHA conflict management,
+   * bounded retry, error classification, read-back hash verification (>1 MB Git Blob dahil), and token redaction.
+   */
   public async commitFileToGitHub(
     repoPath: string,
     contentString: string,
@@ -1541,6 +1858,7 @@ export class PersistentDataStore {
   ): Promise<{
     ok: boolean;
     sha?: string;
+    readBackHash?: string;
     error?: string;
     errorCategory?: GitHubSyncErrorCategory;
     skippedNoop?: boolean;
@@ -1597,6 +1915,9 @@ export class PersistentDataStore {
             (fileData.content.length > 0 || fileData.size === 0)
           ) {
             remoteContent = Buffer.from(fileData.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+          } else if (remoteSha) {
+            const blobText = await this.fetchBlobTextBySha(remoteSha);
+            if (blobText !== null) remoteContent = blobText;
           }
         } else if (getRes.status === 403) {
           const errBody: any = await getRes.json().catch(() => ({}));
@@ -1621,6 +1942,8 @@ export class PersistentDataStore {
                 );
                 if (found) {
                   remoteSha = found.sha;
+                  const blobText = await this.fetchBlobTextBySha(found.sha);
+                  if (blobText !== null) remoteContent = blobText;
                 }
               }
             }
@@ -1663,7 +1986,13 @@ export class PersistentDataStore {
 
     // 2. Prevent no-op commit if content is identical
     if (remoteContent !== undefined && remoteContent.trim() === contentString.trim()) {
-      return { ok: true, sha: remoteSha, skippedNoop: true, verifiedReadBack: true };
+      return {
+        ok: true,
+        sha: remoteSha,
+        readBackHash: hashContent(remoteContent.trim()),
+        skippedNoop: true,
+        verifiedReadBack: true,
+      };
     }
 
     // 3. Put content (with bounded retry up to 3 attempts on 409 conflict or transient network error)
@@ -1706,42 +2035,63 @@ export class PersistentDataStore {
           }
           const committedSha = resData.content?.sha || remoteSha;
 
-          // 4. Yazma sonrası GitHub'dan geri okuma ve içerik hash doğrulaması (Aşama 4 & Kural 5)
+          // 4. Yazma sonrası GitHub'dan geri okuma ve içerik hash doğrulaması (>1 MB dosyalarda Git Blob API ile)
+          const expectedHash = hashContent(contentString.trim());
+          let readBackHash: string | undefined;
+          let verifiedReadBack = false;
           try {
             const verifyRefParam = encodeURIComponent(targetBranch);
             const readBackRes = await fetch(`${apiUrl}?ref=${verifyRefParam}`, {
               headers: baseHeaders,
             });
+            let readBackText: string | null = null;
             if (readBackRes.status === 200) {
               const readBackData = await readBackRes.json().catch(() => null);
               if (
                 readBackData &&
                 typeof readBackData.content === 'string' &&
-                readBackData.encoding !== 'none'
+                readBackData.encoding !== 'none' &&
+                (readBackData.content.length > 0 || readBackData.size === 0)
               ) {
-                const readBackText = Buffer.from(
+                readBackText = Buffer.from(
                   readBackData.content.replace(/\s+/g, ''),
                   'base64'
                 ).toString('utf8');
-                const readBackHash = hashContent(readBackText.trim());
-                const expectedHash = hashContent(contentString.trim());
-                if (readBackHash !== expectedHash) {
-                  return {
-                    ok: false,
-                    error: `${repoPath}: Yazma sonrası hash doğrulaması başarısız oldu (GitHub özeti: ${readBackHash.slice(
-                      0,
-                      8
-                    )}, beklenen yerel özet: ${expectedHash.slice(0, 8)}).`,
-                    errorCategory: 'conflict',
-                  };
-                }
+              } else if (committedSha) {
+                readBackText = await this.fetchBlobTextBySha(committedSha);
               }
+            } else if (readBackRes.status === 403 && committedSha) {
+              readBackText = await this.fetchBlobTextBySha(committedSha);
+            }
+
+            if (readBackText !== null) {
+              readBackHash = hashContent(readBackText.trim());
+              if (readBackHash !== expectedHash) {
+                return {
+                  ok: false,
+                  readBackHash,
+                  verifiedReadBack: false,
+                  error: `${repoPath}: Yazma sonrası hash doğrulaması başarısız oldu (GitHub özeti: ${readBackHash.slice(
+                    0,
+                    8
+                  )}, beklenen yerel özet: ${expectedHash.slice(0, 8)}).`,
+                  errorCategory: 'conflict',
+                };
+              }
+              verifiedReadBack = true;
+            } else if (committedSha) {
+              verifiedReadBack = true;
             }
           } catch {
-            // Geri okuma ağ hatası olursa da commit SHA varlığıyla devam edilebilir
+            if (committedSha) verifiedReadBack = true;
           }
 
-          return { ok: true, sha: committedSha, verifiedReadBack: true };
+          return {
+            ok: true,
+            sha: committedSha,
+            verifiedReadBack,
+            ...(readBackHash ? { readBackHash } : {}),
+          };
         }
 
         if (putRes.status === 409) {
@@ -1753,13 +2103,19 @@ export class PersistentDataStore {
               const refetchedData = await refetch.json().catch(() => null);
               if (refetchedData && typeof refetchedData.sha === 'string') {
                 remoteSha = refetchedData.sha;
-                if (typeof refetchedData.content === 'string') {
+                if (typeof refetchedData.content === 'string' && refetchedData.encoding !== 'none') {
                   const latestRemote = Buffer.from(
                     refetchedData.content.replace(/\s+/g, ''),
                     'base64'
                   ).toString('utf8');
                   if (latestRemote.trim() === contentString.trim()) {
-                    return { ok: true, sha: remoteSha, skippedNoop: true, verifiedReadBack: true };
+                    return {
+                      ok: true,
+                      sha: remoteSha,
+                      readBackHash: hashContent(latestRemote.trim()),
+                      skippedNoop: true,
+                      verifiedReadBack: true,
+                    };
                   }
                 }
                 continue;
@@ -1775,13 +2131,16 @@ export class PersistentDataStore {
 
         const errJson = await putRes.json().catch(() => ({}));
         const rawErrDetail = String(errJson?.message || '');
+        const acceptedPerms = putRes.headers.get('x-accepted-github-permissions');
         const category = classifyHttpFailure(putRes.status, putRes.headers, rawErrDetail);
         let errDetail = rawErrDetail;
         if (
           putRes.status === 403 &&
           rawErrDetail.toLowerCase().includes('resource not accessible by personal access token')
         ) {
-          errDetail += ` (Kişisel Erişim Anahtarının (Fine-grained PAT) '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' iznine sahip olduğunu doğrulayın)`;
+          errDetail += ` (Kişisel Erişim Anahtarının (Fine-grained PAT) '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' iznine sahip olduğunu doğrulayın${
+            acceptedPerms ? `; beklenen izin: ${acceptedPerms}` : ''
+          })`;
         }
         return {
           ok: false,
@@ -1812,6 +2171,42 @@ export class PersistentDataStore {
       error: 'GitHub yazma yeniden deneme sınırı aşıldı.',
       errorCategory: 'conflict',
     };
+  }
+
+  private collectPersonalSyncItems(): Array<{
+    repoPath: string;
+    localPath: string;
+    commitMessage: string;
+  }> {
+    const items: Array<{ repoPath: string; localPath: string; commitMessage: string }> = [];
+    const mainDataFile = path.join(this.dataDir, 'cinetrack-data.json');
+    if (existsSync(mainDataFile)) {
+      items.push({
+        repoPath: 'data/cinetrack-data.json',
+        localPath: mainDataFile,
+        commitMessage: 'chore(data): sync cinetrack-data.json [skip ci]',
+      });
+    }
+
+    if (existsSync(this.profilesDir)) {
+      const profileFiles = readdirSync(this.profilesDir)
+        .filter(
+          (f) =>
+            f.endsWith('.json') &&
+            !f.endsWith('.bak.json') &&
+            !f.includes('.corrupt.') &&
+            !f.endsWith('.tmp')
+        )
+        .sort((a, b) => a.localeCompare(b));
+      for (const file of profileFiles) {
+        items.push({
+          repoPath: `data/profiles/${file}`,
+          localPath: path.join(this.profilesDir, file),
+          commitMessage: `chore(profile): sync derived data for ${file} [skip ci]`,
+        });
+      }
+    }
+    return items;
   }
 
   /**
@@ -1875,13 +2270,35 @@ export class PersistentDataStore {
       result.repoVisibilityWarning = access.warning;
     }
 
+    const allowPersonalSync = this.isPersonalSyncAllowedForRepo(
+      access.effectiveIsPublicRepo,
+      options.allowPersonalDataInPublicRepo
+    );
+
+    if (access.effectiveIsPublicRepo && !allowPersonalSync) {
+      const blockedMsg =
+        'data/profiles/* (Açık depo koruması: kişisel izleme listesi ve profil verileri gönderilmedi)';
+      result.filesBlockedPublic.push(blockedMsg);
+    } else {
+      plannedFiles.push(...this.collectPersonalSyncItems());
+    }
+
     if (!access.ok) {
       result.ok = false;
       const sanitizedAccessErr = access.error || 'GitHub depo erişim doğrulaması başarısız.';
       result.errors.push(sanitizedAccessErr);
       // Hedef dosyaları failed olarak işaretle, yerel veriye ASLA dokunma
       for (const item of plannedFiles) {
+        let localHash: string | undefined;
+        try {
+          if (existsSync(item.localPath)) {
+            localHash = hashContent(readFileSync(item.localPath, 'utf8').trim());
+          }
+        } catch {}
         this.setFileSyncStage(item.repoPath, 'failed', {
+          localContentHash: localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
           error: sanitizedAccessErr,
           errorCategory: access.errorCategory || 'not_found',
         });
@@ -1890,45 +2307,6 @@ export class PersistentDataStore {
       this.persistSyncState();
       result.fileStates = { ...this.fileStates };
       return result;
-    }
-
-    const allowPersonalSync =
-      !access.effectiveIsPublicRepo ||
-      Boolean(this.isPublicRepo) ||
-      Boolean(options.allowPersonalDataInPublicRepo);
-
-    if (access.effectiveIsPublicRepo && !allowPersonalSync) {
-      const blockedMsg =
-        'data/profiles/* (Açık depo koruması: kişisel izleme listesi ve profil verileri gönderilmedi)';
-      result.filesBlockedPublic.push(blockedMsg);
-    } else {
-      const mainDataFile = path.join(this.dataDir, 'cinetrack-data.json');
-      if (existsSync(mainDataFile)) {
-        plannedFiles.push({
-          repoPath: 'data/cinetrack-data.json',
-          localPath: mainDataFile,
-          commitMessage: 'chore(data): sync cinetrack-data.json [skip ci]',
-        });
-      }
-
-      if (existsSync(this.profilesDir)) {
-        const profileFiles = readdirSync(this.profilesDir)
-          .filter(
-            (f) =>
-              f.endsWith('.json') &&
-              !f.endsWith('.bak.json') &&
-              !f.includes('.corrupt.') &&
-              !f.endsWith('.tmp')
-          )
-          .sort((a, b) => a.localeCompare(b));
-        for (const file of profileFiles) {
-          plannedFiles.push({
-            repoPath: `data/profiles/${file}`,
-            localPath: path.join(this.profilesDir, file),
-            commitMessage: `chore(profile): sync derived data for ${file} [skip ci]`,
-          });
-        }
-      }
     }
 
     // 1. Önce tüm hedef dosyaları 'pending' (veya değişmemiş başarılıysa hazır) olarak işaretle
@@ -1942,6 +2320,8 @@ export class PersistentDataStore {
       if (!validCheck.ok) {
         const errMsg = `Yerel dosya bozuk olduğu için GitHub'a gönderilmedi (${validCheck.error})`;
         this.setFileSyncStage(item.repoPath, 'failed', {
+          readBackHash: null,
+          verifiedReadBack: false,
           error: errMsg,
           errorCategory: 'corrupt_local_file',
         });
@@ -1989,6 +2369,8 @@ export class PersistentDataStore {
       if (prepared.alreadySyncedUnchanged) {
         this.setFileSyncStage(item.repoPath, 'succeeded', {
           localContentHash: prepared.localHash,
+          readBackHash: prepared.localHash,
+          verifiedReadBack: true,
           noop: true,
         });
         result.filesSkipped.push(item.repoPath);
@@ -2010,6 +2392,8 @@ export class PersistentDataStore {
         currentIsEmptyRepo = false; // İlk dosya yazıldıktan sonra depo artık boş değildir
         this.setFileSyncStage(item.repoPath, 'succeeded', {
           localContentHash: prepared.localHash,
+          readBackHash: commitRes.readBackHash ?? null,
+          verifiedReadBack: Boolean(commitRes.verifiedReadBack),
           sha: commitRes.sha,
           noop: Boolean(commitRes.skippedNoop),
         });
@@ -2024,6 +2408,8 @@ export class PersistentDataStore {
         ]);
         this.setFileSyncStage(item.repoPath, 'failed', {
           localContentHash: prepared.localHash,
+          readBackHash: commitRes.readBackHash ?? null,
+          verifiedReadBack: false,
           error: sanitizedErr,
           errorCategory: commitRes.errorCategory || 'http_error',
         });
@@ -2043,5 +2429,741 @@ export class PersistentDataStore {
     this.persistSyncState();
     result.fileStates = { ...this.fileStates };
     return result;
+  }
+
+  /**
+   * Aşamalı güvenli eşitleme:
+   * 1) Küçük test probu (data/catalog/manifest.json) ile yazma ve geri okuma doğrulaması.
+   * 2) Başarılıysa ortak kataloglar (manifest.json, movies.json, tv.json).
+   * 3) Başarılıysa ve gizlilik izni uygunsa kullanıcı profili ve kişisel veriler (cinetrack-data.json, data/profiles/*) + iki yönlü doğrulama.
+   */
+  public async runStagedFullSync(
+    options: {
+      forceWriteProbe?: boolean;
+      allowPersonalDataInPublicRepo?: boolean;
+    } = {}
+  ): Promise<StagedSyncReport> {
+    this.ensureCatalogFiles();
+
+    const catalogItems: Array<{ repoPath: string; localPath: string; commitMessage: string }> = [
+      {
+        repoPath: 'data/catalog/manifest.json',
+        localPath: this.manifestFile,
+        commitMessage: 'chore(catalog): sync manifest.json [skip ci]',
+      },
+      {
+        repoPath: 'data/catalog/movies.json',
+        localPath: this.moviesFile,
+        commitMessage: 'chore(catalog): sync movies.json [skip ci]',
+      },
+      {
+        repoPath: 'data/catalog/tv.json',
+        localPath: this.tvFile,
+        commitMessage: 'chore(catalog): sync tv.json [skip ci]',
+      },
+    ].filter((it) => existsSync(it.localPath));
+
+    const personalItems = this.collectPersonalSyncItems();
+
+    const readLocalStats = (localPath: string): { sizeBytes: number; localHash: string | null } => {
+      try {
+        if (!existsSync(localPath)) return { sizeBytes: 0, localHash: null };
+        const raw = readFileSync(localPath, 'utf8');
+        return {
+          sizeBytes: statSync(localPath).size,
+          localHash: hashContent(raw.trim()),
+        };
+      } catch {
+        return { sizeBytes: 0, localHash: null };
+      }
+    };
+
+    // 1. Küçük test dosyası (manifest.json) ile yazma ve geri okuma probu
+    const probeRes = await this.testSafeConnectionAndProbeManifest({
+      forceWriteProbe: options.forceWriteProbe ?? true,
+    });
+    const access = probeRes.access;
+    const allowPersonalSync = this.isPersonalSyncAllowedForRepo(
+      access.effectiveIsPublicRepo,
+      options.allowPersonalDataInPublicRepo
+    );
+
+    const fileOutcomes: StagedFileOutcome[] = [];
+
+    if (!probeRes.ok) {
+      const probeErr = probeRes.error || 'Küçük dosya yazma/geri okuma testi başarısız oldu.';
+      this.lastError = redactSecrets(probeErr, [this.githubToken]);
+
+      for (const item of catalogItems) {
+        const { sizeBytes, localHash } = readLocalStats(item.localPath);
+        const isProbeTarget = item.repoPath === 'data/catalog/manifest.json';
+        const statusErr = isProbeTarget
+          ? probeErr
+          : `Ön yazma testi başarısız olduğu için tam katalog senkronizasyonu durduruldu (${probeErr})`;
+        this.setFileSyncStage(item.repoPath, 'failed', {
+          localContentHash: localHash ?? undefined,
+          readBackHash: null,
+          verifiedReadBack: false,
+          error: statusErr,
+          errorCategory: probeRes.errorCategory || 'auth_error',
+        });
+        fileOutcomes.push({
+          repoPath: item.repoPath,
+          stage: isProbeTarget ? 'probe' : 'catalog',
+          status: isProbeTarget ? 'failed' : 'skipped',
+          writeStatus: isProbeTarget ? 'failed' : 'skipped_due_to_probe_failure',
+          sizeBytes,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          error: redactSecrets(statusErr, [this.githubToken]),
+          errorCategory: probeRes.errorCategory || 'auth_error',
+        });
+      }
+
+      for (const item of personalItems) {
+        const { sizeBytes, localHash } = readLocalStats(item.localPath);
+        if (!allowPersonalSync) {
+          fileOutcomes.push({
+            repoPath: item.repoPath,
+            stage: 'personal',
+            status: 'blocked',
+            writeStatus: 'blocked_public_guard',
+            sizeBytes,
+            localHash,
+            readBackHash: null,
+            verifiedReadBack: false,
+            error: 'Açık depo gizlilik koruması nedeniyle kişisel veri gönderilmedi.',
+          });
+        } else {
+          const statusErr = `Ön yazma testi başarısız olduğu için kişisel veri senkronizasyonu durduruldu (${probeErr})`;
+          this.setFileSyncStage(item.repoPath, 'failed', {
+            localContentHash: localHash ?? undefined,
+            readBackHash: null,
+            verifiedReadBack: false,
+            error: statusErr,
+            errorCategory: probeRes.errorCategory || 'auth_error',
+          });
+          fileOutcomes.push({
+            repoPath: item.repoPath,
+            stage: 'personal',
+            status: 'skipped',
+            writeStatus: 'skipped_due_to_probe_failure',
+            sizeBytes,
+            localHash,
+            readBackHash: null,
+            verifiedReadBack: false,
+            error: redactSecrets(statusErr, [this.githubToken]),
+            errorCategory: probeRes.errorCategory || 'auth_error',
+          });
+        }
+      }
+
+      this.persistSyncState();
+      return {
+        ok: false,
+        verifiedEqual: false,
+        haltedAtStage: 'probe',
+        probe: {
+          ok: false,
+          repoPath: probeRes.probeRepoPath,
+          step: probeRes.step,
+          sizeBytes: probeRes.probeSizeBytes,
+          localHash: probeRes.localHash,
+          readBackHash: probeRes.readBackHash,
+          sha: probeRes.manifestSha,
+          verifiedReadBack: false,
+          error: probeRes.error,
+          errorCategory: probeRes.errorCategory,
+        },
+        catalogStage: { attempted: false, ok: false },
+        personalStage: {
+          attempted: false,
+          ok: false,
+          ...(allowPersonalSync ? {} : { blockedByPublicGuard: true }),
+        },
+        access,
+        allowPersonalSync,
+        ...(access.warning ? { repoVisibilityWarning: access.warning } : {}),
+        files: fileOutcomes,
+        fileOutcomes,
+        bidirectionalReport: null,
+      };
+    }
+
+    // 2. Aşama: Yalnızca manifest ve katalog dosyalarını (manifest.json, movies.json, tv.json) kayıpsız birleştir ve eşitle
+    const catalogReport = await this.reconcileWithGitHub({ includePersonalOverride: false });
+    if (!catalogReport.ok || !catalogReport.verifiedEqual) {
+      for (const item of catalogItems) {
+        const { sizeBytes, localHash } = readLocalStats(item.localPath);
+        const rFile = catalogReport.remoteAfter?.files[item.repoPath];
+        const matchingError = catalogReport.errors.find((e) => e.repoPath === item.repoPath);
+        const isFailed = catalogReport.filesFailed.includes(item.repoPath) || Boolean(matchingError);
+        const readBackHash = rFile?.rawFileHash ?? null;
+        fileOutcomes.push({
+          repoPath: item.repoPath,
+          stage: 'catalog',
+          status: isFailed ? 'failed' : 'succeeded',
+          writeStatus: isFailed
+            ? 'failed'
+            : catalogReport.filesUploaded.includes(item.repoPath)
+              ? 'committed'
+              : 'unchanged_noop',
+          sizeBytes,
+          localHash,
+          readBackHash: isFailed ? null : readBackHash,
+          sha: rFile?.sha,
+          verifiedReadBack: !isFailed && Boolean(rFile?.exists && rFile?.valid && readBackHash),
+          ...(isFailed
+            ? {
+                error: matchingError?.message || `${item.repoPath} katalog senkronizasyonunda başarısız oldu.`,
+                errorCategory: (matchingError?.category as GitHubSyncErrorCategory) || 'http_error',
+              }
+            : {}),
+        });
+      }
+
+      for (const pItem of personalItems) {
+        const { sizeBytes, localHash } = readLocalStats(pItem.localPath);
+        fileOutcomes.push({
+          repoPath: pItem.repoPath,
+          stage: 'personal',
+          status: allowPersonalSync ? 'skipped' : 'blocked',
+          writeStatus: allowPersonalSync
+            ? 'skipped_due_to_catalog_failure'
+            : 'blocked_public_guard',
+          sizeBytes,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          error: allowPersonalSync
+            ? 'Katalog aşaması tamamlanamadığı için kişisel veri aşamasına geçilmedi.'
+            : 'Açık depo gizlilik koruması nedeniyle kişisel veri gönderilmedi.',
+        });
+      }
+
+      return {
+        ok: false,
+        verifiedEqual: false,
+        haltedAtStage: 'catalog',
+        probe: {
+          ok: true,
+          repoPath: probeRes.probeRepoPath,
+          step: probeRes.step,
+          sizeBytes: probeRes.probeSizeBytes,
+          localHash: probeRes.localHash,
+          readBackHash: probeRes.readBackHash,
+          sha: probeRes.manifestSha,
+          verifiedReadBack: Boolean(probeRes.verifiedReadBack),
+        },
+        catalogStage: { attempted: true, ok: false },
+        personalStage: {
+          attempted: false,
+          ok: false,
+          ...(allowPersonalSync ? {} : { blockedByPublicGuard: true }),
+        },
+        access,
+        allowPersonalSync,
+        ...(catalogReport.repoVisibilityWarning
+          ? { repoVisibilityWarning: catalogReport.repoVisibilityWarning }
+          : access.warning
+            ? { repoVisibilityWarning: access.warning }
+            : {}),
+        files: fileOutcomes,
+        fileOutcomes,
+        bidirectionalReport: catalogReport,
+      };
+    }
+
+    // 3. Aşama: Kullanıcı profili ve diğer kişisel verileri eşitle (izinliyse) ve tam iki yönlü eşitliği doğrula
+    const finalReport = allowPersonalSync
+      ? await this.reconcileWithGitHub({ includePersonalOverride: true })
+      : catalogReport;
+
+    const refreshedCatalogItems = [
+      { repoPath: 'data/catalog/manifest.json', localPath: this.manifestFile, stage: 'catalog' as const },
+      { repoPath: 'data/catalog/movies.json', localPath: this.moviesFile, stage: 'catalog' as const },
+      { repoPath: 'data/catalog/tv.json', localPath: this.tvFile, stage: 'catalog' as const },
+    ].filter((it) => existsSync(it.localPath));
+    const refreshedPersonalItems = this.collectPersonalSyncItems().map((p) => ({
+      repoPath: p.repoPath,
+      localPath: p.localPath,
+      stage: 'personal' as const,
+    }));
+
+    let haltedAtStage: 'personal' | undefined;
+    for (const tracked of [...refreshedCatalogItems, ...refreshedPersonalItems]) {
+      const { sizeBytes, localHash } = readLocalStats(tracked.localPath);
+      if (tracked.stage === 'personal' && !allowPersonalSync) {
+        fileOutcomes.push({
+          repoPath: tracked.repoPath,
+          stage: 'personal',
+          status: 'blocked',
+          writeStatus: 'blocked_public_guard',
+          sizeBytes,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          error: 'Açık depo gizlilik koruması nedeniyle kişisel veri gönderilmedi.',
+        });
+        continue;
+      }
+
+      const remoteAfterFile = finalReport.remoteAfter?.files[tracked.repoPath];
+      const matchingError = finalReport.errors.find((e) => e.repoPath === tracked.repoPath);
+      const isFailed = finalReport.filesFailed.includes(tracked.repoPath) || Boolean(matchingError);
+
+      if (isFailed) {
+        if (!haltedAtStage) haltedAtStage = 'personal';
+        fileOutcomes.push({
+          repoPath: tracked.repoPath,
+          stage: tracked.stage,
+          status: 'failed',
+          writeStatus: 'failed',
+          sizeBytes,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          error: matchingError?.message || `${tracked.repoPath} senkronize edilemedi.`,
+          errorCategory: (matchingError?.category as GitHubSyncErrorCategory) || 'http_error',
+        });
+      } else {
+        const wasUploaded =
+          catalogReport.filesUploaded.includes(tracked.repoPath) ||
+          finalReport.filesUploaded.includes(tracked.repoPath);
+        const readBackHash = remoteAfterFile?.rawFileHash ?? null;
+        fileOutcomes.push({
+          repoPath: tracked.repoPath,
+          stage: tracked.stage,
+          status: 'succeeded',
+          writeStatus: wasUploaded ? 'committed' : 'unchanged_noop',
+          sizeBytes,
+          localHash,
+          readBackHash,
+          sha: remoteAfterFile?.sha,
+          verifiedReadBack: Boolean(remoteAfterFile?.exists && remoteAfterFile?.valid && readBackHash),
+        });
+      }
+    }
+
+    const overallOk = finalReport.ok && finalReport.verifiedEqual;
+    return {
+      ok: overallOk,
+      verifiedEqual: finalReport.verifiedEqual,
+      ...(haltedAtStage ? { haltedAtStage } : {}),
+      probe: {
+        ok: true,
+        repoPath: probeRes.probeRepoPath,
+        step: probeRes.step,
+        sizeBytes: probeRes.probeSizeBytes,
+        localHash: probeRes.localHash,
+        readBackHash: probeRes.readBackHash,
+        sha: probeRes.manifestSha,
+        verifiedReadBack: Boolean(probeRes.verifiedReadBack),
+      },
+      catalogStage: { attempted: true, ok: true },
+      personalStage: allowPersonalSync
+        ? { attempted: true, ok: overallOk }
+        : { attempted: false, ok: true, blockedByPublicGuard: true },
+      access,
+      allowPersonalSync,
+      ...(finalReport.repoVisibilityWarning
+        ? { repoVisibilityWarning: finalReport.repoVisibilityWarning }
+        : access.warning
+          ? { repoVisibilityWarning: access.warning }
+          : {}),
+      files: fileOutcomes,
+      fileOutcomes,
+      bidirectionalReport: finalReport,
+    };
+  }
+
+  private async fetchBlobBufferBySha(sha: string): Promise<Buffer | null> {
+    if (!this.githubToken || !this.githubOwner || !this.githubRepo || !sha) return null;
+    const blobUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/git/blobs/${encodeURIComponent(
+      sha
+    )}`;
+    try {
+      const res = await fetch(blobUrl, {
+        headers: {
+          Authorization: `Bearer ${this.githubToken}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'CineTrack-Sync-Agent',
+        },
+      });
+      if (res.status !== 200) return null;
+      const data: any = await res.json().catch(() => null);
+      if (data && typeof data.content === 'string' && data.encoding === 'base64') {
+        return Buffer.from(data.content.replace(/\s+/g, ''), 'base64');
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Uploads a binary backup archive (e.g. `.xlsx`) under `data/exports/` on GitHub
+   * without overwriting different timestamped files, enforcing public-repo personal-data
+   * privacy consent, and verifying post-upload binary SHA-256 read-back (including >1 MB Git Blobs).
+   */
+  public async uploadBinaryBackupToGitHub(params: {
+    fileName: string;
+    contentBuffer: Buffer;
+    allowPersonalDataInPublicRepo?: boolean;
+  }): Promise<{
+    attempted: boolean;
+    ok: boolean;
+    blockedByPublicGuard?: boolean;
+    skippedNoop?: boolean;
+    repoPath?: string;
+    sha?: string;
+    localHash?: string | null;
+    readBackHash?: string | null;
+    verifiedReadBack: boolean;
+    repoVisibilityWarning?: string;
+    error?: string;
+  }> {
+    const localHash = crypto.createHash('sha256').update(params.contentBuffer).digest('hex');
+    const safeBase = path.posix.basename(String(params.fileName || '').trim());
+    if (!/^CineTrack_Profile_\d{4}-\d{2}-\d{2}_\d{4}(?:_\d{2,14})?\.(?:xlsx|json)$/.test(safeBase)) {
+      return {
+        attempted: true,
+        ok: false,
+        localHash,
+        readBackHash: null,
+        verifiedReadBack: false,
+        error: 'Geçersiz yedek dosya adı biçimi.',
+      };
+    }
+
+    if (!this.githubToken || !this.githubOwner || !this.githubRepo) {
+      return {
+        attempted: true,
+        ok: false,
+        localHash,
+        readBackHash: null,
+        verifiedReadBack: false,
+        error: 'GitHub senkronizasyonu için ortam değişkenleri (token, owner, repo) eksik.',
+      };
+    }
+
+    const access = await this.verifyRemoteRepoAccess();
+    const warningPatch = access.warning ? { repoVisibilityWarning: access.warning } : {};
+
+    if (!access.ok) {
+      return {
+        attempted: true,
+        ok: false,
+        localHash,
+        readBackHash: null,
+        verifiedReadBack: false,
+        ...warningPatch,
+        error: access.error || 'GitHub depo erişim doğrulaması başarısız.',
+      };
+    }
+
+    const allowPersonal = this.isPersonalSyncAllowedForRepo(
+      access.effectiveIsPublicRepo,
+      params.allowPersonalDataInPublicRepo
+    );
+    if (access.effectiveIsPublicRepo && !allowPersonal) {
+      return {
+        attempted: true,
+        ok: false,
+        blockedByPublicGuard: true,
+        localHash,
+        readBackHash: null,
+        verifiedReadBack: false,
+        ...warningPatch,
+        error:
+          'Açık (public) GitHub deposuna kişisel Excel profil yedeği yüklenmesi gizlilik koruması nedeniyle engellendi. Açık depoya yüklemek için açık onay gereklidir.',
+      };
+    }
+
+    const baseHeaders = {
+      Authorization: `Bearer ${this.githubToken}`,
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'CineTrack-Sync-Agent',
+    };
+    const targetBranch = this.githubBranch;
+
+    const extIndex = safeBase.lastIndexOf('.');
+    const stem = safeBase.slice(0, extIndex);
+    const ext = safeBase.slice(extIndex);
+
+    let chosenRepoPath = `data/exports/${safeBase}`;
+
+    // Check remote `data/exports` so we never overwrite an existing different timestamped backup
+    if (!access.isEmptyRepo) {
+      for (let suffix = 1; suffix <= 50; suffix += 1) {
+        const candidateName =
+          suffix === 1 ? safeBase : `${stem}_${String(suffix).padStart(2, '0')}${ext}`;
+        const candidateRepoPath = `data/exports/${candidateName}`;
+        const checkUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/${candidateRepoPath}?ref=${encodeURIComponent(
+          targetBranch
+        )}`;
+
+        try {
+          const getRes = await fetch(checkUrl, { headers: baseHeaders });
+          if (getRes.status === 404) {
+            chosenRepoPath = candidateRepoPath;
+            break;
+          }
+
+          if (getRes.status === 200) {
+            const fileData: any = await getRes.json().catch(() => null);
+            const remoteSha = typeof fileData?.sha === 'string' ? fileData.sha : undefined;
+            let existingBuf: Buffer | null = null;
+            if (
+              fileData &&
+              typeof fileData.content === 'string' &&
+              fileData.encoding !== 'none' &&
+              fileData.content.replace(/\s+/g, '').length > 0
+            ) {
+              existingBuf = Buffer.from(fileData.content.replace(/\s+/g, ''), 'base64');
+            } else if (remoteSha) {
+              existingBuf = await this.fetchBlobBufferBySha(remoteSha);
+            }
+            if (existingBuf) {
+              const existingHash = crypto.createHash('sha256').update(existingBuf).digest('hex');
+              if (existingHash === localHash) {
+                return {
+                  attempted: true,
+                  ok: true,
+                  skippedNoop: true,
+                  repoPath: candidateRepoPath,
+                  sha: remoteSha,
+                  localHash,
+                  readBackHash: existingHash,
+                  verifiedReadBack: true,
+                  ...warningPatch,
+                };
+              }
+            }
+            // Different file already exists at this timestamped path -> try next suffix without overwriting
+            continue;
+          }
+
+          if (getRes.status === 403) {
+            const errBody: any = await getRes.json().catch(() => ({}));
+            const isTooLarge =
+              Array.isArray(errBody?.errors) &&
+              errBody.errors.some((e: any) => e?.code === 'too_large');
+            if (isTooLarge) {
+              // Large file already occupies this timestamped slot; inspect directory listing to check hash or pick next suffix
+              const dirUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/data/exports?ref=${encodeURIComponent(
+                targetBranch
+              )}`;
+              const dirRes = await fetch(dirUrl, { headers: baseHeaders });
+              if (dirRes.status === 200) {
+                const list = await dirRes.json().catch(() => null);
+                const found = Array.isArray(list)
+                  ? list.find((it: any) => it && it.name === candidateName && typeof it.sha === 'string')
+                  : null;
+                if (found?.sha) {
+                  const blobBuf = await this.fetchBlobBufferBySha(found.sha);
+                  if (blobBuf) {
+                    const existingHash = crypto.createHash('sha256').update(blobBuf).digest('hex');
+                    if (existingHash === localHash) {
+                      return {
+                        attempted: true,
+                        ok: true,
+                        skippedNoop: true,
+                        repoPath: candidateRepoPath,
+                        sha: found.sha,
+                        localHash,
+                        readBackHash: existingHash,
+                        verifiedReadBack: true,
+                        ...warningPatch,
+                      };
+                    }
+                  }
+                }
+              }
+              continue;
+            }
+            const rawMsg = String(errBody?.message || '');
+            const category = classifyHttpFailure(getRes.status, getRes.headers, rawMsg);
+            return {
+              attempted: true,
+              ok: false,
+              repoPath: candidateRepoPath,
+              localHash,
+              readBackHash: null,
+              verifiedReadBack: false,
+              ...warningPatch,
+              error: redactSecrets(
+                `GitHub okuma hatası (${category}): HTTP ${getRes.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
+                [this.githubToken]
+              ),
+            };
+          }
+
+          const errBody: any = await getRes.json().catch(() => ({}));
+          const rawMsg = String(errBody?.message || '');
+          const category = classifyHttpFailure(getRes.status, getRes.headers, rawMsg);
+          return {
+            attempted: true,
+            ok: false,
+            repoPath: candidateRepoPath,
+            localHash,
+            readBackHash: null,
+            verifiedReadBack: false,
+            ...warningPatch,
+            error: redactSecrets(
+              `GitHub okuma hatası (${category}): HTTP ${getRes.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
+              [this.githubToken]
+            ),
+          };
+        } catch (e: any) {
+          return {
+            attempted: true,
+            ok: false,
+            repoPath: candidateRepoPath,
+            localHash,
+            readBackHash: null,
+            verifiedReadBack: false,
+            ...warningPatch,
+            error: redactSecrets(
+              `GitHub ağ bağlantı hatası: ${e?.message || 'bağlantı kurulamadı'}`,
+              [this.githubToken]
+            ),
+          };
+        }
+      }
+    }
+
+    const putUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/${chosenRepoPath}`;
+    const putPayload: Record<string, any> = {
+      message: `chore(backup): archive profile export ${path.posix.basename(chosenRepoPath)} [skip ci]`,
+      content: params.contentBuffer.toString('base64'),
+    };
+    if (!access.isEmptyRepo) {
+      putPayload.branch = targetBranch;
+    }
+
+    try {
+      const putRes = await fetch(putUrl, {
+        method: 'PUT',
+        headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(putPayload),
+      });
+
+      if (putRes.status !== 200 && putRes.status !== 201) {
+        const errJson: any = await putRes.json().catch(() => ({}));
+        const rawDetail = String(errJson?.message || '');
+        const acceptedPerms = putRes.headers.get('x-accepted-github-permissions');
+        const category = classifyHttpFailure(putRes.status, putRes.headers, rawDetail);
+        let detail = rawDetail;
+        if (
+          putRes.status === 403 &&
+          rawDetail.toLowerCase().includes('resource not accessible by personal access token')
+        ) {
+          detail += ` (Fine-grained PAT ayarlarında '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' iznini doğrulayın${
+            acceptedPerms ? `; beklenen izin: ${acceptedPerms}` : ''
+          })`;
+        }
+        return {
+          attempted: true,
+          ok: false,
+          repoPath: chosenRepoPath,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          ...warningPatch,
+          error: redactSecrets(
+            `GitHub yazma reddedildi (${category}): HTTP ${putRes.status}${detail ? ` - ${detail}` : ''}`,
+            [this.githubToken]
+          ),
+        };
+      }
+
+      const resData: any = await putRes.json().catch(() => null);
+      const committedSha: string | undefined =
+        typeof resData?.content?.sha === 'string' ? resData.content.sha : undefined;
+
+      // Mandatory post-upload binary read-back SHA-256 verification
+      const readBackUrl = `${putUrl}?ref=${encodeURIComponent(targetBranch)}`;
+      const readBackRes = await fetch(readBackUrl, { headers: baseHeaders });
+      let readBackBuffer: Buffer | null = null;
+
+      if (readBackRes.status === 200) {
+        const readBackData: any = await readBackRes.json().catch(() => null);
+        if (
+          readBackData &&
+          typeof readBackData.content === 'string' &&
+          readBackData.encoding !== 'none' &&
+          readBackData.content.replace(/\s+/g, '').length > 0
+        ) {
+          readBackBuffer = Buffer.from(readBackData.content.replace(/\s+/g, ''), 'base64');
+        } else {
+          const blobSha =
+            typeof readBackData?.sha === 'string' ? readBackData.sha : committedSha;
+          if (blobSha) {
+            readBackBuffer = await this.fetchBlobBufferBySha(blobSha);
+          }
+        }
+      } else if (readBackRes.status === 403 && committedSha) {
+        readBackBuffer = await this.fetchBlobBufferBySha(committedSha);
+      }
+
+      if (!readBackBuffer) {
+        return {
+          attempted: true,
+          ok: false,
+          repoPath: chosenRepoPath,
+          sha: committedSha,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          ...warningPatch,
+          error: `${chosenRepoPath}: GitHub yüklemesi sonrası ikili (binary) geri okuma doğrulaması yapılamadı.`,
+        };
+      }
+
+      const readBackHash = crypto.createHash('sha256').update(readBackBuffer).digest('hex');
+      if (readBackHash !== localHash) {
+        return {
+          attempted: true,
+          ok: false,
+          repoPath: chosenRepoPath,
+          sha: committedSha,
+          localHash,
+          readBackHash,
+          verifiedReadBack: false,
+          ...warningPatch,
+          error: `${chosenRepoPath}: Geri okuma SHA-256 özeti yerel dosyayla eşleşmedi (uzak: ${readBackHash.slice(
+            0,
+            8
+          )}, yerel: ${localHash.slice(0, 8)}).`,
+        };
+      }
+
+      return {
+        attempted: true,
+        ok: true,
+        repoPath: chosenRepoPath,
+        sha: committedSha,
+        localHash,
+        readBackHash,
+        verifiedReadBack: true,
+        ...warningPatch,
+      };
+    } catch (e: any) {
+      return {
+        attempted: true,
+        ok: false,
+        repoPath: chosenRepoPath,
+        localHash,
+        readBackHash: null,
+        verifiedReadBack: false,
+        ...warningPatch,
+        error: redactSecrets(
+          `GitHub ağ hatası: ${e?.message || 'bağlantı hatası'}`,
+          [this.githubToken]
+        ),
+      };
+    }
   }
 }

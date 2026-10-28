@@ -10,7 +10,7 @@ import {
   DEFAULT_MAX_PROFILES,
 } from './src/core/limits.ts';
 import { createCineTrackApp } from './src/server/app.ts';
-import { redactSecrets } from './src/server/persistent-store.ts';
+import { redactSecrets, type TokenSourceKind } from './src/server/persistent-store.ts';
 
 void normalizeDataDocument;
 void CURRENT_SCHEMA_VERSION;
@@ -47,11 +47,55 @@ for (const envFileName of ['.env.local', '.env']) {
 
 const tmdbApiKey = process.env.TMDB_API_KEY || localEnv.TMDB_API_KEY || '';
 const optionalAuthToken = process.env.CINETRACK_TOKEN || localEnv.CINETRACK_TOKEN || '';
-const githubToken = process.env.CINETRACK_GITHUB_TOKEN || process.env.CINETRACK_GITHUB_PAT || localEnv.CINETRACK_GITHUB_TOKEN || localEnv.CINETRACK_GITHUB_PAT || '';
+
+let githubToken = '';
+let githubTokenSource: TokenSourceKind = 'none';
+if (process.env.CINETRACK_GITHUB_TOKEN) {
+  githubToken = process.env.CINETRACK_GITHUB_TOKEN;
+  githubTokenSource = 'env:CINETRACK_GITHUB_TOKEN';
+} else if (process.env.CINETRACK_GITHUB_PAT) {
+  githubToken = process.env.CINETRACK_GITHUB_PAT;
+  githubTokenSource = 'env:CINETRACK_GITHUB_PAT';
+} else if (localEnv.CINETRACK_GITHUB_TOKEN) {
+  githubToken = localEnv.CINETRACK_GITHUB_TOKEN;
+  githubTokenSource = 'file:CINETRACK_GITHUB_TOKEN';
+} else if (localEnv.CINETRACK_GITHUB_PAT) {
+  githubToken = localEnv.CINETRACK_GITHUB_PAT;
+  githubTokenSource = 'file:CINETRACK_GITHUB_PAT';
+}
+
 const githubOwner = process.env.CINETRACK_DATA_OWNER || localEnv.CINETRACK_DATA_OWNER || '6yildiz9-maker';
 const githubRepo = process.env.CINETRACK_DATA_REPO || localEnv.CINETRACK_DATA_REPO || 'cinetrack-private-data';
 const githubBranch = process.env.CINETRACK_DATA_BRANCH || localEnv.CINETRACK_DATA_BRANCH || 'main';
-const isPublicRepo = (process.env.CINETRACK_DATA_REPO_IS_PUBLIC || localEnv.CINETRACK_DATA_REPO_IS_PUBLIC || 'false').toLowerCase() === 'true';
+
+const processEnvIsPublicRepo =
+  process.env.CINETRACK_DATA_REPO_IS_PUBLIC !== undefined
+    ? process.env.CINETRACK_DATA_REPO_IS_PUBLIC
+    : null;
+const localEnvIsPublicRepo =
+  localEnv.CINETRACK_DATA_REPO_IS_PUBLIC !== undefined
+    ? localEnv.CINETRACK_DATA_REPO_IS_PUBLIC
+    : null;
+
+const rawIsPublicRepo =
+  localEnvIsPublicRepo !== null
+    ? localEnvIsPublicRepo
+    : processEnvIsPublicRepo !== null
+      ? processEnvIsPublicRepo
+      : 'false';
+const isPublicRepo = rawIsPublicRepo.trim().toLowerCase() === 'true';
+
+const rawAllowPublicPersonal =
+  localEnv.CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC !== undefined
+    ? localEnv.CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC
+    : process.env.CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC;
+const normalizedAllowPublic = rawAllowPublicPersonal?.trim().toLowerCase();
+const allowPublicPersonalSync =
+  normalizedAllowPublic === 'true'
+    ? true
+    : normalizedAllowPublic === 'false'
+      ? false
+      : undefined;
 
 const { app, storage, persistentStore } = createCineTrackApp({
   dataDir,
@@ -60,10 +104,14 @@ const { app, storage, persistentStore } = createCineTrackApp({
   maxItemsPerProfile,
   tmdbApiKey,
   githubToken,
+  githubTokenSource,
   githubOwner,
   githubRepo,
   githubBranch,
   isPublicRepo,
+  ...(allowPublicPersonalSync !== undefined ? { allowPublicPersonalSync } : {}),
+  processEnvIsPublicRepo,
+  localEnvIsPublicRepo,
   ...(optionalAuthToken ? { authToken: optionalAuthToken } : {}),
 });
 

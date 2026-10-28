@@ -271,4 +271,87 @@
       grid-template-columns: 1fr 1fr auto;
     }
   }
+
+  .excel-github-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--text-2);
+    cursor: pointer;
+    line-height: 1.45;
+  }
+
+  .excel-github-toggle input {
+    margin-top: 2px;
+  }
+
+  .excel-backup-progress {
+    margin-top: 10px;
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--accent-border);
+    font-size: 12.5px;
+    color: var(--text-1);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .excel-backup-report {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .excel-backup-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+    gap: 8px;
+  }
+
+  .excel-metric-cell {
+    padding: 8px 10px;
+    border-radius: var(--radius-xs);
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .excel-metric-label {
+    font-size: 11px;
+    color: var(--text-2);
+  }
+
+  .excel-metric-val {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-1);
+  }
+
+  .excel-metric-sub {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-2);
+    word-break: break-all;
+  }
+
+  .excel-github-outcome {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.45;
+  }
+
+  .excel-backup-error {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #fca5a5;
+  }
 }

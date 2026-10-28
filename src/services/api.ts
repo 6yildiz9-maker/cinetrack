@@ -688,6 +688,64 @@ export async function triggerGitHubSync(): Promise<any> {
   }
 }
 
+export async function testGitHubConnection(forceWriteProbe = true): Promise<any> {
+  try {
+    const res = await fetch('/api/sync/test-connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forceWriteProbe }),
+    });
+    return await res.json();
+  } catch (e: any) {
+    return {
+      ok: false,
+      step: 'probe_failed',
+      error: e?.message || 'GitHub bağlantı testi isteği başarısız oldu.',
+    };
+  }
+}
+
+export async function setPublicRepoPersonalSyncConsent(
+  allowPersonalDataInPublicRepo: boolean
+): Promise<any> {
+  try {
+    const res = await fetch('/api/sync/public-consent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        allowPersonalDataInPublicRepo,
+        confirmPublicVisibility: allowPersonalDataInPublicRepo,
+      }),
+    });
+    return await res.json();
+  } catch (e: any) {
+    return {
+      ok: false,
+      status_message: e?.message || 'Açık depo onay tercihi güncellenemedi.',
+    };
+  }
+}
+
+export async function runStagedGitHubSync(forceWriteProbe = true): Promise<any> {
+  try {
+    const res = await fetch('/api/sync/staged', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forceWriteProbe }),
+    });
+    const report = await res.json();
+    if (typeof report?.bidirectionalReport?.serverRevision === 'number') {
+      setLastKnownServerRevision(report.bidirectionalReport.serverRevision);
+    }
+    return report;
+  } catch (e: any) {
+    return {
+      ok: false,
+      error: e?.message || 'Aşamalı GitHub senkronizasyon isteği başarısız oldu.',
+    };
+  }
+}
+
 export async function fetchCatalogItems(type?: 'movie' | 'tv'): Promise<any> {
   try {
     const query = type ? `?type=${encodeURIComponent(type)}` : '';
@@ -758,6 +816,97 @@ export async function pushDerivedProfileData(data: {
     return await res.json();
   } catch {
     return null;
+  }
+}
+
+export interface BackupSheetBreakdown {
+  total: number;
+  movie: number;
+  tv: number;
+}
+
+export interface SingleBackupOutcomeClient {
+  attempted: boolean;
+  ok: boolean;
+  fileName?: string;
+  relativePath?: string;
+  downloadUrl?: string;
+  sizeBytes?: number;
+  sha256?: string;
+  error?: string;
+}
+
+export interface ProfileBackupExportReportClient {
+  ok: boolean;
+  partialFailure: boolean;
+  exportedAt: string;
+  profileId: string;
+  profileName: string;
+  jsonBackup: SingleBackupOutcomeClient;
+  excelBackup: SingleBackupOutcomeClient & {
+    sheetNames?: string[];
+    sheetCounts?: Record<'İzlenen' | 'İzlenecek' | 'İzleniyor' | 'İlgilenmiyorum', BackupSheetBreakdown>;
+    totalItemsCount?: number;
+    movieCount?: number;
+    tvCount?: number;
+    embeddedPostersCount?: number;
+    placeholderPostersCount?: number;
+    missingPosterSourceCount?: number;
+    posterErrorsCount?: number;
+    posterErrors?: Array<{ mediaKey: string; title: string; posterUrl: string; reason: string }>;
+    dualStateKeys?: string[];
+  };
+  githubUpload: {
+    attempted: boolean;
+    ok: boolean;
+    blockedByPublicGuard?: boolean;
+    skippedNoop?: boolean;
+    repoPath?: string;
+    sha?: string;
+    localHash?: string | null;
+    readBackHash?: string | null;
+    verifiedReadBack: boolean;
+    repoVisibilityWarning?: string;
+    error?: string;
+  };
+  status_message?: string;
+}
+
+export async function createProfileBackupExport(params: {
+  profileId: string;
+  profileSnapshot?: any;
+  genresMap?: Record<number, string>;
+  includeJson?: boolean;
+  includeXlsx?: boolean;
+  uploadToGithub?: boolean;
+  allowPersonalDataInPublicRepo?: boolean;
+}): Promise<ProfileBackupExportReportClient> {
+  try {
+    const res = await fetch('/api/backup/profile-export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const json = await res.json();
+    return json as ProfileBackupExportReportClient;
+  } catch (e: any) {
+    const msg = e?.message || 'Profil yedeği dışa aktarma isteği başarısız oldu.';
+    return {
+      ok: false,
+      partialFailure: false,
+      exportedAt: new Date().toISOString(),
+      profileId: params.profileId,
+      profileName: '',
+      jsonBackup: { attempted: Boolean(params.includeJson), ok: false, error: msg },
+      excelBackup: { attempted: Boolean(params.includeXlsx ?? true), ok: false, error: msg },
+      githubUpload: {
+        attempted: Boolean(params.uploadToGithub),
+        ok: false,
+        verifiedReadBack: false,
+        error: msg,
+      },
+      status_message: msg,
+    };
   }
 }
 

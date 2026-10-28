@@ -1722,4 +1722,134 @@ test('Aşama 5.14: Fine-grained PAT yetki hatasında (HTTP 403 Resource not acce
   }
 });
 
+test('Aşama 5.15: Açık depoda (public) onaysızken gizlilik koruması devrededir; açık kullanıcı onayı ile kişisel veriler eşitlenir ve onay geri alındığında tekrar korunur', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-15-'));
+  const gh = createMockGitHubHarness({ isPrivate: false });
+  try {
+    // Sunucu CINETRACK_DATA_REPO_IS_PUBLIC=false ile başlatılmış ama uzak depo gerçekte public
+    const { store, storage } = createIsolatedSyncEnv(tmpDir, { isPublicRepo: false });
+
+    store.upsertCatalogItems([makeMovieRecord(101)]);
+    storage.saveData({
+      version: 3,
+      schemaVersion: 3,
+      engineVersion: 'v3.2.0',
+      activeProfileId: 'profile-default',
+      profiles: [{ id: 'profile-default', name: 'Profilim', items: [] }],
+      revision: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    store.upsertDerivedProfile({
+      profileId: 'profile-default',
+      algorithmVersion: '3.0.0',
+      profileFingerprint: 'fp-101',
+      items: {
+        'movie:101': { mediaKey: 'movie:101', matchScore: 91, lifecycleRing: 'ring0', calculatedAt: '2026-10-28' },
+      },
+    });
+
+    await gh.installAndRun(async () => {
+      // 1) Onay yokken kişisel dosyalar engellenir (mevcut gizlilik koruması sessizce kaldırılmaz)
+      const blockedRes = await store.syncToGitHub();
+      assert.equal(blockedRes.ok, true);
+      assert.ok(blockedRes.filesBlockedPublic.some((f) => f.includes('data/profiles/*')));
+      assert.equal(gh.files.has('data/cinetrack-data.json'), false);
+      assert.equal(gh.files.has('data/profiles/profile-default.json'), false);
+
+      const blockedReconcile = await store.reconcileWithGitHub();
+      assert.ok(blockedReconcile.filesBlockedPublic.includes('data/cinetrack-data.json'));
+      assert.equal(gh.files.has('data/cinetrack-data.json'), false);
+
+      // 2) Kullanıcı açık onay verdiğinde kişisel dosyalar senkronize edilir ve uyarı görünür kalır
+      const consent = store.setPublicPersonalSyncConsent(true);
+      assert.equal(consent.allowPublicPersonalSync, true);
+
+      const allowedRes = await store.syncToGitHub();
+      assert.equal(allowedRes.ok, true);
+      assert.equal(allowedRes.filesBlockedPublic.length, 0);
+      assert.ok(allowedRes.filesCommitted.includes('data/cinetrack-data.json'));
+      assert.ok(allowedRes.filesCommitted.includes('data/profiles/profile-default.json'));
+      assert.ok(allowedRes.repoVisibilityWarning?.includes('herkese açıktır'));
+
+      // 3) Onay geri alındığında gizlilik koruması tekrar devreye girer
+      store.setPublicPersonalSyncConsent(false);
+      assert.equal(store.getSyncStatus().personalSyncBlockedByPublicGuard, true);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.16: 1 MB üzeri dosyalarda Git Blob API geri okuma hash doğrulaması ve 3 aşamalı güvenli senkronizasyon (runStagedFullSync)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-16-'));
+  const gh = createMockGitHubHarness({ isPrivate: false });
+  try {
+    const { store, storage } = createIsolatedSyncEnv(tmpDir, { isPublicRepo: true });
+    // > 1 MB katalog verisi oluştur
+    const largeOverview = 'U'.repeat(25_000);
+    const movies = Array.from({ length: 48 }, (_, i) =>
+      makeMovieRecord(i + 1, { overview: `${i}:${largeOverview}` })
+    );
+    store.upsertCatalogItems(movies);
+    storage.saveData({
+      version: 3,
+      schemaVersion: 3,
+      engineVersion: 'v3.2.0',
+      activeProfileId: 'profile-default',
+      profiles: [{ id: 'profile-default', name: 'Profilim', items: [] }],
+      revision: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    store.upsertDerivedProfile({
+      profileId: 'profile-default',
+      algorithmVersion: '3.0.0',
+      profileFingerprint: 'fp-large',
+      items: {
+        'movie:1': { mediaKey: 'movie:1', matchScore: 96, lifecycleRing: 'ring0', calculatedAt: '2026-10-28' },
+      },
+    });
+
+    // Senaryo A: 403 yazma hatasında 1. aşamada durur, yerel veri silinmez ve hiçbir dosya başarılı sayılmaz
+    gh.setInterceptor(({ method, jsonResponse }) => {
+      if (method === 'PUT') {
+        return jsonResponse(403, { message: 'Resource not accessible by personal access token' });
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const failedStaged = await store.runStagedFullSync({ forceWriteProbe: true });
+      assert.equal(failedStaged.ok, false);
+      assert.equal(failedStaged.probe.ok, false);
+      assert.equal(failedStaged.catalogStage.attempted, false);
+      assert.equal(failedStaged.personalStage.attempted, false);
+      assert.equal(failedStaged.verifiedEqual, false);
+      assert.equal(Object.keys(store.readCatalog('movie')).length, 48, 'Yerel katalog korunmalı');
+      assert.ok(failedStaged.files.every((f) => f.status !== 'succeeded'));
+    });
+
+    // Senaryo B: Yazma izni açıldığında 3 aşama tamamlanır ve >1 MB dosya Git Blob üzerinden readBackHash ile doğrulanır
+    gh.setInterceptor(null);
+    await gh.installAndRun(async () => {
+      const okStaged = await store.runStagedFullSync({ forceWriteProbe: true });
+      assert.equal(okStaged.ok, true);
+      assert.equal(okStaged.probe.ok, true);
+      assert.equal(okStaged.probe.localHash, okStaged.probe.readBackHash);
+      assert.equal(okStaged.catalogStage.ok, true);
+      assert.equal(okStaged.personalStage.ok, true);
+      assert.equal(okStaged.verifiedEqual, true);
+
+      const moviesOutcome = okStaged.files.find((f) => f.repoPath === 'data/catalog/movies.json');
+      assert.ok(moviesOutcome);
+      assert.ok(moviesOutcome.sizeBytes > 1_000_000, 'movies.json 1 MB üzerinde olmalı');
+      assert.equal(moviesOutcome.status, 'succeeded');
+      assert.equal(moviesOutcome.verifiedReadBack, true);
+      assert.equal(moviesOutcome.readBackHash, moviesOutcome.localHash);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+
 

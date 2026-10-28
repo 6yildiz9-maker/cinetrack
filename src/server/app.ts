@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { createDataStorage, countTotalItems, type StorageOptions } from './storage.ts';
 import {
@@ -7,17 +9,25 @@ import {
   type SecurityOptions,
 } from './security.ts';
 import { createTmdbProxyService, type TmdbProxyServiceOptions } from './tmdb-proxy.ts';
-import { PersistentDataStore, redactSecrets } from './persistent-store.ts';
+import { PersistentDataStore, redactSecrets, type TokenSourceKind } from './persistent-store.ts';
 import { CorruptJsonFileError } from './atomic-json.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
+import {
+  executeProfileBackupExport,
+  EXPORT_FILE_NAME_PATTERN,
+} from './excel-profile-backup.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
   maxDataBytes?: number;
   githubToken?: string;
+  githubTokenSource?: TokenSourceKind;
   githubOwner?: string;
   githubRepo?: string;
   githubBranch?: string;
   isPublicRepo?: boolean;
+  allowPublicPersonalSync?: boolean;
+  processEnvIsPublicRepo?: string | null;
+  localEnvIsPublicRepo?: string | null;
 }
 
 function parseIfMatchRevision(req: Request): number | null {
@@ -61,10 +71,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     dataDir: options.dataDir,
     maxDataBytes,
     githubToken: options.githubToken,
+    githubTokenSource: options.githubTokenSource,
     githubOwner: options.githubOwner,
     githubRepo: options.githubRepo,
     githubBranch: options.githubBranch,
     isPublicRepo: options.isPublicRepo,
+    allowPublicPersonalSync: options.allowPublicPersonalSync,
+    processEnvIsPublicRepo: options.processEnvIsPublicRepo,
+    localEnvIsPublicRepo: options.localEnvIsPublicRepo,
   });
   persistentStore.attachDataStorage(storage, maxDataBytes);
 
@@ -382,15 +396,79 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.post('/api/sync/test-connection', originGuard, tokenGuard, async (_req: Request, res: Response) => {
+  app.post('/api/sync/test-connection', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-      const probeResult = await persistentStore.testSafeConnectionAndProbeManifest();
+      const forceWriteProbe = Boolean(req.body?.forceWriteProbe);
+      const probeResult = await persistentStore.testSafeConnectionAndProbeManifest({
+        forceWriteProbe,
+      });
       res.json(probeResult);
     } catch (e: any) {
       res.status(500).json({
         ok: false,
         error: redactSecrets(e?.message || 'Bağlantı testi başarısız oldu.', [options.githubToken]),
+      });
+    }
+  });
+
+  app.post('/api/sync/public-consent', originGuard, tokenGuard, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const allow = req.body?.allowPersonalDataInPublicRepo;
+    if (typeof allow !== 'boolean') {
+      res.status(400).json({
+        ok: false,
+        status_message: 'allowPersonalDataInPublicRepo alanı boolean (true/false) olmalıdır.',
+      });
+      return;
+    }
+    if (allow && req.body?.confirmPublicVisibility !== true) {
+      res.status(400).json({
+        ok: false,
+        status_message:
+          'Açık depoya kişisel veri senkronizasyonu için confirmPublicVisibility=true onayı zorunludur.',
+      });
+      return;
+    }
+    const updated = persistentStore.setPublicPersonalSyncConsent(allow);
+    res.json({
+      ok: true,
+      ...updated,
+      status: persistentStore.getSyncStatus(),
+    });
+  });
+
+  app.post('/api/sync/staged', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.body?.rejectIfBusy === true && persistentStore.isSyncBusy()) {
+      res.status(409).json({
+        ok: false,
+        code: 'sync_in_progress',
+        error: 'Başka bir GitHub senkronizasyon işlemi devam ediyor.',
+      });
+      return;
+    }
+    try {
+      const forceWriteProbe =
+        typeof req.body?.forceWriteProbe === 'boolean' ? req.body.forceWriteProbe : true;
+      const allowOverride =
+        typeof req.body?.allowPersonalDataInPublicRepo === 'boolean'
+          ? req.body.allowPersonalDataInPublicRepo
+          : undefined;
+      const stagedReport = await persistentStore.runStagedFullSync({
+        forceWriteProbe,
+        ...(allowOverride !== undefined ? { allowPersonalDataInPublicRepo: allowOverride } : {}),
+      });
+      if (typeof stagedReport.bidirectionalReport?.serverRevision === 'number') {
+        res.setHeader('ETag', `"rev-${stagedReport.bidirectionalReport.serverRevision}"`);
+      }
+      res.json(stagedReport);
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        error: redactSecrets(e?.message || 'Aşamalı senkronizasyon başarısız oldu.', [
+          options.githubToken,
+        ]),
       });
     }
   });
@@ -502,6 +580,108 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       }
       res.status(500).json({ ok: false, status_message: 'İşlenmiş profil verisi kaydedilemedi.' });
     }
+  });
+
+  // --- Posterli, Sekmeli Excel (.xlsx) & JSON Profil Yedeği Dışa Aktarma ---
+  app.post('/api/backup/profile-export', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const storedDoc = storage.readData();
+      let exportDoc = storedDoc;
+
+      if (req.body?.profileSnapshot && typeof req.body.profileSnapshot === 'object') {
+        const snap = req.body.profileSnapshot;
+        const snapId =
+          typeof snap.id === 'string' && snap.id.trim()
+            ? snap.id.trim()
+            : storedDoc.activeProfileId;
+        const existing = storedDoc.profiles.find((p) => p.id === snapId);
+        if (
+          !existing ||
+          (Array.isArray(snap.items) && snap.items.length >= (existing.items?.length || 0))
+        ) {
+          exportDoc = {
+            ...storedDoc,
+            activeProfileId: snapId,
+            profiles: existing
+              ? storedDoc.profiles.map((p) => (p.id === snapId ? { ...existing, ...snap } : p))
+              : [...storedDoc.profiles, snap],
+          };
+        }
+      }
+
+      const profileId =
+        typeof req.body?.profileId === 'string' && req.body.profileId.trim()
+          ? req.body.profileId.trim()
+          : exportDoc.activeProfileId;
+      const includeJson = typeof req.body?.includeJson === 'boolean' ? req.body.includeJson : true;
+      const includeXlsx = typeof req.body?.includeXlsx === 'boolean' ? req.body.includeXlsx : true;
+      const uploadToGithub = Boolean(req.body?.uploadToGithub);
+      const allowPersonalDataInPublicRepo =
+        typeof req.body?.allowPersonalDataInPublicRepo === 'boolean'
+          ? req.body.allowPersonalDataInPublicRepo
+          : undefined;
+      const dislikedItemsHint = Array.isArray(req.body?.dislikedItemsHint)
+        ? req.body.dislikedItemsHint
+        : undefined;
+      const genresMap =
+        req.body?.genresMap && typeof req.body.genresMap === 'object'
+          ? req.body.genresMap
+          : undefined;
+
+      const report = await executeProfileBackupExport({
+        dataDir: options.dataDir,
+        document: exportDoc,
+        profileId,
+        includeJson,
+        includeXlsx,
+        uploadToGithub,
+        allowPersonalDataInPublicRepo,
+        dislikedItemsHint,
+        genresMap,
+        persistentStore,
+        tmdbApiKey: options.tmdbApiKey,
+        githubTokenForRedaction: options.githubToken,
+      });
+
+      res.json(report);
+    } catch (err: any) {
+      res.status(500).json({
+        ok: false,
+        status_message: redactSecrets(
+          err?.message || 'Profil yedeği dışa aktarılamadı.',
+          [options.githubToken, options.tmdbApiKey]
+        ),
+      });
+    }
+  });
+
+  app.get('/api/backup/exports/:fileName', tokenGuard, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const rawName = String(req.params.fileName || '').trim();
+    if (!EXPORT_FILE_NAME_PATTERN.test(rawName)) {
+      res.status(400).json({ ok: false, status_message: 'Geçersiz yedek dosya adı.' });
+      return;
+    }
+    const exportsDir = path.resolve(options.dataDir, 'exports');
+    const fullPath = path.resolve(exportsDir, rawName);
+    if (!fullPath.startsWith(exportsDir + path.sep) || !existsSync(fullPath)) {
+      res.status(404).json({ ok: false, status_message: 'Yedek dosyası bulunamadı.' });
+      return;
+    }
+
+    const buf = readFileSync(fullPath);
+    if (rawName.endsWith('.xlsx')) {
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+    } else {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="${rawName}"`);
+    res.setHeader('Content-Length', String(buf.length));
+    res.send(buf);
   });
 
   return { app, storage, tmdbProxy, persistentStore };

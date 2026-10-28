@@ -9,9 +9,10 @@
     "build": "vite build",
     "start": "node server.ts",
     "lint": "eslint src server.ts && tsc --noEmit",
-    "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs tests/phases-all.test.mjs tests/persistent-store.test.mjs tests/github-bidirectional-sync.test.mjs"
+    "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs tests/phases-all.test.mjs tests/persistent-store.test.mjs tests/github-bidirectional-sync.test.mjs tests/excel-profile-backup.test.mjs"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "express": "^5.3.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

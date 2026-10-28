@@ -8,6 +8,7 @@ import {
   importItemsFromCsv,
 } from '../core/exporters';
 import {
+  createProfileBackupExport,
   fetchServerBackups,
   fetchSyncStatus,
   inspectGitHubSync,
@@ -15,6 +16,9 @@ import {
   pushGitHubSync,
   reconcileGitHubSync,
   restoreServerBackup,
+  setPublicRepoPersonalSyncConsent,
+  testGitHubConnection,
+  type ProfileBackupExportReportClient,
   type ServerBackupMetadata,
 } from '../services/api';
 import {
@@ -104,6 +108,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [remoteSyncInfo, setRemoteSyncInfo] = useState<any>(null);
   const [activeSyncOp, setActiveSyncOp] = useState<SyncOperationKind | null>(null);
   const [latestSyncReport, setLatestSyncReport] = useState<BidirectionalSyncReport | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionProbeResult, setConnectionProbeResult] = useState<any>(null);
+  const [updatingPublicConsent, setUpdatingPublicConsent] = useState(false);
+  const [exportingExcelMode, setExportingExcelMode] = useState<'xlsx_only' | 'json_and_xlsx' | null>(null);
+  const [uploadExcelToGithub, setUploadExcelToGithub] = useState(false);
+  const [excelExportReport, setExcelExportReport] = useState<ProfileBackupExportReportClient | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useDialogAccessibility(isOpen, onClose);
@@ -122,6 +132,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setCsvStatus('');
       setBackupMessage('');
       setLatestSyncReport(null);
+      setConnectionProbeResult(null);
+      setExcelExportReport(null);
       void fetchSyncStatus().then((info) => {
         if (info) setRemoteSyncInfo(info);
       });
@@ -281,6 +293,42 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     setCsvStatus(`${savedItems.length} içerik CSV olarak dışa aktarıldı.`);
   };
 
+  const triggerDownloadUrl = (downloadUrl: string, fileName?: string) => {
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    if (fileName) link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportFormattedBackup = async (mode: 'xlsx_only' | 'json_and_xlsx') => {
+    if (exportingExcelMode !== null) return;
+    setExportingExcelMode(mode);
+    setExcelExportReport(null);
+    try {
+      const report = await createProfileBackupExport({
+        profileId: activeProfileId,
+        profileSnapshot: effectiveActiveProfile,
+        genresMap,
+        includeJson: mode === 'json_and_xlsx',
+        includeXlsx: true,
+        uploadToGithub: uploadExcelToGithub,
+      });
+      setExcelExportReport(report);
+      if (report.excelBackup?.ok && report.excelBackup.downloadUrl) {
+        triggerDownloadUrl(report.excelBackup.downloadUrl, report.excelBackup.fileName);
+      }
+      if (mode === 'json_and_xlsx' && report.jsonBackup?.ok && report.jsonBackup.downloadUrl) {
+        setTimeout(() => {
+          triggerDownloadUrl(report.jsonBackup.downloadUrl!, report.jsonBackup.fileName);
+        }, 350);
+      }
+    } finally {
+      setExportingExcelMode(null);
+    }
+  };
+
   const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -360,6 +408,35 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
+  const handleTestConnection = async () => {
+    if (activeSyncOp !== null || testingConnection) return;
+    setTestingConnection(true);
+    try {
+      const probe = await testGitHubConnection(true);
+      setConnectionProbeResult(probe);
+      const updatedInfo = await fetchSyncStatus();
+      if (updatedInfo) setRemoteSyncInfo(updatedInfo);
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleTogglePublicConsent = async (nextAllow: boolean) => {
+    if (updatingPublicConsent || activeSyncOp !== null) return;
+    setUpdatingPublicConsent(true);
+    try {
+      const res = await setPublicRepoPersonalSyncConsent(nextAllow);
+      if (res?.status) {
+        setRemoteSyncInfo(res.status);
+      } else {
+        const updatedInfo = await fetchSyncStatus();
+        if (updatedInfo) setRemoteSyncInfo(updatedInfo);
+      }
+    } finally {
+      setUpdatingPublicConsent(false);
+    }
+  };
+
   const syncBanner = deriveSyncUiBanner(remoteSyncInfo, latestSyncReport);
   const localSide: SyncSideSummary | null =
     latestSyncReport?.localAfter || remoteSyncInfo?.localSummary || null;
@@ -389,8 +466,21 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       ? latestSyncReport.errors.map((e) => e.message).join(' | ')
       : remoteSyncInfo?.lastError || null;
 
+  const isPersonalSyncBlocked = Boolean(
+    (latestSyncReport?.filesBlockedPublic?.length ?? 0) > 0 ||
+      remoteSyncInfo?.personalSyncBlockedByPublicGuard
+  );
+
+  const isObservedOrConfiguredPublic = Boolean(
+    remoteSyncInfo?.isPublicRepo ||
+      remoteSyncInfo?.configDiagnostics?.observedRemoteIsPublicRepo
+  );
+
   const isSyncActionDisabled =
-    activeSyncOp !== null || Boolean(remoteSyncInfo?.syncInProgress) || !remoteSyncInfo?.configured;
+    activeSyncOp !== null ||
+    testingConnection ||
+    Boolean(remoteSyncInfo?.syncInProgress) ||
+    !remoteSyncInfo?.configured;
 
   const handleLoadServerBackups = async () => {
     setLoadingBackups(true);
@@ -987,12 +1077,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
               {/* Backup Export / Import */}
               <div className="profile-backup">
-                <button type="button" className="btn" onClick={onExportBackup}>
+                <button type="button" className="btn whitespace-nowrap shrink-0" onClick={onExportBackup}>
                   JSON Yedeği İndir
                 </button>
                 <button
                   type="button"
-                  className="btn"
+                  className="btn whitespace-nowrap shrink-0"
                   onClick={() => fileInputRef.current?.click()}
                 >
                   JSON Yedeği Yükle
@@ -1006,6 +1096,154 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 />
               </div>
               {importStatus && <p className="provider-message">{importStatus}</p>}
+
+              {/* Posterli, 5 Sekmeli Excel (.xlsx) Profil Yedeği */}
+              <div className="profile-tools-section excel-backup-section">
+                <strong className="profile-tools-heading">Excel Profil Yedeği (.xlsx)</strong>
+                <p className="provider-message">
+                  Kişisel film ve dizi arşivinizi gömülü posterlerle birlikte 5 sekmeli (Özet, İzlenen,
+                  İzlenecek, İzleniyor, İlgilenmiyorum), filtrelenebilir ve çevrimdışı açılabilir Excel
+                  çalışma kitabına aktarır. JSON yedeği birincil geri yükleme biçimi olarak korunur.
+                </p>
+
+                <div className="csv-actions-row mt-2.5">
+                  <button
+                    type="button"
+                    className="btn btn-primary whitespace-nowrap shrink-0"
+                    disabled={exportingExcelMode !== null}
+                    onClick={() => handleExportFormattedBackup('xlsx_only')}
+                  >
+                    {exportingExcelMode === 'xlsx_only'
+                      ? 'Posterler gömülüyor ve Excel hazırlanıyor…'
+                      : 'Excel Profil Yedeği (.xlsx)'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn whitespace-nowrap shrink-0"
+                    disabled={exportingExcelMode !== null}
+                    onClick={() => handleExportFormattedBackup('json_and_xlsx')}
+                  >
+                    {exportingExcelMode === 'json_and_xlsx'
+                      ? 'JSON + Excel yedekleniyor…'
+                      : 'JSON + Excel Birlikte Yedekle'}
+                  </button>
+                </div>
+
+                {remoteSyncInfo?.remoteTarget && (
+                  <label className="excel-github-toggle">
+                    <input
+                      type="checkbox"
+                      checked={uploadExcelToGithub}
+                      disabled={exportingExcelMode !== null}
+                      onChange={(e) => setUploadExcelToGithub(e.target.checked)}
+                    />
+                    <span>
+                      Oluşturulan <code>.xlsx</code> arşivini GitHub deposuna (
+                      <code>data/exports/</code>) da yükle ve SHA-256 geri okumasını doğrula
+                    </span>
+                  </label>
+                )}
+
+                {exportingExcelMode !== null && (
+                  <div className="excel-backup-progress" role="status" aria-live="polite">
+                    Poster önbelleği taranıyor ve Excel çalışma kitabı oluşturuluyor ({savedItems.length + preferences.disliked.length} kayıt)…
+                  </div>
+                )}
+
+                {excelExportReport && (
+                  <div className="excel-backup-report tabular-nums" role="status" aria-live="polite">
+                    <div className="excel-backup-metrics-grid">
+                      <div className="excel-metric-cell">
+                        <span className="excel-metric-label">JSON Yedeği</span>
+                        <strong className="excel-metric-val">
+                          {!excelExportReport.jsonBackup.attempted
+                            ? 'İstenmedi (Korundu)'
+                            : excelExportReport.jsonBackup.ok
+                              ? 'Başarılı'
+                              : 'Başarısız'}
+                        </strong>
+                        {excelExportReport.jsonBackup.relativePath && (
+                          <span className="excel-metric-sub">{excelExportReport.jsonBackup.relativePath}</span>
+                        )}
+                      </div>
+
+                      <div className="excel-metric-cell">
+                        <span className="excel-metric-label">Excel Yedeği (.xlsx)</span>
+                        <strong className="excel-metric-val">
+                          {excelExportReport.excelBackup.ok ? 'Başarılı' : 'Başarısız'}
+                        </strong>
+                        {excelExportReport.excelBackup.relativePath && (
+                          <span className="excel-metric-sub">{excelExportReport.excelBackup.relativePath}</span>
+                        )}
+                      </div>
+
+                      <div className="excel-metric-cell">
+                        <span className="excel-metric-label">Toplam İçerik</span>
+                        <strong className="excel-metric-val">
+                          {excelExportReport.excelBackup.totalItemsCount ?? 0} kayıt
+                        </strong>
+                        {excelExportReport.excelBackup.sheetCounts && (
+                          <span className="excel-metric-sub">
+                            İzlenen {excelExportReport.excelBackup.sheetCounts.İzlenen.total} · İzlenecek{' '}
+                            {excelExportReport.excelBackup.sheetCounts.İzlenecek.total} · İzleniyor{' '}
+                            {excelExportReport.excelBackup.sheetCounts.İzleniyor.total} · İlgilenmiyorum{' '}
+                            {excelExportReport.excelBackup.sheetCounts.İlgilenmiyorum.total}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="excel-metric-cell">
+                        <span className="excel-metric-label">Gömülü Poster / Hata</span>
+                        <strong className="excel-metric-val">
+                          {excelExportReport.excelBackup.embeddedPostersCount ?? 0} poster ·{' '}
+                          {excelExportReport.excelBackup.posterErrorsCount ?? 0} hata
+                        </strong>
+                        {typeof excelExportReport.excelBackup.sizeBytes === 'number' && (
+                          <span className="excel-metric-sub">
+                            Boyut: {(excelExportReport.excelBackup.sizeBytes / (1024 * 1024)).toFixed(2)} MB
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {excelExportReport.githubUpload.attempted && (
+                      <div className="excel-github-outcome">
+                        <strong>GitHub Yükleme Durumu:</strong>{' '}
+                        {excelExportReport.githubUpload.ok && excelExportReport.githubUpload.verifiedReadBack
+                          ? `Başarılı ve SHA-256 doğrulandı (${excelExportReport.githubUpload.repoPath})`
+                          : excelExportReport.githubUpload.error || 'Yükleme doğrulanamadı.'}
+                      </div>
+                    )}
+
+                    {(excelExportReport.jsonBackup.error || excelExportReport.excelBackup.error) && (
+                      <div className="excel-backup-error">
+                        {excelExportReport.excelBackup.error || excelExportReport.jsonBackup.error}
+                      </div>
+                    )}
+
+                    <div className="csv-actions-row mt-2">
+                      {excelExportReport.excelBackup.ok && excelExportReport.excelBackup.downloadUrl && (
+                        <a
+                          href={excelExportReport.excelBackup.downloadUrl}
+                          download={excelExportReport.excelBackup.fileName}
+                          className="btn btn-sm whitespace-nowrap shrink-0"
+                        >
+                          Excel (.xlsx) Dosyasını İndir
+                        </a>
+                      )}
+                      {excelExportReport.jsonBackup.ok && excelExportReport.jsonBackup.downloadUrl && (
+                        <a
+                          href={excelExportReport.jsonBackup.downloadUrl}
+                          download={excelExportReport.jsonBackup.fileName}
+                          className="btn btn-sm whitespace-nowrap shrink-0"
+                        >
+                          JSON Dosyasını İndir
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Faz 10: CSV Export / Import (Letterboxd & IMDb) */}
               <div className="profile-tools-section">
@@ -1073,14 +1311,24 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <div className="profile-tools-section github-sync-panel">
                 <div className="github-sync-header">
                   <strong className="profile-tools-heading">GitHub Çift Yönlü Senkronizasyon</strong>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    disabled={isSyncActionDisabled}
-                    onClick={handleInspectGitHub}
-                  >
-                    {activeSyncOp === 'inspect' ? 'Durum denetleniyor…' : 'Durumu denetle'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={isSyncActionDisabled}
+                      onClick={handleTestConnection}
+                    >
+                      {testingConnection ? 'Yazma testi yapılıyor…' : 'Bağlantıyı test et'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={isSyncActionDisabled}
+                      onClick={handleInspectGitHub}
+                    >
+                      {activeSyncOp === 'inspect' ? 'Durum denetleniyor…' : 'Durumu denetle'}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Bağlı hedef depo ve son başarılı senkronizasyon metaverisi */}
@@ -1093,7 +1341,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       <span aria-hidden="true">·</span>
                       <span>Dal: {remoteSyncInfo.remoteTarget.branch}</span>
                       <span aria-hidden="true">·</span>
-                      <span>{remoteSyncInfo.isPublicRepo ? 'Açık Depo' : 'Özel Depo'}</span>
+                      <span>
+                        {isObservedOrConfiguredPublic
+                          ? remoteSyncInfo?.allowPublicPersonalSync
+                            ? 'Açık Depo (Kişisel Veri Onaylı)'
+                            : 'Açık Depo (Kişisel Veri Korumalı)'
+                          : 'Özel Depo'}
+                      </span>
                     </>
                   ) : (
                     <span>Hedef GitHub deposu tanımlanmadı</span>
@@ -1119,6 +1373,57 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                 {remoteSyncInfo?.repoVisibilityWarning && (
                   <p className="github-sync-warning">{remoteSyncInfo.repoVisibilityWarning}</p>
+                )}
+
+                {isObservedOrConfiguredPublic && (
+                  <div className="my-2 rounded border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs">
+                    <label className="flex cursor-pointer items-start gap-2">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={Boolean(remoteSyncInfo?.allowPublicPersonalSync)}
+                        disabled={updatingPublicConsent || activeSyncOp !== null}
+                        onChange={(e) => handleTogglePublicConsent(e.target.checked)}
+                      />
+                      <span>
+                        <strong>Açık depoya profil ve izleme listesi senkronizasyonuna izin ver:</strong>{' '}
+                        Bu depo herkese açık (public) olduğu için onay verildiğinde profil ve izleme listesi
+                        kayıtları GitHub üzerinde görüntülenebilir. Onay kapalıyken gizlilik koruması yalnızca
+                        genel katalog dosyalarına izin verir.
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {connectionProbeResult && (
+                  <div
+                    className={`my-2 rounded border p-2.5 text-xs tabular-nums ${
+                      connectionProbeResult.ok
+                        ? 'border-emerald-500/30 bg-emerald-500/10'
+                        : 'border-rose-500/30 bg-rose-500/10'
+                    }`}
+                    role="status"
+                  >
+                    <div>
+                      <strong>Küçük Dosya Yazma ve Geri Okuma Testi ({connectionProbeResult.probeRepoPath || 'data/catalog/manifest.json'}):</strong>{' '}
+                      {connectionProbeResult.ok ? 'Başarılı' : 'Başarısız'}
+                    </div>
+                    {connectionProbeResult.localHash && (
+                      <div>
+                        Yerel SHA-256: <code>{String(connectionProbeResult.localHash).slice(0, 16)}…</code>
+                        {' · '}
+                        Geri Okuma SHA-256:{' '}
+                        <code>
+                          {connectionProbeResult.readBackHash
+                            ? `${String(connectionProbeResult.readBackHash).slice(0, 16)}…`
+                            : 'yok'}
+                        </code>
+                      </div>
+                    )}
+                    {connectionProbeResult.error && (
+                      <div className="mt-1">{connectionProbeResult.error}</div>
+                    )}
+                  </div>
                 )}
 
                 {/* Pull sırasında yerel veri ezilmesini önleyen onay kutusu */}
@@ -1222,7 +1527,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </strong>
                     <strong>
                       {remoteSide
-                        ? remoteSyncInfo?.isPublicRepo
+                        ? isPersonalSyncBlocked
                           ? 'Açık depo koruması'
                           : `${remoteSide.userProfilesCount} profil / ${remoteSide.userUniqueSavedItemsCount} kayıt`
                         : 'Denetlenmedi'}
@@ -1238,7 +1543,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </strong>
                     <strong>
                       {remoteSide
-                        ? remoteSyncInfo?.isPublicRepo
+                        ? isPersonalSyncBlocked
                           ? 'Açık depo koruması'
                           : `${remoteSide.derivedProfileFilesCount} dosya / ${remoteSide.derivedProfileTotalRecordsCount} kayıt`
                         : 'Denetlenmedi'}
