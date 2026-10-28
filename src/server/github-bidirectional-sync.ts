@@ -2876,7 +2876,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          filesBlockedPublic:
+            access.effectiveIsPublicRepo && !cfg.isPublicRepo
+              ? ['data/cinetrack-data.json', 'data/profiles/*']
+              : [],
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -2895,7 +2898,7 @@ export class GitHubBidirectionalSyncManager {
         effectiveIsPublicRepo: access.effectiveIsPublicRepo,
         warning: access.warning,
       };
-      const includePersonal = !visibility.effectiveIsPublicRepo;
+      const includePersonal = !visibility.effectiveIsPublicRepo || Boolean(cfg.isPublicRepo);
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
       const remoteInspect = await this.inspectRemoteSide(
@@ -3017,7 +3020,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          filesBlockedPublic:
+            access.effectiveIsPublicRepo && !cfg.isPublicRepo
+              ? ['data/cinetrack-data.json', 'data/profiles/*']
+              : [],
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3036,7 +3042,7 @@ export class GitHubBidirectionalSyncManager {
         effectiveIsPublicRepo: access.effectiveIsPublicRepo,
         warning: access.warning,
       };
-      const includePersonal = !visibility.effectiveIsPublicRepo;
+      const includePersonal = !visibility.effectiveIsPublicRepo || Boolean(cfg.isPublicRepo);
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
       const remoteInspect = await this.inspectRemoteSide(
@@ -3527,7 +3533,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          filesBlockedPublic:
+            access.effectiveIsPublicRepo && !cfg.isPublicRepo
+              ? ['data/cinetrack-data.json', 'data/profiles/*']
+              : [],
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3546,7 +3555,7 @@ export class GitHubBidirectionalSyncManager {
         effectiveIsPublicRepo: access.effectiveIsPublicRepo,
         warning: access.warning,
       };
-      const includePersonal = !visibility.effectiveIsPublicRepo;
+      const includePersonal = !visibility.effectiveIsPublicRepo || Boolean(cfg.isPublicRepo);
       const warnings: string[] = [];
       if (visibility.warning) warnings.push(visibility.warning);
 
@@ -3740,7 +3749,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic: access.effectiveIsPublicRepo ? ['data/cinetrack-data.json', 'data/profiles/*'] : [],
+          filesBlockedPublic:
+            access.effectiveIsPublicRepo && !cfg.isPublicRepo
+              ? ['data/cinetrack-data.json', 'data/profiles/*']
+              : [],
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3765,7 +3777,7 @@ export class GitHubBidirectionalSyncManager {
         effectiveIsPublicRepo: access.effectiveIsPublicRepo,
         warning: access.warning,
       };
-      const includePersonal = !visibility.effectiveIsPublicRepo;
+      const includePersonal = !visibility.effectiveIsPublicRepo || Boolean(cfg.isPublicRepo);
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
       const remoteBeforeInspect = await this.inspectRemoteSide(

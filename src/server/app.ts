@@ -382,6 +382,19 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
+  app.post('/api/sync/test-connection', originGuard, tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const probeResult = await persistentStore.testSafeConnectionAndProbeManifest();
+      res.json(probeResult);
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        error: redactSecrets(e?.message || 'Bağlantı testi başarısız oldu.', [options.githubToken]),
+      });
+    }
+  });
+
   app.get('/api/catalog', (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {

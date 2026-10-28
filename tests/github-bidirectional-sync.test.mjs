@@ -1626,3 +1626,100 @@ test('Aşama 5.11: Başarısız dosyanın yanlışlıkla başarılı sayılmamas
   }
 });
 
+test('Aşama 5.12: Güvenli bağlantı testi ve manifest probu (testSafeConnectionAndProbeManifest, 201 oluşturma + geri okuma hash doğrulaması)', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-12-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+    await gh.installAndRun(async () => {
+      // Başlangıçta uzakta manifest yok
+      const probeRes = await store.testSafeConnectionAndProbeManifest();
+      assert.equal(probeRes.ok, true);
+      assert.equal(probeRes.step, 'manifest_verified');
+      assert.equal(probeRes.verifiedReadBack, true);
+      assert.ok(probeRes.manifestSha);
+
+      // İkinci çağrıda mevcut manifest okunur
+      const probeSecond = await store.testSafeConnectionAndProbeManifest();
+      assert.equal(probeSecond.ok, true);
+      assert.equal(probeSecond.step, 'manifest_read');
+      assert.equal(probeSecond.manifestSha, probeRes.manifestSha);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.13: Herkese açık depoda (public) kullanıcı onayı/yapılandırması ile veri senkronizasyonu ve görünürlük uyarısı', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-13-'));
+  const gh = createMockGitHubHarness({ isPrivate: false });
+  try {
+    const { store, storage } = createIsolatedSyncEnv(tmpDir, { isPublicRepo: true });
+
+    store.upsertCatalogItems([makeMovieRecord(1)]);
+    storage.saveData({
+      version: 3,
+      schemaVersion: 3,
+      engineVersion: 'v3.2.0',
+      activeProfileId: 'profile-default',
+      profiles: [{ id: 'profile-default', name: 'Profilim', items: [] }],
+      revision: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    store.upsertDerivedProfile({
+      profileId: 'profile-default',
+      algorithmVersion: '3.0.0',
+      profileFingerprint: 'fp-default',
+      items: {
+        'movie:1': { mediaKey: 'movie:1', matchScore: 95, lifecycleRing: 'ring0', calculatedAt: '2026-10-28' },
+      },
+    });
+
+    await gh.installAndRun(async () => {
+      const access = await store.verifyRemoteRepoAccess();
+      assert.equal(access.ok, true);
+      assert.equal(access.effectiveIsPublicRepo, true);
+      assert.ok(access.warning && access.warning.includes('herkese açıktır (public)'));
+
+      const syncRes = await store.syncToGitHub();
+      assert.equal(syncRes.ok, true);
+      assert.ok(syncRes.repoVisibilityWarning && syncRes.repoVisibilityWarning.includes('herkese açıktır'));
+      assert.equal(syncRes.filesBlockedPublic.length, 0, 'Kullanıcı onayı ile açık depoya kişisel veriler senkronize edilebilmeli');
+      assert.ok(syncRes.filesCommitted.some((f) => f.startsWith('data/profiles/')));
+      assert.ok(syncRes.filesCommitted.includes('data/cinetrack-data.json'));
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Aşama 5.14: Fine-grained PAT yetki hatasında (HTTP 403 Resource not accessible) açıklayıcı rehberlik ve token gizliliği', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-14-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { store } = createIsolatedSyncEnv(tmpDir);
+
+    gh.setInterceptor(({ method, jsonResponse }) => {
+      if (method === 'PUT') {
+        return jsonResponse(403, {
+          message: 'Resource not accessible by personal access token',
+          documentation_url: 'https://docs.github.com/rest/repos/contents#create-or-update-file-contents',
+        });
+      }
+      return null;
+    });
+
+    await gh.installAndRun(async () => {
+      const commitRes = await store.commitFileToGitHub('data/catalog/manifest.json', '{}', 'probe');
+      assert.equal(commitRes.ok, false);
+      assert.equal(commitRes.errorCategory, 'auth_error');
+      assert.ok(commitRes.error?.includes('Contents: Read and write'));
+      assert.ok(commitRes.error?.includes('Fine-grained PAT'));
+      assert.equal(commitRes.error?.includes(TEST_SECRET_TOKEN), false, 'Token sızdırılmamalı');
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+

@@ -636,6 +636,148 @@ export class PersistentDataStore {
     return null;
   }
 
+  /**
+   * Yerel katalog dizini ve dosyalarının (movies.json, tv.json, manifest.json) varlığını garanti eder.
+   */
+  public ensureCatalogFiles(): void {
+    if (!existsSync(this.catalogDir)) mkdirSync(this.catalogDir, { recursive: true });
+    if (!existsSync(this.moviesFile)) {
+      writeJsonFileAtomic(this.moviesFile, '{}', {
+        backupPath: `${this.moviesFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+    if (!existsSync(this.tvFile)) {
+      writeJsonFileAtomic(this.tvFile, '{}', {
+        backupPath: `${this.tvFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+    if (!existsSync(this.manifestFile)) {
+      const movies = this.readCatalog('movie', { allowEmptyOnCorrupt: true });
+      const tv = this.readCatalog('tv', { allowEmptyOnCorrupt: true });
+      const serializedMovies = stringifyDeterministic(movies);
+      const serializedTv = stringifyDeterministic(tv);
+      const combinedHash = hashContent(serializedMovies + serializedTv);
+      const manifest: CatalogManifest = {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        movieCount: Object.keys(movies).length,
+        tvCount: Object.keys(tv).length,
+        contentHash: combinedHash,
+      };
+      writeJsonFileAtomic(this.manifestFile, stringifyDeterministic(manifest), {
+        backupPath: `${this.manifestFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+  }
+
+  /**
+   * Güvenli bağlantı testi (Aşama 5):
+   * Tam senkronizasyon çalıştırmadan önce depo meta verilerini, `main` dalını ve
+   * `data/catalog/manifest.json` dosyasını test probu olarak kontrol eder.
+   */
+  public async testSafeConnectionAndProbeManifest(): Promise<{
+    ok: boolean;
+    step: 'access_check' | 'manifest_read' | 'manifest_probe_created' | 'manifest_verified';
+    access: RemoteRepoAccessCheck;
+    manifestSha?: string;
+    verifiedReadBack?: boolean;
+    error?: string;
+    errorCategory?: GitHubSyncErrorCategory;
+  }> {
+    const access = await this.verifyRemoteRepoAccess();
+    if (!access.ok) {
+      return {
+        ok: false,
+        step: 'access_check',
+        access,
+        error: access.error,
+        errorCategory: access.errorCategory,
+      };
+    }
+
+    if (!this.githubToken || !this.githubOwner || !this.githubRepo) {
+      return {
+        ok: false,
+        step: 'access_check',
+        access,
+        error: 'GitHub kimlik bilgileri eksik.',
+        errorCategory: 'config_error',
+      };
+    }
+
+    const apiUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/data/catalog/manifest.json`;
+    const baseHeaders = {
+      Authorization: `Bearer ${this.githubToken}`,
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'CineTrack-Sync-Agent',
+    };
+
+    if (!access.isEmptyRepo) {
+      try {
+        const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
+          headers: baseHeaders,
+        });
+        if (getRes.status === 200) {
+          const resJson = await getRes.json().catch(() => null);
+          return {
+            ok: true,
+            step: 'manifest_read',
+            access,
+            manifestSha: resJson?.sha,
+            verifiedReadBack: true,
+          };
+        }
+      } catch (e: any) {
+        return {
+          ok: false,
+          step: 'manifest_read',
+          access,
+          error: redactSecrets(`GitHub manifest okuma ağ hatası: ${e?.message || e}`, [this.githubToken]),
+          errorCategory: 'network_error',
+        };
+      }
+    }
+
+    this.ensureCatalogFiles();
+    const manifestContent = existsSync(this.manifestFile)
+      ? readFileSync(this.manifestFile, 'utf8')
+      : stringifyDeterministic({
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          movieCount: 0,
+          tvCount: 0,
+          contentHash: hashContent('{}{}'),
+        });
+
+    const commitRes = await this.commitFileToGitHub(
+      'data/catalog/manifest.json',
+      manifestContent,
+      'chore(catalog): initialize manifest.json [test probe] [skip ci]',
+      { isEmptyRepo: access.isEmptyRepo, branchToUse: this.githubBranch }
+    );
+
+    if (!commitRes.ok) {
+      return {
+        ok: false,
+        step: 'manifest_probe_created',
+        access,
+        error: commitRes.error,
+        errorCategory: commitRes.errorCategory,
+      };
+    }
+
+    return {
+      ok: true,
+      step: 'manifest_verified',
+      access,
+      manifestSha: commitRes.sha,
+      verifiedReadBack: Boolean(commitRes.verifiedReadBack),
+    };
+  }
+
   public upsertCatalogItems(
     items: any[],
     writeOptions: { beforeRenameHook?: (tempFilePath: string) => void } = {}
@@ -1192,9 +1334,12 @@ export class PersistentDataStore {
     if (remoteIsPublic && !this.isPublicRepo) {
       warning =
         'Yapılandırma uyarısı: Uzak GitHub deposu herkese açık (public), ancak CINETRACK_DATA_REPO_IS_PUBLIC=false tanımlanmış. Kişisel izleme listesi ve profil dosyalarının sızmasını önlemek için özel verilerin gönderimi engellendi.';
+    } else if (remoteIsPublic && this.isPublicRepo) {
+      warning =
+        'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi ve kullanıcı profili verileriniz herkese açık olarak depolanmaktadır.';
     } else if (!remoteIsPublic && this.isPublicRepo) {
       warning =
-        'Yapılandırma uyarısı: Uzak GitHub deposu özel (private), ancak CINETRACK_DATA_REPO_IS_PUBLIC=true tanımlandığı için kişisel profil dosyaları gönderilmiyor.';
+        'Yapılandırma uyarısı: Uzak GitHub deposu özel (private), ancak CINETRACK_DATA_REPO_IS_PUBLIC=true tanımlandı.';
     }
 
     const effectiveIsPublicRepo = remoteIsPublic;
@@ -1629,8 +1774,15 @@ export class PersistentDataStore {
         }
 
         const errJson = await putRes.json().catch(() => ({}));
-        const errDetail = String(errJson?.message || '');
-        const category = classifyHttpFailure(putRes.status, putRes.headers, errDetail);
+        const rawErrDetail = String(errJson?.message || '');
+        const category = classifyHttpFailure(putRes.status, putRes.headers, rawErrDetail);
+        let errDetail = rawErrDetail;
+        if (
+          putRes.status === 403 &&
+          rawErrDetail.toLowerCase().includes('resource not accessible by personal access token')
+        ) {
+          errDetail += ` (Kişisel Erişim Anahtarının (Fine-grained PAT) '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' iznine sahip olduğunu doğrulayın)`;
+        }
         return {
           ok: false,
           error: redactSecrets(
@@ -1671,6 +1823,7 @@ export class PersistentDataStore {
     options: {
       forceAll?: boolean;
       verifiedRemoteHashes?: Record<string, string | null>;
+      allowPersonalDataInPublicRepo?: boolean;
     } = {}
   ): Promise<SyncResult> {
     const result: SyncResult = {
@@ -1701,10 +1854,11 @@ export class PersistentDataStore {
 
     const plannedFiles: PlannedSyncItem[] = [];
 
+    // Manifest dosyasını prob olarak ilk sıraya koy
     for (const [relPath, filePath] of [
+      ['data/catalog/manifest.json', this.manifestFile],
       ['data/catalog/movies.json', this.moviesFile],
       ['data/catalog/tv.json', this.tvFile],
-      ['data/catalog/manifest.json', this.manifestFile],
     ] as const) {
       if (existsSync(filePath)) {
         plannedFiles.push({
@@ -1738,7 +1892,12 @@ export class PersistentDataStore {
       return result;
     }
 
-    if (access.effectiveIsPublicRepo) {
+    const allowPersonalSync =
+      !access.effectiveIsPublicRepo ||
+      Boolean(this.isPublicRepo) ||
+      Boolean(options.allowPersonalDataInPublicRepo);
+
+    if (access.effectiveIsPublicRepo && !allowPersonalSync) {
       const blockedMsg =
         'data/profiles/* (Açık depo koruması: kişisel izleme listesi ve profil verileri gönderilmedi)';
       result.filesBlockedPublic.push(blockedMsg);
