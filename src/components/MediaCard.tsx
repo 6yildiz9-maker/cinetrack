@@ -177,7 +177,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
               loading={_eager ? 'eager' : 'lazy'}
               decoding="async"
               referrerPolicy="no-referrer"
-              {...(_eager ? { fetchPriority: 'high', fetchpriority: 'high' } as any : {})}
+              fetchPriority={_eager ? 'high' : undefined}
               onError={() => setPosterFailed(true)}
             />
           )}
