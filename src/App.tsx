@@ -2821,6 +2821,8 @@ export function App() {
         activeProfileName={profileName}
         preferences={preferences}
         savedItems={savedItems}
+        favoriteActors={favoriteActors}
+        dislikedItems={dislikedItems}
         genresMap={genresMap}
         tasteEntries={tasteMap.entries}
         syncStatus={syncStatus}

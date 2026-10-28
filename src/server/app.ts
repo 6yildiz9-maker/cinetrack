@@ -1,6 +1,16 @@
+import crypto from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import {
+  dedupeItems,
+  normalizeFavoriteActors,
+  normalizePreferences,
+  normalizeSavedItem,
+  type DataDocument,
+  type Profile,
+  type SavedItem,
+} from '../core/cinetrack-core.ts';
 import { createDataStorage, countTotalItems, type StorageOptions } from './storage.ts';
 import {
   createOriginMiddleware,
@@ -56,6 +66,93 @@ function isBulkDeleteConfirmed(req: Request): boolean {
   if (headerVal === '1' || headerVal === 'true') return true;
   if (req.body && typeof req.body === 'object' && req.body.confirmBulkDelete === true) return true;
   return false;
+}
+
+/**
+ * Merges an incoming client `profileSnapshot` with persistent server storage non-destructively.
+ * Prevents partial/unhydrated client snapshots (e.g. `favoriteActors: []` or empty transient profile)
+ * from wiping server-side profile fields during backup export.
+ */
+export function resolveExportDocument(storedDoc: DataDocument, reqBody: any): DataDocument {
+  if (!reqBody?.profileSnapshot || typeof reqBody.profileSnapshot !== 'object') {
+    return storedDoc;
+  }
+
+  const snap = reqBody.profileSnapshot;
+  const snapId =
+    typeof snap.id === 'string' && snap.id.trim()
+      ? snap.id.trim()
+      : storedDoc.activeProfileId;
+
+  const snapItemsRaw = Array.isArray(snap.items) ? snap.items : [];
+  const snapItems = dedupeItems(
+    snapItemsRaw.map((it: any) => normalizeSavedItem(it)).filter(Boolean) as SavedItem[]
+  );
+  const snapPrefs = normalizePreferences(snap.preferences || {});
+  const snapFavActors = normalizeFavoriteActors(snap.favoriteActors || []);
+
+  const existing = storedDoc.profiles.find((p) => p.id === snapId);
+  if (!existing) {
+    const serverHasData = storedDoc.profiles.some(
+      (p) => (p.items?.length || 0) > 0 || (p.preferences?.disliked?.length || 0) > 0
+    );
+    if (snapItems.length === 0 && snapPrefs.disliked.length === 0 && serverHasData) {
+      return storedDoc;
+    }
+    const createdProfile: Profile = {
+      id: snapId,
+      name: typeof snap.name === 'string' && snap.name.trim() ? snap.name.trim() : 'Profilim',
+      createdAt: typeof snap.createdAt === 'string' ? snap.createdAt : '',
+      preferences: snapPrefs,
+      items: snapItems,
+      favoriteActors: snapFavActors,
+      isDemo: Boolean(snap.isDemo),
+    };
+    return {
+      ...storedDoc,
+      activeProfileId: snapId,
+      profiles: [...storedDoc.profiles, createdProfile],
+    };
+  }
+
+  const existingItems = Array.isArray(existing.items) ? existing.items : [];
+  const mergedItems =
+    snapItems.length >= existingItems.length
+      ? snapItems
+      : snapItems.length === 0
+        ? existingItems
+        : dedupeItems([...existingItems, ...snapItems]);
+
+  const existingFavs = normalizeFavoriteActors(existing.favoriteActors || []);
+  const mergedFavActors =
+    snapFavActors.length > 0
+      ? snapFavActors.length >= existingFavs.length
+        ? snapFavActors
+        : normalizeFavoriteActors([...existingFavs, ...snapFavActors])
+      : existingFavs;
+
+  const existingPrefs = normalizePreferences(existing.preferences || {});
+  const mergedPreferences = {
+    ...existingPrefs,
+    ...snapPrefs,
+    disliked: snapPrefs.disliked.length > 0 ? snapPrefs.disliked : existingPrefs.disliked,
+  };
+
+  const mergedProfile: Profile = {
+    ...existing,
+    ...snap,
+    id: snapId,
+    name: typeof snap.name === 'string' && snap.name.trim() ? snap.name.trim() : existing.name,
+    items: mergedItems,
+    favoriteActors: mergedFavActors,
+    preferences: mergedPreferences,
+  };
+
+  return {
+    ...storedDoc,
+    activeProfileId: snapId,
+    profiles: storedDoc.profiles.map((p) => (p.id === snapId ? mergedProfile : p)),
+  };
 }
 
 export function createCineTrackApp(options: CineTrackAppOptions): {
@@ -123,6 +220,11 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       return;
     }
     next(err);
+  });
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true });
   });
 
   app.get('/api/tmdb-status', tmdbProxy.handleStatus);
@@ -587,28 +689,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const storedDoc = storage.readData();
-      let exportDoc = storedDoc;
-
-      if (req.body?.profileSnapshot && typeof req.body.profileSnapshot === 'object') {
-        const snap = req.body.profileSnapshot;
-        const snapId =
-          typeof snap.id === 'string' && snap.id.trim()
-            ? snap.id.trim()
-            : storedDoc.activeProfileId;
-        const existing = storedDoc.profiles.find((p) => p.id === snapId);
-        if (
-          !existing ||
-          (Array.isArray(snap.items) && snap.items.length >= (existing.items?.length || 0))
-        ) {
-          exportDoc = {
-            ...storedDoc,
-            activeProfileId: snapId,
-            profiles: existing
-              ? storedDoc.profiles.map((p) => (p.id === snapId ? { ...existing, ...snap } : p))
-              : [...storedDoc.profiles, snap],
-          };
-        }
-      }
+      const exportDoc = resolveExportDocument(storedDoc, req.body);
 
       const profileId =
         typeof req.body?.profileId === 'string' && req.body.profileId.trim()
@@ -656,6 +737,76 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
+  app.post('/api/backup/profile-export/stream', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const storedDoc = storage.readData();
+      const exportDoc = resolveExportDocument(storedDoc, req.body);
+      const profileId =
+        typeof req.body?.profileId === 'string' && req.body.profileId.trim()
+          ? req.body.profileId.trim()
+          : exportDoc.activeProfileId;
+      const dislikedItemsHint = Array.isArray(req.body?.dislikedItemsHint)
+        ? req.body.dislikedItemsHint
+        : undefined;
+      const genresMap =
+        req.body?.genresMap && typeof req.body.genresMap === 'object'
+          ? req.body.genresMap
+          : undefined;
+
+      const report = await executeProfileBackupExport({
+        dataDir: options.dataDir,
+        document: exportDoc,
+        profileId,
+        includeJson: false,
+        includeXlsx: true,
+        uploadToGithub: false,
+        dislikedItemsHint,
+        genresMap,
+        persistentStore,
+        tmdbApiKey: options.tmdbApiKey,
+        githubTokenForRedaction: options.githubToken,
+      });
+
+      if (
+        !report.excelBackup.ok ||
+        !report.excelBackup.absolutePath ||
+        !existsSync(report.excelBackup.absolutePath)
+      ) {
+        res.status(500).json({
+          ok: false,
+          status_message:
+            report.excelBackup.error || 'Excel (.xlsx) ikili akışı oluşturulamadı.',
+        });
+        return;
+      }
+
+      const buf = readFileSync(report.excelBackup.absolutePath);
+      const fileName = report.excelBackup.fileName || 'CineTrack_Profile.xlsx';
+      const sha256 =
+        report.excelBackup.sha256 || crypto.createHash('sha256').update(buf).digest('hex');
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Length', String(buf.length));
+      res.setHeader('X-CineTrack-SHA256', sha256);
+      res.setHeader('X-CineTrack-Filename', fileName);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(buf);
+    } catch (err: any) {
+      res.status(500).json({
+        ok: false,
+        status_message: redactSecrets(
+          err?.message || 'Excel (.xlsx) ikili akışı dışa aktarılamadı.',
+          [options.githubToken, options.tmdbApiKey]
+        ),
+      });
+    }
+  });
+
   app.get('/api/backup/exports/:fileName', tokenGuard, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const rawName = String(req.params.fileName || '').trim();
@@ -671,6 +822,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
 
     const buf = readFileSync(fullPath);
+    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
     if (rawName.endsWith('.xlsx')) {
       res.setHeader(
         'Content-Type',
@@ -681,7 +833,20 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
     res.setHeader('Content-Disposition', `attachment; filename="${rawName}"`);
     res.setHeader('Content-Length', String(buf.length));
+    res.setHeader('X-CineTrack-SHA256', sha256);
+    res.setHeader('X-CineTrack-Filename', rawName);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(buf);
+  });
+
+  // Unmatched /api/* routes must always return JSON 404 and never fall through to SPA index.html
+  app.use('/api', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(404).json({
+      ok: false,
+      code: 'api_not_found',
+      status_message: 'API uç noktası bulunamadı.',
+    });
   });
 
   return { app, storage, tmdbProxy, persistentStore };

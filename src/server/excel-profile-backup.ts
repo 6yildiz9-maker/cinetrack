@@ -107,6 +107,45 @@ export interface ResolvedPosterAsset {
   fromCache: boolean;
 }
 
+export interface SourceCompletenessDiagnostics {
+  rawProfileItemsCount: number;
+  normalizedSavedItemsCount: number;
+  rawDislikedCount: number;
+  uniqueDislikedCount: number;
+  sourceCountsByList: {
+    completed: number;
+    watchlist: number;
+    watching: number;
+    disliked: number;
+  };
+  sourceMovieCount: number;
+  sourceTvCount: number;
+  recordsSentToExcelCount: number;
+  writtenRowsBySheet: Record<ContentSheetName, number>;
+  itemsWithPosterUrlCount: number;
+  uniquePosterUrlsCount: number;
+  downloadedOrCachedPostersCount: number;
+  embeddedPostersCount: number;
+  placeholderPostersCount: number;
+  skippedOrFailedPostersCount: number;
+}
+
+export interface XlsxPackageInspection {
+  validZip: boolean;
+  validOpenXmlStructure: boolean;
+  sizeBytes: number;
+  sha256: string;
+  sheetNames: string[];
+  worksheetDataRowCounts: Record<string, number>;
+  mediaFilesCount: number;
+  mediaTotalCompressedBytes: number;
+  mediaTotalUncompressedBytes: number;
+  drawingFilesCount: number;
+  totalTwoCellAnchors: number;
+  totalBlipEmbeds: number;
+  totalDrawingRelationships: number;
+}
+
 export interface ProfileBackupDataset {
   profileId: string;
   profileName: string;
@@ -114,6 +153,10 @@ export interface ProfileBackupDataset {
   engineVersion: string;
   exportedAtIso: string;
   exportedAtFormatted: string;
+  rawProfileItemsCount: number;
+  normalizedSavedItemsCount: number;
+  rawDislikedCount: number;
+  uniqueDislikedCount: number;
   favoriteActorsCount: number;
   customItemsCount: number;
   dualStateKeys: string[];
@@ -140,6 +183,8 @@ export interface ExcelWorkbookBuildResult {
   missingPosterSourceCount: number;
   posterErrorsCount: number;
   posterErrors: PosterFetchFailure[];
+  sourceDiagnostics: SourceCompletenessDiagnostics;
+  packageInspection: XlsxPackageInspection;
 }
 
 export interface SingleFileExportOutcome {
@@ -187,6 +232,8 @@ export interface ProfileBackupExecutionReport {
     posterErrorsCount?: number;
     posterErrors?: PosterFetchFailure[];
     dualStateKeys?: string[];
+    sourceDiagnostics?: SourceCompletenessDiagnostics;
+    packageInspection?: XlsxPackageInspection;
   };
   githubUpload: GitHubExcelUploadOutcome;
 }
@@ -820,16 +867,28 @@ export async function buildProfileBackupDataset(
   // Detect any item simultaneously present in `items` and `preferences.disliked`
   const dualStateKeys = uniqueDislikedNewestFirst.filter((key) => savedByKey.has(key));
 
-  // Fetch missing disliked metadata via TMDB if available
+  // Fetch missing or incomplete disliked metadata via TMDB if available
   const fetchedDislikedMap = new Map<string, Record<string, any>>();
   const newlyFetchedForCatalog: Array<Record<string, any>> = [];
   if (options.fetchMissingTmdbItem) {
+    const hasRichGenres = (rec: Record<string, any> | undefined): boolean => {
+      if (!rec) return false;
+      if (Array.isArray(rec.genre_ids) && rec.genre_ids.length > 0) return true;
+      if (Array.isArray(rec.genres) && rec.genres.length > 0) return true;
+      return false;
+    };
+    const hasPoster = (rec: Record<string, any> | undefined): boolean =>
+      Boolean(rec && (rec.poster_path || rec.poster_url));
+
     const keysToFetch = uniqueDislikedNewestFirst.filter((key) => {
-      if (savedByKey.has(key) || hintByKey.has(key)) return false;
+      const saved = savedByKey.get(key);
+      if (saved && hasPoster(saved) && hasRichGenres(saved)) return false;
+      const hint = hintByKey.get(key);
+      if (hint && hasPoster(hint) && hasRichGenres(hint)) return false;
       const parsed = parseMediaKey(key);
       if (!parsed || !/^\d+$/.test(String(parsed.id))) return false;
       const cat = parsed.type === 'tv' ? tvCatalog[key] : moviesCatalog[key];
-      return !cat;
+      return !cat || !hasPoster(cat) || !hasRichGenres(cat);
     });
 
     await runWithConcurrency(keysToFetch, 8, async (key) => {
@@ -994,6 +1053,10 @@ export async function buildProfileBackupDataset(
 
   const customItemsCount = uniqueStatRows.filter((r) => r.custom).length;
 
+  const rawDislikedCount = Array.isArray(options.profile.preferences?.disliked)
+    ? options.profile.preferences.disliked.length
+    : 0;
+
   return {
     profileId: String(options.profile.id || 'profile-default'),
     profileName: String(options.profile.name || 'Profilim'),
@@ -1001,6 +1064,10 @@ export async function buildProfileBackupDataset(
     engineVersion: options.engineVersion ?? ENGINE_VERSION,
     exportedAtIso,
     exportedAtFormatted,
+    rawProfileItemsCount: rawItemsClone.length,
+    normalizedSavedItemsCount: normalizedItems.length,
+    rawDislikedCount,
+    uniqueDislikedCount: uniqueDislikedNewestFirst.length,
     favoriteActorsCount: favActors.length,
     customItemsCount,
     dualStateKeys,
@@ -1014,6 +1081,196 @@ export async function buildProfileBackupDataset(
     ratedItemsCount,
     decadeDistribution,
     topGenres,
+  };
+}
+
+/**
+ * Inspects the raw ZIP Central Directory and OpenXML entries of a `.xlsx` binary buffer
+ * without trusting file extensions or high-level metadata.
+ */
+export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection {
+  const sha256 = Buffer.isBuffer(buffer)
+    ? crypto.createHash('sha256').update(buffer).digest('hex')
+    : '';
+  const emptyResult: XlsxPackageInspection = {
+    validZip: false,
+    validOpenXmlStructure: false,
+    sizeBytes: Buffer.isBuffer(buffer) ? buffer.length : 0,
+    sha256,
+    sheetNames: [],
+    worksheetDataRowCounts: {},
+    mediaFilesCount: 0,
+    mediaTotalCompressedBytes: 0,
+    mediaTotalUncompressedBytes: 0,
+    drawingFilesCount: 0,
+    totalTwoCellAnchors: 0,
+    totalBlipEmbeds: 0,
+    totalDrawingRelationships: 0,
+  };
+
+  if (
+    !Buffer.isBuffer(buffer) ||
+    buffer.length < 22 ||
+    buffer[0] !== 0x50 ||
+    buffer[1] !== 0x4b ||
+    buffer[2] !== 0x03 ||
+    buffer[3] !== 0x04
+  ) {
+    return emptyResult;
+  }
+
+  let eocdOffset = -1;
+  const minSearchOffset = Math.max(0, buffer.length - 65557);
+  for (let i = buffer.length - 22; i >= minSearchOffset; i -= 1) {
+    if (buffer.readUInt32LE(i) === 0x06054b50) {
+      eocdOffset = i;
+      break;
+    }
+  }
+  if (eocdOffset < 0) {
+    return emptyResult;
+  }
+
+  const cdSize = buffer.readUInt32LE(eocdOffset + 12);
+  const cdOffset = buffer.readUInt32LE(eocdOffset + 16);
+  if (cdOffset + cdSize > buffer.length) {
+    return emptyResult;
+  }
+
+  interface ZipEntryMeta {
+    name: string;
+    compMethod: number;
+    compSize: number;
+    uncompSize: number;
+    localHeaderOffset: number;
+  }
+
+  const entries = new Map<string, ZipEntryMeta>();
+  let ptr = cdOffset;
+  while (ptr + 46 <= cdOffset + cdSize) {
+    if (buffer.readUInt32LE(ptr) !== 0x02014b50) break;
+    const compMethod = buffer.readUInt16LE(ptr + 10);
+    const compSize = buffer.readUInt32LE(ptr + 20);
+    const uncompSize = buffer.readUInt32LE(ptr + 24);
+    const nameLen = buffer.readUInt16LE(ptr + 28);
+    const extraLen = buffer.readUInt16LE(ptr + 30);
+    const commentLen = buffer.readUInt16LE(ptr + 32);
+    const localHeaderOffset = buffer.readUInt32LE(ptr + 42);
+    const name = buffer.subarray(ptr + 46, ptr + 46 + nameLen).toString('utf8');
+    entries.set(name, { name, compMethod, compSize, uncompSize, localHeaderOffset });
+    ptr += 46 + nameLen + extraLen + commentLen;
+  }
+
+  const extractUtf8 = (entry: ZipEntryMeta | undefined): string | null => {
+    if (!entry) return null;
+    try {
+      const lh = entry.localHeaderOffset;
+      if (lh + 30 > buffer.length || buffer.readUInt32LE(lh) !== 0x04034b50) return null;
+      const nLen = buffer.readUInt16LE(lh + 26);
+      const exLen = buffer.readUInt16LE(lh + 28);
+      const start = lh + 30 + nLen + exLen;
+      const raw = buffer.subarray(start, start + entry.compSize);
+      const inflated = entry.compMethod === 8 ? zlib.inflateRawSync(raw) : raw;
+      return inflated.toString('utf8');
+    } catch {
+      return null;
+    }
+  };
+
+  const hasContentTypes = entries.has('[Content_Types].xml');
+  const workbookXml = extractUtf8(entries.get('xl/workbook.xml'));
+  const workbookRelsXml = extractUtf8(entries.get('xl/_rels/workbook.xml.rels'));
+
+  const relTargetById = new Map<string, string>();
+  if (workbookRelsXml) {
+    const relTagRe = /<Relationship\b[^>]*>/g;
+    let relMatch: RegExpExecArray | null;
+    while ((relMatch = relTagRe.exec(workbookRelsXml)) !== null) {
+      const tag = relMatch[0];
+      const idM = /\bId="([^"]+)"/.exec(tag);
+      const targetM = /\bTarget="([^"]+)"/.exec(tag);
+      if (idM && targetM) {
+        const normalizedTarget = targetM[1].replace(/^\/+/, '');
+        const fullTarget = normalizedTarget.startsWith('xl/')
+          ? normalizedTarget
+          : `xl/${normalizedTarget}`;
+        relTargetById.set(idM[1], fullTarget);
+      }
+    }
+  }
+
+  const sheetNames: string[] = [];
+  const worksheetDataRowCounts: Record<string, number> = {};
+  if (workbookXml) {
+    const sheetTagRe = /<sheet\b[^>]*>/g;
+    let sMatch: RegExpExecArray | null;
+    while ((sMatch = sheetTagRe.exec(workbookXml)) !== null) {
+      const tag = sMatch[0];
+      const nameM = /\bname="([^"]+)"/.exec(tag);
+      const ridM = /\br:id="([^"]+)"/.exec(tag);
+      if (!nameM) continue;
+      const sheetName = nameM[1];
+      sheetNames.push(sheetName);
+      const wsPath = ridM ? relTargetById.get(ridM[1]) : undefined;
+      const wsXml = wsPath ? extractUtf8(entries.get(wsPath)) : null;
+      if (wsXml) {
+        let dataRows = 0;
+        if (sheetName !== 'Özet') {
+          const rowRe = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
+          let rMatch: RegExpExecArray | null;
+          while ((rMatch = rowRe.exec(wsXml)) !== null) {
+            if (Number(rMatch[1]) >= 5) dataRows += 1;
+          }
+        }
+        worksheetDataRowCounts[sheetName] = dataRows;
+      }
+    }
+  }
+
+  let mediaFilesCount = 0;
+  let mediaTotalCompressedBytes = 0;
+  let mediaTotalUncompressedBytes = 0;
+  let drawingFilesCount = 0;
+  let totalTwoCellAnchors = 0;
+  let totalBlipEmbeds = 0;
+  let totalDrawingRelationships = 0;
+
+  for (const entry of entries.values()) {
+    if (entry.name.startsWith('xl/media/') && entry.name.length > 'xl/media/'.length) {
+      mediaFilesCount += 1;
+      mediaTotalCompressedBytes += entry.compSize;
+      mediaTotalUncompressedBytes += entry.uncompSize;
+    } else if (/^xl\/drawings\/drawing\d+\.xml$/.test(entry.name)) {
+      drawingFilesCount += 1;
+      const dXml = extractUtf8(entry) || '';
+      totalTwoCellAnchors += (dXml.match(/<xdr:twoCellAnchor\b/g) || []).length;
+      totalBlipEmbeds += (dXml.match(/\br:embed="/g) || []).length;
+    } else if (/^xl\/drawings\/_rels\/drawing\d+\.xml\.rels$/.test(entry.name)) {
+      const relXml = extractUtf8(entry) || '';
+      totalDrawingRelationships += (relXml.match(/<Relationship\b/g) || []).length;
+    }
+  }
+
+  const validOpenXmlStructure =
+    hasContentTypes &&
+    Boolean(workbookXml) &&
+    sheetNames.length === EXCEL_SHEET_NAMES.length &&
+    EXCEL_SHEET_NAMES.every((expected, idx) => sheetNames[idx] === expected);
+
+  return {
+    validZip: true,
+    validOpenXmlStructure,
+    sizeBytes: buffer.length,
+    sha256,
+    sheetNames,
+    worksheetDataRowCounts,
+    mediaFilesCount,
+    mediaTotalCompressedBytes,
+    mediaTotalUncompressedBytes,
+    drawingFilesCount,
+    totalTwoCellAnchors,
+    totalBlipEmbeds,
+    totalDrawingRelationships,
   };
 }
 
@@ -1220,6 +1477,13 @@ export async function generateProfileExcelBuffer(
     'İlgilenmiyorum',
   ];
 
+  const writtenRowsBySheet: Record<ContentSheetName, number> = {
+    İzlenen: 0,
+    İzlenecek: 0,
+    İzleniyor: 0,
+    İlgilenmiyorum: 0,
+  };
+
   for (const sheetName of contentSheetOrder) {
     const theme = CONTENT_SHEET_THEMES[sheetName];
     const ws = workbook.addWorksheet(sheetName, {
@@ -1237,11 +1501,44 @@ export async function generateProfileExcelBuffer(
       workbookImageIdByUrl,
       placeholderImageId
     );
+    writtenRowsBySheet[sheetName] = dataset.sheets[sheetName].length;
   }
 
   const arrayLike = await workbook.xlsx.writeBuffer();
   const buffer = Buffer.isBuffer(arrayLike) ? arrayLike : Buffer.from(arrayLike);
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+  const packageInspection = inspectXlsxPackageBuffer(buffer);
+  if (!packageInspection.validZip || !packageInspection.validOpenXmlStructure) {
+    throw new Error('Üretilen XLSX paketi geçerli OpenXML ZIP doğrulamasından geçemedi.');
+  }
+
+  let downloadedOrCachedPostersCount = 0;
+  for (const outcome of urlFetchOutcome.values()) {
+    if (outcome.ok) downloadedOrCachedPostersCount += 1;
+  }
+
+  const sourceDiagnostics: SourceCompletenessDiagnostics = {
+    rawProfileItemsCount: dataset.rawProfileItemsCount,
+    normalizedSavedItemsCount: dataset.normalizedSavedItemsCount,
+    rawDislikedCount: dataset.rawDislikedCount,
+    uniqueDislikedCount: dataset.uniqueDislikedCount,
+    sourceCountsByList: {
+      completed: dataset.sheetCounts.İzlenen.total,
+      watchlist: dataset.sheetCounts.İzlenecek.total,
+      watching: dataset.sheetCounts.İzleniyor.total,
+      disliked: dataset.sheetCounts.İlgilenmiyorum.total,
+    },
+    sourceMovieCount: dataset.totalMovieCount,
+    sourceTvCount: dataset.totalTvCount,
+    recordsSentToExcelCount: allSheetRows.length,
+    writtenRowsBySheet,
+    itemsWithPosterUrlCount: allSheetRows.length - missingPosterSourceCount,
+    uniquePosterUrlsCount: uniqueUrls.length,
+    downloadedOrCachedPostersCount,
+    embeddedPostersCount,
+    placeholderPostersCount,
+    skippedOrFailedPostersCount: missingPosterSourceCount + posterErrors.length,
+  };
 
   return {
     buffer,
@@ -1254,6 +1551,8 @@ export async function generateProfileExcelBuffer(
     missingPosterSourceCount,
     posterErrorsCount: posterErrors.length,
     posterErrors,
+    sourceDiagnostics,
+    packageInspection,
   };
 }
 
@@ -2082,6 +2381,8 @@ export async function executeProfileBackupExport(
       excelBackup.posterErrorsCount = built.posterErrorsCount;
       excelBackup.posterErrors = built.posterErrors;
       excelBackup.dualStateKeys = built.dataset.dualStateKeys;
+      excelBackup.sourceDiagnostics = built.sourceDiagnostics;
+      excelBackup.packageInspection = built.packageInspection;
     } catch (err: any) {
       excelBackup.ok = false;
       excelBackup.error = redactSecrets(

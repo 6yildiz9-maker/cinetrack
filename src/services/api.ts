@@ -855,6 +855,8 @@ export interface ProfileBackupExportReportClient {
     posterErrorsCount?: number;
     posterErrors?: Array<{ mediaKey: string; title: string; posterUrl: string; reason: string }>;
     dualStateKeys?: string[];
+    sourceDiagnostics?: Record<string, any>;
+    packageInspection?: Record<string, any>;
   };
   githubUpload: {
     attempted: boolean;
@@ -875,6 +877,7 @@ export interface ProfileBackupExportReportClient {
 export async function createProfileBackupExport(params: {
   profileId: string;
   profileSnapshot?: any;
+  dislikedItemsHint?: any[];
   genresMap?: Record<number, string>;
   includeJson?: boolean;
   includeXlsx?: boolean;
@@ -909,4 +912,264 @@ export async function createProfileBackupExport(params: {
     };
   }
 }
+
+export interface XlsxBinaryValidationResult {
+  ok: boolean;
+  sizeBytes: number;
+  reason?: string;
+}
+
+/**
+ * Validates that downloaded bytes represent a genuine OpenXML ZIP (.xlsx) binary
+ * rather than an HTML fallback page (~10 KB index.html / auth gate), JSON error, or `[object Object]`.
+ */
+export function validateDownloadedXlsxBytes(
+  bytes: ArrayBuffer | Uint8Array,
+  options?: {
+    contentType?: string | null;
+    expectedSizeBytes?: number;
+    expectedSha256?: string;
+    computedSha256?: string | null;
+  }
+): XlsxBinaryValidationResult {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const ct = String(options?.contentType || '').toLowerCase();
+
+  if (ct.includes('text/html') || ct.includes('application/json') || ct.includes('text/plain')) {
+    return {
+      ok: false,
+      sizeBytes: u8.byteLength,
+      reason: `Sunucu ikili Excel (.xlsx) dosyası yerine '${options?.contentType}' yanıtı döndürdü.`,
+    };
+  }
+
+  if (u8.byteLength < 100) {
+    return {
+      ok: false,
+      sizeBytes: u8.byteLength,
+      reason: `İndirilen dosya çok küçük (${u8.byteLength} bayt); geçerli bir .xlsx arşivi değil.`,
+    };
+  }
+
+  // Must start with ZIP Local File Header signature PK\x03\x04 (0x50 0x4b 0x03 0x04)
+  if (u8[0] !== 0x50 || u8[1] !== 0x4b || u8[2] !== 0x03 || u8[3] !== 0x04) {
+    let preview = '';
+    try {
+      preview = new TextDecoder('utf-8').decode(u8.subarray(0, 64)).trim();
+    } catch {
+      preview = '';
+    }
+    if (/^<!doctype\s+html|^<html/i.test(preview)) {
+      return {
+        ok: false,
+        sizeBytes: u8.byteLength,
+        reason: `İndirme yanıtı ikili Excel (.xlsx) yerine HTML sayfası döndürdü (${u8.byteLength} bayt).`,
+      };
+    }
+    if (preview.startsWith('{') || preview.startsWith('[')) {
+      return {
+        ok: false,
+        sizeBytes: u8.byteLength,
+        reason: `İndirme yanıtı ikili Excel (.xlsx) yerine JSON/metin verisi döndürdü (${u8.byteLength} bayt).`,
+      };
+    }
+    return {
+      ok: false,
+      sizeBytes: u8.byteLength,
+      reason: `İndirilen veri geçerli bir ZIP/XLSX imzasına (PK\\x03\\x04) sahip değil (${u8.byteLength} bayt).`,
+    };
+  }
+
+  if (
+    typeof options?.expectedSizeBytes === 'number' &&
+    options.expectedSizeBytes > 0 &&
+    u8.byteLength !== options.expectedSizeBytes
+  ) {
+    return {
+      ok: false,
+      sizeBytes: u8.byteLength,
+      reason: `İndirilen boyut (${u8.byteLength} bayt) üretilen Excel boyutuyla (${options.expectedSizeBytes} bayt) eşleşmiyor.`,
+    };
+  }
+
+  if (
+    options?.expectedSha256 &&
+    options?.computedSha256 &&
+    options.expectedSha256.trim().toLowerCase() !== options.computedSha256.trim().toLowerCase()
+  ) {
+    return {
+      ok: false,
+      sizeBytes: u8.byteLength,
+      reason: 'İndirilen dosyanın SHA-256 özeti sunucuda üretilen Excel dosyasıyla eşleşmiyor.',
+    };
+  }
+
+  return { ok: true, sizeBytes: u8.byteLength };
+}
+
+export async function computeSha256HexBrowser(buffer: ArrayBuffer): Promise<string | null> {
+  try {
+    if (!globalThis.crypto?.subtle?.digest) return null;
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
+    const bytes = new Uint8Array(digest);
+    let hex = '';
+    for (let i = 0; i < bytes.length; i += 1) {
+      hex += bytes[i].toString(16).padStart(2, '0');
+    }
+    return hex;
+  } catch {
+    return null;
+  }
+}
+
+export interface VerifiedBackupBlobDownload {
+  blob: Blob;
+  sizeBytes: number;
+  sha256: string | null;
+  fileName: string;
+  usedStreamFallback: boolean;
+}
+
+/**
+ * Downloads a generated `.xlsx` or `.json` backup via authenticated `fetch()` -> `ArrayBuffer`,
+ * verifies binary signature, byte size, and SHA-256, and falls back to single-request
+ * `POST /api/backup/profile-export/stream` if ephemeral replica storage returns 404/HTML.
+ */
+export async function downloadVerifiedBackupBinary(params: {
+  downloadUrl: string;
+  fileName: string;
+  kind: 'xlsx' | 'json';
+  expectedSizeBytes?: number;
+  expectedSha256?: string;
+  fallbackStreamPayload?: {
+    profileId: string;
+    profileSnapshot?: any;
+    dislikedItemsHint?: any[];
+    genresMap?: Record<number, string>;
+  };
+  customFetch?: typeof fetch;
+}): Promise<VerifiedBackupBlobDownload> {
+  const fetcher = params.customFetch || globalThis.fetch.bind(globalThis);
+  const acceptHeader =
+    params.kind === 'xlsx'
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream'
+      : 'application/json';
+
+  let res = await fetcher(params.downloadUrl, {
+    method: 'GET',
+    cache: 'no-store',
+    credentials: 'same-origin',
+    headers: { Accept: acceptHeader },
+  });
+
+  let effectiveExpectedSize = params.expectedSizeBytes;
+  let effectiveExpectedSha = params.expectedSha256;
+  let effectiveFileName = params.fileName;
+  let usedStreamFallback = false;
+
+  const initialContentType = String(res.headers.get('content-type') || '').toLowerCase();
+  if (
+    params.kind === 'xlsx' &&
+    params.fallbackStreamPayload &&
+    (res.status === 404 || initialContentType.includes('text/html'))
+  ) {
+    res = await fetcher('/api/backup/profile-export/stream', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: acceptHeader,
+      },
+      body: JSON.stringify(params.fallbackStreamPayload),
+    });
+    usedStreamFallback = true;
+    const headerLen = Number(res.headers.get('content-length') || 0);
+    const headerSha = res.headers.get('x-cinetrack-sha256') || undefined;
+    const headerName = res.headers.get('x-cinetrack-filename') || undefined;
+    effectiveExpectedSize = headerLen > 0 ? headerLen : undefined;
+    effectiveExpectedSha = headerSha;
+    if (headerName) effectiveFileName = headerName;
+  }
+
+  if (!res.ok) {
+    let errDetail = `HTTP ${res.status}`;
+    try {
+      const errJson = await res.json();
+      if (errJson?.status_message) errDetail = errJson.status_message;
+    } catch {
+      // ignore non-json error body
+    }
+    throw new Error(`Yedek dosyası indirilemedi (${errDetail}).`);
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const computedSha256 = await computeSha256HexBrowser(arrayBuffer);
+  const responseContentType = res.headers.get('content-type');
+  const headerSha = res.headers.get('x-cinetrack-sha256') || effectiveExpectedSha;
+
+  if (params.kind === 'xlsx') {
+    const check = validateDownloadedXlsxBytes(arrayBuffer, {
+      contentType: responseContentType,
+      expectedSizeBytes: effectiveExpectedSize,
+      expectedSha256: headerSha,
+      computedSha256,
+    });
+    if (!check.ok) {
+      throw new Error(check.reason || 'İndirilen Excel (.xlsx) dosyası doğrulamadan geçemedi.');
+    }
+    const blob = new Blob([arrayBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    return {
+      blob,
+      sizeBytes: arrayBuffer.byteLength,
+      sha256: computedSha256 || headerSha || null,
+      fileName: effectiveFileName,
+      usedStreamFallback,
+    };
+  }
+
+  // JSON verification
+  const ctLower = String(responseContentType || '').toLowerCase();
+  if (ctLower.includes('text/html')) {
+    throw new Error('JSON yedeği yerine HTML yanıtı döndürüldü.');
+  }
+  const text = new TextDecoder('utf-8').decode(arrayBuffer);
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('İndirilen JSON yedeği geçerli bir JSON belgesi değil.');
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('İndirilen JSON yedeği boş veya geçersiz.');
+  }
+  if (
+    typeof effectiveExpectedSize === 'number' &&
+    effectiveExpectedSize > 0 &&
+    arrayBuffer.byteLength !== effectiveExpectedSize
+  ) {
+    throw new Error(
+      `İndirilen JSON boyutu (${arrayBuffer.byteLength} bayt) beklenen boyutla (${effectiveExpectedSize} bayt) eşleşmiyor.`
+    );
+  }
+  if (
+    headerSha &&
+    computedSha256 &&
+    headerSha.trim().toLowerCase() !== computedSha256.trim().toLowerCase()
+  ) {
+    throw new Error('İndirilen JSON yedeğinin SHA-256 özeti eşleşmiyor.');
+  }
+
+  const blob = new Blob([arrayBuffer], { type: 'application/json;charset=utf-8' });
+  return {
+    blob,
+    sizeBytes: arrayBuffer.byteLength,
+    sha256: computedSha256 || headerSha || null,
+    fileName: effectiveFileName,
+    usedStreamFallback,
+  };
+}
+
 

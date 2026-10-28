@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { DataDocument, Profile, Preferences, SavedItem } from '../core/cinetrack-core';
+import {
+  DataDocument,
+  FavoriteActorInfo,
+  Profile,
+  Preferences,
+  SavedItem,
+} from '../core/cinetrack-core';
 import {
   buildMediaJourneyTimeline,
   buildTasteDnaProfile,
@@ -9,6 +15,7 @@ import {
 } from '../core/exporters';
 import {
   createProfileBackupExport,
+  downloadVerifiedBackupBinary,
   fetchServerBackups,
   fetchSyncStatus,
   inspectGitHubSync,
@@ -40,6 +47,8 @@ interface ProfileModalProps {
   activeProfileName: string;
   preferences: Preferences;
   savedItems: SavedItem[];
+  favoriteActors?: FavoriteActorInfo[];
+  dislikedItems?: any[];
   genresMap: Record<number, string>;
   tasteEntries?: Record<string, any>;
   syncStatus: string;
@@ -77,6 +86,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   activeProfileName,
   preferences,
   savedItems,
+  favoriteActors,
+  dislikedItems,
   genresMap,
   tasteEntries = {},
   syncStatus,
@@ -114,6 +125,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [exportingExcelMode, setExportingExcelMode] = useState<'xlsx_only' | 'json_and_xlsx' | null>(null);
   const [uploadExcelToGithub, setUploadExcelToGithub] = useState(false);
   const [excelExportReport, setExcelExportReport] = useState<ProfileBackupExportReportClient | null>(null);
+  const [downloadingBinaryKind, setDownloadingBinaryKind] = useState<'xlsx' | 'json' | null>(null);
+  const [verifiedDownloadInfo, setVerifiedDownloadInfo] = useState<{
+    sizeBytes: number;
+    sha256: string | null;
+    fileName: string;
+  } | null>(null);
+  const [downloadBinaryError, setDownloadBinaryError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useDialogAccessibility(isOpen, onClose);
@@ -134,6 +152,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setLatestSyncReport(null);
       setConnectionProbeResult(null);
       setExcelExportReport(null);
+      setVerifiedDownloadInfo(null);
+      setDownloadBinaryError(null);
       void fetchSyncStatus().then((info) => {
         if (info) setRemoteSyncInfo(info);
       });
@@ -150,10 +170,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       createdAt: activeProfile?.createdAt || '',
       preferences,
       items: savedItems,
-      favoriteActors: activeProfile?.favoriteActors || [],
+      favoriteActors:
+        favoriteActors && favoriteActors.length > 0
+          ? favoriteActors
+          : activeProfile?.favoriteActors || [],
       isDemo,
     }),
-    [activeProfileId, activeProfileName, activeProfile, preferences, savedItems, isDemo]
+    [activeProfileId, activeProfileName, activeProfile, preferences, savedItems, favoriteActors, isDemo]
   );
 
   const tasteDna = useMemo(
@@ -293,23 +316,66 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     setCsvStatus(`${savedItems.length} içerik CSV olarak dışa aktarıldı.`);
   };
 
-  const triggerDownloadUrl = (downloadUrl: string, fileName?: string) => {
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    if (fileName) link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const triggerVerifiedBlobDownload = async (opts: {
+    downloadUrl: string;
+    fileName: string;
+    kind: 'xlsx' | 'json';
+    expectedSizeBytes?: number;
+    expectedSha256?: string;
+  }) => {
+    setDownloadingBinaryKind(opts.kind);
+    setDownloadBinaryError(null);
+    try {
+      const verified = await downloadVerifiedBackupBinary({
+        downloadUrl: opts.downloadUrl,
+        fileName: opts.fileName,
+        kind: opts.kind,
+        expectedSizeBytes: opts.expectedSizeBytes,
+        expectedSha256: opts.expectedSha256,
+        fallbackStreamPayload: {
+          profileId: activeProfileId,
+          profileSnapshot: effectiveActiveProfile,
+          dislikedItemsHint: dislikedItems,
+          genresMap,
+        },
+      });
+      const blobUrl = URL.createObjectURL(verified.blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = verified.fileName;
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+
+      if (opts.kind === 'xlsx') {
+        setVerifiedDownloadInfo({
+          sizeBytes: verified.sizeBytes,
+          sha256: verified.sha256,
+          fileName: verified.fileName,
+        });
+      }
+    } catch (err: any) {
+      setDownloadBinaryError(
+        err?.message || 'Yedek dosyası ikili olarak doğrulanıp indirilemedi.'
+      );
+    } finally {
+      setDownloadingBinaryKind(null);
+    }
   };
 
   const handleExportFormattedBackup = async (mode: 'xlsx_only' | 'json_and_xlsx') => {
     if (exportingExcelMode !== null) return;
     setExportingExcelMode(mode);
     setExcelExportReport(null);
+    setVerifiedDownloadInfo(null);
+    setDownloadBinaryError(null);
     try {
       const report = await createProfileBackupExport({
         profileId: activeProfileId,
         profileSnapshot: effectiveActiveProfile,
+        dislikedItemsHint: dislikedItems,
         genresMap,
         includeJson: mode === 'json_and_xlsx',
         includeXlsx: true,
@@ -317,12 +383,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       });
       setExcelExportReport(report);
       if (report.excelBackup?.ok && report.excelBackup.downloadUrl) {
-        triggerDownloadUrl(report.excelBackup.downloadUrl, report.excelBackup.fileName);
+        await triggerVerifiedBlobDownload({
+          downloadUrl: report.excelBackup.downloadUrl,
+          fileName: report.excelBackup.fileName || 'CineTrack_Profile.xlsx',
+          kind: 'xlsx',
+          expectedSizeBytes: report.excelBackup.sizeBytes,
+          expectedSha256: report.excelBackup.sha256,
+        });
       }
       if (mode === 'json_and_xlsx' && report.jsonBackup?.ok && report.jsonBackup.downloadUrl) {
-        setTimeout(() => {
-          triggerDownloadUrl(report.jsonBackup.downloadUrl!, report.jsonBackup.fileName);
-        }, 350);
+        await triggerVerifiedBlobDownload({
+          downloadUrl: report.jsonBackup.downloadUrl,
+          fileName: report.jsonBackup.fileName || 'CineTrack_Profile.json',
+          kind: 'json',
+          expectedSizeBytes: report.jsonBackup.sizeBytes,
+          expectedSha256: report.jsonBackup.sha256,
+        });
       }
     } finally {
       setExportingExcelMode(null);
@@ -1215,30 +1291,69 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       </div>
                     )}
 
-                    {(excelExportReport.jsonBackup.error || excelExportReport.excelBackup.error) && (
+                    {verifiedDownloadInfo && (
+                      <div className="excel-github-outcome">
+                        <strong>İndirilen İkili Dosya Doğrulaması:</strong>{' '}
+                        {(verifiedDownloadInfo.sizeBytes / (1024 * 1024)).toFixed(2)} MB (
+                        {verifiedDownloadInfo.sizeBytes.toLocaleString('tr-TR')} bayt)
+                        {verifiedDownloadInfo.sha256
+                          ? ` · SHA-256 eşleşti (${verifiedDownloadInfo.sha256.slice(0, 12)}…)`
+                          : ''}
+                      </div>
+                    )}
+
+                    {(excelExportReport.jsonBackup.error ||
+                      excelExportReport.excelBackup.error ||
+                      downloadBinaryError) && (
                       <div className="excel-backup-error">
-                        {excelExportReport.excelBackup.error || excelExportReport.jsonBackup.error}
+                        {downloadBinaryError ||
+                          excelExportReport.excelBackup.error ||
+                          excelExportReport.jsonBackup.error}
                       </div>
                     )}
 
                     <div className="csv-actions-row mt-2">
                       {excelExportReport.excelBackup.ok && excelExportReport.excelBackup.downloadUrl && (
-                        <a
-                          href={excelExportReport.excelBackup.downloadUrl}
-                          download={excelExportReport.excelBackup.fileName}
+                        <button
+                          type="button"
+                          disabled={downloadingBinaryKind !== null}
+                          onClick={() =>
+                            void triggerVerifiedBlobDownload({
+                              downloadUrl: excelExportReport.excelBackup.downloadUrl!,
+                              fileName:
+                                excelExportReport.excelBackup.fileName || 'CineTrack_Profile.xlsx',
+                              kind: 'xlsx',
+                              expectedSizeBytes: excelExportReport.excelBackup.sizeBytes,
+                              expectedSha256: excelExportReport.excelBackup.sha256,
+                            })
+                          }
                           className="btn btn-sm whitespace-nowrap shrink-0"
                         >
-                          Excel (.xlsx) Dosyasını İndir
-                        </a>
+                          {downloadingBinaryKind === 'xlsx'
+                            ? 'İkili dosya doğrulanıyor…'
+                            : 'Excel (.xlsx) Dosyasını İndir'}
+                        </button>
                       )}
                       {excelExportReport.jsonBackup.ok && excelExportReport.jsonBackup.downloadUrl && (
-                        <a
-                          href={excelExportReport.jsonBackup.downloadUrl}
-                          download={excelExportReport.jsonBackup.fileName}
+                        <button
+                          type="button"
+                          disabled={downloadingBinaryKind !== null}
+                          onClick={() =>
+                            void triggerVerifiedBlobDownload({
+                              downloadUrl: excelExportReport.jsonBackup.downloadUrl!,
+                              fileName:
+                                excelExportReport.jsonBackup.fileName || 'CineTrack_Profile.json',
+                              kind: 'json',
+                              expectedSizeBytes: excelExportReport.jsonBackup.sizeBytes,
+                              expectedSha256: excelExportReport.jsonBackup.sha256,
+                            })
+                          }
                           className="btn btn-sm whitespace-nowrap shrink-0"
                         >
-                          JSON Dosyasını İndir
-                        </a>
+                          {downloadingBinaryKind === 'json'
+                            ? 'JSON doğrulanıyor…'
+                            : 'JSON Dosyasını İndir'}
+                        </button>
                       )}
                     </div>
                   </div>

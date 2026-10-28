@@ -366,13 +366,19 @@ export function mergeCatalogItem(existing: CatalogRecord | undefined, incoming: 
   const backdropPath =
     incoming.backdrop_path !== undefined ? incoming.backdrop_path : existing?.backdrop_path ?? null;
 
-  // Merge genre_ids deterministically
+  // Merge genre_ids deterministically (supports both list `genre_ids` and detail `genres: [{id, name}]`)
   const genreSet = new Set<number>();
   if (Array.isArray(existing?.genre_ids)) {
-    for (const g of existing.genre_ids) if (Number.isSafeInteger(g)) genreSet.add(g);
+    for (const g of existing.genre_ids) if (Number.isSafeInteger(g) && g > 0) genreSet.add(g);
   }
   if (Array.isArray(incoming.genre_ids)) {
-    for (const g of incoming.genre_ids) if (Number.isSafeInteger(g)) genreSet.add(g);
+    for (const g of incoming.genre_ids) if (Number.isSafeInteger(g) && g > 0) genreSet.add(g);
+  }
+  if (Array.isArray(incoming.genres)) {
+    for (const g of incoming.genres) {
+      const gid = typeof g === 'number' ? g : Number(g?.id);
+      if (Number.isSafeInteger(gid) && gid > 0) genreSet.add(gid);
+    }
   }
   const genreIds = Array.from(genreSet).sort((a, b) => a - b);
 

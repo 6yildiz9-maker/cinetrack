@@ -14,11 +14,16 @@ import {
   formatExportBaseName,
   generateProfileExcelBuffer,
   getNeutralPosterPlaceholderPng,
+  inspectXlsxPackageBuffer,
   resolveUniqueExportFileName,
   sanitizeSpreadsheetText,
 } from '../src/server/excel-profile-backup.ts';
 import { PersistentDataStore } from '../src/server/persistent-store.ts';
-import { createCineTrackApp } from '../src/server/app.ts';
+import { createCineTrackApp, resolveExportDocument } from '../src/server/app.ts';
+import {
+  downloadVerifiedBackupBinary,
+  validateDownloadedXlsxBytes,
+} from '../src/services/api.ts';
 
 function createTempDir(prefix = 'cinetrack-excel-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -862,4 +867,236 @@ test('HTTP API integration: POST /api/backup/profile-export and GET /api/backup/
   // Path traversal / invalid filename must be rejected with 400
   const badRes = await fetch(`${baseUrl}/api/backup/exports/..%2Fcinetrack-data.json`);
   assert.equal(badRes.status, 400);
+
+  // Unknown /api/* path must return JSON 404 (never fall through to SPA index.html)
+  const unknownApiRes = await fetch(`${baseUrl}/api/backup/exports/nonexistent_route/extra`);
+  assert.equal(unknownApiRes.status, 404);
+  assert.match(unknownApiRes.headers.get('content-type') || '', /application\/json/);
 });
+
+test('15. ZIP/OpenXML package inspection, 10 KB HTML/JSON download rejection, binary stream fallback, favoriteActors preservation, and catalog genre hydration', async (t) => {
+  const tmpDir = createTempDir();
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const seedDoc = {
+    version: 3,
+    schemaVersion: 3,
+    revision: 7,
+    updatedAt: '2026-10-28T17:00:00.000Z',
+    activeProfileId: 'profile-default',
+    profiles: [
+      {
+        id: 'profile-default',
+        name: 'ibrahim',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        preferences: {
+          disliked: ['movie:888'],
+          providers: ['8'],
+          mood: '',
+          reminders: false,
+          notified: [],
+        },
+        favoriteActors: [
+          { id: 1, name: 'Haluk Bilginer', profile_path: '/hb.jpg' },
+          { id: 2, name: 'Cansu Dere', profile_path: '/cd.jpg' },
+        ],
+        items: [
+          {
+            id: 550,
+            media_type: 'movie',
+            title: 'Dövüş Kulübü',
+            release_date: '1999-10-15',
+            vote_average: 8.4,
+            personal_rating: 9,
+            genre_ids: [18, 53],
+            poster_path: '/m550.jpg',
+            status: 'completed',
+            addedAt: '2026-10-01T12:00:00.000Z',
+          },
+          {
+            id: 550,
+            media_type: 'tv',
+            title: 'Aynı Numaralı Dizi',
+            first_air_date: '2020-05-10',
+            vote_average: 7.9,
+            personal_rating: '',
+            genre_ids: [80, 18],
+            poster_path: '/tv550.jpg',
+            status: 'watchlist',
+            addedAt: '2026-10-02T12:00:00.000Z',
+          },
+        ],
+      },
+    ],
+  };
+  fs.writeFileSync(path.join(tmpDir, 'cinetrack-data.json'), JSON.stringify(seedDoc, null, 2));
+
+  // Verify PersistentDataStore extracts genre_ids from TMDB detail `genres: [{ id, name }]`
+  const store = new PersistentDataStore({ dataDir: tmpDir });
+  store.upsertCatalogItems([
+    {
+      id: 888,
+      media_type: 'movie',
+      title: 'Detaydan Gelen Film',
+      release_date: '2023-04-12',
+      vote_average: 5.4,
+      poster_path: '/m888.jpg',
+      genres: [
+        { id: 27, name: 'Korku' },
+        { id: 53, name: 'Gerilim' },
+      ],
+    },
+  ]);
+  const storedMovie888 = store.readCatalog('movie')['movie:888'];
+  assert.deepEqual(storedMovie888.genre_ids, [27, 53]);
+
+  // Verify non-destructive snapshot merge preserves favoriteActors when client sends []
+  const mergedDoc = resolveExportDocument(seedDoc, {
+    profileSnapshot: {
+      id: 'profile-default',
+      name: 'ibrahim',
+      preferences: seedDoc.profiles[0].preferences,
+      items: seedDoc.profiles[0].items,
+      favoriteActors: [], // Partial client snapshot missing favoriteActors!
+    },
+  });
+  assert.equal(mergedDoc.profiles[0].favoriteActors.length, 2);
+
+  // Verify transient empty unknown profile snapshot does NOT wipe persistent server profile
+  const guardedDoc = resolveExportDocument(seedDoc, {
+    profileSnapshot: {
+      id: 'profile-unhydrated-empty',
+      name: 'Profilim',
+      preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+      items: [],
+      favoriteActors: [],
+    },
+  });
+  assert.equal(guardedDoc.activeProfileId, 'profile-default');
+  assert.equal(guardedDoc.profiles[0].items.length, 2);
+
+  // Build workbook and inspect raw ZIP Central Directory + OpenXML internals
+  const built = await generateProfileExcelBuffer({
+    profile: mergedDoc.profiles[0],
+    moviesCatalog: store.readCatalog('movie'),
+    tvCatalog: store.readCatalog('tv'),
+    posterCacheDir: path.join(tmpDir, 'posters'),
+    posterFetcher: async () => ({
+      status: 200,
+      contentType: 'image/jpeg',
+      buffer: makeFakeJpegBuffer(0x77),
+    }),
+  });
+
+  const zipInspection = inspectXlsxPackageBuffer(built.buffer);
+  assert.equal(zipInspection.validZip, true);
+  assert.equal(zipInspection.validOpenXmlStructure, true);
+  assert.deepEqual(zipInspection.sheetNames, [
+    'Özet',
+    'İzlenen',
+    'İzlenecek',
+    'İzleniyor',
+    'İlgilenmiyorum',
+  ]);
+  assert.equal(zipInspection.worksheetDataRowCounts.İzlenen, 1);
+  assert.equal(zipInspection.worksheetDataRowCounts.İzlenecek, 1);
+  assert.equal(zipInspection.worksheetDataRowCounts.İzleniyor, 0);
+  assert.equal(zipInspection.worksheetDataRowCounts.İlgilenmiyorum, 1);
+  assert.equal(zipInspection.mediaFilesCount, 3);
+  assert.equal(zipInspection.totalTwoCellAnchors, 3);
+  assert.equal(zipInspection.totalBlipEmbeds, 3);
+  assert.equal(zipInspection.totalDrawingRelationships, 3);
+
+  // Disliked movie:888 must have hydrated genres ('Korku, Gerilim') and Özet!F6 must show 2 favorite actors!
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(built.buffer);
+  assert.equal(wb.getWorksheet('Özet').getCell('F6').value, 2);
+  assert.equal(wb.getWorksheet('İlgilenmiyorum').getRow(5).getCell(7).value, 'Korku, Gerilim');
+
+  // Verify 10 KB HTML response (Service Worker index.html / auth gate) is strictly rejected!
+  const fake10KbHtml = Buffer.from(
+    '<!DOCTYPE html><html lang="tr"><head><title>CineTrack</title></head><body>' +
+      'x'.repeat(10_000) +
+      '</body></html>',
+    'utf8'
+  );
+  assert.equal(inspectXlsxPackageBuffer(fake10KbHtml).validZip, false);
+  const htmlValidation = validateDownloadedXlsxBytes(fake10KbHtml, {
+    contentType: 'text/html; charset=utf-8',
+  });
+  assert.equal(htmlValidation.ok, false);
+
+  // Even if Content-Type was mislabeled as spreadsheet, HTML body without PK\x03\x04 must be rejected!
+  const disguisedHtmlValidation = validateDownloadedXlsxBytes(fake10KbHtml, {
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  assert.equal(disguisedHtmlValidation.ok, false);
+  assert.match(disguisedHtmlValidation.reason || '', /HTML/i);
+
+  // End-to-end verified client download + stream fallback when GET returns HTML/404
+  const { app } = createCineTrackApp({ dataDir: tmpDir });
+  // Seed cached posters into tmpDir/cache/posters so stream endpoint needs zero external internet calls
+  const exportReport = await executeProfileBackupExport({
+    dataDir: tmpDir,
+    document: mergedDoc,
+    includeJson: false,
+    includeXlsx: true,
+    posterFetcher: async () => ({
+      status: 200,
+      contentType: 'image/jpeg',
+      buffer: makeFakeJpegBuffer(0x77),
+    }),
+  });
+  assert.equal(exportReport.excelBackup.ok, true);
+
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  // Case 1: Normal verified binary download matches exact byte length and SHA-256
+  const verifiedDirect = await downloadVerifiedBackupBinary({
+    downloadUrl: `${baseUrl}${exportReport.excelBackup.downloadUrl}`,
+    fileName: exportReport.excelBackup.fileName,
+    kind: 'xlsx',
+    expectedSizeBytes: exportReport.excelBackup.sizeBytes,
+    expectedSha256: exportReport.excelBackup.sha256,
+  });
+  assert.equal(verifiedDirect.usedStreamFallback, false);
+  assert.equal(verifiedDirect.sizeBytes, exportReport.excelBackup.sizeBytes);
+  assert.equal(verifiedDirect.sha256, exportReport.excelBackup.sha256);
+
+  // Case 2: Simulated Service Worker / replica 404 or HTML fallback on GET automatically recovers via POST /api/backup/profile-export/stream!
+  const verifiedFallback = await downloadVerifiedBackupBinary({
+    downloadUrl: `${baseUrl}/api/backup/exports/CineTrack_Profile_2099-01-01_0000.xlsx`,
+    fileName: 'CineTrack_Profile_2099-01-01_0000.xlsx',
+    kind: 'xlsx',
+    fallbackStreamPayload: {
+      profileId: 'profile-default',
+      profileSnapshot: mergedDoc.profiles[0],
+    },
+    customFetch: (input, init) => {
+      const target = typeof input === 'string' && input.startsWith('/') ? `${baseUrl}${input}` : input;
+      return fetch(target, {
+        ...init,
+        headers: {
+          ...(init?.headers || {}),
+          Origin: baseUrl,
+        },
+      });
+    },
+  });
+  assert.equal(verifiedFallback.usedStreamFallback, true);
+  const fallbackBytes = Buffer.from(await verifiedFallback.blob.arrayBuffer());
+  const fallbackZip = inspectXlsxPackageBuffer(fallbackBytes);
+  assert.equal(fallbackZip.validZip, true);
+  assert.equal(fallbackZip.validOpenXmlStructure, true);
+  assert.equal(fallbackZip.worksheetDataRowCounts.İzlenen, 1);
+  assert.equal(fallbackZip.worksheetDataRowCounts.İzlenecek, 1);
+
+  // Ensure vite.config.ts explicitly excludes /api/ routes from Workbox NavigationRoute SPA fallback
+  const viteConfigText = fs.readFileSync(path.resolve('vite.config.ts'), 'utf8');
+  assert.match(viteConfigText, /navigateFallbackDenylist:\s*\[\s*\/\^\\\/api\\\/\/\s*\]/);
+});
+
