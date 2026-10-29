@@ -8,38 +8,71 @@ export interface QueuedSyncSnapshot {
   payload: DataDocument;
 }
 
-export function loadOfflineSyncSnapshot(): QueuedSyncSnapshot | null {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(OFFLINE_QUEUE_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || !parsed.payload) return null;
-    return {
-      queuedAt: String(parsed.queuedAt || new Date().toISOString()),
-      baseRevision: typeof parsed.baseRevision === 'number' ? parsed.baseRevision : null,
-      payload: parsed.payload as DataDocument,
-    };
-  } catch {
-    return null;
-  }
+export interface EnqueueOfflineResult extends QueuedSyncSnapshot {
+  persisted: boolean;
 }
 
-export function enqueueOfflineSyncSnapshot(payload: DataDocument, baseRevision: number | null): QueuedSyncSnapshot {
+let memoryFallbackSnapshot: QueuedSyncSnapshot | null = null;
+let lastPersistFailed = false;
+
+export function hasUnpersistedOfflineFallback(): boolean {
+  return lastPersistFailed && memoryFallbackSnapshot !== null;
+}
+
+export function loadOfflineSyncSnapshot(): QueuedSyncSnapshot | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(OFFLINE_QUEUE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed.payload) {
+          return {
+            queuedAt: String(parsed.queuedAt || new Date().toISOString()),
+            baseRevision: typeof parsed.baseRevision === 'number' ? parsed.baseRevision : null,
+            payload: parsed.payload as DataDocument,
+          };
+        }
+      }
+    }
+  } catch {
+    // Fall back to in-memory snapshot if localStorage is inaccessible or corrupt
+  }
+  return memoryFallbackSnapshot;
+}
+
+export function enqueueOfflineSyncSnapshot(
+  payload: DataDocument,
+  baseRevision: number | null
+): EnqueueOfflineResult {
+  const existing = loadOfflineSyncSnapshot();
+  const effectiveBaseRevision =
+    baseRevision !== null ? baseRevision : existing ? existing.baseRevision : null;
+
   const entry: QueuedSyncSnapshot = {
     queuedAt: new Date().toISOString(),
-    baseRevision,
+    baseRevision: effectiveBaseRevision,
     payload,
   };
+
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(OFFLINE_QUEUE_STORAGE_KEY, JSON.stringify(entry));
+      memoryFallbackSnapshot = null;
+      lastPersistFailed = false;
+      return { ...entry, persisted: true };
     }
-  } catch {}
-  return entry;
+  } catch (err) {
+    console.warn('CineTrack: çevrimdışı kuyruk localStorage kotasına takıldı; bellek yedeği kullanılıyor.', err);
+  }
+
+  memoryFallbackSnapshot = entry;
+  lastPersistFailed = true;
+  return { ...entry, persisted: false };
 }
 
 export function clearOfflineSyncSnapshot(): void {
+  memoryFallbackSnapshot = null;
+  lastPersistFailed = false;
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(OFFLINE_QUEUE_STORAGE_KEY);

@@ -12,6 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 
 let tempFileSeq = 0;
@@ -223,6 +224,174 @@ export function readJsonFileWithRecovery<T = any>(
       if (restoreRecoveredToTarget) {
         try {
           writeJsonFileAtomic(targetPath, readFileSync(candidateBackup, 'utf8'));
+        } catch {}
+      }
+      return { status: 'recovered', data: backupCheck.data, recoveredFrom: candidateBackup };
+    }
+  }
+
+  return {
+    status: 'corrupt_unrecoverable',
+    data: null,
+    error: primaryCheck.error,
+    quarantinePath,
+  };
+}
+
+async function fileExistsAsync(targetPath: string): Promise<boolean> {
+  try {
+    await fsPromises.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function tryParseValidJsonAsync<T = any>(
+  filePath: string,
+  validate?: (raw: any) => T | null
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+  try {
+    const text = await fsPromises.readFile(filePath, 'utf8');
+    const raw = JSON.parse(text);
+    if (validate) {
+      const validated = validate(raw);
+      if (validated === null) {
+        return { ok: false, error: 'Şema doğrulaması başarısız.' };
+      }
+      return { ok: true, data: validated };
+    }
+    return { ok: true, data: raw as T };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'JSON ayrıştırma hatası.' };
+  }
+}
+
+export async function writeJsonFileAtomicAsync(
+  targetPath: string,
+  serializedJson: string,
+  options: AtomicWriteOptions = {}
+): Promise<void> {
+  if (typeof serializedJson !== 'string' || !serializedJson.trim()) {
+    throw new Error('Atomik yazma için boş JSON içeriği kabul edilmez.');
+  }
+
+  let parsedPayload: any;
+  try {
+    parsedPayload = JSON.parse(serializedJson);
+  } catch (err: any) {
+    throw new Error(`Yazılacak içerik geçerli bir JSON değil: ${err?.message || err}`);
+  }
+
+  if (options.validateParsed && !options.validateParsed(parsedPayload)) {
+    throw new Error('Yazılacak JSON içeriği şema doğrulamasından geçemedi.');
+  }
+
+  const dir = path.dirname(targetPath);
+  await fsPromises.mkdir(dir, { recursive: true });
+
+  if (options.backupPath && (await fileExistsAsync(targetPath))) {
+    const existingCheck = await tryParseValidJsonAsync(
+      targetPath,
+      options.validateParsed ? (r) => (options.validateParsed!(r) ? r : null) : undefined
+    );
+    if (existingCheck.ok) {
+      await fsPromises.mkdir(path.dirname(options.backupPath), { recursive: true });
+      await fsPromises.copyFile(targetPath, options.backupPath);
+    }
+  }
+
+  tempFileSeq = (tempFileSeq + 1) % 1_000_000;
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${tempFileSeq}.tmp`;
+  const buffer = Buffer.from(serializedJson, 'utf8');
+
+  let handle: fsPromises.FileHandle | null = null;
+  try {
+    handle = await fsPromises.open(tempPath, 'w', 0o600);
+    await handle.writeFile(buffer);
+    await handle.datasync();
+    await handle.close();
+    handle = null;
+
+    const writtenStat = await fsPromises.stat(tempPath);
+    if (writtenStat.size !== buffer.byteLength) {
+      throw new Error(
+        `Geçici dosya boyutu uyuşmuyor (beklenen ${buffer.byteLength}, yazılan ${writtenStat.size}).`
+      );
+    }
+
+    if (options.beforeRenameHook) {
+      options.beforeRenameHook(tempPath);
+    }
+
+    await fsPromises.rename(tempPath, targetPath);
+  } catch (err) {
+    if (handle !== null) {
+      try {
+        await handle.close();
+      } catch {}
+    }
+    try {
+      if (await fileExistsAsync(tempPath)) {
+        await fsPromises.unlink(tempPath);
+      }
+    } catch {}
+    throw err;
+  }
+}
+
+export async function readJsonFileWithRecoveryAsync<T = any>(
+  targetPath: string,
+  options: ReadJsonRecoveryOptions<T> = {}
+): Promise<ReadJsonRecoveryResult<T>> {
+  const {
+    backupPaths = [],
+    validate,
+    label = path.basename(targetPath),
+    restoreRecoveredToTarget = true,
+  } = options;
+
+  if (!(await fileExistsAsync(targetPath))) {
+    for (const candidateBackup of backupPaths) {
+      if (!(await fileExistsAsync(candidateBackup))) continue;
+      const check = await tryParseValidJsonAsync(candidateBackup, validate);
+      if (check.ok) {
+        if (restoreRecoveredToTarget) {
+          try {
+            const rawText = await fsPromises.readFile(candidateBackup, 'utf8');
+            await writeJsonFileAtomicAsync(targetPath, rawText);
+          } catch {}
+        }
+        return { status: 'recovered', data: check.data, recoveredFrom: candidateBackup };
+      }
+    }
+    return { status: 'missing', data: null };
+  }
+
+  const primaryCheck = await tryParseValidJsonAsync(targetPath, validate);
+  if (primaryCheck.ok) {
+    return { status: 'ok', data: primaryCheck.data };
+  }
+
+  console.error(`[Storage] Bozuk veri dosyası algılandı (${label}): ${primaryCheck.error}`);
+
+  let quarantinePath: string | undefined;
+  try {
+    quarantinePath = `${targetPath}.corrupt.${Date.now()}`;
+    await fsPromises.copyFile(targetPath, quarantinePath);
+  } catch {}
+
+  for (const candidateBackup of backupPaths) {
+    if (!(await fileExistsAsync(candidateBackup))) continue;
+    const backupCheck = await tryParseValidJsonAsync(candidateBackup, validate);
+    if (backupCheck.ok) {
+      console.warn(
+        `[Storage] ${label} geçerli yedekten kurtarıldı: ${path.basename(candidateBackup)}`
+      );
+      if (restoreRecoveredToTarget) {
+        try {
+          const rawText = await fsPromises.readFile(candidateBackup, 'utf8');
+          await writeJsonFileAtomicAsync(targetPath, rawText);
         } catch {}
       }
       return { status: 'recovered', data: backupCheck.data, recoveredFrom: candidateBackup };

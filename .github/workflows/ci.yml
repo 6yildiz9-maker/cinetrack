@@ -18,10 +18,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '>=22.18.0'
 
       - name: Clean install dependencies
         run: npm ci
+
+      - name: Security Audit (Production Dependencies)
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint & Typecheck
         run: npm run lint

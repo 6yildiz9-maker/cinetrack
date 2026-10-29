@@ -13,7 +13,7 @@ import {
   type TasteMapEntry,
   type TasteRing,
 } from './cinetrack-core.ts';
-import { canonicalizeMediaKey, makeMediaKey, parseMediaKey } from './keys.ts';
+import { canonicalizeMediaKey, makeMediaKey, parseMediaKey, resolveMediaType } from './keys.ts';
 import {
   computeSourceCatalogSignature,
   DERIVED_PROFILE_SCHEMA_VERSION,
@@ -76,25 +76,27 @@ export function resolveDisplayedLifecycleRing(
 
 /**
  * Film-only veya TV-only modlarında karşı medya tipinin havuza ya da vitrine sızmasını katı biçimde engeller.
+ * `media_type` alanı olmayan belirsiz kayıtları tahmin etmeden uyarı günlüğüyle eler (EXT-04).
  */
 export function enforceStrictMediaTypePool<T extends Record<string, any>>(
   items: T[],
   targetType: 'all' | 'movie' | 'tv' | string
 ): T[] {
   if (!Array.isArray(items)) return [];
-  if (targetType !== 'movie' && targetType !== 'tv') return items;
 
   return items.filter((entry) => {
     const cand = entry?.candidate && typeof entry.candidate === 'object' ? entry.candidate : entry;
     if (!cand || typeof cand !== 'object') return false;
-    const resolvedType =
-      cand.media_type === 'tv' || cand.mediaType === 'tv'
-        ? 'tv'
-        : cand.media_type === 'movie' || cand.mediaType === 'movie'
-        ? 'movie'
-        : cand.title && !cand.first_air_date
-        ? 'movie'
-        : 'tv';
+    const resolvedType = resolveMediaType(cand);
+    if (resolvedType === 'unknown') {
+      console.warn(
+        `[Recommendation] media_type alanı belirsiz kayıt havuzdan elendi (id=${String(
+          cand.id ?? 'bilinmiyor'
+        )}).`
+      );
+      return false;
+    }
+    if (targetType !== 'movie' && targetType !== 'tv') return true;
     return resolvedType === targetType;
   });
 }

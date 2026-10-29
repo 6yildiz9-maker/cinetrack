@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import {
   dedupeItems,
+  normalizeDeletedKeys,
   normalizeFavoriteActors,
   normalizePreferences,
   normalizeSavedItem,
@@ -25,6 +27,7 @@ import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts'
 import {
   executeProfileBackupExport,
   EXPORT_FILE_NAME_PATTERN,
+  getPosterCacheStats,
 } from './excel-profile-backup.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
@@ -36,29 +39,82 @@ export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, Tm
   githubBranch?: string;
   isPublicRepo?: boolean;
   allowPublicPersonalSync?: boolean;
+  allowPublicCatalogSync?: boolean;
   processEnvIsPublicRepo?: string | null;
   localEnvIsPublicRepo?: string | null;
+  registerCustomRoutes?: (app: Express) => void;
 }
 
-function parseIfMatchRevision(req: Request): number | null {
+const STATIC_ASSET_EXT_PATTERN =
+  /\.(?:js|mjs|cjs|css|map|png|jpg|jpeg|gif|svg|ico|webp|avif|woff|woff2|ttf|otf|eot|json|webmanifest|txt|xml|xlsx|wasm)$/i;
+
+export function isStaticAssetRequestPath(reqPath: string): boolean {
+  const cleanPath = String(reqPath || '').split('?')[0];
+  if (cleanPath.startsWith('/assets/') || cleanPath.startsWith('/workbox-')) {
+    return true;
+  }
+  return STATIC_ASSET_EXT_PATTERN.test(cleanPath);
+}
+
+export function createSpaFallbackMiddleware(indexHtmlPath: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if ((req.method !== 'GET' && req.method !== 'HEAD') || req.path.startsWith('/api/')) {
+      next();
+      return;
+    }
+    if (isStaticAssetRequestPath(req.path)) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(404).type('text/plain; charset=utf-8').send('Static asset not found');
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(indexHtmlPath);
+  };
+}
+
+interface ParsedWritePrecondition {
+  expectedRevision: number | null;
+  hasInvalidIfMatch: boolean;
+  forceOverwrite: boolean;
+}
+
+function parseWritePrecondition(req: Request): ParsedWritePrecondition {
+  const forceHeader = req.headers['x-cinetrack-force-write'];
+  let forceOverwrite =
+    forceHeader === '1' ||
+    forceHeader === 'true' ||
+    Boolean(req.body && typeof req.body === 'object' && req.body.forceOverwrite === true);
+
   const ifMatch = req.headers['if-match'];
   if (typeof ifMatch === 'string' && ifMatch.trim()) {
-    const cleaned = ifMatch.trim().replace(/^W\//i, '').replace(/^"|"$/g, '');
+    const rawTrimmed = ifMatch.trim();
+    if (rawTrimmed === '*') {
+      forceOverwrite = true;
+      return { expectedRevision: null, hasInvalidIfMatch: false, forceOverwrite };
+    }
+    const cleaned = rawTrimmed.replace(/^W\//i, '').replace(/^"|"$/g, '');
     const revMatch = cleaned.match(/^(?:rev-)?(\d+)$/);
     if (revMatch) {
-      return Number(revMatch[1]);
+      return { expectedRevision: Number(revMatch[1]), hasInvalidIfMatch: false, forceOverwrite };
     }
+    return { expectedRevision: null, hasInvalidIfMatch: true, forceOverwrite };
   }
+
   const headerRev = req.headers['x-cinetrack-base-revision'];
-  if (typeof headerRev === 'string' && /^\d+$/.test(headerRev.trim())) {
-    return Number(headerRev.trim());
+  if (typeof headerRev === 'string' && headerRev.trim()) {
+    if (/^\d+$/.test(headerRev.trim())) {
+      return { expectedRevision: Number(headerRev.trim()), hasInvalidIfMatch: false, forceOverwrite };
+    }
+    return { expectedRevision: null, hasInvalidIfMatch: true, forceOverwrite };
   }
+
   if (req.body && typeof req.body === 'object' && typeof req.body.baseRevision === 'number') {
     if (Number.isSafeInteger(req.body.baseRevision) && req.body.baseRevision >= 0) {
-      return req.body.baseRevision;
+      return { expectedRevision: req.body.baseRevision, hasInvalidIfMatch: false, forceOverwrite };
     }
   }
-  return null;
+
+  return { expectedRevision: null, hasInvalidIfMatch: false, forceOverwrite };
 }
 
 function isBulkDeleteConfirmed(req: Request): boolean {
@@ -68,10 +124,36 @@ function isBulkDeleteConfirmed(req: Request): boolean {
   return false;
 }
 
+async function computeFileSha256Async(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+async function streamFileDownload(
+  res: Response,
+  filePath: string,
+  headers: Record<string, string>
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    for (const [k, v] of Object.entries(headers)) {
+      res.setHeader(k, v);
+    }
+    const stream = createReadStream(filePath);
+    stream.on('error', reject);
+    res.on('finish', resolve);
+    res.on('close', resolve);
+    stream.pipe(res);
+  });
+}
+
 /**
  * Merges an incoming client `profileSnapshot` with persistent server storage non-destructively.
- * Prevents partial/unhydrated client snapshots (e.g. `favoriteActors: []` or empty transient profile)
- * from wiping server-side profile fields during backup export.
+ * Uses a strict `Profile` field whitelist (BUG-08) and supports explicit `disliked: []` clearing (EXT-12).
  */
 export function resolveExportDocument(storedDoc: DataDocument, reqBody: any): DataDocument {
   if (!reqBody?.profileSnapshot || typeof reqBody.profileSnapshot !== 'object') {
@@ -90,6 +172,7 @@ export function resolveExportDocument(storedDoc: DataDocument, reqBody: any): Da
   );
   const snapPrefs = normalizePreferences(snap.preferences || {});
   const snapFavActors = normalizeFavoriteActors(snap.favoriteActors || []);
+  const snapDeletedKeys = normalizeDeletedKeys(snap.deleted_keys);
 
   const existing = storedDoc.profiles.find((p) => p.id === snapId);
   if (!existing) {
@@ -107,6 +190,7 @@ export function resolveExportDocument(storedDoc: DataDocument, reqBody: any): Da
       items: snapItems,
       favoriteActors: snapFavActors,
       isDemo: Boolean(snap.isDemo),
+      ...(Object.keys(snapDeletedKeys).length > 0 ? { deleted_keys: snapDeletedKeys } : {}),
     };
     return {
       ...storedDoc,
@@ -125,27 +209,41 @@ export function resolveExportDocument(storedDoc: DataDocument, reqBody: any): Da
 
   const existingFavs = normalizeFavoriteActors(existing.favoriteActors || []);
   const mergedFavActors =
-    snapFavActors.length > 0
-      ? snapFavActors.length >= existingFavs.length
-        ? snapFavActors
-        : normalizeFavoriteActors([...existingFavs, ...snapFavActors])
-      : existingFavs;
+    snap.favoriteActorsCleared === true
+      ? snapFavActors
+      : snapFavActors.length > 0
+        ? snapFavActors.length >= existingFavs.length
+          ? snapFavActors
+          : normalizeFavoriteActors([...existingFavs, ...snapFavActors])
+        : existingFavs;
 
   const existingPrefs = normalizePreferences(existing.preferences || {});
+  const snapHasExplicitDisliked = Boolean(
+    snap.preferences &&
+      typeof snap.preferences === 'object' &&
+      Object.prototype.hasOwnProperty.call(snap.preferences, 'disliked') &&
+      Array.isArray(snap.preferences.disliked)
+  );
   const mergedPreferences = {
     ...existingPrefs,
     ...snapPrefs,
-    disliked: snapPrefs.disliked.length > 0 ? snapPrefs.disliked : existingPrefs.disliked,
+    disliked: snapHasExplicitDisliked ? snapPrefs.disliked : existingPrefs.disliked,
   };
 
+  const mergedDeletedKeys = normalizeDeletedKeys({
+    ...(existing.deleted_keys || {}),
+    ...snapDeletedKeys,
+  });
+
   const mergedProfile: Profile = {
-    ...existing,
-    ...snap,
     id: snapId,
     name: typeof snap.name === 'string' && snap.name.trim() ? snap.name.trim() : existing.name,
+    createdAt: existing.createdAt || (typeof snap.createdAt === 'string' ? snap.createdAt : ''),
+    isDemo: typeof snap.isDemo === 'boolean' ? snap.isDemo : Boolean(existing.isDemo),
     items: mergedItems,
     favoriteActors: mergedFavActors,
     preferences: mergedPreferences,
+    ...(Object.keys(mergedDeletedKeys).length > 0 ? { deleted_keys: mergedDeletedKeys } : {}),
   };
 
   return {
@@ -174,6 +272,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     githubBranch: options.githubBranch,
     isPublicRepo: options.isPublicRepo,
     allowPublicPersonalSync: options.allowPublicPersonalSync,
+    allowPublicCatalogSync: options.allowPublicCatalogSync,
     processEnvIsPublicRepo: options.processEnvIsPublicRepo,
     localEnvIsPublicRepo: options.localEnvIsPublicRepo,
   });
@@ -181,10 +280,29 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   const originGuard = createOriginMiddleware(options);
   const tokenGuard = createTokenAuthMiddleware(options);
+  const syncStatusGuard = createTokenAuthMiddleware({ ...options, requireTokenForReads: true });
   const tmdbRateLimiter = createTmdbRateLimitMiddleware(options);
 
   const app = express();
   app.disable('x-powered-by');
+  if (options.trustProxy) {
+    app.set('trust proxy', true);
+  }
+
+  // Temel güvenlik başlıkları (BUG-12.1)
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org; connect-src 'self' https://api.themoviedb.org; base-uri 'self'; form-action 'self'"
+    );
+    if (!process.env.APP_URL) {
+      res.setHeader('X-Frame-Options', 'DENY');
+    }
+    next();
+  });
+
   app.use(
     express.json({
       limit: maxDataBytes,
@@ -224,15 +342,16 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ ok: true });
+    const posterCache = getPosterCacheStats(path.join(options.dataDir, 'cache', 'posters'));
+    res.json({ ok: true, posterCache });
   });
 
   app.get('/api/tmdb-status', tmdbProxy.handleStatus);
   app.get('/api/tmdb', tmdbRateLimiter, tmdbProxy.handleTmdb);
 
-  app.get('/api/data', tokenGuard, (_req: Request, res: Response) => {
+  app.get('/api/data', tokenGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    const doc = storage.readData();
+    const doc = await storage.readDataAsync();
     if (storage.hasUnrecoverableCorruption()) {
       res.status(500).json({
         status_message:
@@ -249,10 +368,13 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app.put('/api/data', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-      const expectedRevision = parseIfMatchRevision(req);
+      const { expectedRevision, hasInvalidIfMatch, forceOverwrite } = parseWritePrecondition(req);
       const confirmBulkDelete = isBulkDeleteConfirmed(req);
       const result = await storage.saveDataSerialized(req.body, {
         expectedRevision,
+        hasInvalidIfMatch,
+        requirePrecondition: true,
+        forceOverwrite,
         confirmBulkDelete,
       });
 
@@ -291,12 +413,12 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/data/backups', tokenGuard, (_req: Request, res: Response) => {
+  app.get('/api/data/backups', tokenGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ backups: storage.listBackups() });
+    res.json({ backups: await storage.listBackupsAsync() });
   });
 
-  app.post('/api/data/restore', originGuard, tokenGuard, (req: Request, res: Response) => {
+  app.post('/api/data/restore', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const backupId = typeof req.body?.backupId === 'string' ? req.body.backupId.trim() : '';
     if (!backupId) {
@@ -304,7 +426,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       return;
     }
 
-    const restored = storage.restoreBackup(backupId);
+    const restored = await storage.restoreBackupSerialized(backupId);
     if (!restored) {
       res.status(404).json({ status_message: 'Belirtilen yedek dosyası bulunamadı veya bozuk.', code: 'backup_not_found' });
       return;
@@ -323,7 +445,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   });
 
   // --- Kalıcı Veri Deposu & Çift Yönlü GitHub Senkronizasyonu ---
-  app.get('/api/sync/status', (_req: Request, res: Response) => {
+  app.get('/api/sync/status', syncStatusGuard, (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(persistentStore.getSyncStatus());
   });
@@ -540,6 +662,32 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     });
   });
 
+  app.post('/api/sync/public-catalog-consent', originGuard, tokenGuard, (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const allow = req.body?.allowCatalogInPublicRepo;
+    if (typeof allow !== 'boolean') {
+      res.status(400).json({
+        ok: false,
+        status_message: 'allowCatalogInPublicRepo alanı boolean (true/false) olmalıdır.',
+      });
+      return;
+    }
+    if (allow && req.body?.confirmTmdbAttribution !== true) {
+      res.status(400).json({
+        ok: false,
+        status_message:
+          'Açık depoya TMDB katalog verisi yüklemek için confirmTmdbAttribution=true onayı zorunludur.',
+      });
+      return;
+    }
+    const updated = persistentStore.setPublicCatalogSyncConsent(allow);
+    res.json({
+      ok: true,
+      ...updated,
+      status: persistentStore.getSyncStatus(),
+    });
+  });
+
   app.post('/api/sync/staged', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (req.body?.rejectIfBusy === true && persistentStore.isSyncBusy()) {
@@ -557,9 +705,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         typeof req.body?.allowPersonalDataInPublicRepo === 'boolean'
           ? req.body.allowPersonalDataInPublicRepo
           : undefined;
+      const allowCatalogOverride =
+        typeof req.body?.allowCatalogInPublicRepo === 'boolean'
+          ? req.body.allowCatalogInPublicRepo
+          : undefined;
       const stagedReport = await persistentStore.runStagedFullSync({
         forceWriteProbe,
         ...(allowOverride !== undefined ? { allowPersonalDataInPublicRepo: allowOverride } : {}),
+        ...(allowCatalogOverride !== undefined ? { allowCatalogInPublicRepo: allowCatalogOverride } : {}),
       });
       if (typeof stagedReport.bidirectionalReport?.serverRevision === 'number') {
         res.setHeader('ETag', `"rev-${stagedReport.bidirectionalReport.serverRevision}"`);
@@ -688,7 +841,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app.post('/api/backup/profile-export', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-      const storedDoc = storage.readData();
+      const storedDoc = await storage.readDataAsync();
       const exportDoc = resolveExportDocument(storedDoc, req.body);
 
       const profileId =
@@ -740,7 +893,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app.post('/api/backup/profile-export/stream', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-      const storedDoc = storage.readData();
+      const storedDoc = await storage.readDataAsync();
       const exportDoc = resolveExportDocument(storedDoc, req.body);
       const profileId =
         typeof req.body?.profileId === 'string' && req.body.profileId.trim()
@@ -781,33 +934,33 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         return;
       }
 
-      const buf = readFileSync(report.excelBackup.absolutePath);
+      const absPath = report.excelBackup.absolutePath;
+      const stat = await fsPromises.stat(absPath);
       const fileName = report.excelBackup.fileName || 'CineTrack_Profile.xlsx';
-      const sha256 =
-        report.excelBackup.sha256 || crypto.createHash('sha256').update(buf).digest('hex');
+      const sha256 = report.excelBackup.sha256 || (await computeFileSha256Async(absPath));
 
-      res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      );
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.setHeader('Content-Length', String(buf.length));
-      res.setHeader('X-CineTrack-SHA256', sha256);
-      res.setHeader('X-CineTrack-Filename', fileName);
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.send(buf);
-    } catch (err: any) {
-      res.status(500).json({
-        ok: false,
-        status_message: redactSecrets(
-          err?.message || 'Excel (.xlsx) ikili akışı dışa aktarılamadı.',
-          [options.githubToken, options.tmdbApiKey]
-        ),
+      await streamFileDownload(res, absPath, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="${fileName}"`,
+        'Content-Length': String(stat.size),
+        'X-CineTrack-SHA256': sha256,
+        'X-CineTrack-Filename': fileName,
+        'X-Content-Type-Options': 'nosniff',
       });
+    } catch (err: any) {
+      if (!res.headersSent) {
+        res.status(500).json({
+          ok: false,
+          status_message: redactSecrets(
+            err?.message || 'Excel (.xlsx) ikili akışı dışa aktarılamadı.',
+            [options.githubToken, options.tmdbApiKey]
+          ),
+        });
+      }
     }
   });
 
-  app.get('/api/backup/exports/:fileName', tokenGuard, (req: Request, res: Response) => {
+  app.get('/api/backup/exports/:fileName', tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const rawName = String(req.params.fileName || '').trim();
     if (!EXPORT_FILE_NAME_PATTERN.test(rawName)) {
@@ -821,23 +974,25 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       return;
     }
 
-    const buf = readFileSync(fullPath);
-    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
-    if (rawName.endsWith('.xlsx')) {
-      res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      );
-    } else {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    }
-    res.setHeader('Content-Disposition', `attachment; filename="${rawName}"`);
-    res.setHeader('Content-Length', String(buf.length));
-    res.setHeader('X-CineTrack-SHA256', sha256);
-    res.setHeader('X-CineTrack-Filename', rawName);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.send(buf);
+    const stat = await fsPromises.stat(fullPath);
+    const sha256 = await computeFileSha256Async(fullPath);
+    const contentType = rawName.endsWith('.xlsx')
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'application/json; charset=utf-8';
+
+    await streamFileDownload(res, fullPath, {
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${rawName}"`,
+      'Content-Length': String(stat.size),
+      'X-CineTrack-SHA256': sha256,
+      'X-CineTrack-Filename': rawName,
+      'X-Content-Type-Options': 'nosniff',
+    });
   });
+
+  if (typeof options.registerCustomRoutes === 'function') {
+    options.registerCustomRoutes(app);
+  }
 
   // Unmatched /api/* routes must always return JSON 404 and never fall through to SPA index.html
   app.use('/api', (_req: Request, res: Response) => {
@@ -846,6 +1001,29 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       ok: false,
       code: 'api_not_found',
       status_message: 'API uç noktası bulunamadı.',
+    });
+  });
+
+  // Global error handler (EXT-06): catches uncaught sync/async route errors, redacts secrets, hides stack traces
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const requestId = crypto.randomUUID();
+    const rawMsg = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+    const safeMsg = redactSecrets(rawMsg, [
+      options.githubToken,
+      options.tmdbApiKey,
+      options.authToken,
+    ]);
+    console.error(`[API Error ${requestId}]`, safeMsg);
+    if (res.headersSent) {
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(500).json({
+      ok: false,
+      error: 'internal_error',
+      code: 'internal_error',
+      requestId,
+      status_message: 'Beklenmeyen bir sunucu hatası oluştu.',
     });
   });
 

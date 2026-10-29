@@ -6,6 +6,7 @@ import {
   statSync,
   unlinkSync,
 } from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import {
   normalizeDataDocument,
@@ -25,8 +26,11 @@ import {
   cleanupStaleTempFiles,
   FileWriteSerializer,
   readJsonFileWithRecovery,
+  readJsonFileWithRecoveryAsync,
   tryParseValidJson,
+  tryParseValidJsonAsync,
   writeJsonFileAtomic,
+  writeJsonFileAtomicAsync,
 } from './atomic-json.ts';
 
 export interface StorageOptions {
@@ -50,6 +54,9 @@ export interface BackupMetadata {
 export interface SaveDataOptions {
   expectedRevision?: number | null;
   confirmBulkDelete?: boolean;
+  requirePrecondition?: boolean;
+  forceOverwrite?: boolean;
+  hasInvalidIfMatch?: boolean;
 }
 
 export type SaveDataResult =
@@ -60,10 +67,11 @@ export type SaveDataResult =
     }
   | {
       ok: false;
-      status: 400 | 409 | 413 | 500;
+      status: 400 | 409 | 412 | 413 | 428 | 500;
       code:
         | 'invalid_document'
         | 'revision_conflict'
+        | 'precondition_required'
         | 'sudden_item_drop'
         | 'payload_too_large'
         | 'corrupt_storage';
@@ -81,6 +89,15 @@ export function countTotalItems(doc: DataDocument | null | undefined): number {
     (sum, profile) => sum + (Array.isArray(profile.items) ? profile.items.length : 0),
     0
   );
+}
+
+async function pathExistsAsync(targetPath: string): Promise<boolean> {
+  try {
+    await fsPromises.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function createDataStorage(options: StorageOptions) {
@@ -144,9 +161,54 @@ export function createDataStorage(options: StorageOptions) {
     }
   }
 
+  async function listSortedSnapshotPathsAsync(): Promise<string[]> {
+    if (!(await pathExistsAsync(backupsDir))) return [];
+    try {
+      const files = (await fsPromises.readdir(backupsDir)).filter(
+        (f) => f.startsWith('cinetrack-') && f.endsWith('.json')
+      );
+      const entries: Array<{ fileName: string; fullPath: string; mtimeMs: number }> = [];
+      for (const fileName of files) {
+        const fullPath = path.join(backupsDir, fileName);
+        try {
+          const stat = await fsPromises.stat(fullPath);
+          entries.push({ fileName, fullPath, mtimeMs: stat.mtimeMs });
+        } catch {}
+      }
+      return entries
+        .sort((a, b) => b.mtimeMs - a.mtimeMs || (a.fileName < b.fileName ? 1 : -1))
+        .map((entry) => entry.fullPath);
+    } catch {
+      return [];
+    }
+  }
+
   function readData(): DataDocument {
     const candidateBackups = [dataBackupFile, ...listSortedSnapshotPaths()];
     const recovery = readJsonFileWithRecovery<DataDocument>(dataFile, {
+      backupPaths: candidateBackups,
+      validate: validateRawDocument,
+      label: 'cinetrack-data.json',
+      restoreRecoveredToTarget: true,
+    });
+
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      unrecoverableCorruptionError = null;
+      return recovery.data;
+    }
+
+    if (recovery.status === 'corrupt_unrecoverable') {
+      unrecoverableCorruptionError = recovery.error;
+      return emptyDocument();
+    }
+
+    unrecoverableCorruptionError = null;
+    return emptyDocument();
+  }
+
+  async function readDataAsync(): Promise<DataDocument> {
+    const candidateBackups = [dataBackupFile, ...(await listSortedSnapshotPathsAsync())];
+    const recovery = await readJsonFileWithRecoveryAsync<DataDocument>(dataFile, {
       backupPaths: candidateBackups,
       validate: validateRawDocument,
       label: 'cinetrack-data.json',
@@ -189,11 +251,36 @@ export function createDataStorage(options: StorageOptions) {
     } catch {}
   }
 
+  async function pruneOldSnapshotsAsync(): Promise<void> {
+    if (!(await pathExistsAsync(backupsDir))) return;
+    try {
+      const files = (await fsPromises.readdir(backupsDir)).filter(
+        (f) => f.startsWith('cinetrack-') && f.endsWith('.json')
+      );
+      const validFiles: Array<{ fileName: string; fullPath: string; mtimeMs: number }> = [];
+      for (const fileName of files) {
+        const fullPath = path.join(backupsDir, fileName);
+        try {
+          const stat = await fsPromises.stat(fullPath);
+          const check = await tryParseValidJsonAsync(fullPath, validateRawDocument);
+          if (check.ok) {
+            validFiles.push({ fileName, fullPath, mtimeMs: stat.mtimeMs });
+          }
+        } catch {}
+      }
+      validFiles.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.fileName < b.fileName ? 1 : -1));
+      for (const stale of validFiles.slice(maxSnapshots)) {
+        try {
+          await fsPromises.unlink(stale.fullPath);
+        } catch {}
+      }
+    } catch {}
+  }
+
   function backupExistingData(): void {
     if (!existsSync(dataFile)) return;
     const validCheck = tryParseValidJson(dataFile, validateRawDocument);
     if (!validCheck.ok) {
-      // Bozuk bir ana dosya asla sağlam .bak veya snapshot yedeğinin üzerine kopyalanmaz!
       return;
     }
 
@@ -226,6 +313,42 @@ export function createDataStorage(options: StorageOptions) {
     }
   }
 
+  async function backupExistingDataAsync(): Promise<void> {
+    if (!(await pathExistsAsync(dataFile))) return;
+    const validCheck = await tryParseValidJsonAsync(dataFile, validateRawDocument);
+    if (!validCheck.ok) {
+      return;
+    }
+
+    const parsedExisting = validCheck.data;
+    const profiles = Array.isArray(parsedExisting?.profiles) ? parsedExisting.profiles : [];
+    const worthKeeping =
+      profiles.length > 0 &&
+      (profiles.some((profile) => Array.isArray(profile?.items) && profile.items.length > 0) ||
+        profiles.length > 1);
+
+    if (!worthKeeping) return;
+
+    await fsPromises.copyFile(dataFile, dataBackupFile);
+
+    try {
+      await fsPromises.mkdir(backupsDir, { recursive: true });
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      const rev = Number.isSafeInteger(Number(parsedExisting.revision))
+        ? Number(parsedExisting.revision)
+        : 0;
+      const snapshotName = `cinetrack-${dateStamp}-rev${rev}-${Date.now()}.json`;
+      const snapshotPath = path.join(backupsDir, snapshotName);
+      const serializedExisting = JSON.stringify(parsedExisting, null, 2);
+      await writeJsonFileAtomicAsync(snapshotPath, serializedExisting, {
+        validateParsed: (p) => validateRawDocument(p) !== null,
+      });
+      await pruneOldSnapshotsAsync();
+    } catch (error: any) {
+      console.error('Yedek anlık görüntüsü oluşturulamadı:', error?.message || error);
+    }
+  }
+
   function writeDataAtomic(doc: DataDocument): DataDocument {
     mkdirSync(dataDir, { recursive: true });
     backupExistingData();
@@ -237,9 +360,22 @@ export function createDataStorage(options: StorageOptions) {
     return doc;
   }
 
-  function saveData(rawPayload: unknown, saveOptions: SaveDataOptions = {}): SaveDataResult {
-    // 1. Önce bozuk ve kurtarılamamış bir ana dosya olup olmadığını denetle (sessiz veri kaybını engelle)
-    const current = readData();
+  async function writeDataAtomicAsync(doc: DataDocument): Promise<DataDocument> {
+    await fsPromises.mkdir(dataDir, { recursive: true });
+    await backupExistingDataAsync();
+    const serialized = JSON.stringify(doc, null, 2);
+    await writeJsonFileAtomicAsync(dataFile, serialized, {
+      validateParsed: (p) => validateRawDocument(p) !== null,
+    });
+    unrecoverableCorruptionError = null;
+    return doc;
+  }
+
+  function validateAndPrepareSave(
+    current: DataDocument,
+    rawPayload: unknown,
+    saveOptions: SaveDataOptions
+  ): { ok: true; documentToPersist: DataDocument; incomingItems: number } | SaveDataResult {
     if (unrecoverableCorruptionError) {
       return {
         ok: false,
@@ -249,7 +385,6 @@ export function createDataStorage(options: StorageOptions) {
       };
     }
 
-    // 2. Bayt cinsinden boyut kontrolü (karakter uzunluğu değil, UTF-8 bayt boyutu)
     let rawBytes = 0;
     try {
       rawBytes = measureUtf8Bytes(JSON.stringify(rawPayload ?? null));
@@ -287,20 +422,40 @@ export function createDataStorage(options: StorageOptions) {
     const currentRevision = current.revision ?? 0;
     const expectedRevision = saveOptions.expectedRevision;
 
+    if (saveOptions.hasInvalidIfMatch) {
+      return {
+        ok: false,
+        status: 412,
+        code: 'revision_conflict',
+        message: `Geçersiz If-Match başlığı gönderildi (mevcut rev-${currentRevision}).`,
+        currentRevision,
+        serverDocument: current,
+      };
+    }
+
     if (
       expectedRevision !== undefined &&
       expectedRevision !== null &&
-      Number.isSafeInteger(expectedRevision) &&
-      currentRevision > 0 &&
-      expectedRevision !== currentRevision
+      Number.isSafeInteger(expectedRevision)
     ) {
+      if (expectedRevision !== currentRevision) {
+        return {
+          ok: false,
+          status: currentRevision === 0 ? 412 : 409,
+          code: 'revision_conflict',
+          message: `Sunucuda daha güncel veya farklı bir veri sürümü var (beklenen rev-${expectedRevision}, mevcut rev-${currentRevision}).`,
+          currentRevision,
+          expectedRevision,
+          serverDocument: current,
+        };
+      }
+    } else if (saveOptions.requirePrecondition && !saveOptions.forceOverwrite && currentRevision > 0) {
       return {
         ok: false,
-        status: 409,
-        code: 'revision_conflict',
-        message: `Sunucuda daha güncel bir veri sürümü var (beklenen rev-${expectedRevision}, mevcut rev-${currentRevision}).`,
+        status: 428,
+        code: 'precondition_required',
+        message: `Mevcut sunucu verisinin (rev-${currentRevision}) üzerine koşulsuz yazma engellendi. If-Match başlığı gönderin veya açık üzerine yazma onayı verin.`,
         currentRevision,
-        expectedRevision,
         serverDocument: current,
       };
     }
@@ -343,11 +498,37 @@ export function createDataStorage(options: StorageOptions) {
       };
     }
 
-    writeDataAtomic(documentToPersist);
+    return { ok: true, documentToPersist, incomingItems };
+  }
+
+  function saveData(rawPayload: unknown, saveOptions: SaveDataOptions = {}): SaveDataResult {
+    const current = readData();
+    const prepared = validateAndPrepareSave(current, rawPayload, saveOptions);
+    if (!prepared.ok) {
+      return prepared;
+    }
+    writeDataAtomic(prepared.documentToPersist);
     return {
       ok: true,
-      document: documentToPersist,
-      totalItems: incomingItems,
+      document: prepared.documentToPersist,
+      totalItems: prepared.incomingItems,
+    };
+  }
+
+  async function saveDataAsync(
+    rawPayload: unknown,
+    saveOptions: SaveDataOptions = {}
+  ): Promise<SaveDataResult> {
+    const current = await readDataAsync();
+    const prepared = validateAndPrepareSave(current, rawPayload, saveOptions);
+    if (!prepared.ok) {
+      return prepared;
+    }
+    await writeDataAtomicAsync(prepared.documentToPersist);
+    return {
+      ok: true,
+      document: prepared.documentToPersist,
+      totalItems: prepared.incomingItems,
     };
   }
 
@@ -355,7 +536,7 @@ export function createDataStorage(options: StorageOptions) {
     rawPayload: unknown,
     saveOptions: SaveDataOptions = {}
   ): Promise<SaveDataResult> {
-    return writeSerializer.run(dataFile, () => saveData(rawPayload, saveOptions));
+    return writeSerializer.run(dataFile, () => saveDataAsync(rawPayload, saveOptions));
   }
 
   function listBackups(): BackupMetadata[] {
@@ -408,6 +589,56 @@ export function createDataStorage(options: StorageOptions) {
     return result.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
 
+  async function listBackupsAsync(): Promise<BackupMetadata[]> {
+    const result: BackupMetadata[] = [];
+    if (await pathExistsAsync(backupsDir)) {
+      try {
+        const files = (await fsPromises.readdir(backupsDir)).filter(
+          (f) => f.startsWith('cinetrack-') && f.endsWith('.json')
+        );
+        for (const fileName of files) {
+          const fullPath = path.join(backupsDir, fileName);
+          try {
+            const stat = await fsPromises.stat(fullPath);
+            const check = await tryParseValidJsonAsync(fullPath, validateRawDocument);
+            if (!check.ok) continue;
+            const doc = check.data;
+            result.push({
+              id: fileName,
+              fileName,
+              createdAt: doc.updatedAt || new Date(stat.mtimeMs).toISOString(),
+              sizeBytes: stat.size,
+              revision: doc.revision ?? 0,
+              profilesCount: doc.profiles.length,
+              itemsCount: countTotalItems(doc),
+            });
+          } catch {}
+        }
+      } catch {}
+    }
+
+    if (await pathExistsAsync(dataBackupFile)) {
+      try {
+        const stat = await fsPromises.stat(dataBackupFile);
+        const check = await tryParseValidJsonAsync(dataBackupFile, validateRawDocument);
+        if (check.ok) {
+          const doc = check.data;
+          result.push({
+            id: 'cinetrack-data.bak.json',
+            fileName: 'cinetrack-data.bak.json',
+            createdAt: doc.updatedAt || new Date(stat.mtimeMs).toISOString(),
+            sizeBytes: stat.size,
+            revision: doc.revision ?? 0,
+            profilesCount: doc.profiles.length,
+            itemsCount: countTotalItems(doc),
+          });
+        }
+      } catch {}
+    }
+
+    return result.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
+
   function restoreBackup(backupId: string): DataDocument | null {
     const safeName = path.basename(String(backupId || '').trim());
     if (!safeName || !safeName.endsWith('.json')) return null;
@@ -433,15 +664,46 @@ export function createDataStorage(options: StorageOptions) {
     return restoredDoc;
   }
 
+  async function restoreBackupAsync(backupId: string): Promise<DataDocument | null> {
+    const safeName = path.basename(String(backupId || '').trim());
+    if (!safeName || !safeName.endsWith('.json')) return null;
+
+    const targetPath =
+      safeName === 'cinetrack-data.bak.json' ? dataBackupFile : path.join(backupsDir, safeName);
+    if (!(await pathExistsAsync(targetPath))) return null;
+
+    const backupCheck = await tryParseValidJsonAsync(targetPath, validateRawDocument);
+    if (!backupCheck.ok) {
+      return null;
+    }
+
+    const backupDoc = backupCheck.data;
+    const current = await readDataAsync();
+    const nextRevision = (current.revision ?? 0) + 1;
+    const restoredDoc: DataDocument = {
+      ...backupDoc,
+      revision: nextRevision,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeDataAtomicAsync(restoredDoc);
+    return restoredDoc;
+  }
+
+  function restoreBackupSerialized(backupId: string): Promise<DataDocument | null> {
+    return writeSerializer.run(dataFile, () => restoreBackupAsync(backupId));
+  }
+
   function createSafetySnapshotSerialized(): Promise<void> {
-    return writeSerializer.run(dataFile, () => {
-      backupExistingData();
-    });
+    return writeSerializer.run(dataFile, () => backupExistingDataAsync());
   }
 
   function applySyncedDocumentSerialized(rawPayload: unknown): Promise<SaveDataResult> {
     return writeSerializer.run(dataFile, () =>
-      saveData(rawPayload, { expectedRevision: null, confirmBulkDelete: true })
+      saveDataAsync(rawPayload, {
+        expectedRevision: null,
+        confirmBulkDelete: true,
+        forceOverwrite: true,
+      })
     );
   }
 
@@ -452,11 +714,15 @@ export function createDataStorage(options: StorageOptions) {
     maxDataBytes,
     hasUnrecoverableCorruption: () => Boolean(unrecoverableCorruptionError),
     readData,
+    readDataAsync,
     saveData,
+    saveDataAsync,
     saveDataSerialized,
     createSafetySnapshotSerialized,
     applySyncedDocumentSerialized,
     listBackups,
+    listBackupsAsync,
     restoreBackup,
+    restoreBackupSerialized,
   };
 }

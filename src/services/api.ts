@@ -22,13 +22,14 @@ export interface ServerBackupMetadata {
 }
 
 export interface ServerConflictDetail {
-  code: 'revision_conflict' | 'sudden_item_drop';
+  code: 'revision_conflict' | 'precondition_required' | 'sudden_item_drop';
   message: string;
   currentRevision?: number;
   expectedRevision?: number;
   existingItems?: number;
   incomingItems?: number;
   serverDocument?: DataDocument;
+  localPayload?: DataDocument;
 }
 
 export interface PushServerDataResult {
@@ -374,14 +375,16 @@ export async function fetchServerData(): Promise<DataDocument | null> {
 
 export async function pushServerDataDetailed(
   payload: DataDocument,
-  options: { baseRevision?: number | null; confirmBulkDelete?: boolean } = {}
+  options: { baseRevision?: number | null; confirmBulkDelete?: boolean; forceOverwrite?: boolean } = {}
 ): Promise<PushServerDataResult> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
   const revToCheck = options.baseRevision !== undefined ? options.baseRevision : lastKnownServerRevision;
-  if (typeof revToCheck === 'number' && revToCheck > 0) {
+  if (options.forceOverwrite) {
+    headers['X-CineTrack-Force-Write'] = '1';
+  } else if (typeof revToCheck === 'number' && Number.isSafeInteger(revToCheck) && revToCheck >= 0) {
     headers['If-Match'] = `"rev-${revToCheck}"`;
   }
   if (options.confirmBulkDelete) {
@@ -415,22 +418,27 @@ export async function pushServerDataDetailed(
     }
 
     if (
-      response.status === 409 &&
-      (bodyJson?.code === 'revision_conflict' || bodyJson?.code === 'sudden_item_drop')
+      (response.status === 409 || response.status === 412 || response.status === 428) &&
+      (bodyJson?.code === 'revision_conflict' ||
+        bodyJson?.code === 'precondition_required' ||
+        bodyJson?.code === 'sudden_item_drop' ||
+        response.status === 412 ||
+        response.status === 428)
     ) {
       return {
         ok: false,
-        status: 409,
+        status: response.status,
         conflict: {
-          code: bodyJson.code,
-          message: bodyJson.status_message || 'Sunucu veri çakışması algılandı.',
-          currentRevision: bodyJson.currentRevision,
-          expectedRevision: bodyJson.expectedRevision,
-          existingItems: bodyJson.existingItems,
-          incomingItems: bodyJson.incomingItems,
-          serverDocument: bodyJson.serverDocument,
+          code: bodyJson?.code || 'revision_conflict',
+          message: bodyJson?.status_message || 'Sunucu veri çakışması algılandı.',
+          currentRevision: bodyJson?.currentRevision,
+          expectedRevision: bodyJson?.expectedRevision,
+          existingItems: bodyJson?.existingItems,
+          incomingItems: bodyJson?.incomingItems,
+          serverDocument: bodyJson?.serverDocument,
+          localPayload: payload,
         },
-        errorMessage: bodyJson.status_message,
+        errorMessage: bodyJson?.status_message,
       };
     }
 

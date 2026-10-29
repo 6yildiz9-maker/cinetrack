@@ -4,7 +4,14 @@ cd /d "%~dp0"
 
 where node >nul 2>nul
 if errorlevel 1 (
-  echo Node.js bulunamadi. Once https://nodejs.org adresinden Node.js yukleyin.
+  echo Node.js bulunamadi. Once https://nodejs.org adresinden Node.js 22.18 veya uzeri surumu yukleyin.
+  pause
+  exit /b 1
+)
+
+node -e "const [maj,min]=process.versions.node.split('.').map(Number);process.exit(maj>22||(maj===22&&min>=18)?0:1)" >nul 2>nul
+if errorlevel 1 (
+  echo Node.js 22.18.0 veya uzeri surum gereklidir. Lutfen https://nodejs.org adresinden guncelleyin.
   pause
   exit /b 1
 )

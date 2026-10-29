@@ -9,6 +9,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,

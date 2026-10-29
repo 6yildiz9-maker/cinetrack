@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 
 export interface SecurityOptions {
@@ -7,11 +8,22 @@ export interface SecurityOptions {
    */
   authToken?: string;
   /**
-   * Whether GET /api/data also requires CINETRACK_TOKEN when configured. Defaults to false so local read works unless strict.
+   * Whether GET /api/data (or other guarded GET routes) also requires CINETRACK_TOKEN when configured.
    */
   requireTokenForReads?: boolean;
   /**
-   * Maximum /api/tmdb requests per IP within rateLimitWindowMs. Defaults to 180.
+   * Effective bind host of the server (defaults to '127.0.0.1').
+   * When bound to a non-loopback address without CINETRACK_TOKEN, mutations fail closed with 503 auth_required.
+   */
+  bindHost?: string;
+  /**
+   * Whether X-Forwarded-Host and X-Forwarded-For headers from a reverse proxy are trusted.
+   * Defaults to false unless CINETRACK_TRUST_PROXY=true or app 'trust proxy' is enabled.
+   */
+  trustProxy?: boolean;
+  /**
+   * Maximum /api/tmdb requests per IP within rateLimitWindowMs.
+   * Defaults to 0 (disabled) on loopback and 60 req/min on non-loopback hosts.
    */
   rateLimitMaxRequests?: number;
   /**
@@ -36,14 +48,30 @@ function extractRequestToken(req: Request): string {
   return '';
 }
 
+export function timingSafeTokenMatches(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const digestProvided = crypto.createHash('sha256').update(provided, 'utf8').digest();
+  const digestExpected = crypto.createHash('sha256').update(expected, 'utf8').digest();
+  return crypto.timingSafeEqual(digestProvided, digestExpected);
+}
+
 function normalizeHostValue(raw: string | undefined): string {
   if (!raw) return '';
   return raw.split(',')[0].trim().toLowerCase();
 }
 
 export function isLoopbackHostname(hostname: string): boolean {
-  const clean = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const clean = hostname.replace(/^\[|\]$/g, '').trim().toLowerCase();
   return clean === 'localhost' || clean === '127.0.0.1' || clean === '::1';
+}
+
+function isTrustedProxyEnabled(
+  req: Request,
+  options?: Pick<SecurityOptions, 'trustProxy'>
+): boolean {
+  if (options?.trustProxy !== undefined) return options.trustProxy;
+  if (process.env.CINETRACK_TRUST_PROXY?.trim().toLowerCase() === 'true') return true;
+  return Boolean(req.app?.get?.('trust proxy'));
 }
 
 /**
@@ -51,7 +79,11 @@ export function isLoopbackHostname(hostname: string): boolean {
  * Allows non-browser CLI/server requests that omit Origin & Referer, and allows loopback equivalence
  * (localhost <-> 127.0.0.1 on the same port) for local desktop usage.
  */
-export function verifyOriginGuard(req: Request, allowedOrigins: string[] = []): { ok: boolean; reason?: string } {
+export function verifyOriginGuard(
+  req: Request,
+  allowedOrigins: string[] = [],
+  options?: Pick<SecurityOptions, 'trustProxy'>
+): { ok: boolean; reason?: string } {
   const method = req.method.toUpperCase();
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
     return { ok: true };
@@ -77,12 +109,17 @@ export function verifyOriginGuard(req: Request, allowedOrigins: string[] = []): 
     return { ok: false, reason: 'Origin başlığı çözümlenemedi.' };
   }
 
-  const normalizedAllowed = new Set(allowedOrigins.map((item) => item.trim().toLowerCase()).filter(Boolean));
+  const normalizedAllowed = new Set(
+    allowedOrigins.map((item) => item.trim().toLowerCase()).filter(Boolean)
+  );
   if (normalizedAllowed.has(parsedOrigin.origin.toLowerCase())) {
     return { ok: true };
   }
 
-  const forwardedHost = normalizeHostValue(req.headers['x-forwarded-host'] as string | undefined);
+  const trustProxy = isTrustedProxyEnabled(req, options);
+  const forwardedHost = trustProxy
+    ? normalizeHostValue(req.headers['x-forwarded-host'] as string | undefined)
+    : '';
   const hostHeader = forwardedHost || normalizeHostValue(req.headers.host);
   if (!hostHeader) {
     return { ok: true };
@@ -118,7 +155,7 @@ export function verifyOriginGuard(req: Request, allowedOrigins: string[] = []): 
 export function createOriginMiddleware(options: SecurityOptions = {}) {
   const allowedOrigins = options.allowedOrigins || [];
   return (req: Request, res: Response, next: NextFunction): void => {
-    const check = verifyOriginGuard(req, allowedOrigins);
+    const check = verifyOriginGuard(req, allowedOrigins, { trustProxy: options.trustProxy });
     if (!check.ok) {
       res.status(403).json({
         status_message: check.reason || 'Kaynak doğrulaması başarısız.',
@@ -133,19 +170,31 @@ export function createOriginMiddleware(options: SecurityOptions = {}) {
 export function createTokenAuthMiddleware(options: SecurityOptions = {}) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const configuredToken = (options.authToken ?? process.env.CINETRACK_TOKEN ?? '').trim();
+    const bindHost = (options.bindHost ?? '127.0.0.1').trim() || '127.0.0.1';
+    const isRead = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+
     if (!configuredToken) {
+      if (!isLoopbackHostname(bindHost) && (!isRead || options.requireTokenForReads)) {
+        res.status(503).json({
+          ok: false,
+          error: 'auth_required',
+          code: 'auth_required',
+          status_message:
+            'Uzaktan erişim modunda mutasyonlar için CINETRACK_TOKEN yapılandırması zorunludur.',
+        });
+        return;
+      }
       next();
       return;
     }
 
-    const isRead = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
     if (isRead && !options.requireTokenForReads) {
       next();
       return;
     }
 
     const provided = extractRequestToken(req);
-    if (!provided || provided !== configuredToken) {
+    if (!timingSafeTokenMatches(provided, configuredToken)) {
       res.status(401).json({
         status_message: 'Yetkisiz istek: Geçerli CINETRACK_TOKEN gerekli.',
         code: 'unauthorized_token',
@@ -198,10 +247,21 @@ export class SlidingWindowRateLimiter {
 }
 
 export function createTmdbRateLimitMiddleware(options: SecurityOptions = {}) {
-  const envMax = Number(process.env.CINETRACK_TMDB_RATE_LIMIT) || 0;
-  const maxReq = options.rateLimitMaxRequests ?? (envMax > 0 ? envMax : 0);
+  const bindHost = (options.bindHost ?? '127.0.0.1').trim() || '127.0.0.1';
+  const rawEnvLimit = process.env.CINETRACK_TMDB_RATE_LIMIT;
+  const parsedEnvLimit =
+    rawEnvLimit !== undefined && rawEnvLimit.trim() !== '' ? Number(rawEnvLimit) : NaN;
 
-  // Localhost personal default: disabled (no-op) unless explicitly enabled via options or env
+  const maxReq =
+    options.rateLimitMaxRequests !== undefined
+      ? options.rateLimitMaxRequests
+      : Number.isFinite(parsedEnvLimit) && parsedEnvLimit >= 0
+        ? parsedEnvLimit
+        : !isLoopbackHostname(bindHost)
+          ? 60
+          : 0;
+
+  // Localhost personal default: disabled (no-op) unless explicitly enabled via options, env, or non-loopback host
   if (maxReq <= 0) {
     return (_req: Request, _res: Response, next: NextFunction): void => {
       next();
@@ -216,8 +276,15 @@ export function createTmdbRateLimitMiddleware(options: SecurityOptions = {}) {
   const limiter = new SlidingWindowRateLimiter(maxReq, windowMs);
 
   return (req: Request, res: Response, next: NextFunction): void => {
-    const forwarded = typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'] : '';
-    const clientIp = (forwarded.split(',')[0] || req.ip || req.socket?.remoteAddress || 'local').trim();
+    const trustProxy = isTrustedProxyEnabled(req, options);
+    const forwarded =
+      trustProxy && typeof req.headers['x-forwarded-for'] === 'string'
+        ? req.headers['x-forwarded-for']
+        : '';
+    const clientIp = trustProxy
+      ? (forwarded.split(',')[0] || req.ip || req.socket?.remoteAddress || 'local').trim()
+      : (req.socket?.remoteAddress || req.ip || 'local').trim();
+
     const verdict = limiter.check(clientIp);
     res.setHeader('X-RateLimit-Limit', String(maxReq));
     res.setHeader('X-RateLimit-Remaining', String(verdict.remaining));

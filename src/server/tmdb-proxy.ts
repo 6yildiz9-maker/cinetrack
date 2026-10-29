@@ -24,7 +24,19 @@ export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'watch_region',
 ]);
 
+export const MAX_TMDB_UPSTREAM_BYTES = 10 * 1024 * 1024;
+
+class TmdbUpstreamTooLargeError extends Error {
+  public readonly code = 'upstream_payload_too_large';
+  constructor(message: string) {
+    super(message);
+    this.name = 'TmdbUpstreamTooLargeError';
+  }
+}
+
 export function validateTmdbParam(key: string, value: string): string {
+  if (key === 'language' && !/^[a-z]{2}(?:-[A-Z]{2})?$/.test(value))
+    return 'Dil parametresi geçersiz.';
   if (key === 'query' && value.length > 120) return 'Arama ifadesi çok uzun.';
   if (key === 'with_genres' && !/^\d+(?:\|\d+)*$/.test(value)) return 'Tür kimlikleri geçersiz.';
   if (key === 'sort_by' && !/^(?:popularity|vote_average|release_date)\.(?:asc|desc)$/.test(value))
@@ -599,8 +611,57 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
       if (!fetchPromise) {
         fetchPromise = (async () => {
           const upstream = await fetchImpl(target.toString(), { signal: AbortSignal.timeout(10_000) });
-          const body = await upstream.text();
-          const contentType = upstream.headers.get('Content-Type') || 'application/json; charset=utf-8';
+          const contentLengthRaw =
+            upstream.headers?.get?.('Content-Length') ??
+            upstream.headers?.get?.('content-length') ??
+            null;
+          if (contentLengthRaw !== null && Number(contentLengthRaw) > MAX_TMDB_UPSTREAM_BYTES) {
+            try {
+              await upstream.body?.cancel?.();
+            } catch {}
+            throw new TmdbUpstreamTooLargeError(
+              `TMDB yanıt boyutu izin verilen sınırı (10 MiB) aşıyor (${contentLengthRaw} bayt).`
+            );
+          }
+
+          let body = '';
+          if (upstream.body && typeof upstream.body.getReader === 'function') {
+            const reader = upstream.body.getReader();
+            const chunks: Uint8Array[] = [];
+            let totalBytes = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) {
+                totalBytes += value.byteLength;
+                if (totalBytes > MAX_TMDB_UPSTREAM_BYTES) {
+                  try {
+                    await reader.cancel();
+                  } catch {}
+                  throw new TmdbUpstreamTooLargeError(
+                    'TMDB akış yanıtı izin verilen azami boyutu (10 MiB) aştı.'
+                  );
+                }
+                chunks.push(value);
+              }
+            }
+            const merged = new Uint8Array(totalBytes);
+            let offset = 0;
+            for (const c of chunks) {
+              merged.set(c, offset);
+              offset += c.byteLength;
+            }
+            body = new TextDecoder('utf-8').decode(merged);
+          } else {
+            body = await upstream.text();
+            if (Buffer.byteLength(body, 'utf8') > MAX_TMDB_UPSTREAM_BYTES) {
+              throw new TmdbUpstreamTooLargeError(
+                'TMDB yanıt gövdesi izin verilen azami boyutu (10 MiB) aştı.'
+              );
+            }
+          }
+
+          const contentType = upstream.headers?.get?.('Content-Type') || 'application/json; charset=utf-8';
           if (upstream.ok) {
             tmdbCache.delete(cacheKey);
             tmdbCache.set(cacheKey, { at: Date.now(), body, contentType, ttl, source: 'live' });

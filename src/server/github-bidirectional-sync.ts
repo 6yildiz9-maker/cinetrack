@@ -11,6 +11,7 @@ import {
   isItemSaved,
   makeMediaKey,
   normalizeDataDocument,
+  normalizeDeletedKeys,
   normalizeFavoriteActors,
   normalizePreferences,
   RECOMMENDATION_WEIGHTS_V3,
@@ -449,6 +450,7 @@ function stripUserDataVolatileFields(doc: DataDocument): Record<string, any> {
         reminders: false,
         notified: [],
       };
+      const normalizedTombstones = normalizeDeletedKeys(p.deleted_keys);
       return {
         id: p.id,
         name: p.name,
@@ -463,6 +465,9 @@ function stripUserDataVolatileFields(doc: DataDocument): Record<string, any> {
         favoriteActors: [...(p.favoriteActors || [])]
           .map((a) => ({ id: a.id, name: a.name, profile_path: a.profile_path ?? null }))
           .sort((a, b) => a.id - b.id),
+        ...(Object.keys(normalizedTombstones).length > 0
+          ? { deleted_keys: normalizedTombstones }
+          : {}),
         items,
       };
     });
@@ -708,6 +713,22 @@ export function reconcileUserDataDocumentsLossless(
       remoteItemsMap.set(makeMediaKey(it), it);
     }
 
+    const lpDeleted = normalizeDeletedKeys(lp.deleted_keys);
+    const rpDeleted = normalizeDeletedKeys(rp.deleted_keys);
+    const mergedDeletedKeys: Record<string, string> = { ...lpDeleted };
+    for (const [delKey, delIso] of Object.entries(rpDeleted)) {
+      const existingIso = mergedDeletedKeys[delKey];
+      if (!existingIso || Date.parse(delIso) > Date.parse(existingIso)) {
+        mergedDeletedKeys[delKey] = delIso;
+      }
+    }
+
+    const getSavedItemTimestampMs = (item: SavedItem): number => {
+      const candidate = item.updatedAt || item.addedAt || item.firstAddedAt || '';
+      if (!candidate) return NaN;
+      return Date.parse(candidate);
+    };
+
     const allItemKeys = Array.from(
       new Set<string>([...localItemsMap.keys(), ...remoteItemsMap.keys()])
     );
@@ -717,14 +738,45 @@ export function reconcileUserDataDocumentsLossless(
       const li = localItemsMap.get(key);
       const ri = remoteItemsMap.get(key);
       if (li && !ri) {
-        combinedItems.push(li);
-        addedToRemote++;
+        const remoteTombstoneIso = rpDeleted[key];
+        if (remoteTombstoneIso) {
+          const liMs = getSavedItemTimestampMs(li);
+          const delMs = Date.parse(remoteTombstoneIso);
+          if (Number.isFinite(liMs) && Number.isFinite(delMs) && liMs > delMs) {
+            combinedItems.push(li);
+            delete mergedDeletedKeys[key];
+            addedToRemote++;
+          } else {
+            mergedDeletedKeys[key] = remoteTombstoneIso;
+            updatedItems++;
+          }
+        } else {
+          combinedItems.push(li);
+          delete mergedDeletedKeys[key];
+          addedToRemote++;
+        }
       } else if (ri && !li) {
-        combinedItems.push(ri);
-        addedToLocal++;
+        const localTombstoneIso = lpDeleted[key];
+        if (localTombstoneIso) {
+          const riMs = getSavedItemTimestampMs(ri);
+          const delMs = Date.parse(localTombstoneIso);
+          if (Number.isFinite(riMs) && Number.isFinite(delMs) && riMs > delMs) {
+            combinedItems.push(ri);
+            delete mergedDeletedKeys[key];
+            addedToLocal++;
+          } else {
+            mergedDeletedKeys[key] = localTombstoneIso;
+            updatedItems++;
+          }
+        } else {
+          combinedItems.push(ri);
+          delete mergedDeletedKeys[key];
+          addedToLocal++;
+        }
       } else if (li && ri) {
         const res = mergeTwoSavedItemsLossless(profileId, li, ri);
         combinedItems.push(res.merged);
+        delete mergedDeletedKeys[key];
         if (res.conflict) conflicts.push(res.conflict);
         if (res.changedLocal || res.changedRemote) updatedItems++;
       }
@@ -797,6 +849,7 @@ export function reconcileUserDataDocumentsLossless(
       preferences: mergedPrefs,
       items: dedupeItems(combinedItems),
       favoriteActors: Array.from(actorMap.values()),
+      ...(Object.keys(mergedDeletedKeys).length > 0 ? { deleted_keys: mergedDeletedKeys } : {}),
       isDemo: Boolean(lp.isDemo && rp.isDemo),
     });
   }
@@ -1568,8 +1621,9 @@ interface ParsedSideBundle {
 export function compareSyncSides(
   localBundle: ParsedSideBundle,
   remoteBundle: ParsedSideBundle,
-  options: { includePersonalFiles: boolean }
+  options: { includePersonalFiles: boolean; includeCatalogFiles?: boolean }
 ): SyncComparisonSummary {
+  const includeCatalog = options.includeCatalogFiles !== false;
   const allPaths = new Set<string>([
     ...Object.keys(localBundle.summary.files),
     ...Object.keys(remoteBundle.summary.files),
@@ -1588,6 +1642,7 @@ export function compareSyncSides(
     const rf = remoteBundle.summary.files[repoPath];
     const personal = Boolean(lf?.personal ?? rf?.personal);
     if (personal && !options.includePersonalFiles) continue;
+    if (!personal && !includeCatalog) continue;
 
     const lExists = Boolean(lf?.exists);
     const rExists = Boolean(rf?.exists);
@@ -1648,35 +1703,37 @@ export function compareSyncSides(
   }
 
   // Katalog bazında farklı kayıt sayısını doğrudan anahtar farkından hesapla
-  const allMovieKeys = new Set([
-    ...Object.keys(localBundle.movies),
-    ...Object.keys(remoteBundle.movies),
-  ]);
-  for (const k of allMovieKeys) {
-    const lm = localBundle.movies[k];
-    const rm = remoteBundle.movies[k];
-    if (!lm || !rm) {
-      differentRecordsCount++;
-    } else {
-      const ls = stringifyDeterministic({ ...lm, firstStoredAt: '', lastUpdatedAt: '' });
-      const rs = stringifyDeterministic({ ...rm, firstStoredAt: '', lastUpdatedAt: '' });
-      if (ls !== rs) differentRecordsCount++;
+  if (includeCatalog) {
+    const allMovieKeys = new Set([
+      ...Object.keys(localBundle.movies),
+      ...Object.keys(remoteBundle.movies),
+    ]);
+    for (const k of allMovieKeys) {
+      const lm = localBundle.movies[k];
+      const rm = remoteBundle.movies[k];
+      if (!lm || !rm) {
+        differentRecordsCount++;
+      } else {
+        const ls = stringifyDeterministic({ ...lm, firstStoredAt: '', lastUpdatedAt: '' });
+        const rs = stringifyDeterministic({ ...rm, firstStoredAt: '', lastUpdatedAt: '' });
+        if (ls !== rs) differentRecordsCount++;
+      }
     }
-  }
 
-  const allTvKeys = new Set([
-    ...Object.keys(localBundle.tv),
-    ...Object.keys(remoteBundle.tv),
-  ]);
-  for (const k of allTvKeys) {
-    const lt = localBundle.tv[k];
-    const rt = remoteBundle.tv[k];
-    if (!lt || !rt) {
-      differentRecordsCount++;
-    } else {
-      const ls = stringifyDeterministic({ ...lt, firstStoredAt: '', lastUpdatedAt: '' });
-      const rs = stringifyDeterministic({ ...rt, firstStoredAt: '', lastUpdatedAt: '' });
-      if (ls !== rs) differentRecordsCount++;
+    const allTvKeys = new Set([
+      ...Object.keys(localBundle.tv),
+      ...Object.keys(remoteBundle.tv),
+    ]);
+    for (const k of allTvKeys) {
+      const lt = localBundle.tv[k];
+      const rt = remoteBundle.tv[k];
+      if (!lt || !rt) {
+        differentRecordsCount++;
+      } else {
+        const ls = stringifyDeterministic({ ...lt, firstStoredAt: '', lastUpdatedAt: '' });
+        const rs = stringifyDeterministic({ ...rt, firstStoredAt: '', lastUpdatedAt: '' });
+        if (ls !== rs) differentRecordsCount++;
+      }
     }
   }
 
@@ -1764,12 +1821,28 @@ export interface BidirectionalSyncDependencies {
     branch: string;
     isPublicRepo: boolean;
     allowPublicPersonalSync?: boolean;
+    allowPublicCatalogSync?: boolean;
   };
   onSyncCompleted?: (info: {
     report: BidirectionalSyncReport;
     lastRemoteSummary: SyncSideSummary | null;
     lastComparison: SyncComparisonSummary | null;
   }) => void;
+}
+
+function buildBlockedPublicPaths(includeCatalog: boolean, includePersonal: boolean): string[] {
+  const blocked: string[] = [];
+  if (!includeCatalog) {
+    blocked.push(
+      'data/catalog/manifest.json',
+      'data/catalog/movies.json',
+      'data/catalog/tv.json'
+    );
+  }
+  if (!includePersonal) {
+    blocked.push('data/cinetrack-data.json', 'data/profiles/*');
+  }
+  return blocked;
 }
 
 export class GitHubBidirectionalSyncManager {
@@ -2415,12 +2488,17 @@ export class GitHubBidirectionalSyncManager {
 
   private async inspectRemoteSide(
     cfg: { token: string; owner: string; repo: string; branch: string },
-    options: { includePersonalFiles: boolean; localProfilePaths: string[] }
+    options: {
+      includePersonalFiles: boolean;
+      includeCatalogFiles?: boolean;
+      localProfilePaths: string[];
+    }
   ): Promise<{
     bundle: ParsedSideBundle;
     rawRemoteContents: Record<string, { content: string; sha: string }>;
     transportFailed: boolean;
   }> {
+    const includeCatalog = options.includeCatalogFiles !== false;
     const inspectedAt = new Date().toISOString();
     const files: Record<string, SyncFileInspection> = {};
     const errors: SyncErrorRecord[] = [];
@@ -2433,175 +2511,178 @@ export class GitHubBidirectionalSyncManager {
     let userData: DataDocument | null = null;
     const derivedProfiles: Record<string, DerivedProfileDocument> = {};
 
-    // 1. movies.json
-    const moviesRes = await this.fetchRemoteFileRaw('data/catalog/movies.json', cfg);
-    if (!moviesRes.ok) {
-      transportFailed = true;
-      errors.push(moviesRes.error);
-      files['data/catalog/movies.json'] = {
-        repoPath: 'data/catalog/movies.json',
-        category: 'catalog_movies',
-        personal: false,
-        exists: false,
-        valid: false,
-        sizeBytes: 0,
-        rawFileHash: null,
-        semanticHash: null,
-        recordCount: 0,
-        uniqueKeyCount: 0,
-        error: moviesRes.error.message,
-        errorCategory: moviesRes.error.category,
-      };
-    } else if (!moviesRes.exists) {
-      files['data/catalog/movies.json'] = {
-        repoPath: 'data/catalog/movies.json',
-        category: 'catalog_movies',
-        personal: false,
-        exists: false,
-        valid: true,
-        sizeBytes: 0,
-        rawFileHash: null,
-        semanticHash: null,
-        recordCount: 0,
-        uniqueKeyCount: 0,
-      };
-    } else {
-      rawRemoteContents['data/catalog/movies.json'] = {
-        content: moviesRes.content,
-        sha: moviesRes.sha,
-      };
-      const inspected = inspectCatalogRawContent(
-        'data/catalog/movies.json',
-        moviesRes.content,
-        'movie',
-        this.maxBytes,
-        moviesRes.sha
-      );
-      files['data/catalog/movies.json'] = inspected.inspection;
-      if (inspected.parsedMap) movies = inspected.parsedMap;
-      if (!inspected.inspection.valid && inspected.inspection.error) {
-        errors.push({
-          repoPath: 'data/catalog/movies.json',
-          category: inspected.inspection.errorCategory || 'corrupt_remote_json',
-          message: `data/catalog/movies.json: ${inspected.inspection.error}`,
-        });
-      }
-    }
-
-    // 2. tv.json
-    const tvRes = await this.fetchRemoteFileRaw('data/catalog/tv.json', cfg);
-    if (!tvRes.ok) {
-      transportFailed = true;
-      errors.push(tvRes.error);
-      files['data/catalog/tv.json'] = {
-        repoPath: 'data/catalog/tv.json',
-        category: 'catalog_tv',
-        personal: false,
-        exists: false,
-        valid: false,
-        sizeBytes: 0,
-        rawFileHash: null,
-        semanticHash: null,
-        recordCount: 0,
-        uniqueKeyCount: 0,
-        error: tvRes.error.message,
-        errorCategory: tvRes.error.category,
-      };
-    } else if (!tvRes.exists) {
-      files['data/catalog/tv.json'] = {
-        repoPath: 'data/catalog/tv.json',
-        category: 'catalog_tv',
-        personal: false,
-        exists: false,
-        valid: true,
-        sizeBytes: 0,
-        rawFileHash: null,
-        semanticHash: null,
-        recordCount: 0,
-        uniqueKeyCount: 0,
-      };
-    } else {
-      rawRemoteContents['data/catalog/tv.json'] = { content: tvRes.content, sha: tvRes.sha };
-      const inspected = inspectCatalogRawContent(
-        'data/catalog/tv.json',
-        tvRes.content,
-        'tv',
-        this.maxBytes,
-        tvRes.sha
-      );
-      files['data/catalog/tv.json'] = inspected.inspection;
-      if (inspected.parsedMap) tv = inspected.parsedMap;
-      if (!inspected.inspection.valid && inspected.inspection.error) {
-        errors.push({
-          repoPath: 'data/catalog/tv.json',
-          category: inspected.inspection.errorCategory || 'corrupt_remote_json',
-          message: `data/catalog/tv.json: ${inspected.inspection.error}`,
-        });
-      }
-    }
-
-    // 3. manifest.json
     let manifestValid = true;
     let manifestMismatchReason: string | undefined;
-    const manifestRes = await this.fetchRemoteFileRaw('data/catalog/manifest.json', cfg);
-    if (!manifestRes.ok) {
-      transportFailed = true;
-      errors.push(manifestRes.error);
-      manifestValid = false;
-      files['data/catalog/manifest.json'] = {
-        repoPath: 'data/catalog/manifest.json',
-        category: 'catalog_manifest',
-        personal: false,
-        exists: false,
-        valid: false,
-        sizeBytes: 0,
-        rawFileHash: null,
-        semanticHash: null,
-        recordCount: 0,
-        uniqueKeyCount: 0,
-        error: manifestRes.error.message,
-        errorCategory: manifestRes.error.category,
-      };
-    } else if (!manifestRes.exists) {
-      const hasRemoteCatalog = Object.keys(movies).length > 0 || Object.keys(tv).length > 0;
-      manifestValid = !hasRemoteCatalog;
-      manifestMismatchReason = hasRemoteCatalog
-        ? "GitHub'da katalog dosyaları mevcut ancak manifest.json eksik"
-        : undefined;
-      files['data/catalog/manifest.json'] = {
-        repoPath: 'data/catalog/manifest.json',
-        category: 'catalog_manifest',
-        personal: false,
-        exists: false,
-        valid: !hasRemoteCatalog,
-        sizeBytes: 0,
-        rawFileHash: null,
-        semanticHash: null,
-        recordCount: 0,
-        uniqueKeyCount: 0,
-        ...(hasRemoteCatalog
-          ? {
-              error: manifestMismatchReason,
-              errorCategory: 'schema_mismatch' as const,
-            }
-          : {}),
-      };
-    } else {
-      rawRemoteContents['data/catalog/manifest.json'] = {
-        content: manifestRes.content,
-        sha: manifestRes.sha,
-      };
-      const inspected = inspectManifestRawContent(
-        manifestRes.content,
-        movies,
-        tv,
-        this.maxBytes,
-        manifestRes.sha
-      );
-      files['data/catalog/manifest.json'] = inspected.inspection;
-      manifest = inspected.manifest || null;
-      manifestValid = inspected.manifestConsistent;
-      manifestMismatchReason = inspected.mismatchReason;
+
+    if (includeCatalog) {
+      // 1. movies.json
+      const moviesRes = await this.fetchRemoteFileRaw('data/catalog/movies.json', cfg);
+      if (!moviesRes.ok) {
+        transportFailed = true;
+        errors.push(moviesRes.error);
+        files['data/catalog/movies.json'] = {
+          repoPath: 'data/catalog/movies.json',
+          category: 'catalog_movies',
+          personal: false,
+          exists: false,
+          valid: false,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+          error: moviesRes.error.message,
+          errorCategory: moviesRes.error.category,
+        };
+      } else if (!moviesRes.exists) {
+        files['data/catalog/movies.json'] = {
+          repoPath: 'data/catalog/movies.json',
+          category: 'catalog_movies',
+          personal: false,
+          exists: false,
+          valid: true,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+        };
+      } else {
+        rawRemoteContents['data/catalog/movies.json'] = {
+          content: moviesRes.content,
+          sha: moviesRes.sha,
+        };
+        const inspected = inspectCatalogRawContent(
+          'data/catalog/movies.json',
+          moviesRes.content,
+          'movie',
+          this.maxBytes,
+          moviesRes.sha
+        );
+        files['data/catalog/movies.json'] = inspected.inspection;
+        if (inspected.parsedMap) movies = inspected.parsedMap;
+        if (!inspected.inspection.valid && inspected.inspection.error) {
+          errors.push({
+            repoPath: 'data/catalog/movies.json',
+            category: inspected.inspection.errorCategory || 'corrupt_remote_json',
+            message: `data/catalog/movies.json: ${inspected.inspection.error}`,
+          });
+        }
+      }
+
+      // 2. tv.json
+      const tvRes = await this.fetchRemoteFileRaw('data/catalog/tv.json', cfg);
+      if (!tvRes.ok) {
+        transportFailed = true;
+        errors.push(tvRes.error);
+        files['data/catalog/tv.json'] = {
+          repoPath: 'data/catalog/tv.json',
+          category: 'catalog_tv',
+          personal: false,
+          exists: false,
+          valid: false,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+          error: tvRes.error.message,
+          errorCategory: tvRes.error.category,
+        };
+      } else if (!tvRes.exists) {
+        files['data/catalog/tv.json'] = {
+          repoPath: 'data/catalog/tv.json',
+          category: 'catalog_tv',
+          personal: false,
+          exists: false,
+          valid: true,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+        };
+      } else {
+        rawRemoteContents['data/catalog/tv.json'] = { content: tvRes.content, sha: tvRes.sha };
+        const inspected = inspectCatalogRawContent(
+          'data/catalog/tv.json',
+          tvRes.content,
+          'tv',
+          this.maxBytes,
+          tvRes.sha
+        );
+        files['data/catalog/tv.json'] = inspected.inspection;
+        if (inspected.parsedMap) tv = inspected.parsedMap;
+        if (!inspected.inspection.valid && inspected.inspection.error) {
+          errors.push({
+            repoPath: 'data/catalog/tv.json',
+            category: inspected.inspection.errorCategory || 'corrupt_remote_json',
+            message: `data/catalog/tv.json: ${inspected.inspection.error}`,
+          });
+        }
+      }
+
+      // 3. manifest.json
+      const manifestRes = await this.fetchRemoteFileRaw('data/catalog/manifest.json', cfg);
+      if (!manifestRes.ok) {
+        transportFailed = true;
+        errors.push(manifestRes.error);
+        manifestValid = false;
+        files['data/catalog/manifest.json'] = {
+          repoPath: 'data/catalog/manifest.json',
+          category: 'catalog_manifest',
+          personal: false,
+          exists: false,
+          valid: false,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+          error: manifestRes.error.message,
+          errorCategory: manifestRes.error.category,
+        };
+      } else if (!manifestRes.exists) {
+        const hasRemoteCatalog = Object.keys(movies).length > 0 || Object.keys(tv).length > 0;
+        manifestValid = !hasRemoteCatalog;
+        manifestMismatchReason = hasRemoteCatalog
+          ? "GitHub'da katalog dosyaları mevcut ancak manifest.json eksik"
+          : undefined;
+        files['data/catalog/manifest.json'] = {
+          repoPath: 'data/catalog/manifest.json',
+          category: 'catalog_manifest',
+          personal: false,
+          exists: false,
+          valid: !hasRemoteCatalog,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+          ...(hasRemoteCatalog
+            ? {
+                error: manifestMismatchReason,
+                errorCategory: 'schema_mismatch' as const,
+              }
+            : {}),
+        };
+      } else {
+        rawRemoteContents['data/catalog/manifest.json'] = {
+          content: manifestRes.content,
+          sha: manifestRes.sha,
+        };
+        const inspected = inspectManifestRawContent(
+          manifestRes.content,
+          movies,
+          tv,
+          this.maxBytes,
+          manifestRes.sha
+        );
+        files['data/catalog/manifest.json'] = inspected.inspection;
+        manifest = inspected.manifest || null;
+        manifestValid = inspected.manifestConsistent;
+        manifestMismatchReason = inspected.mismatchReason;
+      }
     }
 
     // 4. Kişisel veriler (yalnızca özel depoda okunur/yazılır)
@@ -2859,6 +2940,7 @@ export class GitHubBidirectionalSyncManager {
         cfg.allowPublicPersonalSync !== undefined
           ? cfg.allowPublicPersonalSync
           : Boolean(cfg.isPublicRepo);
+      const allowCatalogOnPublic = Boolean(cfg.allowPublicCatalogSync);
       const access = await this.deps.store.verifyRemoteRepoAccess();
       if (!access.ok) {
         return {
@@ -2881,10 +2963,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic:
-            access.effectiveIsPublicRepo && !allowPersonalOnPublic
-              ? ['data/cinetrack-data.json', 'data/profiles/*']
-              : [],
+          filesBlockedPublic: buildBlockedPublicPaths(
+            !access.effectiveIsPublicRepo || allowCatalogOnPublic,
+            !access.effectiveIsPublicRepo || allowPersonalOnPublic
+          ),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -2904,19 +2986,24 @@ export class GitHubBidirectionalSyncManager {
         warning: access.warning,
       };
       const includePersonal = !visibility.effectiveIsPublicRepo || allowPersonalOnPublic;
+      const includeCatalog = !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
       const remoteInspect = await this.inspectRemoteSide(
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
-        { includePersonalFiles: includePersonal, localProfilePaths }
+        {
+          includePersonalFiles: includePersonal,
+          includeCatalogFiles: includeCatalog,
+          localProfilePaths,
+        }
       );
 
       const warnings: string[] = [];
       if (visibility.warning) warnings.push(visibility.warning);
-      if (localBefore.summary.manifestMismatchReason) {
+      if (includeCatalog && localBefore.summary.manifestMismatchReason) {
         warnings.push(`Yerel manifest: ${localBefore.summary.manifestMismatchReason}`);
       }
-      if (remoteInspect.bundle.summary.manifestMismatchReason) {
+      if (includeCatalog && remoteInspect.bundle.summary.manifestMismatchReason) {
         warnings.push(`GitHub manifest: ${remoteInspect.bundle.summary.manifestMismatchReason}`);
       }
 
@@ -2927,6 +3014,7 @@ export class GitHubBidirectionalSyncManager {
 
       const comparison = compareSyncSides(localBefore, remoteInspect.bundle, {
         includePersonalFiles: includePersonal,
+        includeCatalogFiles: includeCatalog,
       });
 
       const ok = !remoteInspect.transportFailed && allErrors.length === 0;
@@ -2949,14 +3037,18 @@ export class GitHubBidirectionalSyncManager {
         filesDownloaded: [],
         filesUploaded: [],
         filesUnchanged: comparison.differingFiles.length === 0
-          ? Object.keys(localBefore.summary.files).filter(
-              (p) => localBefore.summary.files[p]?.exists
-            )
+          ? Object.keys(localBefore.summary.files).filter((p) => {
+              const info = localBefore.summary.files[p];
+              if (!info?.exists) return false;
+              if (info.personal && !includePersonal) return false;
+              if (!info.personal && !includeCatalog) return false;
+              return true;
+            })
           : [],
         filesMerged: [],
         filesFailed: allErrors.map((e) => e.repoPath).filter(Boolean) as string[],
         filesPending: comparison.differingFiles.map((d) => d.repoPath),
-        filesBlockedPublic: includePersonal ? [] : ['data/cinetrack-data.json', 'data/profiles/*'],
+        filesBlockedPublic: buildBlockedPublicPaths(includeCatalog, includePersonal),
         recordsAdded: 0,
         recordsUpdated: 0,
         recordsConflicted: comparison.conflictingUserItemsCount,
@@ -3007,6 +3099,7 @@ export class GitHubBidirectionalSyncManager {
         cfg.allowPublicPersonalSync !== undefined
           ? cfg.allowPublicPersonalSync
           : Boolean(cfg.isPublicRepo);
+      const allowCatalogOnPublic = Boolean(cfg.allowPublicCatalogSync);
       const access = await this.deps.store.verifyRemoteRepoAccess();
       if (!access.ok) {
         return {
@@ -3029,10 +3122,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic:
-            access.effectiveIsPublicRepo && !allowPersonalOnPublic
-              ? ['data/cinetrack-data.json', 'data/profiles/*']
-              : [],
+          filesBlockedPublic: buildBlockedPublicPaths(
+            !access.effectiveIsPublicRepo || allowCatalogOnPublic,
+            !access.effectiveIsPublicRepo || allowPersonalOnPublic
+          ),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3052,11 +3145,16 @@ export class GitHubBidirectionalSyncManager {
         warning: access.warning,
       };
       const includePersonal = !visibility.effectiveIsPublicRepo || allowPersonalOnPublic;
+      const includeCatalog = !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
       const remoteInspect = await this.inspectRemoteSide(
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
-        { includePersonalFiles: includePersonal, localProfilePaths }
+        {
+          includePersonalFiles: includePersonal,
+          includeCatalogFiles: includeCatalog,
+          localProfilePaths,
+        }
       );
 
       if (remoteInspect.transportFailed) {
@@ -3082,7 +3180,7 @@ export class GitHubBidirectionalSyncManager {
             .map((e) => e.repoPath)
             .filter(Boolean) as string[],
           filesPending: [],
-          filesBlockedPublic: includePersonal ? [] : ['data/cinetrack-data.json', 'data/profiles/*'],
+          filesBlockedPublic: buildBlockedPublicPaths(includeCatalog, includePersonal),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3101,6 +3199,7 @@ export class GitHubBidirectionalSyncManager {
 
       const initialComparison = compareSyncSides(localBefore, remoteInspect.bundle, {
         includePersonalFiles: includePersonal,
+        includeCatalogFiles: includeCatalog,
       });
 
       // Yerel kullanıcı verisini sessizce ezme koruması (Spec Bölüm 4.8)
@@ -3158,7 +3257,7 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: initialComparison.differingFiles.map((d) => d.repoPath),
-          filesBlockedPublic: includePersonal ? [] : ['data/cinetrack-data.json', 'data/profiles/*'],
+          filesBlockedPublic: buildBlockedPublicPaths(includeCatalog, includePersonal),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: initialComparison.conflictingUserItemsCount,
@@ -3447,6 +3546,7 @@ export class GitHubBidirectionalSyncManager {
       const localAfter = this.inspectLocalSide();
       const postComparison = compareSyncSides(localAfter, remoteInspect.bundle, {
         includePersonalFiles: includePersonal,
+        includeCatalogFiles: includeCatalog,
       });
 
       const ok = errors.length === 0 && localAfter.errors.length === 0;
@@ -3474,7 +3574,7 @@ export class GitHubBidirectionalSyncManager {
         filesMerged,
         filesFailed,
         filesPending: postComparison.differingFiles.map((d) => d.repoPath),
-        filesBlockedPublic: includePersonal ? [] : ['data/cinetrack-data.json', 'data/profiles/*'],
+        filesBlockedPublic: buildBlockedPublicPaths(includeCatalog, includePersonal),
         recordsAdded,
         recordsUpdated,
         recordsConflicted: conflicts.length,
@@ -3524,6 +3624,7 @@ export class GitHubBidirectionalSyncManager {
         cfg.allowPublicPersonalSync !== undefined
           ? cfg.allowPublicPersonalSync
           : Boolean(cfg.isPublicRepo);
+      const allowCatalogOnPublic = Boolean(cfg.allowPublicCatalogSync);
       const access = await this.deps.store.verifyRemoteRepoAccess();
       if (!access.ok) {
         const failedReport: BidirectionalSyncReport = {
@@ -3546,10 +3647,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic:
-            access.effectiveIsPublicRepo && !allowPersonalOnPublic
-              ? ['data/cinetrack-data.json', 'data/profiles/*']
-              : [],
+          filesBlockedPublic: buildBlockedPublicPaths(
+            !access.effectiveIsPublicRepo || allowCatalogOnPublic,
+            !access.effectiveIsPublicRepo || allowPersonalOnPublic
+          ),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3575,13 +3676,14 @@ export class GitHubBidirectionalSyncManager {
         warning: access.warning,
       };
       const includePersonal = !visibility.effectiveIsPublicRepo || allowPersonalOnPublic;
+      const includeCatalog = !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const warnings: string[] = [];
       if (visibility.warning) warnings.push(visibility.warning);
 
       // Yerel manifest tutarsızsa ve katalog dosyaları sağlamsa önce yerel manifest'i onar
       const moviesValid = localBefore.summary.files['data/catalog/movies.json']?.valid !== false;
       const tvValid = localBefore.summary.files['data/catalog/tv.json']?.valid !== false;
-      if (moviesValid && tvValid && !localBefore.summary.manifestValid) {
+      if (includeCatalog && moviesValid && tvValid && !localBefore.summary.manifestValid) {
         const manifestPath = path.join(this.deps.dataDir, 'catalog', 'manifest.json');
         const repairedManifest: CatalogManifest = {
           version: 1,
@@ -3606,7 +3708,11 @@ export class GitHubBidirectionalSyncManager {
 
       const remoteBeforeInspect = await this.inspectRemoteSide(
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
-        { includePersonalFiles: includePersonal, localProfilePaths }
+        {
+          includePersonalFiles: includePersonal,
+          includeCatalogFiles: includeCatalog,
+          localProfilePaths,
+        }
       );
 
       const verifiedRemoteHashes: Record<string, string | null> = {};
@@ -3623,6 +3729,7 @@ export class GitHubBidirectionalSyncManager {
       const syncRes = await this.deps.store.syncToGitHub({
         verifiedRemoteHashes,
         allowPersonalDataInPublicRepo: includePersonal,
+        allowCatalogInPublicRepo: includeCatalog,
       });
       const pushErrors: SyncErrorRecord[] = [...localReady.errors];
       for (const failedPath of syncRes.filesFailed) {
@@ -3644,7 +3751,11 @@ export class GitHubBidirectionalSyncManager {
       // Push tamamlandıktan sonra uzak dosyaları YENİDEN oku ve doğrula (Spec Bölüm 2 & 5.6)
       const remoteAfterInspect = await this.inspectRemoteSide(
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
-        { includePersonalFiles: includePersonal, localProfilePaths }
+        {
+          includePersonalFiles: includePersonal,
+          includeCatalogFiles: includeCatalog,
+          localProfilePaths,
+        }
       );
 
       for (const reErr of remoteAfterInspect.bundle.errors) {
@@ -3655,6 +3766,7 @@ export class GitHubBidirectionalSyncManager {
 
       const postComparison = compareSyncSides(localReady, remoteAfterInspect.bundle, {
         includePersonalFiles: includePersonal,
+        includeCatalogFiles: includeCatalog,
       });
 
       const ok =
@@ -3730,7 +3842,7 @@ export class GitHubBidirectionalSyncManager {
    * ve uzak dosyaları yeniden okuyarak tam eşitliği doğrular.
    */
   public async reconcile(
-    options: { includePersonalOverride?: boolean } = {}
+    options: { includePersonalOverride?: boolean; includeCatalogOverride?: boolean } = {}
   ): Promise<BidirectionalSyncReport> {
     return this.runSerialized(async () => {
       const startedAt = new Date().toISOString();
@@ -3757,6 +3869,10 @@ export class GitHubBidirectionalSyncManager {
           : cfg.allowPublicPersonalSync !== undefined
             ? cfg.allowPublicPersonalSync
             : Boolean(cfg.isPublicRepo);
+      const allowCatalogOnPublic =
+        options.includeCatalogOverride !== undefined
+          ? options.includeCatalogOverride
+          : Boolean(cfg.allowPublicCatalogSync);
       const access = await this.deps.store.verifyRemoteRepoAccess();
       if (!access.ok) {
         const report: BidirectionalSyncReport = {
@@ -3779,10 +3895,10 @@ export class GitHubBidirectionalSyncManager {
           filesMerged: [],
           filesFailed: [],
           filesPending: [],
-          filesBlockedPublic:
-            access.effectiveIsPublicRepo && !allowPersonalOnPublic
-              ? ['data/cinetrack-data.json', 'data/profiles/*']
-              : [],
+          filesBlockedPublic: buildBlockedPublicPaths(
+            !access.effectiveIsPublicRepo || allowCatalogOnPublic,
+            !access.effectiveIsPublicRepo || allowPersonalOnPublic
+          ),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3811,11 +3927,19 @@ export class GitHubBidirectionalSyncManager {
         options.includePersonalOverride !== undefined
           ? options.includePersonalOverride
           : !visibility.effectiveIsPublicRepo || allowPersonalOnPublic;
+      const includeCatalog =
+        options.includeCatalogOverride !== undefined
+          ? options.includeCatalogOverride
+          : !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
       const remoteBeforeInspect = await this.inspectRemoteSide(
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
-        { includePersonalFiles: includePersonal, localProfilePaths }
+        {
+          includePersonalFiles: includePersonal,
+          includeCatalogFiles: includeCatalog,
+          localProfilePaths,
+        }
       );
 
       const warnings: string[] = [];
@@ -3845,7 +3969,7 @@ export class GitHubBidirectionalSyncManager {
             .map((e) => e.repoPath)
             .filter(Boolean) as string[],
           filesPending: [],
-          filesBlockedPublic: includePersonal ? [] : ['data/cinetrack-data.json', 'data/profiles/*'],
+          filesBlockedPublic: buildBlockedPublicPaths(includeCatalog, includePersonal),
           recordsAdded: 0,
           recordsUpdated: 0,
           recordsConflicted: 0,
@@ -3882,125 +4006,129 @@ export class GitHubBidirectionalSyncManager {
       const pathsBlockedFromPush = new Set<string>();
 
       // --- A. KATALOG İKİ YÖNLÜ BİRLEŞTİRME ---
-      const lMoviesInfo = localBefore.summary.files['data/catalog/movies.json'];
-      const rMoviesInfo = remoteBeforeInspect.bundle.summary.files['data/catalog/movies.json'];
       let reconciledMovies = localBefore.movies;
-
-      if (!lMoviesInfo.valid) {
-        filesFailed.push('data/catalog/movies.json');
-        pathsBlockedFromPush.add('data/catalog/movies.json');
-        errors.push({
-          repoPath: 'data/catalog/movies.json',
-          category: 'corrupt_local_file',
-          message: `Yerel movies.json bozuk olduğu için birleştirilmedi (${lMoviesInfo.error}).`,
-        });
-      } else if (rMoviesInfo?.exists && !rMoviesInfo.valid) {
-        filesFailed.push('data/catalog/movies.json');
-        pathsBlockedFromPush.add('data/catalog/movies.json');
-        errors.push({
-          repoPath: 'data/catalog/movies.json',
-          category: rMoviesInfo.errorCategory || 'corrupt_remote_json',
-          message: `GitHub movies.json bozuk olduğu için yerel sağlam dosya korundu (${rMoviesInfo.error}).`,
-        });
-      } else {
-        const movieMerge = mergeCatalogMapsLossless(
-          localBefore.movies,
-          remoteBeforeInspect.bundle.movies,
-          'movie'
-        );
-        reconciledMovies = movieMerge.merged;
-        recordsAdded += movieMerge.addedToLocal + movieMerge.addedToRemote;
-        recordsUpdated += Math.max(movieMerge.updatedLocal, movieMerge.updatedRemote);
-
-        const serializedMergedMovies = stringifyDeterministic(reconciledMovies);
-        const moviesPath = path.join(this.deps.dataDir, 'catalog', 'movies.json');
-        const localRawMatches =
-          lMoviesInfo.exists &&
-          lMoviesInfo.rawFileHash === computeRawUtf8Hash(serializedMergedMovies);
-
-        if (
-          !localRawMatches &&
-          (Object.keys(reconciledMovies).length > 0 ||
-            lMoviesInfo.exists ||
-            Boolean(rMoviesInfo?.exists))
-        ) {
-          writeJsonFileAtomic(moviesPath, serializedMergedMovies, {
-            backupPath: `${moviesPath}.bak`,
-            validateParsed: isPlainObject,
-          });
-          if (movieMerge.addedToLocal > 0 && movieMerge.addedToRemote > 0) {
-            filesMerged.push('data/catalog/movies.json');
-          } else if (
-            movieMerge.addedToLocal > 0 ||
-            movieMerge.updatedLocal > 0 ||
-            (!lMoviesInfo.exists && rMoviesInfo?.exists)
-          ) {
-            filesDownloaded.push('data/catalog/movies.json');
-          }
-        }
-      }
-
-      const lTvInfo = localBefore.summary.files['data/catalog/tv.json'];
-      const rTvInfo = remoteBeforeInspect.bundle.summary.files['data/catalog/tv.json'];
       let reconciledTv = localBefore.tv;
 
-      if (!lTvInfo.valid) {
-        filesFailed.push('data/catalog/tv.json');
-        pathsBlockedFromPush.add('data/catalog/tv.json');
-        errors.push({
-          repoPath: 'data/catalog/tv.json',
-          category: 'corrupt_local_file',
-          message: `Yerel tv.json bozuk olduğu için birleştirilmedi (${lTvInfo.error}).`,
-        });
-      } else if (rTvInfo?.exists && !rTvInfo.valid) {
-        filesFailed.push('data/catalog/tv.json');
-        pathsBlockedFromPush.add('data/catalog/tv.json');
-        errors.push({
-          repoPath: 'data/catalog/tv.json',
-          category: rTvInfo.errorCategory || 'corrupt_remote_json',
-          message: `GitHub tv.json bozuk olduğu için yerel sağlam dosya korundu (${rTvInfo.error}).`,
-        });
-      } else {
-        const tvMerge = mergeCatalogMapsLossless(
-          localBefore.tv,
-          remoteBeforeInspect.bundle.tv,
-          'tv'
-        );
-        reconciledTv = tvMerge.merged;
-        recordsAdded += tvMerge.addedToLocal + tvMerge.addedToRemote;
-        recordsUpdated += Math.max(tvMerge.updatedLocal, tvMerge.updatedRemote);
+      if (includeCatalog) {
+        const lMoviesInfo = localBefore.summary.files['data/catalog/movies.json'];
+        const rMoviesInfo = remoteBeforeInspect.bundle.summary.files['data/catalog/movies.json'];
 
-        const serializedMergedTv = stringifyDeterministic(reconciledTv);
-        const tvPath = path.join(this.deps.dataDir, 'catalog', 'tv.json');
-        const localTvRawMatches =
-          lTvInfo.exists && lTvInfo.rawFileHash === computeRawUtf8Hash(serializedMergedTv);
-
-        if (
-          !localTvRawMatches &&
-          (Object.keys(reconciledTv).length > 0 || lTvInfo.exists || Boolean(rTvInfo?.exists))
-        ) {
-          writeJsonFileAtomic(tvPath, serializedMergedTv, {
-            backupPath: `${tvPath}.bak`,
-            validateParsed: isPlainObject,
+        if (!lMoviesInfo.valid) {
+          filesFailed.push('data/catalog/movies.json');
+          pathsBlockedFromPush.add('data/catalog/movies.json');
+          errors.push({
+            repoPath: 'data/catalog/movies.json',
+            category: 'corrupt_local_file',
+            message: `Yerel movies.json bozuk olduğu için birleştirilmedi (${lMoviesInfo.error}).`,
           });
-          if (tvMerge.addedToLocal > 0 && tvMerge.addedToRemote > 0) {
-            filesMerged.push('data/catalog/tv.json');
-          } else if (
-            tvMerge.addedToLocal > 0 ||
-            tvMerge.updatedLocal > 0 ||
-            (!lTvInfo.exists && rTvInfo?.exists)
+        } else if (rMoviesInfo?.exists && !rMoviesInfo.valid) {
+          filesFailed.push('data/catalog/movies.json');
+          pathsBlockedFromPush.add('data/catalog/movies.json');
+          errors.push({
+            repoPath: 'data/catalog/movies.json',
+            category: rMoviesInfo.errorCategory || 'corrupt_remote_json',
+            message: `GitHub movies.json bozuk olduğu için yerel sağlam dosya korundu (${rMoviesInfo.error}).`,
+          });
+        } else {
+          const movieMerge = mergeCatalogMapsLossless(
+            localBefore.movies,
+            remoteBeforeInspect.bundle.movies,
+            'movie'
+          );
+          reconciledMovies = movieMerge.merged;
+          recordsAdded += movieMerge.addedToLocal + movieMerge.addedToRemote;
+          recordsUpdated += Math.max(movieMerge.updatedLocal, movieMerge.updatedRemote);
+
+          const serializedMergedMovies = stringifyDeterministic(reconciledMovies);
+          const moviesPath = path.join(this.deps.dataDir, 'catalog', 'movies.json');
+          const localRawMatches =
+            lMoviesInfo.exists &&
+            lMoviesInfo.rawFileHash === computeRawUtf8Hash(serializedMergedMovies);
+
+          if (
+            !localRawMatches &&
+            (Object.keys(reconciledMovies).length > 0 ||
+              lMoviesInfo.exists ||
+              Boolean(rMoviesInfo?.exists))
           ) {
-            filesDownloaded.push('data/catalog/tv.json');
+            writeJsonFileAtomic(moviesPath, serializedMergedMovies, {
+              backupPath: `${moviesPath}.bak`,
+              validateParsed: isPlainObject,
+            });
+            if (movieMerge.addedToLocal > 0 && movieMerge.addedToRemote > 0) {
+              filesMerged.push('data/catalog/movies.json');
+            } else if (
+              movieMerge.addedToLocal > 0 ||
+              movieMerge.updatedLocal > 0 ||
+              (!lMoviesInfo.exists && rMoviesInfo?.exists)
+            ) {
+              filesDownloaded.push('data/catalog/movies.json');
+            }
+          }
+        }
+
+        const lTvInfo = localBefore.summary.files['data/catalog/tv.json'];
+        const rTvInfo = remoteBeforeInspect.bundle.summary.files['data/catalog/tv.json'];
+
+        if (!lTvInfo.valid) {
+          filesFailed.push('data/catalog/tv.json');
+          pathsBlockedFromPush.add('data/catalog/tv.json');
+          errors.push({
+            repoPath: 'data/catalog/tv.json',
+            category: 'corrupt_local_file',
+            message: `Yerel tv.json bozuk olduğu için birleştirilmedi (${lTvInfo.error}).`,
+          });
+        } else if (rTvInfo?.exists && !rTvInfo.valid) {
+          filesFailed.push('data/catalog/tv.json');
+          pathsBlockedFromPush.add('data/catalog/tv.json');
+          errors.push({
+            repoPath: 'data/catalog/tv.json',
+            category: rTvInfo.errorCategory || 'corrupt_remote_json',
+            message: `GitHub tv.json bozuk olduğu için yerel sağlam dosya korundu (${rTvInfo.error}).`,
+          });
+        } else {
+          const tvMerge = mergeCatalogMapsLossless(
+            localBefore.tv,
+            remoteBeforeInspect.bundle.tv,
+            'tv'
+          );
+          reconciledTv = tvMerge.merged;
+          recordsAdded += tvMerge.addedToLocal + tvMerge.addedToRemote;
+          recordsUpdated += Math.max(tvMerge.updatedLocal, tvMerge.updatedRemote);
+
+          const serializedMergedTv = stringifyDeterministic(reconciledTv);
+          const tvPath = path.join(this.deps.dataDir, 'catalog', 'tv.json');
+          const localTvRawMatches =
+            lTvInfo.exists && lTvInfo.rawFileHash === computeRawUtf8Hash(serializedMergedTv);
+
+          if (
+            !localTvRawMatches &&
+            (Object.keys(reconciledTv).length > 0 || lTvInfo.exists || Boolean(rTvInfo?.exists))
+          ) {
+            writeJsonFileAtomic(tvPath, serializedMergedTv, {
+              backupPath: `${tvPath}.bak`,
+              validateParsed: isPlainObject,
+            });
+            if (tvMerge.addedToLocal > 0 && tvMerge.addedToRemote > 0) {
+              filesMerged.push('data/catalog/tv.json');
+            } else if (
+              tvMerge.addedToLocal > 0 ||
+              tvMerge.updatedLocal > 0 ||
+              (!lTvInfo.exists && rTvInfo?.exists)
+            ) {
+              filesDownloaded.push('data/catalog/tv.json');
+            }
           }
         }
       }
 
-      // Manifest yeniden üretimi (eğer katalog dosyalarından biri bozuk değilse)
+      // Manifest yeniden üretimi (eğer katalog senkronizasyonu izinli ve katalog dosyalarından biri bozuk değilse)
       const reconciledCatalogHash = computeCatalogManifestContentHash(
         reconciledMovies,
         reconciledTv
       );
       if (
+        includeCatalog &&
         !pathsBlockedFromPush.has('data/catalog/movies.json') &&
         !pathsBlockedFromPush.has('data/catalog/tv.json')
       ) {
@@ -4301,23 +4429,27 @@ export class GitHubBidirectionalSyncManager {
 
       // --- D. BİRLEŞTİRİLMİŞ GÜNCEL YEREL DOSYALARI GITHUB'A YÜKLE ---
       const localPrepared = this.inspectLocalSide();
-      const uploadCandidates: Array<{ repoPath: string; localPath: string; commitMsg: string }> = [
-        {
-          repoPath: 'data/catalog/movies.json',
-          localPath: path.join(this.deps.dataDir, 'catalog', 'movies.json'),
-          commitMsg: 'chore(sync): reconcile movies.json [skip ci]',
-        },
-        {
-          repoPath: 'data/catalog/tv.json',
-          localPath: path.join(this.deps.dataDir, 'catalog', 'tv.json'),
-          commitMsg: 'chore(sync): reconcile tv.json [skip ci]',
-        },
-        {
-          repoPath: 'data/catalog/manifest.json',
-          localPath: path.join(this.deps.dataDir, 'catalog', 'manifest.json'),
-          commitMsg: 'chore(sync): reconcile manifest.json [skip ci]',
-        },
-      ];
+      const uploadCandidates: Array<{ repoPath: string; localPath: string; commitMsg: string }> = [];
+
+      if (includeCatalog) {
+        uploadCandidates.push(
+          {
+            repoPath: 'data/catalog/movies.json',
+            localPath: path.join(this.deps.dataDir, 'catalog', 'movies.json'),
+            commitMsg: 'chore(sync): reconcile movies.json [skip ci]',
+          },
+          {
+            repoPath: 'data/catalog/tv.json',
+            localPath: path.join(this.deps.dataDir, 'catalog', 'tv.json'),
+            commitMsg: 'chore(sync): reconcile tv.json [skip ci]',
+          },
+          {
+            repoPath: 'data/catalog/manifest.json',
+            localPath: path.join(this.deps.dataDir, 'catalog', 'manifest.json'),
+            commitMsg: 'chore(sync): reconcile manifest.json [skip ci]',
+          }
+        );
+      }
 
       if (includePersonal) {
         uploadCandidates.push({
@@ -4410,6 +4542,7 @@ export class GitHubBidirectionalSyncManager {
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
+          includeCatalogFiles: includeCatalog,
           localProfilePaths: Object.keys(localAfter.derivedProfiles),
         }
       );
@@ -4422,6 +4555,7 @@ export class GitHubBidirectionalSyncManager {
 
       const postComparison = compareSyncSides(localAfter, remoteAfterInspect.bundle, {
         includePersonalFiles: includePersonal,
+        includeCatalogFiles: includeCatalog,
       });
 
       const uniqueFailed = Array.from(new Set(filesFailed));
@@ -4463,7 +4597,7 @@ export class GitHubBidirectionalSyncManager {
         filesPending: remoteAfterInspect.transportFailed
           ? []
           : postComparison.differingFiles.map((d) => d.repoPath),
-        filesBlockedPublic: includePersonal ? [] : ['data/cinetrack-data.json', 'data/profiles/*'],
+        filesBlockedPublic: buildBlockedPublicPaths(includeCatalog, includePersonal),
         recordsAdded,
         recordsUpdated,
         recordsConflicted: conflicts.length,

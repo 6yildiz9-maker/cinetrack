@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type DataDocument } from '../core/cinetrack-core';
 import {
   getLastKnownServerRevision,
@@ -9,6 +9,7 @@ import {
   clearOfflineSyncSnapshot,
   enqueueOfflineSyncSnapshot,
   hasPendingOfflineSync,
+  hasUnpersistedOfflineFallback,
   loadOfflineSyncSnapshot,
 } from '../services/offline-queue';
 import { useOnlineStatus } from './useOnlineStatus';
@@ -16,11 +17,26 @@ import { useOnlineStatus } from './useOnlineStatus';
 export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, localDoc: DataDocument) => void) {
   const isOnline = useOnlineStatus();
   const [pendingSync, setPendingSync] = useState<boolean>(() => hasPendingOfflineSync());
+  const [unpersistedWarning, setUnpersistedWarning] = useState<boolean>(() =>
+    hasUnpersistedOfflineFallback()
+  );
+  const conflictPausedRef = useRef<boolean>(false);
+
+  const resolveQueuedConflict = useCallback(() => {
+    conflictPausedRef.current = false;
+    clearOfflineSyncSnapshot();
+    setPendingSync(false);
+    setUnpersistedWarning(false);
+  }, []);
 
   const flushQueue = useCallback(async () => {
+    if (conflictPausedRef.current) {
+      return;
+    }
     const queued = loadOfflineSyncSnapshot();
     if (!queued) {
       setPendingSync(false);
+      setUnpersistedWarning(false);
       return;
     }
 
@@ -29,15 +45,19 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
     });
 
     if (res.ok) {
+      conflictPausedRef.current = false;
       clearOfflineSyncSnapshot();
       setPendingSync(false);
+      setUnpersistedWarning(false);
       return;
     }
 
-    if (res.status === 409 && res.conflict) {
-      clearOfflineSyncSnapshot();
-      setPendingSync(false);
-      onConflict?.(res.conflict, queued.payload);
+    if ((res.status === 409 || res.status === 412 || res.status === 428) && res.conflict) {
+      // BUG-07: Çakışma çözülene kadar çevrimdışı kuyruk kaydını silme!
+      // Sayfa yenilense bile bekleyen yerel değişiklikler korunur.
+      conflictPausedRef.current = true;
+      setPendingSync(true);
+      onConflict?.({ ...res.conflict, localPayload: queued.payload }, queued.payload);
       return;
     }
     // Network error (status 0) or transient 5xx: keep queued
@@ -45,38 +65,47 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
   }, [onConflict]);
 
   useEffect(() => {
-    if (isOnline && pendingSync) {
+    if (isOnline && pendingSync && !conflictPausedRef.current) {
       void flushQueue();
     }
   }, [isOnline, pendingSync, flushQueue]);
 
   const syncDocument = useCallback(
     async (payload: DataDocument, options: { confirmBulkDelete?: boolean; forceOverwrite?: boolean } = {}) => {
+      if (options.forceOverwrite) {
+        conflictPausedRef.current = false;
+      }
+
       if (!navigator.onLine) {
-        enqueueOfflineSyncSnapshot(payload, getLastKnownServerRevision());
+        const enq = enqueueOfflineSyncSnapshot(payload, getLastKnownServerRevision());
         setPendingSync(true);
-        return { ok: false, queued: true };
+        setUnpersistedWarning(!enq.persisted);
+        return { ok: false, queued: true, persisted: enq.persisted };
       }
 
       const res = await pushServerDataDetailed(payload, {
         baseRevision: options.forceOverwrite ? null : getLastKnownServerRevision(),
         confirmBulkDelete: options.confirmBulkDelete,
+        forceOverwrite: options.forceOverwrite,
       });
 
       if (res.ok) {
+        conflictPausedRef.current = false;
         clearOfflineSyncSnapshot();
         setPendingSync(false);
+        setUnpersistedWarning(false);
         return { ok: true, queued: false };
       }
 
       if (res.status === 0) {
-        enqueueOfflineSyncSnapshot(payload, getLastKnownServerRevision());
+        const enq = enqueueOfflineSyncSnapshot(payload, getLastKnownServerRevision());
         setPendingSync(true);
-        return { ok: false, queued: true };
+        setUnpersistedWarning(!enq.persisted);
+        return { ok: false, queued: true, persisted: enq.persisted };
       }
 
-      if (res.status === 409 && res.conflict) {
-        onConflict?.(res.conflict, payload);
+      if ((res.status === 409 || res.status === 412 || res.status === 428) && res.conflict) {
+        onConflict?.({ ...res.conflict, localPayload: payload }, payload);
       }
 
       return { ok: false, queued: false, conflict: res.conflict };
@@ -87,7 +116,9 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
   return {
     isOnline,
     pendingSync,
+    unpersistedWarning,
     syncDocument,
     flushQueue,
+    resolveQueuedConflict,
   };
 }

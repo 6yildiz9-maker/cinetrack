@@ -3,4 +3,8 @@
 !.env.example
 node_modules/
 dist/
+dev-dist/
+.aistudio/
+bun.lock
 data/
+

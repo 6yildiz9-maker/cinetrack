@@ -70,15 +70,18 @@ export const Stats: React.FC<StatsProps> = ({ items }) => {
       {/* 2x2 Metrik Kartları (Section 6.9) */}
       <div className="stats-2x2-grid">
         {/* 1. İzlenen Süre */}
-        <div className="stat-card">
+        <div
+          className="stat-card"
+          title="Süre verisi eksik filmler için 110 dk, diziler için bölüm başı 45 dk varsayılan tahmin uygulanır."
+        >
           <div className="stat-card-header">
             <svg className="icon stat-icon" aria-hidden="true">
               <use href="#icon-clock"></use>
             </svg>
-            <span className="stat-label">İzlenen Süre</span>
+            <span className="stat-label">İzlenen Süre (tahmini)</span>
           </div>
           <div className="stat-value tabular-nums">{statsData.watchTimeString}</div>
-          <span className="stat-sub">Toplam kaydedilen süre</span>
+          <span className="stat-sub">Kaydedilen ve tahmini toplam süre</span>
         </div>
 
         {/* 2. İçerik Sayısı */}

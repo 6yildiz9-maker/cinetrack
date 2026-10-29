@@ -152,22 +152,32 @@ export async function mapLimit<T, R>(
   return results;
 }
 
+export const ESTIMATED_MOVIE_MINUTES = 110;
+export const ESTIMATED_TV_EPISODE_MINUTES = 45;
+export const ESTIMATED_TV_FALLBACK_EPISODES = 10;
+
 export function calculateItemWatchMinutes(item?: Partial<SavedItem> | null): number {
   if (!item || typeof item !== 'object') return 0;
   if (item.media_type === 'movie') {
-    const runtime = Number(item.runtime) || 110;
+    const runtime = Number(item.runtime) || ESTIMATED_MOVIE_MINUTES;
     if (item.status === 'completed') return runtime;
     if (item.status === 'watching') return Math.round(runtime * 0.5);
     return 0;
   }
   if (item.media_type === 'tv') {
-    const epTime = Number(item.episode_run_time?.[0]) || Number(item.runtime) || 45;
+    const epTime =
+      Number(item.episode_run_time?.[0]) || Number(item.runtime) || ESTIMATED_TV_EPISODE_MINUTES;
     const explicitEpisodes = Number(item.episodes_watched) || 0;
     if (item.status === 'completed') {
       const totalShowEpisodes =
         Number(item.number_of_episodes) ||
-        (Number(item.number_of_seasons) ? Number(item.number_of_seasons) * 10 : 10);
-      const eps = Math.max(explicitEpisodes, totalShowEpisodes > 0 ? totalShowEpisodes : 10);
+        (Number(item.number_of_seasons)
+          ? Number(item.number_of_seasons) * ESTIMATED_TV_FALLBACK_EPISODES
+          : ESTIMATED_TV_FALLBACK_EPISODES);
+      const eps = Math.max(
+        explicitEpisodes,
+        totalShowEpisodes > 0 ? totalShowEpisodes : ESTIMATED_TV_FALLBACK_EPISODES
+      );
       return eps * epTime;
     }
     if (item.status === 'watching') {
@@ -185,8 +195,10 @@ export function getTvShowEpisodesCount(item?: Partial<SavedItem> | null): number
   if (item.status === 'completed') {
     const total =
       Number(item.number_of_episodes) ||
-      (Number(item.number_of_seasons) ? Number(item.number_of_seasons) * 10 : 10);
-    return Math.max(explicit, total > 0 ? total : 10);
+      (Number(item.number_of_seasons)
+        ? Number(item.number_of_seasons) * ESTIMATED_TV_FALLBACK_EPISODES
+        : ESTIMATED_TV_FALLBACK_EPISODES);
+    return Math.max(explicit, total > 0 ? total : ESTIMATED_TV_FALLBACK_EPISODES);
   }
   if (item.status === 'watching') {
     return explicit > 0 ? explicit : 1;

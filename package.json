@@ -3,13 +3,17 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "license": "MIT",
   "description": "TMDB destekli kişisel film ve dizi izleme kataloğu",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "tsx server.ts --dev",
     "build": "vite build",
     "start": "node server.ts",
-    "lint": "eslint src server.ts && tsc --noEmit",
-    "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs tests/phases-all.test.mjs tests/persistent-store.test.mjs tests/github-bidirectional-sync.test.mjs tests/excel-profile-backup.test.mjs"
+    "lint": "eslint src server.ts tests && tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
+    "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs tests/phases-all.test.mjs tests/persistent-store.test.mjs tests/github-bidirectional-sync.test.mjs tests/excel-profile-backup.test.mjs tests/audit-spec-fixes.test.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

@@ -1654,7 +1654,10 @@ test('Aşama 5.13: Herkese açık depoda (public) kullanıcı onayı/yapılandı
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-13-'));
   const gh = createMockGitHubHarness({ isPrivate: false });
   try {
-    const { store, storage } = createIsolatedSyncEnv(tmpDir, { isPublicRepo: true });
+    const { store, storage } = createIsolatedSyncEnv(tmpDir, {
+      isPublicRepo: true,
+      allowPublicCatalogSync: true,
+    });
 
     store.upsertCatalogItems([makeMovieRecord(1)]);
     storage.saveData({
@@ -1749,31 +1752,47 @@ test('Aşama 5.15: Açık depoda (public) onaysızken gizlilik koruması devrede
     });
 
     await gh.installAndRun(async () => {
-      // 1) Onay yokken kişisel dosyalar engellenir (mevcut gizlilik koruması sessizce kaldırılmaz)
+      // 1) Onay yokken hem kişisel dosyalar hem de katalog dosyaları engellenir (gizlilik ve TMDB ToS koruması)
       const blockedRes = await store.syncToGitHub();
       assert.equal(blockedRes.ok, true);
       assert.ok(blockedRes.filesBlockedPublic.some((f) => f.includes('data/profiles/*')));
+      assert.ok(blockedRes.filesBlockedPublic.some((f) => f.includes('data/catalog/')));
       assert.equal(gh.files.has('data/cinetrack-data.json'), false);
       assert.equal(gh.files.has('data/profiles/profile-default.json'), false);
+      assert.equal(gh.files.has('data/catalog/movies.json'), false);
 
       const blockedReconcile = await store.reconcileWithGitHub();
       assert.ok(blockedReconcile.filesBlockedPublic.includes('data/cinetrack-data.json'));
+      assert.ok(blockedReconcile.filesBlockedPublic.includes('data/catalog/movies.json'));
       assert.equal(gh.files.has('data/cinetrack-data.json'), false);
 
-      // 2) Kullanıcı açık onay verdiğinde kişisel dosyalar senkronize edilir ve uyarı görünür kalır
+      // 2) Yalnızca kişisel onay verildiğinde kişisel dosyalar eşitlenir, katalog koruması devam eder
       const consent = store.setPublicPersonalSyncConsent(true);
       assert.equal(consent.allowPublicPersonalSync, true);
+      assert.equal(consent.catalogSyncBlockedByPublicGuard, true);
+
+      const personalOnlyRes = await store.syncToGitHub();
+      assert.equal(personalOnlyRes.ok, true);
+      assert.ok(personalOnlyRes.filesCommitted.includes('data/cinetrack-data.json'));
+      assert.ok(personalOnlyRes.filesCommitted.includes('data/profiles/profile-default.json'));
+      assert.ok(personalOnlyRes.filesBlockedPublic.some((f) => f.includes('data/catalog/')));
+
+      // 3) Katalog onayı da açıkça verildiğinde tüm dosyalar senkronize edilir ve görünürlük uyarısı korunur
+      const catConsent = store.setPublicCatalogSyncConsent(true);
+      assert.equal(catConsent.allowPublicCatalogSync, true);
+      assert.equal(catConsent.catalogSyncBlockedByPublicGuard, false);
 
       const allowedRes = await store.syncToGitHub();
       assert.equal(allowedRes.ok, true);
       assert.equal(allowedRes.filesBlockedPublic.length, 0);
-      assert.ok(allowedRes.filesCommitted.includes('data/cinetrack-data.json'));
-      assert.ok(allowedRes.filesCommitted.includes('data/profiles/profile-default.json'));
+      assert.ok(allowedRes.filesCommitted.includes('data/catalog/movies.json'));
       assert.ok(allowedRes.repoVisibilityWarning?.includes('herkese açıktır'));
 
-      // 3) Onay geri alındığında gizlilik koruması tekrar devreye girer
+      // 4) Onaylar geri alındığında gizlilik ve katalog korumaları tekrar devreye girer
       store.setPublicPersonalSyncConsent(false);
+      store.setPublicCatalogSyncConsent(false);
       assert.equal(store.getSyncStatus().personalSyncBlockedByPublicGuard, true);
+      assert.equal(store.getSyncStatus().catalogSyncBlockedByPublicGuard, true);
     });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1784,7 +1803,10 @@ test('Aşama 5.16: 1 MB üzeri dosyalarda Git Blob API geri okuma hash doğrulam
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-phase5-16-'));
   const gh = createMockGitHubHarness({ isPrivate: false });
   try {
-    const { store, storage } = createIsolatedSyncEnv(tmpDir, { isPublicRepo: true });
+    const { store, storage } = createIsolatedSyncEnv(tmpDir, {
+      isPublicRepo: true,
+      allowPublicCatalogSync: true,
+    });
     // > 1 MB katalog verisi oluştur
     const largeOverview = 'U'.repeat(25_000);
     const movies = Array.from({ length: 48 }, (_, i) =>

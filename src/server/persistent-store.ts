@@ -86,6 +86,10 @@ export type TokenSourceKind =
   | 'env:CINETRACK_GITHUB_PAT'
   | 'file:CINETRACK_GITHUB_TOKEN'
   | 'file:CINETRACK_GITHUB_PAT'
+  | 'file:.env.local:CINETRACK_GITHUB_PAT'
+  | 'file:.env.local:CINETRACK_GITHUB_TOKEN'
+  | 'file:.env:CINETRACK_GITHUB_PAT'
+  | 'file:.env:CINETRACK_GITHUB_TOKEN'
   | 'options'
   | 'none';
 
@@ -106,6 +110,7 @@ export interface PersistentStoreOptions {
   githubBranch?: string;
   isPublicRepo?: boolean;
   allowPublicPersonalSync?: boolean;
+  allowPublicCatalogSync?: boolean;
   processEnvIsPublicRepo?: string | null;
   localEnvIsPublicRepo?: string | null;
 }
@@ -162,15 +167,20 @@ export interface SyncStatus {
   isPublicRepo: boolean;
   configuredEnvIsPublicRepo?: boolean;
   allowPublicPersonalSync?: boolean;
+  allowPublicCatalogSync?: boolean;
   personalSyncBlockedByPublicGuard?: boolean;
+  catalogSyncBlockedByPublicGuard?: boolean;
   publicConsentUpdatedAt?: string | null;
+  publicCatalogConsentUpdatedAt?: string | null;
   configDiagnostics?: {
     processEnvIsPublicRepo: string | null;
     localEnvIsPublicRepo: string | null;
     effectiveConfiguredIsPublicRepo: boolean;
     observedRemoteIsPublicRepo: boolean | null;
     allowPublicPersonalSync: boolean;
+    allowPublicCatalogSync?: boolean;
     persistedUserConsent: boolean | null;
+    persistedCatalogConsent?: boolean | null;
   };
   tokenDiagnostics?: {
     configured: boolean;
@@ -262,6 +272,7 @@ export interface StagedSyncReport {
   catalogStage: {
     attempted: boolean;
     ok: boolean;
+    blockedByPublicGuard?: boolean;
   };
   personalStage: {
     attempted: boolean;
@@ -270,6 +281,7 @@ export interface StagedSyncReport {
   };
   access: RemoteRepoAccessCheck;
   allowPersonalSync: boolean;
+  allowCatalogSync?: boolean;
   repoVisibilityWarning?: string;
   files: StagedFileOutcome[];
   fileOutcomes: StagedFileOutcome[];
@@ -484,6 +496,8 @@ export class PersistentDataStore {
   private persistedInitialReconcile = false;
   private persistedPublicPersonalConsent?: boolean;
   private publicConsentUpdatedAt: string | null = null;
+  private persistedPublicCatalogConsent?: boolean;
+  private publicCatalogConsentUpdatedAt: string | null = null;
   private lastObservedRemotePublic?: boolean;
   private repoVisibilityWarning?: string;
   private fileStates: Record<string, SyncFileStateRecord> = {};
@@ -499,6 +513,7 @@ export class PersistentDataStore {
   private githubBranch: string;
   private isPublicRepo: boolean;
   private allowPublicPersonalSync?: boolean;
+  private allowPublicCatalogSync?: boolean;
   private processEnvIsPublicRepo: string | null;
   private localEnvIsPublicRepo: string | null;
 
@@ -520,6 +535,7 @@ export class PersistentDataStore {
     this.githubBranch = options.githubBranch?.trim() || 'main';
     this.isPublicRepo = Boolean(options.isPublicRepo);
     this.allowPublicPersonalSync = options.allowPublicPersonalSync;
+    this.allowPublicCatalogSync = options.allowPublicCatalogSync;
     this.processEnvIsPublicRepo = options.processEnvIsPublicRepo ?? null;
     this.localEnvIsPublicRepo = options.localEnvIsPublicRepo ?? null;
 
@@ -551,6 +567,43 @@ export class PersistentDataStore {
     return Boolean(this.isPublicRepo);
   }
 
+  public isCatalogSyncAllowedForRepo(
+    remoteIsPublic: boolean,
+    perCallOverride?: boolean
+  ): boolean {
+    if (!remoteIsPublic) return true;
+    if (perCallOverride !== undefined) return perCallOverride;
+    if (this.persistedPublicCatalogConsent !== undefined) {
+      return this.persistedPublicCatalogConsent;
+    }
+    return Boolean(this.allowPublicCatalogSync);
+  }
+
+  private buildPublicVisibilityWarning(remoteIsPublic: boolean): string | undefined {
+    const effectiveConfiguredIsPublic = this.getEffectiveConfiguredIsPublicRepo();
+    const personalAllowed = this.isPersonalSyncAllowedForRepo(remoteIsPublic);
+    const catalogAllowed = this.isCatalogSyncAllowedForRepo(remoteIsPublic);
+    if (!remoteIsPublic) {
+      if (effectiveConfiguredIsPublic) {
+        return 'Yapılandırma uyarısı: Uzak GitHub deposu özel (private), ancak CINETRACK_DATA_REPO_IS_PUBLIC=true tanımlandı.';
+      }
+      return undefined;
+    }
+    if (!effectiveConfiguredIsPublic && !catalogAllowed) {
+      return 'Yapılandırma uyarısı: Uzak GitHub deposu herkese açıktır (public), ancak CINETRACK_DATA_REPO_IS_PUBLIC=false ve CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC=false tanımlıdır. Kişisel profil verileri ve TMDB katalog dosyalarının açık depoya gönderimi engellendi.';
+    }
+    if (!personalAllowed && !catalogAllowed) {
+      return 'Bilgi: Uzak GitHub veri deposu herkese açıktır (public). Gizlilik ve TMDB lisans koruması aktif olduğu için açık onay verilmeden kişisel veriler ve katalog dosyaları gönderilmez.';
+    }
+    if (!personalAllowed && catalogAllowed) {
+      return 'Bilgi: Uzak GitHub veri deposu herkese açıktır (public). Gizlilik koruması aktif olduğu için kişisel veriler gönderilmez; TMDB katalog verileri açık lisans onayınız doğrultusunda senkronize edilir.';
+    }
+    if (personalAllowed && !catalogAllowed) {
+      return 'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel profil verileriniz açık onayınızla senkronize edilir; TMDB katalog dosyaları ise CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC onayı olmadığı için açık depoya gönderilmez.';
+    }
+    return 'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi, profil verileriniz ve TMDB katalog önbelleği açık onayınız doğrultusunda herkese açık olarak depolanmaktadır.';
+  }
+
   public setPublicPersonalSyncConsent(allowPersonalDataInPublicRepo: boolean): {
     allowPublicPersonalSync: boolean;
     effectiveConfiguredIsPublicRepo: boolean;
@@ -559,15 +612,29 @@ export class PersistentDataStore {
     this.persistedPublicPersonalConsent = Boolean(allowPersonalDataInPublicRepo);
     this.publicConsentUpdatedAt = new Date().toISOString();
     if (this.lastObservedRemotePublic === true) {
-      this.repoVisibilityWarning = this.persistedPublicPersonalConsent
-        ? 'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi ve kullanıcı profili verileriniz açık onayınız doğrultusunda herkese açık olarak depolanmaktadır.'
-        : 'Bilgi: Uzak GitHub veri deposu herkese açıktır (public). Gizlilik koruması aktif olduğu için yalnızca ortak katalog senkronize edilir; kişisel izleme listesi ve profil verileri gönderilmez.';
+      this.repoVisibilityWarning = this.buildPublicVisibilityWarning(true);
     }
     this.persistSyncState();
     return {
       allowPublicPersonalSync: this.isPersonalSyncAllowedForRepo(true),
       effectiveConfiguredIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
       updatedAt: this.publicConsentUpdatedAt,
+    };
+  }
+
+  public setPublicCatalogSyncConsent(allowCatalogInPublicRepo: boolean): {
+    allowPublicCatalogSync: boolean;
+    updatedAt: string;
+  } {
+    this.persistedPublicCatalogConsent = Boolean(allowCatalogInPublicRepo);
+    this.publicCatalogConsentUpdatedAt = new Date().toISOString();
+    if (this.lastObservedRemotePublic === true) {
+      this.repoVisibilityWarning = this.buildPublicVisibilityWarning(true);
+    }
+    this.persistSyncState();
+    return {
+      allowPublicCatalogSync: this.isCatalogSyncAllowedForRepo(true),
+      updatedAt: this.publicCatalogConsentUpdatedAt,
     };
   }
 
@@ -584,6 +651,7 @@ export class PersistentDataStore {
         branch: this.githubBranch,
         isPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
         allowPublicPersonalSync: this.isPersonalSyncAllowedForRepo(true),
+        allowPublicCatalogSync: this.isCatalogSyncAllowedForRepo(true),
       }),
       onSyncCompleted: ({ report, lastRemoteSummary, lastComparison }) => {
         this.recordBidirectionalOutcome(report, lastRemoteSummary, lastComparison);
@@ -708,6 +776,8 @@ export class PersistentDataStore {
       persistedInitialReconcile?: boolean;
       persistedPublicPersonalConsent?: boolean;
       publicConsentUpdatedAt?: string | null;
+      persistedPublicCatalogConsent?: boolean;
+      publicCatalogConsentUpdatedAt?: string | null;
       lastObservedRemotePublic?: boolean;
       lastRemoteSummary?: SyncSideSummary | null;
       lastComparison?: SyncComparisonSummary | null;
@@ -723,6 +793,10 @@ export class PersistentDataStore {
         this.persistedPublicPersonalConsent = parsed.data.persistedPublicPersonalConsent;
       }
       this.publicConsentUpdatedAt = parsed.data.publicConsentUpdatedAt ?? null;
+      if (typeof parsed.data.persistedPublicCatalogConsent === 'boolean') {
+        this.persistedPublicCatalogConsent = parsed.data.persistedPublicCatalogConsent;
+      }
+      this.publicCatalogConsentUpdatedAt = parsed.data.publicCatalogConsentUpdatedAt ?? null;
       if (typeof parsed.data.lastObservedRemotePublic === 'boolean') {
         this.lastObservedRemotePublic = parsed.data.lastObservedRemotePublic;
       }
@@ -745,6 +819,12 @@ export class PersistentDataStore {
           ? { persistedPublicPersonalConsent: this.persistedPublicPersonalConsent }
           : {}),
         ...(this.publicConsentUpdatedAt ? { publicConsentUpdatedAt: this.publicConsentUpdatedAt } : {}),
+        ...(this.persistedPublicCatalogConsent !== undefined
+          ? { persistedPublicCatalogConsent: this.persistedPublicCatalogConsent }
+          : {}),
+        ...(this.publicCatalogConsentUpdatedAt
+          ? { publicCatalogConsentUpdatedAt: this.publicCatalogConsentUpdatedAt }
+          : {}),
         ...(this.lastObservedRemotePublic !== undefined
           ? { lastObservedRemotePublic: this.lastObservedRemotePublic }
           : {}),
@@ -1389,11 +1469,13 @@ export class PersistentDataStore {
 
     const effectiveConfiguredIsPublic = this.getEffectiveConfiguredIsPublicRepo();
     const allowPublicPersonalSync = this.isPersonalSyncAllowedForRepo(true);
+    const allowPublicCatalogSync = this.isCatalogSyncAllowedForRepo(true);
     const observedPublic =
       this.lastObservedRemotePublic !== undefined
         ? this.lastObservedRemotePublic
         : effectiveConfiguredIsPublic;
     const personalSyncBlockedByPublicGuard = Boolean(observedPublic && !allowPublicPersonalSync);
+    const catalogSyncBlockedByPublicGuard = Boolean(observedPublic && !allowPublicCatalogSync);
 
     return {
       configured,
@@ -1402,8 +1484,11 @@ export class PersistentDataStore {
       isPublicRepo: effectiveConfiguredIsPublic,
       configuredEnvIsPublicRepo: this.isPublicRepo,
       allowPublicPersonalSync,
+      allowPublicCatalogSync,
       personalSyncBlockedByPublicGuard,
+      catalogSyncBlockedByPublicGuard,
       publicConsentUpdatedAt: this.publicConsentUpdatedAt,
+      publicCatalogConsentUpdatedAt: this.publicCatalogConsentUpdatedAt,
       configDiagnostics: {
         processEnvIsPublicRepo: this.processEnvIsPublicRepo,
         localEnvIsPublicRepo: this.localEnvIsPublicRepo,
@@ -1411,9 +1496,14 @@ export class PersistentDataStore {
         observedRemoteIsPublicRepo:
           this.lastObservedRemotePublic !== undefined ? this.lastObservedRemotePublic : null,
         allowPublicPersonalSync,
+        allowPublicCatalogSync,
         persistedUserConsent:
           this.persistedPublicPersonalConsent !== undefined
             ? this.persistedPublicPersonalConsent
+            : null,
+        persistedCatalogConsent:
+          this.persistedPublicCatalogConsent !== undefined
+            ? this.persistedPublicCatalogConsent
             : null,
       },
       tokenDiagnostics: {
@@ -1464,7 +1554,7 @@ export class PersistentDataStore {
   }
 
   public reconcileWithGitHub(
-    options: { includePersonalOverride?: boolean } = {}
+    options: { includePersonalOverride?: boolean; includeCatalogOverride?: boolean } = {}
   ): Promise<BidirectionalSyncReport> {
     return this.bidirectionalManager.reconcile(options);
   }
@@ -1619,23 +1709,7 @@ export class PersistentDataStore {
     const isRemotePrivate = repoMeta.private === true;
     const remoteIsPublic = repoMeta.private === false;
     this.lastObservedRemotePublic = remoteIsPublic;
-    const effectiveConfiguredIsPublic = this.getEffectiveConfiguredIsPublicRepo();
-    const personalSyncAllowed = this.isPersonalSyncAllowedForRepo(remoteIsPublic);
-    let warning: string | undefined;
-
-    if (remoteIsPublic && !effectiveConfiguredIsPublic) {
-      warning =
-        'Yapılandırma uyarısı: Uzak GitHub deposu herkese açık (public), ancak CINETRACK_DATA_REPO_IS_PUBLIC=false tanımlanmış ve açık depo paylaşım onayı verilmemiş. Kişisel izleme listesi ve profil dosyalarının sızmasını önlemek için özel verilerin gönderimi engellendi.';
-    } else if (remoteIsPublic && !personalSyncAllowed) {
-      warning =
-        'Bilgi: Uzak GitHub veri deposu herkese açıktır (public). Gizlilik koruması aktif olduğu için yalnızca ortak katalog senkronize edilir; kişisel izleme listesi ve profil verileri gönderilmez.';
-    } else if (remoteIsPublic && personalSyncAllowed) {
-      warning =
-        'Dikkat: Uzak GitHub veri deposu herkese açıktır (public). Kişisel izleme listesi ve kullanıcı profili verileriniz açık onayınız doğrultusunda herkese açık olarak depolanmaktadır.';
-    } else if (!remoteIsPublic && effectiveConfiguredIsPublic) {
-      warning =
-        'Yapılandırma uyarısı: Uzak GitHub deposu özel (private), ancak CINETRACK_DATA_REPO_IS_PUBLIC=true tanımlandı.';
-    }
+    const warning = this.buildPublicVisibilityWarning(remoteIsPublic);
 
     const effectiveIsPublicRepo = remoteIsPublic;
     this.repoVisibilityWarning = warning;
@@ -2225,6 +2299,7 @@ export class PersistentDataStore {
       forceAll?: boolean;
       verifiedRemoteHashes?: Record<string, string | null>;
       allowPersonalDataInPublicRepo?: boolean;
+      allowCatalogInPublicRepo?: boolean;
     } = {}
   ): Promise<SyncResult> {
     const result: SyncResult = {
@@ -2255,31 +2330,41 @@ export class PersistentDataStore {
 
     const plannedFiles: PlannedSyncItem[] = [];
 
-    // Manifest dosyasını prob olarak ilk sıraya koy
-    for (const [relPath, filePath] of [
-      ['data/catalog/manifest.json', this.manifestFile],
-      ['data/catalog/movies.json', this.moviesFile],
-      ['data/catalog/tv.json', this.tvFile],
-    ] as const) {
-      if (existsSync(filePath)) {
-        plannedFiles.push({
-          repoPath: relPath,
-          localPath: filePath,
-          commitMessage: `chore(catalog): sync ${path.basename(relPath)} [skip ci]`,
-        });
-      }
-    }
-
     // 0. Depo erişim, yetki ve dal ön doğrulamasını çalıştır
     const access = await this.verifyRemoteRepoAccess();
     if (access.warning) {
       result.repoVisibilityWarning = access.warning;
     }
 
+    const allowCatalogSync = this.isCatalogSyncAllowedForRepo(
+      access.effectiveIsPublicRepo,
+      options.allowCatalogInPublicRepo
+    );
     const allowPersonalSync = this.isPersonalSyncAllowedForRepo(
       access.effectiveIsPublicRepo,
       options.allowPersonalDataInPublicRepo
     );
+
+    if (access.effectiveIsPublicRepo && !allowCatalogSync) {
+      result.filesBlockedPublic.push(
+        'data/catalog/* (Açık depo koruması: TMDB katalog verileri açık lisans onayı olmadan gönderilmedi)'
+      );
+    } else {
+      // Manifest dosyasını prob olarak ilk sıraya koy
+      for (const [relPath, filePath] of [
+        ['data/catalog/manifest.json', this.manifestFile],
+        ['data/catalog/movies.json', this.moviesFile],
+        ['data/catalog/tv.json', this.tvFile],
+      ] as const) {
+        if (existsSync(filePath)) {
+          plannedFiles.push({
+            repoPath: relPath,
+            localPath: filePath,
+            commitMessage: `chore(catalog): sync ${path.basename(relPath)} [skip ci]`,
+          });
+        }
+      }
+    }
 
     if (access.effectiveIsPublicRepo && !allowPersonalSync) {
       const blockedMsg =
@@ -2447,6 +2532,7 @@ export class PersistentDataStore {
     options: {
       forceWriteProbe?: boolean;
       allowPersonalDataInPublicRepo?: boolean;
+      allowCatalogInPublicRepo?: boolean;
     } = {}
   ): Promise<StagedSyncReport> {
     this.ensureCatalogFiles();
@@ -2484,6 +2570,147 @@ export class PersistentDataStore {
       }
     };
 
+    const fileOutcomes: StagedFileOutcome[] = [];
+
+    // Açık depo kontrolünü manifest yazma probundan ÖNCE yap: katalog paylaşım onayı yoksa manifest.json bile açık depoya yazılmaz
+    const preAccess = await this.verifyRemoteRepoAccess();
+    const allowCatalogSyncPre = this.isCatalogSyncAllowedForRepo(
+      preAccess.effectiveIsPublicRepo,
+      options.allowCatalogInPublicRepo
+    );
+    const allowPersonalSyncPre = this.isPersonalSyncAllowedForRepo(
+      preAccess.effectiveIsPublicRepo,
+      options.allowPersonalDataInPublicRepo
+    );
+
+    if (preAccess.ok && preAccess.effectiveIsPublicRepo && !allowCatalogSyncPre) {
+      for (const cItem of catalogItems) {
+        const { sizeBytes, localHash } = readLocalStats(cItem.localPath);
+        fileOutcomes.push({
+          repoPath: cItem.repoPath,
+          stage: 'catalog',
+          status: 'blocked',
+          writeStatus: 'blocked_public_guard',
+          sizeBytes,
+          localHash,
+          readBackHash: null,
+          verifiedReadBack: false,
+          error: 'Açık depo TMDB katalog yeniden dağıtım koruması nedeniyle katalog gönderilmedi.',
+        });
+      }
+
+      if (!allowPersonalSyncPre) {
+        for (const pItem of personalItems) {
+          const { sizeBytes, localHash } = readLocalStats(pItem.localPath);
+          fileOutcomes.push({
+            repoPath: pItem.repoPath,
+            stage: 'personal',
+            status: 'blocked',
+            writeStatus: 'blocked_public_guard',
+            sizeBytes,
+            localHash,
+            readBackHash: null,
+            verifiedReadBack: false,
+            error: 'Açık depo gizlilik koruması nedeniyle kişisel veri gönderilmedi.',
+          });
+        }
+        return {
+          ok: true,
+          verifiedEqual: true,
+          probe: {
+            ok: true,
+            repoPath: 'data/catalog/manifest.json',
+            step: 'access_check',
+            sizeBytes: 0,
+            localHash: null,
+            readBackHash: null,
+            verifiedReadBack: false,
+          },
+          catalogStage: { attempted: false, ok: true, blockedByPublicGuard: true },
+          personalStage: { attempted: false, ok: true, blockedByPublicGuard: true },
+          access: preAccess,
+          allowPersonalSync: false,
+          allowCatalogSync: false,
+          ...(preAccess.warning ? { repoVisibilityWarning: preAccess.warning } : {}),
+          files: fileOutcomes,
+          fileOutcomes,
+          bidirectionalReport: null,
+        };
+      }
+
+      const personalOnlyReport = await this.reconcileWithGitHub({
+        includePersonalOverride: true,
+        includeCatalogOverride: false,
+      });
+      const refreshedPersonal = this.collectPersonalSyncItems();
+      let haltedAtPersonal: 'personal' | undefined;
+      for (const pItem of refreshedPersonal) {
+        const { sizeBytes, localHash } = readLocalStats(pItem.localPath);
+        const rFile = personalOnlyReport.remoteAfter?.files[pItem.repoPath];
+        const matchingErr = personalOnlyReport.errors.find((e) => e.repoPath === pItem.repoPath);
+        const isFailed =
+          personalOnlyReport.filesFailed.includes(pItem.repoPath) || Boolean(matchingErr);
+        if (isFailed) {
+          if (!haltedAtPersonal) haltedAtPersonal = 'personal';
+          fileOutcomes.push({
+            repoPath: pItem.repoPath,
+            stage: 'personal',
+            status: 'failed',
+            writeStatus: 'failed',
+            sizeBytes,
+            localHash,
+            readBackHash: null,
+            verifiedReadBack: false,
+            error: matchingErr?.message || `${pItem.repoPath} senkronize edilemedi.`,
+            errorCategory: (matchingErr?.category as GitHubSyncErrorCategory) || 'http_error',
+          });
+        } else {
+          const wasUploaded = personalOnlyReport.filesUploaded.includes(pItem.repoPath);
+          const readBackHash = rFile?.rawFileHash ?? null;
+          fileOutcomes.push({
+            repoPath: pItem.repoPath,
+            stage: 'personal',
+            status: 'succeeded',
+            writeStatus: wasUploaded ? 'committed' : 'unchanged_noop',
+            sizeBytes,
+            localHash,
+            readBackHash,
+            sha: rFile?.sha,
+            verifiedReadBack: Boolean(rFile?.exists && rFile?.valid && readBackHash),
+          });
+        }
+      }
+
+      const personalOk = personalOnlyReport.ok && personalOnlyReport.verifiedEqual;
+      return {
+        ok: personalOk,
+        verifiedEqual: personalOnlyReport.verifiedEqual,
+        ...(haltedAtPersonal ? { haltedAtStage: haltedAtPersonal } : {}),
+        probe: {
+          ok: true,
+          repoPath: 'data/cinetrack-data.json',
+          step: 'access_check',
+          sizeBytes: 0,
+          localHash: null,
+          readBackHash: null,
+          verifiedReadBack: personalOk,
+        },
+        catalogStage: { attempted: false, ok: true, blockedByPublicGuard: true },
+        personalStage: { attempted: true, ok: personalOk },
+        access: preAccess,
+        allowPersonalSync: true,
+        allowCatalogSync: false,
+        ...(personalOnlyReport.repoVisibilityWarning
+          ? { repoVisibilityWarning: personalOnlyReport.repoVisibilityWarning }
+          : preAccess.warning
+            ? { repoVisibilityWarning: preAccess.warning }
+            : {}),
+        files: fileOutcomes,
+        fileOutcomes,
+        bidirectionalReport: personalOnlyReport,
+      };
+    }
+
     // 1. Küçük test dosyası (manifest.json) ile yazma ve geri okuma probu
     const probeRes = await this.testSafeConnectionAndProbeManifest({
       forceWriteProbe: options.forceWriteProbe ?? true,
@@ -2493,8 +2720,6 @@ export class PersistentDataStore {
       access.effectiveIsPublicRepo,
       options.allowPersonalDataInPublicRepo
     );
-
-    const fileOutcomes: StagedFileOutcome[] = [];
 
     if (!probeRes.ok) {
       const probeErr = probeRes.error || 'Küçük dosya yazma/geri okuma testi başarısız oldu.';
@@ -2598,7 +2823,10 @@ export class PersistentDataStore {
     }
 
     // 2. Aşama: Yalnızca manifest ve katalog dosyalarını (manifest.json, movies.json, tv.json) kayıpsız birleştir ve eşitle
-    const catalogReport = await this.reconcileWithGitHub({ includePersonalOverride: false });
+    const catalogReport = await this.reconcileWithGitHub({
+      includePersonalOverride: false,
+      includeCatalogOverride: true,
+    });
     if (!catalogReport.ok || !catalogReport.verifiedEqual) {
       for (const item of catalogItems) {
         const { sizeBytes, localHash } = readLocalStats(item.localPath);
@@ -2683,7 +2911,10 @@ export class PersistentDataStore {
 
     // 3. Aşama: Kullanıcı profili ve diğer kişisel verileri eşitle (izinliyse) ve tam iki yönlü eşitliği doğrula
     const finalReport = allowPersonalSync
-      ? await this.reconcileWithGitHub({ includePersonalOverride: true })
+      ? await this.reconcileWithGitHub({
+          includePersonalOverride: true,
+          includeCatalogOverride: true,
+        })
       : catalogReport;
 
     const refreshedCatalogItems = [

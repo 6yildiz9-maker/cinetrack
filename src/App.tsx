@@ -69,6 +69,7 @@ import {
   POOL_LOW_WATERMARK,
   HIDE_LISTED_CATEGORIES,
   filterHiddenUserRegisteredItems,
+  normalizeDeletedKeys,
 } from './core/cinetrack-core';
 import {
   fetchTmdb,
@@ -92,12 +93,14 @@ import {
   mapRecommendationBatchToDisplayItems,
 } from './core/recommendation-orchestrator';
 import { useOfflineSync } from './hooks/useOfflineSync';
+import { hasPendingOfflineSync } from './services/offline-queue';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
 const ACTIVE_PROFILE_STORAGE = 'cinetrack.activeProfile.v1';
 const PROFILE_STORAGE = 'cinetrack.profile.v1';
 const DIRTY_KEY = 'cinetrack.dirty.v2';
+const HIDE_LISTED_STORAGE_KEY = 'cinetrack_hide_listed_items';
 const EMPTY_REASONS_MAP = new Map<string, string>();
 
 function listStorageKey(profileId: string) {
@@ -192,6 +195,19 @@ function loadFavoriteActors(profileId: string): FavoriteActorInfo[] {
   }
 }
 
+function deletedKeysStorageKey(profileId: string): string {
+  return `cinetrack_deleted_keys_${profileId}`;
+}
+
+function loadDeletedKeys(profileId: string): Record<string, string> {
+  try {
+    const stored = localStorage.getItem(deletedKeysStorageKey(profileId));
+    return stored ? normalizeDeletedKeys(JSON.parse(stored)) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function App() {
   // Profiles and Watchlist State
   const [profiles, setProfiles] = useState<Profile[]>(loadInitialProfiles);
@@ -201,6 +217,7 @@ export function App() {
   const [preferences, setPreferences] = useState<Preferences>(() => loadProfilePreferences(activeProfileId));
   const [savedItems, setSavedItems] = useState<SavedItem[]>(() => loadProfileItems(activeProfileId));
   const [favoriteActors, setFavoriteActors] = useState<FavoriteActorInfo[]>(() => loadFavoriteActors(activeProfileId));
+  const [deletedKeys, setDeletedKeys] = useState<Record<string, string>>(() => loadDeletedKeys(activeProfileId));
   const [dislikedItems, setDislikedItems] = useState<any[]>(() => {
     try {
       const cache = JSON.parse(localStorage.getItem('cinetrack_disliked_cache') || '{}');
@@ -222,7 +239,13 @@ export function App() {
   const [selectedType, setSelectedType] = useState<string>('all');
   const [selectedSort, setSelectedSort] = useState<string>('popular');
   const [selectedProvider, setSelectedProvider] = useState<string>('');
-  const [hideListedItems, setHideListedItems] = useState<boolean>(false);
+  const [hideListedItems, setHideListedItems] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HIDE_LISTED_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [genresMap, setGenresMap] = useState<Record<number, string>>({});
 
   const [catalogItems, setCatalogItems] = useState<any[]>([]);
@@ -285,6 +308,14 @@ export function App() {
   dislikedItemsRef.current = dislikedItems;
   const favoriteActorsRef = useRef<FavoriteActorInfo[]>(favoriteActors);
   favoriteActorsRef.current = favoriteActors;
+  const deletedKeysRef = useRef<Record<string, string>>(deletedKeys);
+  deletedKeysRef.current = deletedKeys;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDE_LISTED_STORAGE_KEY, hideListedItems ? '1' : '0');
+    } catch {}
+  }, [hideListedItems]);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -331,6 +362,7 @@ export function App() {
       localStorage.setItem(PROFILE_STORAGE, profileName);
       localStorage.setItem(preferencesStorageKey(activeProfileId), JSON.stringify(preferences));
       localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(favoriteActors));
+      localStorage.setItem(deletedKeysStorageKey(activeProfileId), JSON.stringify(deletedKeys));
     } catch (err) {
       console.warn('LocalStorage metadata save warning:', err);
     }
@@ -371,6 +403,7 @@ export function App() {
     savedItems,
     preferences,
     favoriteActors,
+    deletedKeys,
     serverSyncReady,
   ]);
 
@@ -381,18 +414,25 @@ export function App() {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
       activeProfileId,
-      profiles: profiles.map((p) => ({
-        id: p.id,
-        name: p.id === activeProfileId ? profileName : p.name,
-        createdAt: p.createdAt || '',
-        preferences: p.id === activeProfileId ? preferences : loadProfilePreferences(p.id),
-        items: p.id === activeProfileId ? savedItems : loadProfileItems(p.id),
-        favoriteActors:
+      profiles: profiles.map((p) => {
+        const profDeletedKeys =
           p.id === activeProfileId
-            ? (favoriteActorsRef.current || [])
-            : (p.favoriteActors || loadFavoriteActors(p.id)),
-        isDemo: p.id === activeProfileId ? Boolean(activeProfile?.isDemo) : Boolean(p.isDemo),
-      })),
+            ? normalizeDeletedKeys(deletedKeysRef.current)
+            : normalizeDeletedKeys(p.deleted_keys || loadDeletedKeys(p.id));
+        return {
+          id: p.id,
+          name: p.id === activeProfileId ? profileName : p.name,
+          createdAt: p.createdAt || '',
+          preferences: p.id === activeProfileId ? preferences : loadProfilePreferences(p.id),
+          items: p.id === activeProfileId ? savedItems : loadProfileItems(p.id),
+          favoriteActors:
+            p.id === activeProfileId
+              ? (favoriteActorsRef.current || [])
+              : (p.favoriteActors || loadFavoriteActors(p.id)),
+          isDemo: p.id === activeProfileId ? Boolean(activeProfile?.isDemo) : Boolean(p.isDemo),
+          ...(Object.keys(profDeletedKeys).length > 0 ? { deleted_keys: profDeletedKeys } : {}),
+        };
+      }),
     };
   }, [profiles, activeProfileId, profileName, preferences, savedItems, activeProfile?.isDemo]);
 
@@ -401,7 +441,13 @@ export function App() {
     setSyncStatus(`Çakışma algılandı: ${conflict.message}`);
   }, []);
 
-  const { isOnline, pendingSync, syncDocument } = useOfflineSync(handleServerConflict);
+  const {
+    isOnline,
+    pendingSync,
+    unpersistedWarning,
+    syncDocument,
+    resolveQueuedConflict,
+  } = useOfflineSync(handleServerConflict);
 
   const applyDataDocumentToState = useCallback((rawDoc: DataDocument) => {
     const doc = normalizeDataDocument(rawDoc);
@@ -416,15 +462,20 @@ export function App() {
     setSavedItems(active.items);
     const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
     setFavoriteActors(activeFavs);
+    const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
+    deletedKeysRef.current = activeDeleted;
+    setDeletedKeys(activeDeleted);
     const loadedMap = loadPersistentTasteMap(active.id);
     tasteMapRef.current = loadedMap;
     setTasteMap(loadedMap);
     try {
       localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
+      localStorage.setItem(deletedKeysStorageKey(active.id), JSON.stringify(activeDeleted));
       localStorage.removeItem(DIRTY_KEY);
     } catch {}
+    resolveQueuedConflict();
     setServerConflict(null);
-  }, []);
+  }, [resolveQueuedConflict]);
 
   // Push server data on changes (with revision guard & offline queue)
   const pushToServer = useCallback(async () => {
@@ -446,15 +497,18 @@ export function App() {
   }, [buildCurrentPayload, syncDocument]);
 
   const handleKeepLocalOnConflict = useCallback(async () => {
-    const payload = buildCurrentPayload();
+    const payload = serverConflict?.localPayload || buildCurrentPayload();
     const res = await syncDocument(payload, { forceOverwrite: true, confirmBulkDelete: true });
     if (res.ok) {
-      localStorage.removeItem(DIRTY_KEY);
+      try {
+        localStorage.removeItem(DIRTY_KEY);
+      } catch {}
+      resolveQueuedConflict();
       setServerConflict(null);
       setSyncStatus('Yerel değişiklikler sunucuya kaydedildi.');
       showToast('Yerel verileriniz sunucuya kaydedildi.');
     }
-  }, [buildCurrentPayload, syncDocument, showToast]);
+  }, [serverConflict, buildCurrentPayload, syncDocument, resolveQueuedConflict, showToast]);
 
   const handleUseServerOnConflict = useCallback(() => {
     if (serverConflict?.serverDocument) {
@@ -469,13 +523,19 @@ export function App() {
       pushToServer();
     }, 500);
     return () => clearTimeout(timer);
-  }, [pushToServer, serverSyncReady, favoriteActors]);
+  }, [pushToServer, serverSyncReady, favoriteActors, deletedKeys]);
 
-  // Otomatik 5 dakikalık periyodik arka plan senkronizasyonu
+  // Otomatik 5 dakikalık periyodik arka plan senkronizasyonu (yalnızca kirli bayrak veya bekleyen kuyruk varsa)
   useEffect(() => {
     if (!serverSyncReady) return;
     const interval = setInterval(() => {
-      pushToServer();
+      try {
+        if (localStorage.getItem(DIRTY_KEY) === '1' || hasPendingOfflineSync()) {
+          void pushToServer();
+        }
+      } catch {
+        void pushToServer();
+      }
     }, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [pushToServer, serverSyncReady]);
@@ -500,11 +560,15 @@ export function App() {
               setSavedItems(active.items);
               const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
               setFavoriteActors(activeFavs);
+              const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
+              deletedKeysRef.current = activeDeleted;
+              setDeletedKeys(activeDeleted);
               const loadedMap = loadPersistentTasteMap(active.id);
               tasteMapRef.current = loadedMap;
               setTasteMap(loadedMap);
               try {
                 localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
+                localStorage.setItem(deletedKeysStorageKey(active.id), JSON.stringify(activeDeleted));
               } catch {}
             }
           }
@@ -532,21 +596,25 @@ export function App() {
     };
   }, []);
 
-  // Release Reminders check
+  // Release Reminders check (ref-backed with single batched state update — BUG-13.3)
   const checkReleaseReminders = useCallback(() => {
-    if (!preferences.reminders || !('Notification' in window) || Notification.permission !== 'granted') {
+    const currentPrefs = preferencesRef.current;
+    const currentItems = savedItemsRef.current;
+    if (!currentPrefs.reminders || !('Notification' in window) || Notification.permission !== 'granted') {
       return;
     }
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    for (const item of savedItems) {
+    const newlyNotified: string[] = [];
+
+    for (const item of currentItems) {
       if (item.status === 'completed') continue;
       const airDate = resolveAirDate(item);
       if (!airDate) continue;
       const days = reminderDaysUntil(airDate, today);
       if (days === null) continue;
       const key = `${item.media_type}:${item.id}:${airDate}`;
-      if (preferences.notified.includes(key)) continue;
+      if (currentPrefs.notified.includes(key) || newlyNotified.includes(key)) continue;
 
       const next = item.next_episode_to_air;
       const episodeTag =
@@ -564,12 +632,16 @@ export function App() {
         notification.close();
       };
 
+      newlyNotified.push(key);
+    }
+
+    if (newlyNotified.length > 0) {
       setPreferences((prev) => ({
         ...prev,
-        notified: [...prev.notified.slice(-199), key],
+        notified: [...prev.notified, ...newlyNotified].slice(-200),
       }));
     }
-  }, [preferences, savedItems]);
+  }, []);
 
   useEffect(() => {
     checkReleaseReminders();
@@ -1803,6 +1875,15 @@ export function App() {
     }
 
     const itemKey = makeMediaKey(mediaType, targetId);
+    if (deletedKeysRef.current[itemKey]) {
+      setDeletedKeys((prev) => {
+        if (!prev[itemKey]) return prev;
+        const copy = { ...prev };
+        delete copy[itemKey];
+        deletedKeysRef.current = copy;
+        return copy;
+      });
+    }
     setSavedItems((currentSaved) => {
       const existingIndex = currentSaved.findIndex(
         (entry) =>
@@ -1923,6 +2004,14 @@ export function App() {
     const itemKey = makeMediaKey(item);
     const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
     const targetTitle = (item.title || item.name || '').trim().toLowerCase();
+    if (itemKey.startsWith('movie:') || itemKey.startsWith('tv:')) {
+      const deletedAtIso = new Date().toISOString();
+      setDeletedKeys((prev) => {
+        const nextDeleted = normalizeDeletedKeys({ ...prev, [itemKey]: deletedAtIso });
+        deletedKeysRef.current = nextDeleted;
+        return nextDeleted;
+      });
+    }
     setSavedItems((prev) => {
       const next = prev.filter(
         (entry) =>
@@ -2294,6 +2383,9 @@ export function App() {
     setPreferences(target?.preferences || loadProfilePreferences(newId));
     const favs = target?.favoriteActors?.length ? target.favoriteActors : loadFavoriteActors(newId);
     setFavoriteActors(favs);
+    const targetDeleted = normalizeDeletedKeys(target?.deleted_keys || loadDeletedKeys(newId));
+    deletedKeysRef.current = targetDeleted;
+    setDeletedKeys(targetDeleted);
     const nextTasteMap = loadPersistentTasteMap(newId);
     tasteMapRef.current = nextTasteMap;
     setTasteMap(nextTasteMap);
@@ -2322,6 +2414,8 @@ export function App() {
     setSavedItems([]);
     setPreferences(newProf.preferences);
     setFavoriteActors([]);
+    deletedKeysRef.current = {};
+    setDeletedKeys({});
     const nextTasteMap = loadPersistentTasteMap(newId);
     tasteMapRef.current = nextTasteMap;
     setTasteMap(nextTasteMap);
@@ -2477,7 +2571,11 @@ export function App() {
 
   return (
     <>
-      <OfflineIndicator isOnline={isOnline} pendingSync={pendingSync} />
+      <OfflineIndicator
+        isOnline={isOnline}
+        pendingSync={pendingSync}
+        unpersistedWarning={unpersistedWarning}
+      />
       <Header
         profileName={profileName}
         query={query}

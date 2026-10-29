@@ -2,8 +2,11 @@ import crypto from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
+  promises as fsPromises,
+  readdirSync,
   readFileSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -18,6 +21,7 @@ import {
   normalizePreferences,
   normalizeSavedItem,
   parseMediaKey,
+  resolveMediaType,
   type DataDocument,
   type Profile,
   type SavedItem,
@@ -693,21 +697,63 @@ export function getNeutralPosterPlaceholderPng(): Buffer {
   return cachedPlaceholderPng;
 }
 
+export const ALLOWED_POSTER_HOSTS: ReadonlySet<string> = new Set([
+  'image.tmdb.org',
+  'img.tmdb.org',
+]);
+
+export const MAX_POSTER_RESPONSE_BYTES = 5 * 1024 * 1024;
+export const DEFAULT_POSTER_CACHE_MAX_BYTES = 200 * 1024 * 1024;
+export const DEFAULT_POSTER_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function isAllowedPosterUrl(rawUrl: string): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== 'https:') return false;
+    if (parsed.username || parsed.password) return false;
+    if (parsed.port !== '' && parsed.port !== '443') return false;
+    if (!ALLOWED_POSTER_HOSTS.has(parsed.hostname.toLowerCase())) return false;
+    if (parsed.pathname.includes('..') || parsed.pathname.includes('\\')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function resolvePosterUrlForExport(
   item: { poster_path?: string | null; poster_url?: string | null },
   tmdbPosterSize = 'w154'
 ): string | null {
+  const safeSize = /^[a-zA-Z0-9_]+$/.test(tmdbPosterSize) ? tmdbPosterSize : 'w154';
   const rawPath = typeof item.poster_path === 'string' ? item.poster_path.trim() : '';
   if (rawPath) {
-    if (rawPath.startsWith('https://')) return rawPath;
+    if (
+      rawPath.startsWith('https://') ||
+      rawPath.startsWith('http://') ||
+      rawPath.startsWith('//') ||
+      rawPath.includes('://')
+    ) {
+      if (!rawPath.startsWith('https://')) return null;
+      try {
+        const parsed = new URL(rawPath);
+        return isAllowedPosterUrl(parsed.href) ? parsed.href : null;
+      } catch {
+        return null;
+      }
+    }
+    if (rawPath.includes('..') || rawPath.includes('\\') || /[\s?#]/.test(rawPath)) {
+      return null;
+    }
     const normalizedPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
-    return `https://image.tmdb.org/t/p/${tmdbPosterSize}${normalizedPath}`;
+    const candidate = `https://image.tmdb.org/t/p/${safeSize}${normalizedPath}`;
+    return isAllowedPosterUrl(candidate) ? candidate : null;
   }
   const rawUrl = typeof item.poster_url === 'string' ? item.poster_url.trim() : '';
   if (rawUrl) {
     try {
       const parsed = new URL(rawUrl);
-      if (parsed.protocol === 'https:') return parsed.href;
+      return isAllowedPosterUrl(parsed.href) ? parsed.href : null;
     } catch {
       return null;
     }
@@ -715,23 +761,97 @@ export function resolvePosterUrlForExport(
   return null;
 }
 
+const MAX_POSTER_REDIRECT_HOPS = 3;
+
 const defaultPosterFetcher: PosterFetcherFn = async (url, timeoutMs) => {
+  if (!isAllowedPosterUrl(url)) {
+    throw new Error('İzin verilmeyen poster sunucusu engellendi (SSRF koruması)');
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        Accept: 'image/jpeg,image/png,image/gif,image/*;q=0.8',
-        'User-Agent': 'CineTrack-Backup-Exporter/1.0',
-      },
-    });
-    const arr = await res.arrayBuffer();
-    return {
-      status: res.status,
-      contentType: res.headers.get('content-type'),
-      buffer: Buffer.from(arr),
-    };
+    let currentUrl = url;
+    for (let hop = 0; hop <= MAX_POSTER_REDIRECT_HOPS; hop += 1) {
+      if (!isAllowedPosterUrl(currentUrl)) {
+        throw new Error('İzin verilmeyen poster sunucusu engellendi (SSRF koruması)');
+      }
+      const res = await fetch(currentUrl, {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: {
+          Accept: 'image/jpeg,image/png,image/gif,image/*;q=0.8',
+          'User-Agent': 'CineTrack-Backup-Exporter/1.0',
+        },
+      });
+
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location || hop >= MAX_POSTER_REDIRECT_HOPS) {
+          throw new Error(`Poster yönlendirme sınırı aşıldı veya geçersiz (HTTP ${res.status})`);
+        }
+        let resolvedNext: string;
+        try {
+          resolvedNext = new URL(location, currentUrl).href;
+        } catch {
+          throw new Error('Geçersiz poster yönlendirme adresi');
+        }
+        if (!isAllowedPosterUrl(resolvedNext)) {
+          throw new Error('Güvenli olmayan poster yönlendirme hedefi engellendi (SSRF koruması)');
+        }
+        currentUrl = resolvedNext;
+        continue;
+      }
+
+      const declaredLengthHeader = res.headers.get('content-length');
+      const declaredLength = declaredLengthHeader ? Number(declaredLengthHeader) : NaN;
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_POSTER_RESPONSE_BYTES) {
+        try {
+          await res.body?.cancel();
+        } catch {
+          // Ignore cancel error
+        }
+        throw new Error('Poster yanıt boyutu 5 MiB sınırını aşıyor');
+      }
+
+      if (!res.body) {
+        return {
+          status: res.status,
+          contentType: res.headers.get('content-type'),
+          buffer: Buffer.alloc(0),
+        };
+      }
+
+      const reader = res.body.getReader();
+      const chunks: Buffer[] = [];
+      let receivedBytes = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value && value.byteLength > 0) {
+            receivedBytes += value.byteLength;
+            if (receivedBytes > MAX_POSTER_RESPONSE_BYTES) {
+              await reader.cancel().catch(() => {});
+              throw new Error('Poster yanıt boyutu 5 MiB sınırını aşıyor');
+            }
+            chunks.push(Buffer.from(value));
+          }
+        }
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore lock release failure
+        }
+      }
+
+      return {
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        buffer: Buffer.concat(chunks),
+      };
+    }
+    throw new Error('Poster yönlendirme sınırı aşıldı');
   } finally {
     clearTimeout(timer);
   }
@@ -757,16 +877,73 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+export interface PosterCacheStats {
+  filesCount: number;
+  totalBytes: number;
+  maxBytes: number;
+  ttlDays: number;
+}
+
+export function getPosterCacheStats(
+  cacheDir: string,
+  maxBytes = DEFAULT_POSTER_CACHE_MAX_BYTES,
+  ttlMs = DEFAULT_POSTER_CACHE_TTL_MS
+): PosterCacheStats {
+  const ttlDays = Math.max(1, Math.round(ttlMs / (24 * 60 * 60 * 1000)));
+  if (!cacheDir || !existsSync(cacheDir)) {
+    return { filesCount: 0, totalBytes: 0, maxBytes, ttlDays };
+  }
+  let filesCount = 0;
+  let totalBytes = 0;
+  try {
+    const entries = readdirSync(cacheDir);
+    for (const name of entries) {
+      if (!/\.(jpg|jpeg|png|gif)$/i.test(name)) continue;
+      try {
+        const st = statSync(path.join(cacheDir, name));
+        if (st.isFile()) {
+          filesCount += 1;
+          totalBytes += st.size;
+        }
+      } catch {
+        // Ignore racing file deletion
+      }
+    }
+  } catch {
+    // Ignore unreadable cache directory
+  }
+  return { filesCount, totalBytes, maxBytes, ttlDays };
+}
+
+export interface PosterCacheOptions {
+  maxBytes?: number;
+  ttlMs?: number;
+  nowMs?: () => number;
+}
+
 export class PosterCacheManager {
   private cacheDir: string;
+  private maxBytes: number;
+  private ttlMs: number;
+  private nowMs: () => number;
   private memoryCache = new Map<
     string,
     { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif'; width: number; height: number }
   >();
 
-  constructor(cacheDir: string) {
+  constructor(cacheDir: string, options: PosterCacheOptions = {}) {
     this.cacheDir = cacheDir;
+    this.maxBytes =
+      typeof options.maxBytes === 'number' && options.maxBytes > 0
+        ? options.maxBytes
+        : DEFAULT_POSTER_CACHE_MAX_BYTES;
+    this.ttlMs =
+      typeof options.ttlMs === 'number' && options.ttlMs > 0
+        ? options.ttlMs
+        : DEFAULT_POSTER_CACHE_TTL_MS;
+    this.nowMs = options.nowMs || (() => Date.now());
     mkdirSync(this.cacheDir, { recursive: true });
+    this.purgeIfNeeded();
   }
 
   private getDiskPaths(urlHash: string): Array<{ ext: 'jpeg' | 'png' | 'gif'; filePath: string }> {
@@ -777,18 +954,85 @@ export class PosterCacheManager {
     ];
   }
 
+  public purgeIfNeeded(): { evictedFiles: number; totalBytes: number; filesCount: number } {
+    if (!existsSync(this.cacheDir)) {
+      return { evictedFiles: 0, totalBytes: 0, filesCount: 0 };
+    }
+    const now = this.nowMs();
+    let evictedFiles = 0;
+    const validEntries: Array<{ filePath: string; size: number; mtimeMs: number }> = [];
+
+    try {
+      const names = readdirSync(this.cacheDir);
+      for (const name of names) {
+        if (!/\.(jpg|jpeg|png|gif)$/i.test(name)) continue;
+        const filePath = path.join(this.cacheDir, name);
+        try {
+          const st = statSync(filePath);
+          if (!st.isFile()) continue;
+          const isExpired = now - st.mtimeMs > this.ttlMs;
+          const isInvalidSize = st.size < 16 || st.size > MAX_POSTER_RESPONSE_BYTES;
+          if (isExpired || isInvalidSize) {
+            try {
+              unlinkSync(filePath);
+              evictedFiles += 1;
+            } catch {
+              // Ignore unlink race
+            }
+            continue;
+          }
+          validEntries.push({ filePath, size: st.size, mtimeMs: st.mtimeMs });
+        } catch {
+          // Ignore racing file
+        }
+      }
+    } catch {
+      return { evictedFiles, totalBytes: 0, filesCount: 0 };
+    }
+
+    let totalBytes = validEntries.reduce((acc, e) => acc + e.size, 0);
+    if (totalBytes > this.maxBytes) {
+      validEntries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+      while (validEntries.length > 0 && totalBytes > this.maxBytes) {
+        const oldest = validEntries.shift()!;
+        try {
+          unlinkSync(oldest.filePath);
+          totalBytes -= oldest.size;
+          evictedFiles += 1;
+        } catch {
+          // Ignore unlink race
+        }
+      }
+    }
+
+    return {
+      evictedFiles,
+      totalBytes,
+      filesCount: validEntries.length,
+    };
+  }
+
   public readCached(
     url: string
   ): { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif'; width: number; height: number } | null {
     const memHit = this.memoryCache.get(url);
     if (memHit) return memHit;
 
+    const now = this.nowMs();
     const urlHash = crypto.createHash('sha256').update(url).digest('hex');
     for (const candidate of this.getDiskPaths(urlHash)) {
       if (!existsSync(candidate.filePath)) continue;
       try {
         const stat = statSync(candidate.filePath);
-        if (stat.size < 16 || stat.size > 5 * 1024 * 1024) continue;
+        if (now - stat.mtimeMs > this.ttlMs) {
+          try {
+            unlinkSync(candidate.filePath);
+          } catch {
+            // Ignore unlink race
+          }
+          continue;
+        }
+        if (stat.size < 16 || stat.size > MAX_POSTER_RESPONSE_BYTES) continue;
         const buf = readFileSync(candidate.filePath);
         const detected = detectImageExtension(buf);
         const dims = readImageDimensions(buf);
@@ -908,7 +1152,19 @@ function mapRecordToExportRow(
   genresMap: Record<number, string>,
   tmdbPosterSize: string
 ): ExportRowItem {
-  const mediaType: 'movie' | 'tv' = source.media_type === 'tv' ? 'tv' : 'movie';
+  const sourceResolved = resolveMediaType(source);
+  const catalogResolved = catalogMatch ? resolveMediaType(catalogMatch) : 'unknown';
+  let mediaType: 'movie' | 'tv';
+  if (sourceResolved !== 'unknown') {
+    mediaType = sourceResolved;
+  } else if (catalogResolved !== 'unknown') {
+    mediaType = catalogResolved;
+  } else {
+    console.warn(
+      `[CineTrack Backup] Kayıt medya türü belirsiz (id=${String(source.id ?? catalogMatch?.id ?? '')}); varsayılan 'movie' kullanıldı.`
+    );
+    mediaType = 'movie';
+  }
   const id = source.id ?? catalogMatch?.id ?? '';
   const canonicalKey = makeMediaKey(mediaType, id);
 
@@ -1075,8 +1331,26 @@ export async function buildProfileBackupDataset(
   const hintByKey = new Map<string, Record<string, any>>();
   for (const hint of options.dislikedItemsHint || []) {
     if (!hint || typeof hint !== 'object' || hint.id == null) continue;
-    const mType: 'movie' | 'tv' = hint.media_type === 'tv' ? 'tv' : 'movie';
+    const mType = resolveMediaType(hint);
+    if (mType === 'unknown') {
+      console.warn(
+        `[CineTrack Backup] dislikedItemsHint kaydında medya türü belirsiz (id=${String(hint.id)}); atlanıyor.`
+      );
+      continue;
+    }
     hintByKey.set(makeMediaKey(mType, hint.id), hint);
+  }
+
+  // O(1) lookup map for raw input items so user note fields are preserved without O(n^2) .find()
+  const rawByKey = new Map<string, Record<string, any>>();
+  for (const rawItem of rawItemsClone) {
+    if (!rawItem || typeof rawItem !== 'object' || rawItem.id == null) continue;
+    const mType = resolveMediaType(rawItem);
+    if (mType === 'unknown') continue;
+    const k = makeMediaKey(mType, rawItem.id);
+    if (!rawByKey.has(k)) {
+      rawByKey.set(k, rawItem);
+    }
   }
 
   const izlenenRaw: ExportRowItem[] = [];
@@ -1087,9 +1361,7 @@ export async function buildProfileBackupDataset(
     const key = makeMediaKey(item);
     const catMatch = item.media_type === 'tv' ? tvCatalog[key] : moviesCatalog[key];
     // Preserve any user note fields if present on raw input item
-    const rawOriginal = rawItemsClone.find(
-      (r) => r && makeMediaKey(r.media_type === 'tv' ? 'tv' : 'movie', r.id) === key
-    );
+    const rawOriginal = rawByKey.get(key);
     const enrichedSource = rawOriginal ? { ...rawOriginal, ...item } : item;
     const row = mapRecordToExportRow(enrichedSource, catMatch, mergedGenresMap, tmdbPosterSize);
 
@@ -1757,6 +2029,8 @@ export interface GenerateExcelOptions extends BuildDatasetOptions {
   posterFetcher?: PosterFetcherFn;
   posterTimeoutMs?: number;
   posterConcurrency?: number;
+  posterCacheMaxBytes?: number;
+  posterCacheTtlMs?: number;
   embedPlaceholderOnMissingPoster?: boolean;
 }
 
@@ -1767,7 +2041,10 @@ export async function generateProfileExcelBuffer(
   options: GenerateExcelOptions
 ): Promise<ExcelWorkbookBuildResult> {
   const dataset = await buildProfileBackupDataset(options);
-  const posterCache = new PosterCacheManager(options.posterCacheDir);
+  const posterCache = new PosterCacheManager(options.posterCacheDir, {
+    maxBytes: options.posterCacheMaxBytes,
+    ttlMs: options.posterCacheTtlMs,
+  });
   const posterFetcher = options.posterFetcher || defaultPosterFetcher;
   const posterTimeoutMs = options.posterTimeoutMs ?? 7000;
   const posterConcurrency = options.posterConcurrency ?? 16;
@@ -1871,6 +2148,9 @@ export async function generateProfileExcelBuffer(
       });
     }
   });
+
+  // Enforce bounded disk cache size after writing newly fetched posters
+  posterCache.purgeIfNeeded();
 
   // Compute accurate poster embedding & error metrics before rendering Özet sheet
   let embeddedPostersCount = 0;
@@ -2751,6 +3031,25 @@ export async function executeProfileBackupExport(
     verifiedReadBack: false,
   };
 
+async function writeBufferAtomicAsync(targetPath: string, data: Buffer): Promise<void> {
+  const dir = path.dirname(targetPath);
+  await fsPromises.mkdir(dir, { recursive: true });
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${Math.random()
+    .toString(16)
+    .slice(2)}.tmp`;
+  try {
+    await fsPromises.writeFile(tempPath, data);
+    await fsPromises.rename(tempPath, targetPath);
+  } catch (err) {
+    try {
+      await fsPromises.unlink(tempPath);
+    } catch {
+      // Ignore cleanup error
+    }
+    throw err;
+  }
+}
+
   // 1. JSON Backup (Primary Lossless Format — isolated try/catch)
   if (includeJson) {
     try {
@@ -2770,12 +3069,13 @@ export async function executeProfileBackupExport(
           notified: [],
         },
         favoriteActors: foundProfile.favoriteActors || [],
+        ...(foundProfile.deleted_keys ? { deleted_keys: foundProfile.deleted_keys } : {}),
         isDemo: Boolean(foundProfile.isDemo),
         exportedAt,
       };
       const serialized = JSON.stringify(jsonPayload, null, 2);
       const buf = Buffer.from(serialized, 'utf8');
-      writeFileSync(fullPath, buf);
+      await writeBufferAtomicAsync(fullPath, buf);
       jsonBackup.ok = true;
       jsonBackup.fileName = fileName;
       jsonBackup.relativePath = `data/exports/${fileName}`;
@@ -2858,7 +3158,7 @@ export async function executeProfileBackupExport(
       });
 
       const { fileName, fullPath } = resolveUniqueExportFileName(exportsDir, baseName, 'xlsx');
-      writeFileSync(fullPath, built.buffer);
+      await writeBufferAtomicAsync(fullPath, built.buffer);
 
       generatedExcelBuffer = built.buffer;
       generatedExcelFileName = fileName;

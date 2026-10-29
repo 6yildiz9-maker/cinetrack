@@ -18,19 +18,26 @@ TMDB metaverileriyle çalışan, tamamen deterministik (kural tabanlı) öneri v
 
 ## Kurulum ve Çalıştırma
 
+> **Gereksinim:** Üretim modunda (`npm start` -> `node server.ts`) yerel TypeScript çalıştırma desteği için **Node.js `>= 22.18.0`** gereklidir. Arayüz yalnızca Türkçe (`tr`) dilinde sunulmaktadır.
+
 1. Bağımlılıkları yükleyin:
    ```bash
    npm install
    ```
-2. İsteğe bağlı `.env` dosyasını oluşturun (`TMDB_API_KEY` girilmezse uygulama yerleşik örnek katalogla, `CINETRACK_GITHUB_PAT` girilmezse güvenli yerel depolama modunda çalışır):
+2. İsteğe bağlı `.env` veya `.env.local` dosyasını oluşturun (`process.env > .env.local > .env > varsayılan` öncelik sırası uygulanır; `TMDB_API_KEY` girilmezse uygulama yerleşik örnek katalogla, `CINETRACK_GITHUB_PAT` girilmezse güvenli yerel depolama modunda çalışır):
    ```bash
    cp .env.example .env
    ```
    Desteklenen ortam değişkenleri (`.env.example`):
+   - `PORT`: HTTP dinleme portu (varsayılan `3000`).
+   - `CINETRACK_HOST`: Bağlanılacak ağ arayüzü (varsayılan `127.0.0.1` — yalnızca yerel makine).
+   - `CINETRACK_TOKEN`: LAN / uzaktan erişimde (`CINETRACK_HOST=0.0.0.0`) zorunlu kimlik doğrulama parolası (`Authorization: Bearer <token>` veya `X-CineTrack-Token`). Loopback dışı arayüzde token tanımlanmamışsa tüm yazma ve hassas durum uç noktaları güvenli biçimde `503 auth_required` döner.
+   - `CINETRACK_TRUST_PROXY`: Yalnızca güvenilir bir ters vekil (Nginx/Caddy vb.) arkasında çalışırken `true` yapılmalıdır; `false` iken sahte `X-Forwarded-For` ve `X-Forwarded-Host` başlıkları yok sayılır.
+   - `CINETRACK_TMDB_RATE_LIMIT`: Loopback dışı bağlantılarda dakikadaki maksimum `/api/tmdb` istek sınırı (varsayılan `60`).
    - `TMDB_API_KEY`: Sunucu tarafı TMDB vekil anahtarı.
-   - `CINETRACK_GITHUB_PAT`: İsteğe bağlı GitHub Contents API kişisel erişim belirteci (yalnızca sunucuda okunur; istemci paketine veya loglara asla yazılmaz).
+   - `CINETRACK_GITHUB_PAT`: İsteğe bağlı GitHub Contents API kişisel erişim belirteci (birincil değişken; geriye dönük uyumluluk için `CINETRACK_GITHUB_TOKEN` yedek olarak desteklenir).
    - `CINETRACK_DATA_OWNER`, `CINETRACK_DATA_REPO`, `CINETRACK_DATA_BRANCH`: Uzak kalıcı veri deposu hedefi.
-   - `CINETRACK_DATA_REPO_IS_PUBLIC`: Depo herkese açıksa `true` yapılmalıdır; ayrıca uzak depo gerçekte `public` ise kişisel liste ve profil dosyalarının gönderimi otomatik engellenir.
+   - `CINETRACK_DATA_REPO_IS_PUBLIC` ve `CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC`: Uzak depo gerçekte `public` ise hem kişisel profil verileri hem de TMDB katalog dosyaları varsayılan olarak engellenir; açık depoya aktarım yalnızca açık onay ve TMDB atıf koşulları kabulüyle etkinleşir.
 3. Geliştirme sunucusunu başlatın:
    ```bash
    npm run dev
@@ -44,13 +51,18 @@ TMDB metaverileriyle çalışan, tamamen deterministik (kural tabanlı) öneri v
 ## Doğrulama ve Test Zinciri
 
 ```bash
-npm run lint     # ESLint + tsc --noEmit tip denetimi
-npm test         # Çekirdek, atomik depolama, profil önbelleği, GitHub senkronizasyonu ve öneri testleri
+npm run lint     # ESLint (src + server.ts + tests) + tsc --noEmit tip denetimi
+npm test         # Çekirdek, atomik depolama, profil önbelleği, GitHub senkronizasyonu, Excel yedek ve güvenlik testleri
 npm run build    # Vite + PWA üretim paketi oluşturma
 ```
 
-## Veri Sınırları, Güvenlik ve TMDB Koşulları
+## Veri Sınırları, Metrik Notları, Güvenlik ve TMDB Koşulları
 
-- **Tek Kaynaklı Veri Boyutu Sınırı (`25 MB` / `26.214.400` bayt)**: Hem Express sunucusu (`PUT /api/data`), hem depolama katmanı (`src/server/storage.ts`), hem de yedek içe aktarma doğrulaması (`src/core/limits.ts` -> `DEFAULT_MAX_DATA_BYTES = 25 * 1024 * 1024`) UTF-8 bayt uzunluğu üzerinden tek bir 25 MiB sınırı kullanır. Gerçek ~1.250 öğelik kütüphaneler ~2,2 MB yer kapladığı için eski 2 MB sınırı yetersiz kalmış, 100 MB ise tek seferlik senkron JSON ayrıştırma belleği açısından aşırı bulunmuştur; 25 MiB sınırı ~15.000+ zengin öğeyi güvenle destekler.
-- **Sırların İzolasyonu**: İstemci tarafında hiçbir `VITE_` önekli sır veya anahtar kullanılmaz; `TMDB_API_KEY` ve `CINETRACK_GITHUB_PAT` yalnızca sunucu katmanında okunur ve hata mesajlarından maskelenir (`[REDACTED]`).
-- **TMDB Kullanım Koşulları ve Saklama Sınırları**: Katalog verileri [The Movie Database (TMDB)](https://www.themoviedb.org/) tarafından sağlanır; bu ürün TMDB tarafından onaylanmamış veya sertifikalandırılmamıştır. Yerel katalogda (`data/catalog/`) yalnızca öneri ve çevrimdışı görüntüleme için gerekli temel metaveri alanları (`id`, `media_type`, `title`, `overview`, `poster_path`, `backdrop_path`, `genre_ids`, `vote_average`, `vote_count`, yayın tarihi ve `popularity`) tekilleştirilerek tutulur. TMDB API kullanım koşulları, TMDB içeriklerinin genel bir veri seti veya rakip servis olarak herkese açık yeniden dağıtımına izin vermez; bu nedenle uzak GitHub eşitlemesi yalnızca uygulama sahibinin kişisel özel deposu (`private`) ile kullanılmalıdır (hukuki tavsiye niteliği taşımaz; güncel koşullar için resmi TMDB API Terms of Use metni esas alınmalıdır).
+- **Tahmini İzleme Süresi Hesabı**: TMDB liste yanıtları tekil süre bilgisini her zaman içermediğinden profil istatistiklerindeki *"İzlenen Süre (tahmini)"* metriği filmler için `110 dk`, diziler için bölüm başına `45 dk` (bölüm sayısı bilinmiyorsa `10` bölüm) varsayımıyla hesaplanır.
+- **Tek Kaynaklı Veri Boyutu Sınırı (`25 MB` / `26.214.400` bayt)**: Hem Express sunucusu (`PUT /api/data`), hem depolama katmanı (`src/server/storage.ts`), hem de yedek içe aktarma doğrulaması (`src/core/limits.ts` -> `DEFAULT_MAX_DATA_BYTES = 25 * 1024 * 1024`) UTF-8 bayt uzunluğu üzerinden tek bir 25 MiB sınırı kullanır.
+- **Sırların İzolasyonu ve Önkoşullu Yazma**: İstemci tarafında hiçbir `VITE_` önekli sır veya anahtar kullanılmaz; `TMDB_API_KEY`, `CINETRACK_GITHUB_PAT` ve `CINETRACK_TOKEN` yalnızca sunucu katmanında okunur ve hata mesajlarından maskelenir (`[REDACTED]`). Mevcut veri revizyonu `> 0` olduğunda `PUT /api/data` yazmaları `If-Match` başlığı zorunluluğu (`428 Precondition Required`) ile yarış koşulu kayıplarına karşı korunur; silinen içerikler 30 günlük mezar taşı (`deleted_keys`) kaydıyla çift yönlü senkronizasyonda geri dirilmez.
+- **TMDB Kullanım Koşulları ve Saklama Sınırları**: Katalog verileri [The Movie Database (TMDB)](https://www.themoviedb.org/) tarafından sağlanır; bu ürün TMDB tarafından onaylanmamış veya sertifikalandırılmamıştır. TMDB API kullanım koşulları, TMDB içeriklerinin genel bir veri seti veya rakip servis olarak herkese açık yeniden dağıtımına izin vermez; bu nedenle uzak GitHub eşitlemesi varsayılan olarak yalnızca özel (`private`) depolarla çalışacak biçimde sınırlandırılmıştır.
+
+## Lisans
+
+Bu proje **MIT Lisansı** altında lisanslanmıştır. Üçüncü taraf içerik ve poster metaverileri TMDB kullanım koşullarına tabidir.

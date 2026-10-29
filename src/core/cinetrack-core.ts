@@ -83,11 +83,13 @@ export interface Profile {
   preferences: Preferences;
   items: SavedItem[];
   favoriteActors?: FavoriteActorInfo[];
+  deleted_keys?: Record<string, string>;
   isDemo?: boolean;
 }
 
 export const CURRENT_SCHEMA_VERSION = 3;
 export const ENGINE_VERSION = 'v3.2.0';
+export const TOMBSTONE_RETENTION_DAYS = 30;
 
 export interface DataDocument {
   version: 3;
@@ -102,6 +104,7 @@ export interface DataDocument {
 import {
   makeMediaKey,
   parseMediaKey,
+  resolveMediaType,
   canonicalizeMediaKey,
   canonicalizeMediaKeyList,
   mergeTasteMapEntriesOnCollision,
@@ -111,6 +114,7 @@ import {
 export {
   makeMediaKey,
   parseMediaKey,
+  resolveMediaType,
   canonicalizeMediaKey,
   canonicalizeMediaKeyList,
   mergeTasteMapEntriesOnCollision,
@@ -610,6 +614,39 @@ export function normalizePreferences(
   };
 }
 
+export function normalizeDeletedKeys(
+  raw: unknown,
+  options: { nowMs?: number; maxEntries?: number; retentionDays?: number } = {}
+): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const nowMs = options.nowMs ?? Date.now();
+  const maxEntries = options.maxEntries ?? 2000;
+  const retentionMs = (options.retentionDays ?? TOMBSTONE_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
+  const cutoffMs = nowMs - retentionMs;
+
+  const validEntries: Array<[string, string]> = [];
+  for (const [rawKey, rawTs] of Object.entries(raw as Record<string, unknown>)) {
+    const parsedKey = parseMediaKey(rawKey);
+    if (!parsedKey) continue;
+    const canonical = `${parsedKey.type}:${parsedKey.id}`;
+    if (!DISLIKED_KEY_PATTERN.test(canonical)) continue;
+    if (typeof rawTs !== 'string' || !rawTs.trim()) continue;
+    const tsMs = Date.parse(rawTs);
+    if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
+    const iso = new Date(tsMs).toISOString();
+    validEntries.push([canonical, iso]);
+  }
+
+  validEntries.sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]));
+  const out: Record<string, string> = {};
+  for (const [k, ts] of validEntries.slice(-maxEntries)) {
+    if (!out[k] || ts > out[k]) {
+      out[k] = ts;
+    }
+  }
+  return out;
+}
+
 export function normalizeProfile(
   raw: any,
   { maxItems = DEFAULT_MAX_ITEMS_PER_PROFILE, knownMoods = null }: { maxItems?: number; knownMoods?: string[] | null } = {}
@@ -619,13 +656,22 @@ export function normalizeProfile(
   const items = Array.isArray(raw.items)
     ? (raw.items.map(normalizeSavedItem).filter(Boolean) as SavedItem[])
     : [];
+  const deduped = dedupeItems(items).slice(0, maxItems);
+  const liveKeys = new Set(deduped.map((it) => makeMediaKey(it)));
+  const normalizedTombstones = normalizeDeletedKeys(raw.deleted_keys);
+  for (const key of Object.keys(normalizedTombstones)) {
+    if (liveKeys.has(key)) {
+      delete normalizedTombstones[key];
+    }
+  }
   return {
     id: raw.id,
     name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 40) : 'Profilim',
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt.slice(0, 40) : '',
     preferences: normalizePreferences(raw.preferences, { knownMoods }),
-    items: dedupeItems(items).slice(0, maxItems),
+    items: deduped,
     favoriteActors: normalizeFavoriteActors(raw.favoriteActors),
+    ...(Object.keys(normalizedTombstones).length > 0 ? { deleted_keys: normalizedTombstones } : {}),
     isDemo: raw.isDemo === true,
   };
 }

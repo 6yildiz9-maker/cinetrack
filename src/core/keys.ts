@@ -1,21 +1,48 @@
 export type CanonicalMediaType = 'movie' | 'tv';
+export type ResolvedMediaType = CanonicalMediaType | 'unknown';
+
+/**
+ * Tek kaynaklı medya türü çözümleyici (EXT-04).
+ * Kayıt üzerinde açık `media_type` / `mediaType` veya geçerli kanonik anahtar yoksa
+ * `title` / `first_air_date` üzerinden sessizce tahmin yapmaz; `'unknown'` döndürür.
+ */
+export function resolveMediaType(record: unknown): ResolvedMediaType {
+  if (!record || typeof record !== 'object') return 'unknown';
+  const obj = record as Record<string, unknown>;
+  const explicit = obj.media_type ?? obj.mediaType;
+  if (explicit === 'movie' || explicit === 'tv') {
+    return explicit;
+  }
+  if (typeof obj.mediaKey === 'string') {
+    const parsed = parseMediaKey(obj.mediaKey);
+    if (parsed) return parsed.type;
+  }
+  if (typeof obj.key === 'string') {
+    const parsed = parseMediaKey(obj.key);
+    if (parsed) return parsed.type;
+  }
+  return 'unknown';
+}
 
 /**
  * Standart film/dizi kimlik anahtarı üretir.
  * Örn: makeMediaKey('movie', 872585) -> "movie:872585"
  * Örn: makeMediaKey('tv', '1396') -> "tv:1396"
- * Örn: makeMediaKey(item) -> "movie:872585"
+ * Örn: makeMediaKey(item) -> "movie:872585" (tür belirsizse "unknown:872585")
  */
 export function makeMediaKey(typeOrItem: any, id?: any): string {
   if (typeOrItem && typeof typeOrItem === 'object') {
-    const mediaType: CanonicalMediaType = typeOrItem.media_type === 'tv' ? 'tv' : 'movie';
+    const mediaType: ResolvedMediaType = resolveMediaType(typeOrItem);
     const itemId = typeOrItem.id != null ? String(typeOrItem.id).trim() : '';
     return `${mediaType}:${itemId}`;
   }
-  const mediaType: CanonicalMediaType = String(typeOrItem) === 'tv' ? 'tv' : 'movie';
+  const rawType = String(typeOrItem ?? '').trim();
+  const mediaType: ResolvedMediaType =
+    rawType === 'tv' ? 'tv' : rawType === 'movie' ? 'movie' : 'unknown';
   const itemId = id != null ? String(id).trim() : '';
   return `${mediaType}:${itemId}`;
 }
+
 
 /**
  * Hem iki nokta üst üste ("movie:872585") hem de eski tire ayracını ("movie-872585")
