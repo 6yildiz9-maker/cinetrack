@@ -7,14 +7,25 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import ExcelJS from 'exceljs';
 import {
+  EMU_PER_PIXEL,
   EXCEL_SHEET_NAMES,
+  POSTER_CELL_HEIGHT_PX,
+  POSTER_CELL_WIDTH_PX,
+  POSTER_ROW_HEIGHT_PT,
+  POSTER_TARGET_HEIGHT_PX,
+  POSTER_TARGET_WIDTH_PX,
   buildProfileBackupDataset,
+  computePosterPlacement,
   detectImageExtension,
+  excelColumnWidthToPixels,
   executeProfileBackupExport,
   formatExportBaseName,
   generateProfileExcelBuffer,
   getNeutralPosterPlaceholderPng,
   inspectXlsxPackageBuffer,
+  pixelsToExcelColumnWidth,
+  pointsToPixels,
+  readImageDimensions,
   resolveUniqueExportFileName,
   sanitizeSpreadsheetText,
 } from '../src/server/excel-profile-backup.ts';
@@ -30,13 +41,23 @@ function createTempDir(prefix = 'cinetrack-excel-test-') {
 }
 
 /**
- * Minimal valid JPEG binary fixture (SOI FF D8 FF E0 ... EOI FF D9)
+ * Valid JPEG binary fixture with real JFIF APP0 + COM seed + SOF0 frame header (default TMDB w154 = 154x231 px)
  */
-function makeFakeJpegBuffer(seedByte = 0x42) {
+function makeFakeJpegBuffer(seedByte = 0x42, width = 154, height = 231) {
   return Buffer.from([
-    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
-    0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-    0x00, 0x01, 0x00, 0x00, seedByte, 0x11, 0x22, 0x33,
+    // SOI
+    0xff, 0xd8,
+    // APP0 (JFIF, 16 bytes)
+    0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+    // COM (4 bytes carrying unique seedByte)
+    0xff, 0xfe, 0x00, 0x04, seedByte & 0xff, 0x43,
+    // SOF0 (Baseline DCT, 11 bytes carrying big-endian height & width)
+    0xff, 0xc0, 0x00, 0x0b, 0x08,
+    (height >> 8) & 0xff, height & 0xff,
+    (width >> 8) & 0xff, width & 0xff,
+    0x01, 0x01, 0x11, 0x00,
+    // EOI
     0xff, 0xd9,
   ]);
 }
@@ -394,18 +415,27 @@ test('4, 5, 6, 7, 10, 11 & 14. Generated .xlsx opens cleanly in ExcelJS with exa
       'Kullanıcı Notu',
     ]);
 
-    // Bounded title column width (~33 chars) and poster column width (~10.5 -> ~72px)
-    assert.ok(ws.getColumn(1).width >= 9.5 && ws.getColumn(1).width <= 12);
+    // Bounded title column width (~33 chars) and poster column width (~10.79 chars -> exact 76 px = 72 px poster + 4 px margin)
+    assert.ok(ws.getColumn(1).width >= 10 && ws.getColumn(1).width <= 11.5);
+    assert.equal(excelColumnWidthToPixels(ws.getColumn(1).width), POSTER_CELL_WIDTH_PX);
     assert.equal(ws.getColumn(3).width, 33);
 
-    // Every data row has height 84 pt and an embedded image anchored in col 0
+    // Every data row has height 84 pt (112 px) and an embedded 72x108 px oneCellAnchor image in col 0
     const rowCount = countActualDataRows(ws);
+    for (let r = 5; r < 5 + rowCount; r += 1) {
+      assert.equal(ws.getRow(r).height, POSTER_ROW_HEIGHT_PT);
+    }
     const images = ws.getImages();
     assert.equal(images.length, rowCount);
-    for (const img of images) {
-      assert.ok(img.range.tl.nativeCol === 0 || Math.floor(img.range.tl.col) === 0);
-      assert.ok(img.range.br.col < 1);
-    }
+    images.forEach((img, idx) => {
+      assert.equal(img.range.editAs, 'oneCell');
+      assert.equal(img.range.tl.nativeCol, 0);
+      assert.equal(img.range.tl.nativeRow, 4 + idx);
+      assert.equal(img.range.tl.nativeColOff, 2 * EMU_PER_PIXEL);
+      assert.equal(img.range.tl.nativeRowOff, 2 * EMU_PER_PIXEL);
+      assert.equal(img.range.ext.width, POSTER_TARGET_WIDTH_PX);
+      assert.equal(img.range.ext.height, POSTER_TARGET_HEIGHT_PX);
+    });
   }
 
   // Long title preserved completely without truncation & wrapText enabled (Test #6)
@@ -1003,7 +1033,19 @@ test('15. ZIP/OpenXML package inspection, 10 KB HTML/JSON download rejection, bi
   assert.equal(zipInspection.worksheetDataRowCounts.İzleniyor, 0);
   assert.equal(zipInspection.worksheetDataRowCounts.İlgilenmiyorum, 1);
   assert.equal(zipInspection.mediaFilesCount, 3);
-  assert.equal(zipInspection.totalTwoCellAnchors, 3);
+  assert.equal(zipInspection.totalOneCellAnchors, 3);
+  assert.equal(zipInspection.totalTwoCellAnchors, 0);
+  assert.equal(zipInspection.totalImageAnchors, 3);
+  assert.equal(zipInspection.posterColumnRenderedWidthPx, POSTER_CELL_WIDTH_PX);
+  assert.equal(zipInspection.dataRowHeightPt, POSTER_ROW_HEIGHT_PT);
+  assert.equal(zipInspection.dataRowRenderedHeightPx, POSTER_CELL_HEIGHT_PX);
+  assert.equal(zipInspection.minRenderedWidthPx, POSTER_TARGET_WIDTH_PX);
+  assert.equal(zipInspection.maxRenderedWidthPx, POSTER_TARGET_WIDTH_PX);
+  assert.equal(zipInspection.minRenderedHeightPx, POSTER_TARGET_HEIGHT_PX);
+  assert.equal(zipInspection.maxRenderedHeightPx, POSTER_TARGET_HEIGHT_PX);
+  assert.equal(zipInspection.allAnchorsInPosterColumn, true);
+  assert.equal(zipInspection.allAnchorsRowAligned, true);
+  assert.equal(zipInspection.anyThinStripAnchor, false);
   assert.equal(zipInspection.totalBlipEmbeds, 3);
   assert.equal(zipInspection.totalDrawingRelationships, 3);
 
@@ -1098,5 +1140,144 @@ test('15. ZIP/OpenXML package inspection, 10 KB HTML/JSON download rejection, bi
   // Ensure vite.config.ts explicitly excludes /api/ routes from Workbox NavigationRoute SPA fallback
   const viteConfigText = fs.readFileSync(path.resolve('vite.config.ts'), 'utf8');
   assert.match(viteConfigText, /navigateFallbackDenylist:\s*\[\s*\/\^\\\/api\\\/\/\s*\]/);
+});
+
+test('16. Excel poster unit conversions, aspect-ratio preservation without stretching, thin-strip prevention, and corrupt sliver source rejection', async (t) => {
+  const tmpDir = createTempDir();
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  // 16a: ECMA-376 OpenXML column-width <-> pixel conversions and point <-> pixel conversions
+  for (const targetPx of [64, 72, 76, 120]) {
+    const colChars = pixelsToExcelColumnWidth(targetPx);
+    assert.equal(excelColumnWidthToPixels(colChars), targetPx);
+  }
+  assert.equal(pointsToPixels(81), 108);
+  assert.equal(pointsToPixels(84), 112);
+
+  // 16b: Binary dimension parser for JPEG & PNG
+  assert.deepEqual(readImageDimensions(makeFakeJpegBuffer(0x10, 154, 231)), {
+    width: 154,
+    height: 231,
+    format: 'jpeg',
+  });
+  assert.deepEqual(readImageDimensions(getNeutralPosterPlaceholderPng()), {
+    width: 144,
+    height: 216,
+    format: 'png',
+  });
+
+  // 16c: Proportional placement preserves exact source aspect ratio inside 72x108 target box
+  const standard2x3 = computePosterPlacement(154, 231);
+  assert.equal(standard2x3.widthPx, 72);
+  assert.equal(standard2x3.heightPx, 108);
+  assert.equal(standard2x3.cxEmu, 72 * EMU_PER_PIXEL); // 685,800 EMU
+  assert.equal(standard2x3.cyEmu, 108 * EMU_PER_PIXEL); // 1,028,700 EMU
+  assert.equal(standard2x3.leftOffsetPx, 2);
+  assert.equal(standard2x3.topOffsetPx, 2);
+
+  const square1x1 = computePosterPlacement(300, 300);
+  assert.equal(square1x1.widthPx, 72);
+  assert.equal(square1x1.heightPx, 72);
+  assert.equal(square1x1.leftOffsetPx, 2);
+  assert.equal(square1x1.topOffsetPx, 20); // Centered vertically in 112 px row height
+
+  const tall1x2 = computePosterPlacement(120, 240);
+  assert.equal(tall1x2.widthPx, 54);
+  assert.equal(tall1x2.heightPx, 108);
+  assert.equal(tall1x2.leftOffsetPx, 11); // Centered horizontally in 76 px column width
+  assert.equal(tall1x2.topOffsetPx, 2);
+
+  // 16d: End-to-end workbook with standard 2:3, square 1:1, tall 1:2, and a corrupt 4x120 px sliver
+  const profile = {
+    id: 'profile-aspect',
+    name: 'Poster Oran ve Boyut Testi',
+    createdAt: '2026-10-29T00:00:00.000Z',
+    preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+    favoriteActors: [],
+    items: [
+      {
+        id: 101,
+        media_type: 'movie',
+        title: 'Standart 2:3 Posterli Film',
+        poster_path: '/p-2x3.jpg',
+        status: 'completed',
+        addedAt: '2026-10-29T10:04:00.000Z',
+      },
+      {
+        id: 102,
+        media_type: 'tv',
+        title: 'Kare 1:1 Posterli Dizi',
+        poster_path: '/p-square.jpg',
+        status: 'completed',
+        addedAt: '2026-10-29T10:03:00.000Z',
+      },
+      {
+        id: 103,
+        media_type: 'movie',
+        title: 'Dar Uzun 1:2 Posterli Film',
+        poster_path: '/p-tall.jpg',
+        status: 'completed',
+        addedAt: '2026-10-29T10:02:00.000Z',
+      },
+      {
+        id: 104,
+        media_type: 'movie',
+        title: 'Bozuk 4px Şerit Görselli Film',
+        poster_path: '/p-corrupt-sliver.jpg',
+        status: 'completed',
+        addedAt: '2026-10-29T10:01:00.000Z',
+      },
+    ],
+  };
+
+  const built = await generateProfileExcelBuffer({
+    profile,
+    posterCacheDir: path.join(tmpDir, 'posters'),
+    posterFetcher: async (url) => {
+      if (url.endsWith('/p-2x3.jpg')) {
+        return { status: 200, contentType: 'image/jpeg', buffer: makeFakeJpegBuffer(1, 154, 231) };
+      }
+      if (url.endsWith('/p-square.jpg')) {
+        return { status: 200, contentType: 'image/jpeg', buffer: makeFakeJpegBuffer(2, 300, 300) };
+      }
+      if (url.endsWith('/p-tall.jpg')) {
+        return { status: 200, contentType: 'image/jpeg', buffer: makeFakeJpegBuffer(3, 120, 240) };
+      }
+      // Corrupt 4x120 px vertical sliver from upstream must be rejected, NOT embedded or cached!
+      return { status: 200, contentType: 'image/jpeg', buffer: makeFakeJpegBuffer(4, 4, 120) };
+    },
+  });
+
+  assert.equal(built.embeddedPostersCount, 3);
+  assert.equal(built.posterErrorsCount, 1);
+  assert.equal(built.placeholderPostersCount, 1);
+  assert.match(built.posterErrors[0].reason, /4x120/);
+
+  // Corrupt 4x120 sliver must NOT have been persisted into poster disk cache
+  const cachedFiles = fs.readdirSync(path.join(tmpDir, 'posters'));
+  assert.equal(cachedFiles.length, 3);
+
+  const inspection = built.packageInspection;
+  assert.equal(inspection.totalOneCellAnchors, 4);
+  assert.equal(inspection.totalTwoCellAnchors, 0);
+  assert.equal(inspection.anyThinStripAnchor, false);
+  assert.equal(inspection.allAnchorsInPosterColumn, true);
+  assert.equal(inspection.allAnchorsRowAligned, true);
+  assert.equal(inspection.minRenderedWidthPx, 54);
+  assert.equal(inspection.maxRenderedWidthPx, 72);
+  assert.equal(inspection.minRenderedHeightPx, 72);
+  assert.equal(inspection.maxRenderedHeightPx, 108);
+
+  // Verify reloaded workbook preserves exact per-row aspect ratios without distortion
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(built.buffer);
+  const izlenenImages = wb.getWorksheet('İzlenen').getImages();
+  assert.equal(izlenenImages.length, 4);
+  assert.deepEqual(izlenenImages.map((im) => im.range.ext), [
+    { width: 72, height: 108 }, // 154x231 (2:3) -> 72x108
+    { width: 72, height: 72 },  // 300x300 (1:1) -> 72x72
+    { width: 54, height: 108 }, // 120x240 (1:2) -> 54x108
+    { width: 72, height: 108 }, // 144x216 placeholder (2:3) -> 72x108
+  ]);
 });
 

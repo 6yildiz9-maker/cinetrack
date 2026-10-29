@@ -140,10 +140,27 @@ export interface XlsxPackageInspection {
   mediaFilesCount: number;
   mediaTotalCompressedBytes: number;
   mediaTotalUncompressedBytes: number;
+  minMediaSourceWidthPx: number | null;
+  maxMediaSourceWidthPx: number | null;
+  minMediaSourceHeightPx: number | null;
+  maxMediaSourceHeightPx: number | null;
   drawingFilesCount: number;
+  totalOneCellAnchors: number;
   totalTwoCellAnchors: number;
+  totalImageAnchors: number;
   totalBlipEmbeds: number;
   totalDrawingRelationships: number;
+  posterColumnWidthChars: number | null;
+  posterColumnRenderedWidthPx: number | null;
+  dataRowHeightPt: number | null;
+  dataRowRenderedHeightPx: number | null;
+  minRenderedWidthPx: number | null;
+  maxRenderedWidthPx: number | null;
+  minRenderedHeightPx: number | null;
+  maxRenderedHeightPx: number | null;
+  allAnchorsInPosterColumn: boolean;
+  allAnchorsRowAligned: boolean;
+  anyThinStripAnchor: boolean;
 }
 
 export interface ProfileBackupDataset {
@@ -368,6 +385,217 @@ export function detectImageExtension(buffer: Buffer): 'jpeg' | 'png' | 'gif' | n
   return null;
 }
 
+export interface ImageDimensions {
+  width: number;
+  height: number;
+  format: 'jpeg' | 'png' | 'gif';
+}
+
+/**
+ * Pure binary header parser for JPEG (SOF0..SOF15), PNG (IHDR), and GIF (Logical Screen Descriptor).
+ * Verifies real source pixel dimensions before embedding into Excel so tiny/corrupt slivers are caught
+ * and true aspect ratios are preserved without stretching.
+ */
+export function readImageDimensions(buffer: Buffer): ImageDimensions | null {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 10) return null;
+
+  // PNG: 8-byte signature + 4-byte length + 'IHDR' + 4-byte width + 4-byte height
+  if (
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    if (width > 0 && height > 0) {
+      return { width, height, format: 'png' };
+    }
+    return null;
+  }
+
+  // GIF87a / GIF89a: width & height at bytes 6..10 (uint16 LE)
+  if (
+    buffer.length >= 10 &&
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38
+  ) {
+    const width = buffer.readUInt16LE(6);
+    const height = buffer.readUInt16LE(8);
+    if (width > 0 && height > 0) {
+      return { width, height, format: 'gif' };
+    }
+    return null;
+  }
+
+  // JPEG: walk markers from SOI (FF D8) until SOF marker (C0..C3, C5..C7, C9..CB, CD..CF)
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 4 <= buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      while (offset < buffer.length && buffer[offset] === 0xff) {
+        offset += 1;
+      }
+      if (offset >= buffer.length) break;
+      const marker = buffer[offset];
+      offset += 1;
+
+      // Standalone markers without length payload
+      if (
+        marker === 0xd8 ||
+        marker === 0xd9 ||
+        (marker >= 0xd0 && marker <= 0xd7) ||
+        marker === 0x01
+      ) {
+        continue;
+      }
+      if (offset + 2 > buffer.length) break;
+      const segmentLength = buffer.readUInt16BE(offset);
+      if (segmentLength < 2 || offset + segmentLength > buffer.length) break;
+
+      const isSofMarker =
+        (marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf);
+      if (isSofMarker) {
+        if (offset + 7 <= buffer.length) {
+          const height = buffer.readUInt16BE(offset + 3);
+          const width = buffer.readUInt16BE(offset + 5);
+          if (width > 0 && height > 0) {
+            return { width, height, format: 'jpeg' };
+          }
+        }
+        return null;
+      }
+      offset += segmentLength;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * OpenXML / Excel 96-DPI DrawingML & SpreadsheetML measurement constants.
+ * - 1 inch = 914,400 EMU = 96 pixels = 72 points
+ * - 1 pixel (at 96 DPI) = 9,525 EMU = 0.75 points (matches ExcelJS ExtXform EMU_PER_PIXEL_AT_96_DPI)
+ * - 1 point = 12,700 EMU = 4/3 pixels
+ */
+export const EMU_PER_PIXEL = 9525;
+export const EMU_PER_POINT = 12700;
+export const CALIBRI_11_MDW_PX = 7;
+export const MIN_VALID_POSTER_DIMENSION_PX = 16;
+
+export const POSTER_TARGET_WIDTH_PX = 72;
+export const POSTER_TARGET_HEIGHT_PX = 108;
+export const POSTER_CELL_PADDING_X_PX = 2;
+export const POSTER_CELL_PADDING_Y_PX = 2;
+export const POSTER_CELL_WIDTH_PX = POSTER_TARGET_WIDTH_PX + POSTER_CELL_PADDING_X_PX * 2; // 76 px (72 px poster + 2px left/right margin)
+export const POSTER_CELL_HEIGHT_PX = POSTER_TARGET_HEIGHT_PX + POSTER_CELL_PADDING_Y_PX * 2; // 112 px (108 px poster + 2px top/bottom margin)
+
+export function pixelsToPoints(pixels: number): number {
+  return Math.round(((pixels * 72) / 96) * 100) / 100;
+}
+
+export function pointsToPixels(points: number): number {
+  return Math.round((points * 96) / 72);
+}
+
+export const POSTER_ROW_HEIGHT_PT = pixelsToPoints(POSTER_CELL_HEIGHT_PX); // 84 pt (81 pt = 108 px poster + 3 pt = 4 px margin)
+
+/**
+ * Converts an OpenXML `<col width="W"/>` character-width value into Excel's rendered pixel width
+ * per ECMA-376 Part 1 §18.3.1.13 (using Calibri 11pt MDW = 7 px at 96 DPI).
+ */
+export function excelColumnWidthToPixels(xmlWidth: number, mdw = CALIBRI_11_MDW_PX): number {
+  if (!Number.isFinite(xmlWidth) || xmlWidth <= 0) return 0;
+  return Math.trunc(((256 * xmlWidth + Math.trunc(128 / mdw)) / 256) * mdw);
+}
+
+/**
+ * Converts a target pixel width into an OpenXML `<col width="W"/>` value that Excel renders
+ * at the exact requested pixel width (ECMA-376 Part 1 §18.3.1.13).
+ */
+export function pixelsToExcelColumnWidth(targetPixels: number, mdw = CALIBRI_11_MDW_PX): number {
+  const desiredPx = Math.max(1, Math.round(targetPixels));
+  const rawUnits = Math.ceil((desiredPx / mdw) * 256 - Math.trunc(128 / mdw));
+  let candidate = Math.round((rawUnits / 256) * 100) / 100;
+  while (excelColumnWidthToPixels(candidate, mdw) < desiredPx) {
+    candidate = Math.round((candidate + 0.01) * 100) / 100;
+  }
+  while (
+    candidate > 0.02 &&
+    excelColumnWidthToPixels(Math.round((candidate - 0.01) * 100) / 100, mdw) >= desiredPx
+  ) {
+    candidate = Math.round((candidate - 0.01) * 100) / 100;
+  }
+  return candidate;
+}
+
+export interface PosterCellPlacement {
+  widthPx: number;
+  heightPx: number;
+  cxEmu: number;
+  cyEmu: number;
+  leftOffsetPx: number;
+  topOffsetPx: number;
+  colOffEmu: number;
+  rowOffEmu: number;
+  aspectRatio: number;
+}
+
+/**
+ * Fits a poster with source dimensions `(srcWidth, srcHeight)` proportionally inside
+ * the `72 × 108 px` target box without stretching or squishing, centered inside the poster cell.
+ */
+export function computePosterPlacement(
+  srcWidth: number,
+  srcHeight: number,
+  cellWidthPx = POSTER_CELL_WIDTH_PX,
+  cellHeightPx = POSTER_CELL_HEIGHT_PX,
+  targetWidthPx = POSTER_TARGET_WIDTH_PX,
+  targetHeightPx = POSTER_TARGET_HEIGHT_PX
+): PosterCellPlacement {
+  const safeSrcW =
+    Number.isFinite(srcWidth) && srcWidth > 0 ? srcWidth : targetWidthPx;
+  const safeSrcH =
+    Number.isFinite(srcHeight) && srcHeight > 0 ? srcHeight : targetHeightPx;
+
+  const scale = Math.min(targetWidthPx / safeSrcW, targetHeightPx / safeSrcH);
+  const widthPx = Math.max(1, Math.round(safeSrcW * scale * 100) / 100);
+  const heightPx = Math.max(1, Math.round(safeSrcH * scale * 100) / 100);
+
+  const leftOffsetPx = Math.max(0, Math.round(((cellWidthPx - widthPx) / 2) * 100) / 100);
+  const topOffsetPx = Math.max(0, Math.round(((cellHeightPx - heightPx) / 2) * 100) / 100);
+
+  const cxEmu = Math.floor(widthPx * EMU_PER_PIXEL);
+  const cyEmu = Math.floor(heightPx * EMU_PER_PIXEL);
+  const colOffEmu = Math.round(leftOffsetPx * EMU_PER_PIXEL);
+  const rowOffEmu = Math.round(topOffsetPx * EMU_PER_PIXEL);
+
+  return {
+    widthPx,
+    heightPx,
+    cxEmu,
+    cyEmu,
+    leftOffsetPx,
+    topOffsetPx,
+    colOffEmu,
+    rowOffEmu,
+    aspectRatio: Math.round((widthPx / heightPx) * 10000) / 10000,
+  };
+}
+
 const CRC32_TABLE = (() => {
   const table = new Uint32Array(256);
   for (let n = 0; n < 256; n += 1) {
@@ -401,13 +629,13 @@ function makePngChunk(type: string, data: Buffer): Buffer {
 let cachedPlaceholderPng: Buffer | null = null;
 
 /**
- * Generates a crisp, neutral CineTrack 2:3 dark-slate placeholder PNG (68x102 px)
+ * Generates a crisp, neutral CineTrack 2:3 dark-slate placeholder PNG (144x216 px — 2x retina for 72x108 px)
  * using pure Node.js built-ins (no native dependencies).
  */
 export function getNeutralPosterPlaceholderPng(): Buffer {
   if (cachedPlaceholderPng) return cachedPlaceholderPng;
-  const width = 68;
-  const height = 102;
+  const width = 144;
+  const height = 216;
   // RGB color type (2), 8-bit depth
   const rowStride = 1 + width * 3;
   const raw = Buffer.alloc(rowStride * height);
@@ -417,15 +645,15 @@ export function getNeutralPosterPlaceholderPng(): Buffer {
     raw[rowStart] = 0; // Filter type 0 (None)
     for (let x = 0; x < width; x += 1) {
       const px = rowStart + 1 + x * 3;
-      const isOuterBorder = x <= 1 || x >= width - 2 || y <= 1 || y >= height - 2;
+      const isOuterBorder = x <= 2 || x >= width - 3 || y <= 2 || y >= height - 3;
       const isInnerIconFrame =
-        x >= 20 &&
-        x <= 47 &&
-        y >= 34 &&
-        y <= 67 &&
-        (x === 20 || x === 47 || y === 34 || y === 67 || y === 42 || y === 59);
+        x >= 44 &&
+        x <= 99 &&
+        y >= 74 &&
+        y <= 141 &&
+        (x <= 45 || x >= 98 || y <= 75 || y >= 140 || (y >= 90 && y <= 91) || (y >= 124 && y <= 125));
       const isFilmSprocket =
-        (x === 24 || x === 43) && y >= 36 && y <= 65 && y % 5 <= 1;
+        (x === 52 || x === 53 || x === 90 || x === 91) && y >= 78 && y <= 137 && y % 10 <= 3;
 
       let r = 0x1e;
       let g = 0x29;
@@ -531,7 +759,10 @@ async function runWithConcurrency<T, R>(
 
 export class PosterCacheManager {
   private cacheDir: string;
-  private memoryCache = new Map<string, { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif' }>();
+  private memoryCache = new Map<
+    string,
+    { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif'; width: number; height: number }
+  >();
 
   constructor(cacheDir: string) {
     this.cacheDir = cacheDir;
@@ -546,7 +777,9 @@ export class PosterCacheManager {
     ];
   }
 
-  public readCached(url: string): { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif' } | null {
+  public readCached(
+    url: string
+  ): { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif'; width: number; height: number } | null {
     const memHit = this.memoryCache.get(url);
     if (memHit) return memHit;
 
@@ -558,8 +791,19 @@ export class PosterCacheManager {
         if (stat.size < 16 || stat.size > 5 * 1024 * 1024) continue;
         const buf = readFileSync(candidate.filePath);
         const detected = detectImageExtension(buf);
-        if (detected) {
-          const entry = { buffer: buf, extension: detected };
+        const dims = readImageDimensions(buf);
+        if (
+          detected &&
+          dims &&
+          dims.width >= MIN_VALID_POSTER_DIMENSION_PX &&
+          dims.height >= MIN_VALID_POSTER_DIMENSION_PX
+        ) {
+          const entry = {
+            buffer: buf,
+            extension: detected,
+            width: dims.width,
+            height: dims.height,
+          };
           this.memoryCache.set(url, entry);
           return entry;
         }
@@ -570,8 +814,14 @@ export class PosterCacheManager {
     return null;
   }
 
-  public writeCached(url: string, buffer: Buffer, extension: 'jpeg' | 'png' | 'gif'): void {
-    this.memoryCache.set(url, { buffer, extension });
+  public writeCached(
+    url: string,
+    buffer: Buffer,
+    extension: 'jpeg' | 'png' | 'gif',
+    width: number,
+    height: number
+  ): void {
+    this.memoryCache.set(url, { buffer, extension, width, height });
     try {
       mkdirSync(this.cacheDir, { recursive: true });
       const urlHash = crypto.createHash('sha256').update(url).digest('hex');
@@ -1102,10 +1352,27 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
     mediaFilesCount: 0,
     mediaTotalCompressedBytes: 0,
     mediaTotalUncompressedBytes: 0,
+    minMediaSourceWidthPx: null,
+    maxMediaSourceWidthPx: null,
+    minMediaSourceHeightPx: null,
+    maxMediaSourceHeightPx: null,
     drawingFilesCount: 0,
+    totalOneCellAnchors: 0,
     totalTwoCellAnchors: 0,
+    totalImageAnchors: 0,
     totalBlipEmbeds: 0,
     totalDrawingRelationships: 0,
+    posterColumnWidthChars: null,
+    posterColumnRenderedWidthPx: null,
+    dataRowHeightPt: null,
+    dataRowRenderedHeightPx: null,
+    minRenderedWidthPx: null,
+    maxRenderedWidthPx: null,
+    minRenderedHeightPx: null,
+    maxRenderedHeightPx: null,
+    allAnchorsInPosterColumn: true,
+    allAnchorsRowAligned: true,
+    anyThinStripAnchor: false,
   };
 
   if (
@@ -1161,7 +1428,7 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
     ptr += 46 + nameLen + extraLen + commentLen;
   }
 
-  const extractUtf8 = (entry: ZipEntryMeta | undefined): string | null => {
+  const extractBuffer = (entry: ZipEntryMeta | undefined): Buffer | null => {
     if (!entry) return null;
     try {
       const lh = entry.localHeaderOffset;
@@ -1170,11 +1437,15 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
       const exLen = buffer.readUInt16LE(lh + 28);
       const start = lh + 30 + nLen + exLen;
       const raw = buffer.subarray(start, start + entry.compSize);
-      const inflated = entry.compMethod === 8 ? zlib.inflateRawSync(raw) : raw;
-      return inflated.toString('utf8');
+      return entry.compMethod === 8 ? zlib.inflateRawSync(raw) : Buffer.from(raw);
     } catch {
       return null;
     }
+  };
+
+  const extractUtf8 = (entry: ZipEntryMeta | undefined): string | null => {
+    const inflated = extractBuffer(entry);
+    return inflated ? inflated.toString('utf8') : null;
   };
 
   const hasContentTypes = entries.has('[Content_Types].xml');
@@ -1201,6 +1472,11 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
 
   const sheetNames: string[] = [];
   const worksheetDataRowCounts: Record<string, number> = {};
+  let posterColumnWidthChars: number | null = null;
+  let posterColumnRenderedWidthPx: number | null = null;
+  let dataRowHeightPt: number | null = null;
+  let dataRowRenderedHeightPx: number | null = null;
+
   if (workbookXml) {
     const sheetTagRe = /<sheet\b[^>]*>/g;
     let sMatch: RegExpExecArray | null;
@@ -1216,10 +1492,33 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
       if (wsXml) {
         let dataRows = 0;
         if (sheetName !== 'Özet') {
+          if (posterColumnWidthChars === null) {
+            const col1Match = /<col\b[^>]*\bmin="1"[^>]*\bwidth="([^"]+)"/.exec(wsXml);
+            if (col1Match) {
+              const parsedW = parseFloat(col1Match[1]);
+              if (Number.isFinite(parsedW) && parsedW > 0) {
+                posterColumnWidthChars = parsedW;
+                posterColumnRenderedWidthPx = excelColumnWidthToPixels(parsedW);
+              }
+            }
+          }
           const rowRe = /<row\b[^>]*\br="(\d+)"[^>]*>/g;
           let rMatch: RegExpExecArray | null;
           while ((rMatch = rowRe.exec(wsXml)) !== null) {
-            if (Number(rMatch[1]) >= 5) dataRows += 1;
+            const rNum = Number(rMatch[1]);
+            if (rNum >= 5) {
+              dataRows += 1;
+              if (dataRowHeightPt === null) {
+                const htM = /\bht="([^"]+)"/.exec(rMatch[0]);
+                if (htM) {
+                  const parsedHt = parseFloat(htM[1]);
+                  if (Number.isFinite(parsedHt) && parsedHt > 0) {
+                    dataRowHeightPt = parsedHt;
+                    dataRowRenderedHeightPx = pointsToPixels(parsedHt);
+                  }
+                }
+              }
+            }
           }
         }
         worksheetDataRowCounts[sheetName] = dataRows;
@@ -1230,26 +1529,147 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
   let mediaFilesCount = 0;
   let mediaTotalCompressedBytes = 0;
   let mediaTotalUncompressedBytes = 0;
+  let minMediaSourceWidthPx: number | null = null;
+  let maxMediaSourceWidthPx: number | null = null;
+  let minMediaSourceHeightPx: number | null = null;
+  let maxMediaSourceHeightPx: number | null = null;
   let drawingFilesCount = 0;
+  let totalOneCellAnchors = 0;
   let totalTwoCellAnchors = 0;
   let totalBlipEmbeds = 0;
   let totalDrawingRelationships = 0;
+  let minRenderedWidthPx: number | null = null;
+  let maxRenderedWidthPx: number | null = null;
+  let minRenderedHeightPx: number | null = null;
+  let maxRenderedHeightPx: number | null = null;
+  let allAnchorsInPosterColumn = true;
+  let allAnchorsRowAligned = true;
+  let anyThinStripAnchor = false;
+
+  const recordRenderedSize = (wPx: number, hPx: number) => {
+    const roundedW = Math.round(wPx * 100) / 100;
+    const roundedH = Math.round(hPx * 100) / 100;
+    if (minRenderedWidthPx === null || roundedW < minRenderedWidthPx) minRenderedWidthPx = roundedW;
+    if (maxRenderedWidthPx === null || roundedW > maxRenderedWidthPx) maxRenderedWidthPx = roundedW;
+    if (minRenderedHeightPx === null || roundedH < minRenderedHeightPx) minRenderedHeightPx = roundedH;
+    if (maxRenderedHeightPx === null || roundedH > maxRenderedHeightPx) maxRenderedHeightPx = roundedH;
+    if (roundedW < 24 || roundedH < 24) {
+      anyThinStripAnchor = true;
+    }
+  };
 
   for (const entry of entries.values()) {
-    if (entry.name.startsWith('xl/media/') && entry.name.length > 'xl/media/'.length) {
+    if (
+      entry.name.startsWith('xl/media/') &&
+      entry.name.length > 'xl/media/'.length &&
+      !entry.name.endsWith('/')
+    ) {
       mediaFilesCount += 1;
       mediaTotalCompressedBytes += entry.compSize;
       mediaTotalUncompressedBytes += entry.uncompSize;
+      const mediaBuf = extractBuffer(entry);
+      if (mediaBuf) {
+        const dims = readImageDimensions(mediaBuf);
+        if (dims) {
+          if (minMediaSourceWidthPx === null || dims.width < minMediaSourceWidthPx) {
+            minMediaSourceWidthPx = dims.width;
+          }
+          if (maxMediaSourceWidthPx === null || dims.width > maxMediaSourceWidthPx) {
+            maxMediaSourceWidthPx = dims.width;
+          }
+          if (minMediaSourceHeightPx === null || dims.height < minMediaSourceHeightPx) {
+            minMediaSourceHeightPx = dims.height;
+          }
+          if (maxMediaSourceHeightPx === null || dims.height > maxMediaSourceHeightPx) {
+            maxMediaSourceHeightPx = dims.height;
+          }
+        }
+      }
     } else if (/^xl\/drawings\/drawing\d+\.xml$/.test(entry.name)) {
       drawingFilesCount += 1;
       const dXml = extractUtf8(entry) || '';
-      totalTwoCellAnchors += (dXml.match(/<xdr:twoCellAnchor\b/g) || []).length;
       totalBlipEmbeds += (dXml.match(/\br:embed="/g) || []).length;
+
+      const anchorRowsInDrawing: number[] = [];
+
+      // Inspect oneCellAnchor nodes (<xdr:from> + <xdr:ext cx="..." cy="..."/>)
+      const oneCellRe = /<xdr:oneCellAnchor\b[^>]*>([\s\S]*?)<\/xdr:oneCellAnchor>/g;
+      let ocMatch: RegExpExecArray | null;
+      while ((ocMatch = oneCellRe.exec(dXml)) !== null) {
+        totalOneCellAnchors += 1;
+        const body = ocMatch[1];
+        const fromBlock = /<xdr:from>([\s\S]*?)<\/xdr:from>/.exec(body)?.[1] || '';
+        const fromCol = Number(/<xdr:col>(\d+)<\/xdr:col>/.exec(fromBlock)?.[1] ?? -1);
+        const fromColOff = Number(/<xdr:colOff>(-?\d+)<\/xdr:colOff>/.exec(fromBlock)?.[1] ?? 0);
+        const fromRow = Number(/<xdr:row>(\d+)<\/xdr:row>/.exec(fromBlock)?.[1] ?? -1);
+        const fromRowOff = Number(/<xdr:rowOff>(-?\d+)<\/xdr:rowOff>/.exec(fromBlock)?.[1] ?? 0);
+        const extMatch = /<xdr:ext\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(body);
+
+        if (fromCol !== 0 || fromColOff < 0 || fromRowOff < 0) {
+          allAnchorsInPosterColumn = false;
+        }
+        anchorRowsInDrawing.push(fromRow);
+
+        if (extMatch) {
+          const wPx = Number(extMatch[1]) / EMU_PER_PIXEL;
+          const hPx = Number(extMatch[2]) / EMU_PER_PIXEL;
+          recordRenderedSize(wPx, hPx);
+          if (
+            posterColumnRenderedWidthPx !== null &&
+            fromColOff / EMU_PER_PIXEL + wPx > posterColumnRenderedWidthPx + 0.5
+          ) {
+            allAnchorsInPosterColumn = false;
+          }
+          if (
+            dataRowRenderedHeightPx !== null &&
+            fromRowOff / EMU_PER_PIXEL + hPx > dataRowRenderedHeightPx + 0.5
+          ) {
+            allAnchorsRowAligned = false;
+          }
+        } else {
+          anyThinStripAnchor = true;
+        }
+      }
+
+      // Also inspect any twoCellAnchor nodes (<xdr:from> + <xdr:to>)
+      const twoCellRe = /<xdr:twoCellAnchor\b[^>]*>([\s\S]*?)<\/xdr:twoCellAnchor>/g;
+      let tcMatch: RegExpExecArray | null;
+      while ((tcMatch = twoCellRe.exec(dXml)) !== null) {
+        totalTwoCellAnchors += 1;
+        const body = tcMatch[1];
+        const fromBlock = /<xdr:from>([\s\S]*?)<\/xdr:from>/.exec(body)?.[1] || '';
+        const toBlock = /<xdr:to>([\s\S]*?)<\/xdr:to>/.exec(body)?.[1] || '';
+        const fromCol = Number(/<xdr:col>(\d+)<\/xdr:col>/.exec(fromBlock)?.[1] ?? -1);
+        const fromColOff = Number(/<xdr:colOff>(-?\d+)<\/xdr:colOff>/.exec(fromBlock)?.[1] ?? 0);
+        const fromRow = Number(/<xdr:row>(\d+)<\/xdr:row>/.exec(fromBlock)?.[1] ?? -1);
+        const fromRowOff = Number(/<xdr:rowOff>(-?\d+)<\/xdr:rowOff>/.exec(fromBlock)?.[1] ?? 0);
+        const toCol = Number(/<xdr:col>(\d+)<\/xdr:col>/.exec(toBlock)?.[1] ?? -1);
+        const toColOff = Number(/<xdr:colOff>(-?\d+)<\/xdr:colOff>/.exec(toBlock)?.[1] ?? 0);
+        const toRow = Number(/<xdr:row>(\d+)<\/xdr:row>/.exec(toBlock)?.[1] ?? -1);
+        const toRowOff = Number(/<xdr:rowOff>(-?\d+)<\/xdr:rowOff>/.exec(toBlock)?.[1] ?? 0);
+
+        if (fromCol !== 0 || toCol !== 0 || fromRow !== toRow) {
+          allAnchorsInPosterColumn = false;
+        }
+        anchorRowsInDrawing.push(fromRow);
+        const wPx = (toColOff - fromColOff) / EMU_PER_PIXEL;
+        const hPx = (toRowOff - fromRowOff) / EMU_PER_PIXEL;
+        recordRenderedSize(wPx, hPx);
+      }
+
+      for (let i = 0; i < anchorRowsInDrawing.length; i += 1) {
+        if (anchorRowsInDrawing[i] !== 4 + i) {
+          allAnchorsRowAligned = false;
+          break;
+        }
+      }
     } else if (/^xl\/drawings\/_rels\/drawing\d+\.xml\.rels$/.test(entry.name)) {
       const relXml = extractUtf8(entry) || '';
       totalDrawingRelationships += (relXml.match(/<Relationship\b/g) || []).length;
     }
   }
+
+  const totalImageAnchors = totalOneCellAnchors + totalTwoCellAnchors;
 
   const validOpenXmlStructure =
     hasContentTypes &&
@@ -1267,10 +1687,27 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
     mediaFilesCount,
     mediaTotalCompressedBytes,
     mediaTotalUncompressedBytes,
+    minMediaSourceWidthPx,
+    maxMediaSourceWidthPx,
+    minMediaSourceHeightPx,
+    maxMediaSourceHeightPx,
     drawingFilesCount,
+    totalOneCellAnchors,
     totalTwoCellAnchors,
+    totalImageAnchors,
     totalBlipEmbeds,
     totalDrawingRelationships,
+    posterColumnWidthChars,
+    posterColumnRenderedWidthPx,
+    dataRowHeightPt,
+    dataRowRenderedHeightPx,
+    minRenderedWidthPx,
+    maxRenderedWidthPx,
+    minRenderedHeightPx,
+    maxRenderedHeightPx,
+    allAnchorsInPosterColumn,
+    allAnchorsRowAligned,
+    anyThinStripAnchor,
   };
 }
 
@@ -1350,7 +1787,14 @@ export async function generateProfileExcelBuffer(
 
   const urlFetchOutcome = new Map<
     string,
-    { ok: true; buffer: Buffer; extension: 'jpeg' | 'png' | 'gif' } | { ok: false; reason: string }
+    | {
+        ok: true;
+        buffer: Buffer;
+        extension: 'jpeg' | 'png' | 'gif';
+        width: number;
+        height: number;
+      }
+    | { ok: false; reason: string }
   >();
 
   await runWithConcurrency(uniqueUrls, posterConcurrency, async (url) => {
@@ -1360,6 +1804,8 @@ export async function generateProfileExcelBuffer(
         ok: true,
         buffer: cached.buffer,
         extension: cached.extension,
+        width: cached.width,
+        height: cached.height,
       });
       return;
     }
@@ -1388,11 +1834,31 @@ export async function generateProfileExcelBuffer(
         });
         return;
       }
-      posterCache.writeCached(url, response.buffer, ext);
+      const dims = readImageDimensions(response.buffer);
+      if (!dims) {
+        urlFetchOutcome.set(url, {
+          ok: false,
+          reason: 'Görsel piksel boyutları okunamadı (bozuk görsel başlığı)',
+        });
+        return;
+      }
+      if (
+        dims.width < MIN_VALID_POSTER_DIMENSION_PX ||
+        dims.height < MIN_VALID_POSTER_DIMENSION_PX
+      ) {
+        urlFetchOutcome.set(url, {
+          ok: false,
+          reason: `Kaynak görsel boyutu çok küçük veya bozuk (${dims.width}x${dims.height} piksel)`,
+        });
+        return;
+      }
+      posterCache.writeCached(url, response.buffer, ext, dims.width, dims.height);
       urlFetchOutcome.set(url, {
         ok: true,
         buffer: response.buffer,
         extension: ext,
+        width: dims.width,
+        height: dims.height,
       });
     } catch (err: any) {
       const msg =
@@ -1439,23 +1905,40 @@ export async function generateProfileExcelBuffer(
   workbook.modified = options.exportedAt || new Date();
 
   // Register unique binary images in workbook media table once per unique URL (avoids bloating .xlsx on duplicate URLs)
-  const workbookImageIdByUrl = new Map<string, number>();
+  const workbookImageMetaByUrl = new Map<
+    string,
+    { imageId: number; width: number; height: number }
+  >();
   for (const [url, outcome] of urlFetchOutcome.entries()) {
     if (outcome.ok) {
       const imgId = workbook.addImage({
         buffer: outcome.buffer as any,
         extension: outcome.extension,
       });
-      workbookImageIdByUrl.set(url, imgId);
+      workbookImageMetaByUrl.set(url, {
+        imageId: imgId,
+        width: outcome.width,
+        height: outcome.height,
+      });
     }
   }
 
-  let placeholderImageId: number | null = null;
+  let placeholderImageMeta: { imageId: number; width: number; height: number } | null = null;
   if (embedPlaceholder && (missingPosterSourceCount > 0 || posterErrors.length > 0)) {
-    placeholderImageId = workbook.addImage({
-      buffer: getNeutralPosterPlaceholderPng() as any,
+    const placeholderBuf = getNeutralPosterPlaceholderPng();
+    const placeholderDims = readImageDimensions(placeholderBuf) || {
+      width: 144,
+      height: 216,
+    };
+    const imgId = workbook.addImage({
+      buffer: placeholderBuf as any,
       extension: 'png',
     });
+    placeholderImageMeta = {
+      imageId: imgId,
+      width: placeholderDims.width,
+      height: placeholderDims.height,
+    };
   }
 
   // 1. Özet Sheet (Must be index 0)
@@ -1498,8 +1981,8 @@ export async function generateProfileExcelBuffer(
       dataset.sheetCounts[sheetName],
       dataset,
       theme,
-      workbookImageIdByUrl,
-      placeholderImageId
+      workbookImageMetaByUrl,
+      placeholderImageMeta
     );
     writtenRowsBySheet[sheetName] = dataset.sheets[sheetName].length;
   }
@@ -1508,8 +1991,14 @@ export async function generateProfileExcelBuffer(
   const buffer = Buffer.isBuffer(arrayLike) ? arrayLike : Buffer.from(arrayLike);
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
   const packageInspection = inspectXlsxPackageBuffer(buffer);
-  if (!packageInspection.validZip || !packageInspection.validOpenXmlStructure) {
-    throw new Error('Üretilen XLSX paketi geçerli OpenXML ZIP doğrulamasından geçemedi.');
+  if (
+    !packageInspection.validZip ||
+    !packageInspection.validOpenXmlStructure ||
+    packageInspection.anyThinStripAnchor ||
+    !packageInspection.allAnchorsInPosterColumn ||
+    !packageInspection.allAnchorsRowAligned
+  ) {
+    throw new Error('Üretilen XLSX paketi geçerli OpenXML ZIP veya poster yerleşim doğrulamasından geçemedi.');
   }
 
   let downloadedOrCachedPostersCount = 0;
@@ -1938,12 +2427,13 @@ function populateContentWorksheet(
   counts: SheetBreakdownCount,
   dataset: ProfileBackupDataset,
   theme: SheetThemePalette,
-  workbookImageIdByUrl: Map<string, number>,
-  placeholderImageId: number | null
+  workbookImageMetaByUrl: Map<string, { imageId: number; width: number; height: number }>,
+  placeholderImageMeta: { imageId: number; width: number; height: number } | null
 ): void {
+  const posterColumnWidthChars = pixelsToExcelColumnWidth(POSTER_CELL_WIDTH_PX);
   // Set column widths ONLY (do NOT set `header` here so Row 1 stays our sheet title banner without merged cells)
   ws.columns = [
-    { key: 'poster', width: 10.5 }, // ~72 px
+    { key: 'poster', width: posterColumnWidthChars }, // 76 px rendered width (72 px poster + 2 px margin left/right)
     { key: 'type', width: 9 }, // FİLM / DİZİ badge
     { key: 'title', width: 33 }, // ~30–35 visible chars, wrapText enabled
     { key: 'year', width: 8.5 },
@@ -2055,8 +2545,8 @@ function populateContentWorksheet(
   rows.forEach((item, index) => {
     const excelRowNum = 5 + index;
     const row = ws.getRow(excelRowNum);
-    // 84 pt = 112 px (~5.6–6 standard Excel rows visually, single data row per item)
-    row.height = 84;
+    // 84 pt = 112 px (81 pt = 108 px poster + 3 pt = 4 px vertical margin, single row per item)
+    row.height = POSTER_ROW_HEIGHT_PT;
 
     const zebraBg = index % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC';
 
@@ -2164,22 +2654,32 @@ function populateContentWorksheet(
     keyCell.font = { name: FONT_FAMILY, size: 9, color: { argb: 'FF64748B' } };
     keyCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
-    // Embed Poster Image inside Col 1 (0-based row index = excelRowNum - 1)
-    let targetImgId: number | undefined;
-    if (item.posterUrl && workbookImageIdByUrl.has(item.posterUrl)) {
-      targetImgId = workbookImageIdByUrl.get(item.posterUrl);
-    } else if (placeholderImageId !== null) {
-      targetImgId = placeholderImageId;
+    // Embed Poster Image inside Col 1 (0-based col = 0, 0-based row = excelRowNum - 1)
+    let targetImg: { imageId: number; width: number; height: number } | null = null;
+    if (item.posterUrl && workbookImageMetaByUrl.has(item.posterUrl)) {
+      targetImg = workbookImageMetaByUrl.get(item.posterUrl) || null;
+    } else if (placeholderImageMeta !== null) {
+      targetImg = placeholderImageMeta;
     }
 
-    if (targetImgId !== undefined) {
+    if (targetImg !== null) {
       const zeroRow = excelRowNum - 1;
-      // Anchor strictly within cell A<excelRowNum> with subtle padding (~65x102 px, 2:3 ratio)
-      // so Excel sorting and AutoFilter move/hide posters together with their row.
-      ws.addImage(targetImgId, {
-        tl: { col: 0.06, row: zeroRow + 0.045 } as any,
-        br: { col: 0.94, row: zeroRow + 0.955 } as any,
-        editAs: 'twoCell',
+      const placement = computePosterPlacement(targetImg.width, targetImg.height);
+      // Pass explicit integer EMU offsets (`nativeColOff`/`nativeRowOff`) to bypass ExcelJS's
+      // broken `Anchor.colWidth` (`column.width * 10000`) conversion, and pass `ext` in pixels
+      // (serialized by ExcelJS `ExtXform` at 96 DPI: `1 px = 9525 EMU` -> ~72x108 px proportional).
+      ws.addImage(targetImg.imageId, {
+        tl: {
+          nativeCol: 0,
+          nativeColOff: placement.colOffEmu,
+          nativeRow: zeroRow,
+          nativeRowOff: placement.rowOffEmu,
+        } as any,
+        ext: {
+          width: placement.widthPx,
+          height: placement.heightPx,
+        },
+        editAs: 'oneCell',
       });
     }
   });
