@@ -114,6 +114,8 @@ export interface TmdbItem {
   seasons?: TmdbSeasonSummary[];
   next_episode_to_air?: TmdbNextEpisode | null;
   belongs_to_collection?: TmdbCollectionInfo | null;
+  collectionName?: string;
+  topCastIds?: number[];
   production_companies?: TmdbProductionCompany[];
   credits?: TmdbCredits;
   cast?: TmdbCastMember[];

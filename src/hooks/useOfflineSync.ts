@@ -13,15 +13,27 @@ import {
   loadOfflineSyncSnapshot,
   loadOfflineSyncSnapshotAsync,
 } from '../services/offline-queue';
+import {
+  hasUnpersistedIdbFallback,
+  subscribeIdbQuotaWarning,
+} from '../services/storage-idb';
 import { useOnlineStatus } from './useOnlineStatus';
 
 export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, localDoc: DataDocument) => void) {
   const isOnline = useOnlineStatus();
   const [pendingSync, setPendingSync] = useState<boolean>(() => hasPendingOfflineSync());
-  const [unpersistedWarning, setUnpersistedWarning] = useState<boolean>(() =>
-    hasUnpersistedOfflineFallback()
+  const [unpersistedWarning, setUnpersistedWarning] = useState<boolean>(
+    () => hasUnpersistedOfflineFallback() || hasUnpersistedIdbFallback()
   );
   const conflictPausedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    return subscribeIdbQuotaWarning(() => {
+      if (hasUnpersistedIdbFallback()) {
+        setUnpersistedWarning(true);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -39,7 +51,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
     conflictPausedRef.current = false;
     clearOfflineSyncSnapshot();
     setPendingSync(false);
-    setUnpersistedWarning(false);
+    setUnpersistedWarning(hasUnpersistedIdbFallback());
   }, []);
 
   const flushQueue = useCallback(async () => {
@@ -49,7 +61,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
     const queued = (await loadOfflineSyncSnapshotAsync()) || loadOfflineSyncSnapshot();
     if (!queued) {
       setPendingSync(false);
-      setUnpersistedWarning(false);
+      setUnpersistedWarning(hasUnpersistedIdbFallback());
       return;
     }
 
@@ -61,7 +73,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
       conflictPausedRef.current = false;
       clearOfflineSyncSnapshot();
       setPendingSync(false);
-      setUnpersistedWarning(false);
+      setUnpersistedWarning(hasUnpersistedIdbFallback());
       return;
     }
 
@@ -92,7 +104,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
       if (!navigator.onLine) {
         const enq = enqueueOfflineSyncSnapshot(payload, getLastKnownServerRevision());
         setPendingSync(true);
-        setUnpersistedWarning(!enq.persisted);
+        setUnpersistedWarning(!enq.persisted || hasUnpersistedIdbFallback());
         return { ok: false, queued: true, persisted: enq.persisted };
       }
 
@@ -106,14 +118,14 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
         conflictPausedRef.current = false;
         clearOfflineSyncSnapshot();
         setPendingSync(false);
-        setUnpersistedWarning(false);
+        setUnpersistedWarning(hasUnpersistedIdbFallback());
         return { ok: true, queued: false };
       }
 
       if (res.status === 0) {
         const enq = enqueueOfflineSyncSnapshot(payload, getLastKnownServerRevision());
         setPendingSync(true);
-        setUnpersistedWarning(!enq.persisted);
+        setUnpersistedWarning(!enq.persisted || hasUnpersistedIdbFallback());
         return { ok: false, queued: true, persisted: enq.persisted };
       }
 

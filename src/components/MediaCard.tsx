@@ -10,7 +10,7 @@ import {
 } from '../core/cinetrack-core';
 import { TmdbItem } from '../types/tmdb';
 import { formatMatchBadge } from '../i18n';
-import { isItemInSeries } from '../services/series-service';
+import { getItemSeriesInfo } from '../services/series-service';
 import { subscribeSeriesIndex } from '../services/storage-idb';
 import { recordPosterAccess } from '../services/poster-cache-manager';
 
@@ -156,7 +156,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   const shouldRenderRingChip =
     showRing || context === 'taste' || (Boolean(ringKey) && size !== 'xs');
 
-  const isSeries = isItemInSeries(item);
+  const seriesInfo = getItemSeriesInfo(item);
+  const isSeries = seriesInfo.inSeries;
 
   return (
     <article
@@ -263,8 +264,16 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         {isSeries && size !== 'xs' && (
           <span
             className="poster-series-badge badge-series"
-            title="Bir serinin veya evrenin parçası"
-            aria-label="Seri yapım"
+            title={
+              seriesInfo.collectionName
+                ? `Seri: ${seriesInfo.collectionName}`
+                : 'Bir serinin veya evrenin parçası'
+            }
+            aria-label={
+              seriesInfo.collectionName
+                ? `Seri yapım: ${seriesInfo.collectionName}`
+                : 'Seri yapım'
+            }
           >
             SERİ
           </span>
@@ -474,6 +483,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({
                 <span className="card-genres clamp-1">{genreNames}</span>
               </>
             )}
+          </div>
+        )}
+
+        {isSeries && seriesInfo.collectionName && size !== 'xs' && (
+          <div className="card-series-label clamp-1" title={seriesInfo.collectionName}>
+            {seriesInfo.collectionName}
           </div>
         )}
 

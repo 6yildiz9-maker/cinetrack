@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { MediaCard } from './MediaCard';
 import { ActorRecommendationsSection } from './ActorRecommendationsSection';
+import { SeriesRecommendationsSection } from './SeriesRecommendationsSection';
 import { SeasonCalendarSection } from './SeasonCalendarSection';
 import { ErrorBoundary } from './ErrorBoundary';
 import {
@@ -55,6 +56,9 @@ interface MediaGridProps {
   forYouSubTab?: 'recommendations' | 'series';
   onForYouSubTabChange?: (sub: 'recommendations' | 'series') => void;
   seriesCount?: number;
+  hiddenKeys?: string[];
+  mood?: string;
+  isDemo?: boolean;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -99,6 +103,9 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   forYouSubTab = 'recommendations',
   onForYouSubTabChange,
   seriesCount = 0,
+  hiddenKeys = [],
+  mood = '',
+  isDemo = false,
 }) => {
   const [actorsSubTab, setActorsSubTab] = useState<'actors' | 'recommendations'>('actors');
   const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
@@ -320,6 +327,30 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             </ErrorBoundary>
           )}
         </div>
+      ) : isForYouSeriesMode ? (
+        <ErrorBoundary sectionName="Seri ve Evren Önerileri">
+          <SeriesRecommendationsSection
+            savedItems={savedItems}
+            dislikedKeys={dislikedKeys}
+            hiddenKeys={hiddenKeys}
+            genresMap={genres}
+            mood={mood}
+            selectedType={selectedType}
+            selectedGenre={selectedGenre}
+            selectedSort={selectedSort}
+            isDemo={isDemo}
+            tmdbSource={tmdbSource}
+            onOpenDetails={onOpenDetails}
+            onQuickAdd={onQuickAdd}
+            onSetStatus={onSetStatus}
+            onQuickSave={onQuickSave}
+            onToggleDislike={onToggleDislike}
+            onEmptyAction={onEmptyAction}
+            onBackToRecommendations={
+              onForYouSubTabChange ? () => onForYouSubTabChange('recommendations') : undefined
+            }
+          />
+        </ErrorBoundary>
       ) : (
       <div id="catalogGrid" className="grid">
         {isLoading ? (

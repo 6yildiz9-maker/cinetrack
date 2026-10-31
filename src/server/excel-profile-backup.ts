@@ -7,7 +7,6 @@ import {
   readFileSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -915,10 +914,42 @@ export function getPosterCacheStats(
   return { filesCount, totalBytes, maxBytes, ttlDays };
 }
 
+export async function getPosterCacheStatsAsync(
+  cacheDir: string,
+  maxBytes = DEFAULT_POSTER_CACHE_MAX_BYTES,
+  ttlMs = DEFAULT_POSTER_CACHE_TTL_MS
+): Promise<PosterCacheStats> {
+  const ttlDays = Math.max(1, Math.round(ttlMs / (24 * 60 * 60 * 1000)));
+  if (!cacheDir) {
+    return { filesCount: 0, totalBytes: 0, maxBytes, ttlDays };
+  }
+  let filesCount = 0;
+  let totalBytes = 0;
+  try {
+    const entries = await fsPromises.readdir(cacheDir);
+    for (const name of entries) {
+      if (!/\.(jpg|jpeg|png|gif)$/i.test(name)) continue;
+      try {
+        const st = await fsPromises.stat(path.join(cacheDir, name));
+        if (st.isFile()) {
+          filesCount += 1;
+          totalBytes += st.size;
+        }
+      } catch {
+        // Ignore racing file deletion
+      }
+    }
+  } catch {
+    return { filesCount: 0, totalBytes: 0, maxBytes, ttlDays };
+  }
+  return { filesCount, totalBytes, maxBytes, ttlDays };
+}
+
 export interface PosterCacheOptions {
   maxBytes?: number;
   ttlMs?: number;
   nowMs?: () => number;
+  skipSyncInit?: boolean;
 }
 
 export class PosterCacheManager {
@@ -942,8 +973,15 @@ export class PosterCacheManager {
         ? options.ttlMs
         : DEFAULT_POSTER_CACHE_TTL_MS;
     this.nowMs = options.nowMs || (() => Date.now());
-    mkdirSync(this.cacheDir, { recursive: true });
-    this.purgeIfNeeded();
+    if (!options.skipSyncInit) {
+      mkdirSync(this.cacheDir, { recursive: true });
+      this.purgeIfNeeded();
+    }
+  }
+
+  public async initAsync(): Promise<void> {
+    await fsPromises.mkdir(this.cacheDir, { recursive: true });
+    await this.purgeIfNeededAsync();
   }
 
   private getDiskPaths(urlHash: string): Array<{ ext: 'jpeg' | 'png' | 'gif'; filePath: string }> {
@@ -1012,6 +1050,65 @@ export class PosterCacheManager {
     };
   }
 
+  public async purgeIfNeededAsync(): Promise<{
+    evictedFiles: number;
+    totalBytes: number;
+    filesCount: number;
+  }> {
+    const now = this.nowMs();
+    let evictedFiles = 0;
+    const validEntries: Array<{ filePath: string; size: number; mtimeMs: number }> = [];
+
+    try {
+      const names = await fsPromises.readdir(this.cacheDir);
+      for (const name of names) {
+        if (!/\.(jpg|jpeg|png|gif)$/i.test(name)) continue;
+        const filePath = path.join(this.cacheDir, name);
+        try {
+          const st = await fsPromises.stat(filePath);
+          if (!st.isFile()) continue;
+          const isExpired = now - st.mtimeMs > this.ttlMs;
+          const isInvalidSize = st.size < 16 || st.size > MAX_POSTER_RESPONSE_BYTES;
+          if (isExpired || isInvalidSize) {
+            try {
+              await fsPromises.unlink(filePath);
+              evictedFiles += 1;
+            } catch {
+              // Ignore unlink race
+            }
+            continue;
+          }
+          validEntries.push({ filePath, size: st.size, mtimeMs: st.mtimeMs });
+        } catch {
+          // Ignore racing file
+        }
+      }
+    } catch {
+      return { evictedFiles, totalBytes: 0, filesCount: 0 };
+    }
+
+    let totalBytes = validEntries.reduce((acc, e) => acc + e.size, 0);
+    if (totalBytes > this.maxBytes) {
+      validEntries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+      while (validEntries.length > 0 && totalBytes > this.maxBytes) {
+        const oldest = validEntries.shift()!;
+        try {
+          await fsPromises.unlink(oldest.filePath);
+          totalBytes -= oldest.size;
+          evictedFiles += 1;
+        } catch {
+          // Ignore unlink race
+        }
+      }
+    }
+
+    return {
+      evictedFiles,
+      totalBytes,
+      filesCount: validEntries.length,
+    };
+  }
+
   public readCached(
     url: string
   ): { buffer: Buffer; extension: 'jpeg' | 'png' | 'gif'; width: number; height: number } | null {
@@ -1058,6 +1155,69 @@ export class PosterCacheManager {
     return null;
   }
 
+  public async readCachedAsync(
+    url: string
+  ): Promise<{ buffer: Buffer; extension: 'jpeg' | 'png' | 'gif'; width: number; height: number } | null> {
+    const memHit = this.memoryCache.get(url);
+    if (memHit) return memHit;
+
+    const now = this.nowMs();
+    const urlHash = crypto.createHash('sha256').update(url).digest('hex');
+    for (const candidate of this.getDiskPaths(urlHash)) {
+      try {
+        const stat = await fsPromises.stat(candidate.filePath);
+        if (!stat.isFile()) continue;
+        if (now - stat.mtimeMs > this.ttlMs) {
+          await fsPromises.unlink(candidate.filePath).catch(() => {});
+          continue;
+        }
+        if (stat.size < 16 || stat.size > MAX_POSTER_RESPONSE_BYTES) continue;
+        const buf = await fsPromises.readFile(candidate.filePath);
+        const detected = detectImageExtension(buf);
+        const dims = readImageDimensions(buf);
+        if (
+          detected &&
+          dims &&
+          dims.width >= MIN_VALID_POSTER_DIMENSION_PX &&
+          dims.height >= MIN_VALID_POSTER_DIMENSION_PX
+        ) {
+          const entry = {
+            buffer: buf,
+            extension: detected,
+            width: dims.width,
+            height: dims.height,
+          };
+          this.memoryCache.set(url, entry);
+          return entry;
+        }
+      } catch {
+        // Ignore missing/unreadable cache entry
+      }
+    }
+    return null;
+  }
+
+  public async writeCachedAsync(
+    url: string,
+    buffer: Buffer,
+    extension: 'jpeg' | 'png' | 'gif',
+    width: number,
+    height: number
+  ): Promise<void> {
+    this.memoryCache.set(url, { buffer, extension, width, height });
+    try {
+      await fsPromises.mkdir(this.cacheDir, { recursive: true });
+      const urlHash = crypto.createHash('sha256').update(url).digest('hex');
+      const fileExt = extension === 'jpeg' ? 'jpg' : extension;
+      const target = path.join(this.cacheDir, `${urlHash}.${fileExt}`);
+      const tempPath = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+      await fsPromises.writeFile(tempPath, buffer);
+      await fsPromises.rename(tempPath, target);
+    } catch {
+      // Disk cache write failure is non-fatal
+    }
+  }
+
   public writeCached(
     url: string,
     buffer: Buffer,
@@ -1065,16 +1225,7 @@ export class PosterCacheManager {
     width: number,
     height: number
   ): void {
-    this.memoryCache.set(url, { buffer, extension, width, height });
-    try {
-      mkdirSync(this.cacheDir, { recursive: true });
-      const urlHash = crypto.createHash('sha256').update(url).digest('hex');
-      const fileExt = extension === 'jpeg' ? 'jpg' : extension;
-      const target = path.join(this.cacheDir, `${urlHash}.${fileExt}`);
-      writeFileSync(target, buffer);
-    } catch {
-      // Disk cache write failure is non-fatal
-    }
+    void this.writeCachedAsync(url, buffer, extension, width, height);
   }
 }
 
@@ -2044,7 +2195,9 @@ export async function generateProfileExcelBuffer(
   const posterCache = new PosterCacheManager(options.posterCacheDir, {
     maxBytes: options.posterCacheMaxBytes,
     ttlMs: options.posterCacheTtlMs,
+    skipSyncInit: true,
   });
+  await posterCache.initAsync();
   const posterFetcher = options.posterFetcher || defaultPosterFetcher;
   const posterTimeoutMs = options.posterTimeoutMs ?? 7000;
   const posterConcurrency = options.posterConcurrency ?? 16;
@@ -2075,7 +2228,7 @@ export async function generateProfileExcelBuffer(
   >();
 
   await runWithConcurrency(uniqueUrls, posterConcurrency, async (url) => {
-    const cached = posterCache.readCached(url);
+    const cached = await posterCache.readCachedAsync(url);
     if (cached) {
       urlFetchOutcome.set(url, {
         ok: true,
@@ -2129,7 +2282,7 @@ export async function generateProfileExcelBuffer(
         });
         return;
       }
-      posterCache.writeCached(url, response.buffer, ext, dims.width, dims.height);
+      await posterCache.writeCachedAsync(url, response.buffer, ext, dims.width, dims.height);
       urlFetchOutcome.set(url, {
         ok: true,
         buffer: response.buffer,
@@ -2150,7 +2303,7 @@ export async function generateProfileExcelBuffer(
   });
 
   // Enforce bounded disk cache size after writing newly fetched posters
-  posterCache.purgeIfNeeded();
+  await posterCache.purgeIfNeededAsync();
 
   // Compute accurate poster embedding & error metrics before rendering Özet sheet
   let embeddedPostersCount = 0;

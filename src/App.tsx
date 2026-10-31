@@ -102,18 +102,28 @@ import {
   saveUserListsIdb,
   removeSurfacedKey,
   subscribeSeriesIndex,
+  loadUiPrefsIdb,
+  saveUiPrefsIdb,
+  recordSkippedKeysIdb,
+  removeSkippedKeyIdb,
 } from './services/storage-idb';
 import {
   indexItemForSeries,
-  indexItemsForSeriesBatch,
+  registerLocalSavedSeriesHints,
   computeUserSeriesUniverses,
 } from './services/series-service';
-import { consumeStockItem, markItemsAsSurfaced } from './services/stock-engine';
+import {
+  consumeStockItem,
+  enrichStockItemsTopCast,
+  markItemsAsSurfaced,
+  seedCandidatePoolFromStock,
+} from './services/stock-engine';
 import {
   enforcePosterCacheQuota,
   requestServiceWorkerPosterPurge,
 } from './services/poster-cache-manager';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
+import { compareMediaDatesAscending, isWithinReleaseWindow } from './utils/release-window';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
 const ACTIVE_PROFILE_STORAGE = 'cinetrack.activeProfile.v1';
@@ -332,11 +342,59 @@ export function App() {
   const deletedKeysRef = useRef<Record<string, string>>(deletedKeys);
   deletedKeysRef.current = deletedKeys;
 
+  const uiPrefsHydratedProfileRef = useRef<string>('');
+
   useEffect(() => {
     try {
       localStorage.setItem(HIDE_LISTED_STORAGE_KEY, hideListedItems ? '1' : '0');
     } catch {}
   }, [hideListedItems]);
+
+  // Hydrate & persist UI filter/sort preferences in Depo 10 (`ct:ui-prefs`)
+  useEffect(() => {
+    let active = true;
+    uiPrefsHydratedProfileRef.current = '';
+    void loadUiPrefsIdb(activeProfileId).then((stored) => {
+      if (!active) return;
+      if (stored) {
+        if (stored.selectedType) {
+          setSelectedType(stored.selectedType);
+          selectedTypeRef.current = stored.selectedType;
+        }
+        if (stored.selectedSort) {
+          setSelectedSort(stored.selectedSort);
+        }
+        if (typeof stored.selectedGenre === 'string') {
+          setSelectedGenre(stored.selectedGenre);
+          selectedGenreRef.current = stored.selectedGenre;
+        }
+        if (typeof stored.hideListedItems === 'boolean') {
+          setHideListedItems(stored.hideListedItems);
+          hideListedItemsRef.current = stored.hideListedItems;
+        }
+        if (stored.forYouSubTab === 'recommendations' || stored.forYouSubTab === 'series') {
+          setForYouSubTab(stored.forYouSubTab);
+        }
+      }
+      uiPrefsHydratedProfileRef.current = activeProfileId;
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeProfileId]);
+
+  useEffect(() => {
+    if (uiPrefsHydratedProfileRef.current !== activeProfileId) return;
+    void saveUiPrefsIdb({
+      profileId: activeProfileId,
+      selectedType: selectedType === 'movie' || selectedType === 'tv' ? selectedType : 'all',
+      selectedSort,
+      selectedGenre,
+      hideListedItems,
+      forYouSubTab,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [activeProfileId, selectedType, selectedSort, selectedGenre, hideListedItems, forYouSubTab]);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -508,10 +566,10 @@ export function App() {
     };
   }, []);
 
-  // Index user's saved items into ct:series-index so SERİ badges and Seriler tab stay populated (FEAT-01 #8)
+  // Register local series hints with 0 network calls on startup/save; network backfill runs lazily ONLY when "Seriler" opens (FEAT-01 #6)
   useEffect(() => {
     if (savedItems.length > 0) {
-      void indexItemsForSeriesBatch(savedItems);
+      void registerLocalSavedSeriesHints(savedItems);
     }
   }, [savedItems]);
 
@@ -750,11 +808,12 @@ export function App() {
       return [...mList, ...tList].sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
     }
     if (cat === 'upcoming') {
-      return [...mList, ...tList].sort((a, b) => {
-        const dateA = a.release_date || a.first_air_date || '9999';
-        const dateB = b.release_date || b.first_air_date || '9999';
-        return dateA.localeCompare(dateB);
-      });
+      return [...mList, ...tList].sort((a, b) =>
+        compareMediaDatesAscending(
+          a.release_date || a.first_air_date,
+          b.release_date || b.first_air_date
+        )
+      );
     }
     if (cat === 'gems') {
       return [...mList, ...tList].sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
@@ -917,8 +976,16 @@ export function App() {
                 : fetchTmdb('/tv/on_the_air', { page: String(pageNum) }, ticket.signal);
             }
             const [movies, tvs] = await Promise.all([moviesPromise, tvsPromise]);
+            const mergedUpcoming = mergeDiscoverResults(
+              cat,
+              movies.results || [],
+              tvs.results || []
+            ).filter((it) => {
+              const d = it.release_date || it.first_air_date || '';
+              return d ? isWithinReleaseWindow(d) : false;
+            });
             return {
-              rawItems: mergeDiscoverResults(cat, movies.results || [], tvs.results || []),
+              rawItems: mergedUpcoming,
               totalPages: Math.max(movies.total_pages || 1, tvs.total_pages || 1),
             };
           }
@@ -1306,7 +1373,14 @@ export function App() {
                 )
               : generalTasteProfile;
 
-          // Sunucuda indirilmiş katalog (data/catalog/movies.json & tv.json) varsa yerel havuzları önce besle
+          // FEAT-02 #5: Önce birincil istemci deposu ct:stock'tan aday havuzlarını besle (sıfır ağ maliyeti)
+          await Promise.all([
+            seedCandidatePoolFromStock(currentProfileId, 'movie', rawSaved, currentPrefs),
+            seedCandidatePoolFromStock(currentProfileId, 'tv', rawSaved, currentPrefs),
+          ]);
+          if (!requestGateRef.current.isCurrent(ticket.id)) return;
+
+          // Sunucuda indirilmiş katalog (data/catalog/movies.json & tv.json) varsa yerel havuzları tamamla
           const preMoviePool = loadPersistentPoolData(currentProfileId, 'movie');
           const preTvPool = loadPersistentPoolData(currentProfileId, 'tv');
           if (
@@ -1537,6 +1611,7 @@ export function App() {
           }
 
           setForYouProgressStep('Öne çıkan adayların kadro ve hikâye sinyalleri zenginleştiriliyor…');
+          const shortlistTopCast: Record<string, number[]> = {};
           await mapLimit(shortlist, 5, async (entry) => {
             try {
               const details = await fetchTmdbCached(
@@ -1544,17 +1619,28 @@ export function App() {
                 { append_to_response: 'credits' },
                 ticket.signal
               );
+              const castSlice = (details?.credits?.cast || []).slice(0, 8);
+              const top3Ids = castSlice
+                .slice(0, 3)
+                .map((c: any) => Number(c?.id))
+                .filter((n: number) => Number.isInteger(n) && n > 0);
+              if (top3Ids.length > 0) {
+                shortlistTopCast[makeMediaKey(entry.candidate)] = top3Ids;
+              }
               Object.assign(entry.candidate, {
                 overview: entry.candidate.overview || details?.overview || '',
                 belongs_to_collection: details?.belongs_to_collection || null,
                 production_companies: details?.production_companies || [],
-                cast: (details?.credits?.cast || []).slice(0, 8),
+                cast: castSlice,
                 crew: (details?.credits?.crew || []).filter(
                   (m: any) => m.job === 'Director' || m.job === 'Creator'
                 ),
               });
             } catch {}
           });
+          if (Object.keys(shortlistTopCast).length > 0) {
+            void enrichStockItemsTopCast(shortlistTopCast);
+          }
           if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
           // Zenginleştirilmiş adayları bağımsız olarak yeniden puanla ve lastRecommendedKeys'i süz
@@ -1807,6 +1893,13 @@ export function App() {
   );
 
   const handleRefreshForYou = useCallback(() => {
+    const savedSet = new Set(savedItemsRef.current.map((s) => makeMediaKey(s)));
+    const skipped = forYouItemsRef.current
+      .map((it) => makeMediaKey(it))
+      .filter((k) => !savedSet.has(k));
+    if (skipped.length > 0) {
+      void recordSkippedKeysIdb(activeProfileIdRef.current, skipped);
+    }
     loadCategoryResults('for-you', 1, false, '', selectedProvider, true, selectedType, selectedGenre);
   }, [loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
 
@@ -1822,6 +1915,7 @@ export function App() {
       const result: PoolCandidateItem[] = [];
 
       for (const mediaType of mediaTypes) {
+        await seedCandidatePoolFromStock(activeProfileId, mediaType, savedItems, preferences);
         const pool = await replenishCandidatePool({
           profileId: activeProfileId,
           mediaType,
@@ -1989,9 +2083,10 @@ export function App() {
       setTasteMap(nextMap);
     } catch {}
 
-    // Aşama 3 & 4: Stoktan düş, ct:surfaced geçmişinden çıkar ve seri indeksini güncelle
+    // Aşama 3 & 4: Stoktan düş, ct:surfaced & ct:skip-log geçmişinden çıkar ve seri indeksini güncelle
     void consumeStockItem(normalized, activeProfileIdRef.current);
     void removeSurfacedKey(itemKey);
+    void removeSkippedKeyIdb(activeProfileIdRef.current, itemKey);
     void indexItemForSeries(normalized);
 
     const title = displayTitle(item);
@@ -2262,7 +2357,12 @@ export function App() {
   // FEAT-01 #10 & #11: Compute missing franchise parts strictly for franchises present in user's savedItems
   const seriesUniverseData = React.useMemo(() => {
     void seriesIndexVersion;
-    const universes = computeUserSeriesUniverses(savedItems);
+    const effectiveDemo = Boolean(activeProfile?.isDemo || tmdbSourceMeta.source === 'demo');
+    const universes = computeUserSeriesUniverses(savedItems, {
+      includeStubs: !effectiveDemo,
+      dislikedKeys: preferences.disliked,
+      hiddenKeys: preferences.hidden,
+    });
     const items: any[] = [];
     const reasonsMap = new Map<string, string>();
     const seenKeys = new Set<string>();
@@ -2295,7 +2395,7 @@ export function App() {
     }
 
     return { items, reasonsMap, universesCount: universes.length };
-  }, [savedItems, preferences.disliked, preferences.hidden, seriesIndexVersion]);
+  }, [savedItems, preferences.disliked, preferences.hidden, seriesIndexVersion, activeProfile?.isDemo, tmdbSourceMeta.source]);
 
   const getDisplayedItems = () => {
     if (tab === 'discover') {
@@ -2927,7 +3027,10 @@ export function App() {
               onSortChange={setSelectedSort}
               forYouSubTab={forYouSubTab}
               onForYouSubTabChange={setForYouSubTab}
-              seriesCount={seriesUniverseData.items.length}
+              seriesCount={seriesUniverseData.universesCount}
+              hiddenKeys={preferences.hidden}
+              mood={preferences.mood}
+              isDemo={Boolean(activeProfile?.isDemo)}
             />
           </ErrorBoundary>
         )}
@@ -3014,6 +3117,7 @@ export function App() {
       <DetailModal
         item={detailItem}
         savedItem={detailItem ? findSavedItem(savedItems, detailItem) : undefined}
+        savedItems={savedItems}
         isOpen={Boolean(detailItem)}
         genresMap={genresMap}
         isDisliked={
@@ -3029,6 +3133,7 @@ export function App() {
         onRemove={handleRemoveItem}
         onToggleDislike={handleToggleDislike}
         onToggleFavoriteActor={handleToggleFavoriteActor}
+        onSelectMedia={(next) => setDetailItem(next)}
         onOpenPerson={(id, name) => {
           setPersonId(id);
           setPersonName(name);

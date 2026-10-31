@@ -1,20 +1,30 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  FavoriteActorInfo,
-  ActorRecommendationItem,
-  scoreActorRecommendations,
-  SavedItem,
+  type FavoriteActorInfo,
+  type ActorRecommendationItem,
+  type SavedItem,
   findSavedItem,
   makeMediaKey,
   createRequestGate,
-  fetchActorCreditsBatch,
-  ActorFetchStatus,
+  type ActorFetchStatus,
   normalizeFavoriteActors,
   describeActorFetchChipState,
 } from '../core/cinetrack-core';
-import { fetchTmdbCached, TMDB_CACHE_TTLS } from '../services/api';
-import { TmdbItem, TmdbPersonCreditItem } from '../types/tmdb';
+import {
+  buildMergedActorCreditsWithStock,
+  loadOpenActorCreditsLazy,
+  scoreSingleActorMemoized,
+  type PerActorSignedMemoEntry,
+} from '../services/actor-recommendations-engine';
+import { subscribeStockState } from '../services/stock-engine';
+import type { TmdbItem, TmdbPersonCreditItem } from '../types/tmdb';
 import { MediaCard } from './MediaCard';
+import {
+  PaginatedMediaModal,
+  SCORE_DEBOUNCE_MS,
+  SHELF_INITIAL_COUNT,
+  sliceShelfItems,
+} from './PaginatedMediaModal';
 
 interface ActorRecommendationsSectionProps {
   favoriteActors: FavoriteActorInfo[];
@@ -41,7 +51,17 @@ const ACCORDION_STORAGE_KEY = 'cinetrack.actor-accordions.v1';
 function loadAccordionStates(): Record<number, boolean> {
   try {
     const raw = localStorage.getItem(ACCORDION_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const clean: Record<number, boolean> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      const id = Number(k);
+      if (Number.isInteger(id) && id > 0 && typeof v === 'boolean') {
+        clean[id] = v;
+      }
+    }
+    return clean;
   } catch {
     return {};
   }
@@ -70,14 +90,16 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
 
   const [actorCreditsMap, setActorCreditsMap] = useState<Record<number, TmdbPersonCreditItem[]>>({});
   const [actorStatuses, setActorStatuses] = useState<Record<number, ActorFetchStatus>>({});
-  const [isLoading, setIsLoading] = useState<boolean>(() => validFavoriteActors.length > 0);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [enableDiversity, setEnableDiversity] = useState<boolean>(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null);
+  const [stockRevision, setStockRevision] = useState<number>(0);
+  const [shelfLimits, setShelfLimits] = useState<Record<number, number>>({});
 
-  // Accordion open/closed states persisted in localStorage
+  // Accordion open/closed states persisted in localStorage (first 2 open by default)
   const [openAccordions, setOpenAccordions] = useState<Record<number, boolean>>(() => {
     const saved = loadAccordionStates();
-    // Default the first 2 actors to open if not saved yet
     if (Object.keys(saved).length === 0 && validFavoriteActors.length > 0) {
       const initial: Record<number, boolean> = {};
       validFavoriteActors.slice(0, 2).forEach((a) => {
@@ -88,13 +110,61 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     return saved;
   });
 
-  // Modal for "Tümünü Gör" per actor
   const [allViewActor, setAllViewActor] = useState<FavoriteActorInfo | null>(null);
 
   const requestGateRef = useRef(createRequestGate());
-  const actorCreditsCacheRef = useRef<
-    Map<number, { at: number; credits: TmdbPersonCreditItem[]; status: ActorFetchStatus }>
-  >(new Map());
+  const perActorMemoRef = useRef<Map<number, PerActorSignedMemoEntry>>(new Map());
+  const hasRenderedInitialScoreRef = useRef<boolean>(false);
+
+  // Debounce scoring inputs (300ms) after initial render so rapid filter clicks never freeze the UI
+  const [debouncedScoringInputs, setDebouncedScoringInputs] = useState(() => ({
+    savedItems,
+    dislikedKeys,
+    selectedType,
+    selectedGenre,
+    selectedSort,
+    enableDiversity,
+  }));
+
+  useEffect(() => {
+    if (!hasRenderedInitialScoreRef.current) {
+      hasRenderedInitialScoreRef.current = true;
+      setDebouncedScoringInputs({
+        savedItems,
+        dislikedKeys,
+        selectedType,
+        selectedGenre,
+        selectedSort,
+        enableDiversity,
+      });
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedScoringInputs({
+        savedItems,
+        dislikedKeys,
+        selectedType,
+        selectedGenre,
+        selectedSort,
+        enableDiversity,
+      });
+    }, SCORE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [savedItems, dislikedKeys, selectedType, selectedGenre, selectedSort, enableDiversity]);
+
+  useEffect(() => {
+    return subscribeStockState(() => {
+      setStockRevision((v) => v + 1);
+    });
+  }, []);
+
+  const openActorIds = useMemo(
+    () =>
+      validFavoriteActors
+        .filter((actor) => Boolean(openAccordions[actor.id]))
+        .map((actor) => actor.id),
+    [validFavoriteActors, openAccordions]
+  );
 
   const saveAccordionStates = (states: Record<number, boolean>) => {
     setOpenAccordions(states);
@@ -110,56 +180,37 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     });
   };
 
-  const loadCredits = useCallback(
+  const loadOpenCredits = useCallback(
     async (force = false) => {
-      if (validFavoriteActors.length === 0) {
-        setActorCreditsMap({});
-        setActorStatuses({});
+      if (validFavoriteActors.length === 0 || openActorIds.length === 0) {
         setIsLoading(false);
         return;
       }
 
-      if (force) {
-        actorCreditsCacheRef.current.clear();
-      }
+      const missingOpenActors = force
+        ? validFavoriteActors.filter((a) => openActorIds.includes(a.id))
+        : validFavoriteActors.filter(
+            (a) => openActorIds.includes(a.id) && !actorCreditsMap[a.id]
+          );
 
-      const now = Date.now();
-      const cachedCredits: Record<number, TmdbPersonCreditItem[]> = {};
-      const cachedStatuses: Record<number, ActorFetchStatus> = {};
-      const actorsToFetch: FavoriteActorInfo[] = [];
-
-      for (const actor of validFavoriteActors) {
-        const hit = !force ? actorCreditsCacheRef.current.get(actor.id) : undefined;
-        if (hit && now - hit.at < TMDB_CACHE_TTLS.ACTOR_CREDITS && hit.status.status !== 'error') {
-          cachedCredits[actor.id] = hit.credits;
-          cachedStatuses[actor.id] = hit.status;
-        } else {
-          actorsToFetch.push(actor);
-        }
-      }
-
-      if (actorsToFetch.length === 0) {
-        setActorCreditsMap(cachedCredits);
-        setActorStatuses(cachedStatuses);
-        setFetchError(null);
+      if (missingOpenActors.length === 0) {
         setIsLoading(false);
         return;
       }
 
       const ticket = requestGateRef.current.begin();
-      setActorCreditsMap((prev) => ({ ...prev, ...cachedCredits }));
-      setActorStatuses((prev) => ({ ...prev, ...cachedStatuses }));
-      setIsLoading(Object.keys(cachedCredits).length === 0);
+      setIsLoading(true);
       setFetchError(null);
+      if (force) {
+        setRateLimitWarning(null);
+      }
 
       try {
-        const result = await fetchActorCreditsBatch(actorsToFetch, {
-          concurrency: 3,
-          signal: ticket.signal,
-          ticketId: ticket.id,
-          isCurrentTicket: (id) => requestGateRef.current.isCurrent(id),
+        const result = await loadOpenActorCreditsLazy({
+          actors: missingOpenActors,
+          openAccordionIds: openActorIds,
           force,
-          fetchTmdbFn: fetchTmdbCached,
+          signal: ticket.signal,
           onActorStatusChange: (status) => {
             if (!requestGateRef.current.isCurrent(ticket.id)) return;
             setActorStatuses((prev) => ({ ...prev, [status.actorId]: status }));
@@ -168,22 +219,13 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
 
         if (!requestGateRef.current.isCurrent(ticket.id)) return;
 
-        const fetchedAt = Date.now();
-        for (const actor of actorsToFetch) {
-          const st = result.statuses[actor.id];
-          const cr = (result.creditsMap[actor.id] || []) as TmdbPersonCreditItem[];
-          if (st && st.status !== 'error') {
-            actorCreditsCacheRef.current.set(actor.id, {
-              at: fetchedAt,
-              credits: cr,
-              status: st,
-            });
-          }
+        setActorCreditsMap((prev) => ({ ...prev, ...result.creditsMap }));
+        setActorStatuses((prev) => ({ ...prev, ...result.statuses }));
+        if (result.rateLimitWarning) {
+          setRateLimitWarning(result.rateLimitWarning);
         }
-
-        setActorCreditsMap({ ...cachedCredits, ...result.creditsMap });
-        setActorStatuses({ ...cachedStatuses, ...result.statuses });
-        if (result.errorCount > 0 && result.completedCount === 0 && Object.keys(cachedCredits).length === 0) {
+        const loadedCount = Object.keys(result.creditsMap).length;
+        if (loadedCount === 0 && !result.rateLimited) {
           setFetchError('Favori oyuncuların içerikleri yüklenirken bir sorun oluştu.');
         }
       } catch (err: unknown) {
@@ -196,63 +238,71 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
         }
       }
     },
-    [validFavoriteActors]
+    [validFavoriteActors, openActorIds, actorCreditsMap]
   );
 
   useEffect(() => {
-    void loadCredits();
-  }, [loadCredits]);
+    void loadOpenCredits(false);
+  }, [loadOpenCredits]);
 
-  const filteredRecommendations = useMemo(() => {
-    if (validFavoriteActors.length === 0) return [];
-    const effectiveType =
-      selectedType === 'movie' || selectedType === 'tv' ? selectedType : 'all';
-    const mappedSortMode: 'best_match' | 'newest' | 'hidden_gems' =
-      selectedSort === 'recent'
-        ? 'newest'
-        : selectedSort === 'gems'
-        ? 'hidden_gems'
-        : 'best_match';
-    return scoreActorRecommendations({
-      favoriteActors: validFavoriteActors,
-      actorCreditsMap,
-      savedItems,
-      dislikedKeys,
-      genresMap,
-      providerIndex,
-      preferredProviders,
-      sortMode: mappedSortMode,
-      sortBy: selectedSort || 'popular',
-      mediaTypeFilter: effectiveType,
-      genreFilter: selectedGenre || '',
-      enableDiversity,
-      maxPerGenre: 4,
-    });
-  }, [
-    validFavoriteActors,
-    actorCreditsMap,
-    savedItems,
-    dislikedKeys,
-    genresMap,
-    providerIndex,
-    preferredProviders,
-    selectedType,
-    selectedGenre,
-    selectedSort,
-    enableDiversity,
-  ]);
+  const excludedKeysSet = useMemo(() => {
+    const s = new Set<string>(debouncedScoringInputs.dislikedKeys);
+    for (const saved of debouncedScoringInputs.savedItems) {
+      s.add(`${saved.media_type === 'tv' ? 'tv' : 'movie'}:${saved.id}`);
+    }
+    return s;
+  }, [debouncedScoringInputs.savedItems, debouncedScoringInputs.dislikedKeys]);
 
-  // Map recommendations per actor
+  // Per-actor memoized scoring: scores ONLY open accordions or already-cached actors without cross-actor re-computation
   const actorItemsMap = useMemo(() => {
+    void stockRevision;
     const map = new Map<number, ActorRecommendationItem[]>();
     for (const actor of validFavoriteActors) {
-      const items = filteredRecommendations.filter((item) =>
-        item.matchedActors?.some((a) => a.id === actor.id)
-      );
-      map.set(actor.id, items);
+      const isOpen = Boolean(openAccordions[actor.id]);
+      const loadedCredits = actorCreditsMap[actor.id];
+      if (!isOpen && !loadedCredits) {
+        map.set(actor.id, []);
+        continue;
+      }
+      const mergedCredits = isOpen
+        ? buildMergedActorCreditsWithStock(actor, loadedCredits, excludedKeysSet)
+        : loadedCredits || [];
+
+      const scored = scoreSingleActorMemoized(actor, mergedCredits, perActorMemoRef.current, {
+        savedItems: debouncedScoringInputs.savedItems,
+        dislikedKeys: debouncedScoringInputs.dislikedKeys,
+        genresMap,
+        preferredProviders,
+        providerIndex,
+        selectedType: debouncedScoringInputs.selectedType || 'all',
+        selectedGenre: debouncedScoringInputs.selectedGenre || '',
+        selectedSort: debouncedScoringInputs.selectedSort || 'popular',
+        enableDiversity: debouncedScoringInputs.enableDiversity,
+      });
+      map.set(actor.id, scored);
     }
     return map;
-  }, [validFavoriteActors, filteredRecommendations]);
+  }, [
+    validFavoriteActors,
+    openAccordions,
+    actorCreditsMap,
+    excludedKeysSet,
+    debouncedScoringInputs,
+    genresMap,
+    preferredProviders,
+    providerIndex,
+    stockRevision,
+  ]);
+
+  const totalUniqueCount = useMemo(() => {
+    const unique = new Set<string>();
+    for (const items of actorItemsMap.values()) {
+      for (const it of items) {
+        unique.add(makeMediaKey(it.media_type, it.id));
+      }
+    }
+    return unique.size;
+  }, [actorItemsMap]);
 
   if (validFavoriteActors.length === 0) {
     return null;
@@ -263,10 +313,13 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       <div className="actor-recs-head">
         <div>
           <div className="actor-recs-title">
-            <h3 id="actorRecsHeading">Favori Oyuncularımdan Öneriler ({filteredRecommendations.length})</h3>
+            <h3 id="actorRecsHeading">
+              Favori Oyuncularımdan Öneriler{' '}
+              <span className="tabular-nums">({totalUniqueCount})</span>
+            </h3>
           </div>
           <p className="actor-recs-sub">
-            Favori oyuncularının yer aldığı, kişisel puanlarına, seçili filtrelere ve kadro sırasına göre seçilmiş yapımlar.
+            Açık oyuncu rafları kalıcı önbellek ve yerel stoktan anında yüklenir; kapalı raflar siz açana kadar ağ isteği yapmaz.
           </p>
         </div>
 
@@ -286,22 +339,30 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
           <button
             type="button"
             className="for-you-head-refresh-btn"
-            onClick={() => void loadCredits(true)}
-            disabled={isLoading}
-            title="Önerileri yenile"
+            onClick={() => void loadOpenCredits(true)}
+            disabled={isLoading || openActorIds.length === 0}
+            title="Açık raflardaki önerileri yenile"
             aria-label="Önerileri yenile"
           >
-            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
+            <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">
+              ↻
+            </span>{' '}
             <span>Yenile</span>
           </button>
         </div>
       </div>
 
-      {/* Yatay Çip Şeridi: (Al Pacino 9) (Cillian 12) ... */}
+      {rateLimitWarning && (
+        <div className="rate-limit-warning-banner" role="status">
+          <span>⚠️ {rateLimitWarning}</span>
+        </div>
+      )}
+
       <div className="actor-chips-strip" role="tablist" aria-label="Favori oyuncu listesi">
         {validFavoriteActors.map((actor) => {
-          const count = actorItemsMap.get(actor.id)?.length || 0;
+          const items = actorItemsMap.get(actor.id) || [];
           const isOpen = Boolean(openAccordions[actor.id]);
+          const hasLoaded = Boolean(actorCreditsMap[actor.id]);
           return (
             <button
               key={actor.id}
@@ -310,14 +371,25 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
               onClick={() => {
                 toggleAccordion(actor.id);
                 const el = document.getElementById(`actor-accordion-${actor.id}`);
-                const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-                el?.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'nearest' });
+                const prefersReducedMotion =
+                  typeof window !== 'undefined' &&
+                  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                el?.scrollIntoView({
+                  behavior: prefersReducedMotion ? 'auto' : 'smooth',
+                  block: 'nearest',
+                });
               }}
-              title={`${actor.name} için ${count} öneri`}
+              title={
+                isOpen || hasLoaded
+                  ? `${actor.name} için ${items.length} öneri`
+                  : `${actor.name} rafını aç ve filmografiyi yükle`
+              }
               aria-expanded={isOpen}
             >
               <span className="actor-strip-name">{actor.name}</span>{' '}
-              <span className="actor-strip-count tabular-nums">{count}</span>
+              {(isOpen || hasLoaded) && (
+                <span className="actor-strip-count tabular-nums">{items.length}</span>
+              )}
             </button>
           );
         })}
@@ -326,13 +398,12 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
       {fetchError && (
         <div className="message" role="alert">
           <strong>{fetchError}</strong>
-          <button type="button" className="btn" onClick={() => void loadCredits(true)}>
+          <button type="button" className="btn" onClick={() => void loadOpenCredits(true)}>
             Tekrar dene
           </button>
         </div>
       )}
 
-      {/* Akordiyon Rafları Listesi */}
       <div className="actor-accordions-container">
         {validFavoriteActors.map((actor) => {
           const items = actorItemsMap.get(actor.id) || [];
@@ -340,6 +411,8 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
           const status = actorStatuses[actor.id];
           const isActorLoading = status?.status === 'loading';
           const chipState = describeActorFetchChipState(actor, status, isLoading);
+          const currentShelfLimit = shelfLimits[actor.id] ?? SHELF_INITIAL_COUNT;
+          const shelfSlice = sliceShelfItems(items, currentShelfLimit);
 
           return (
             <div
@@ -347,7 +420,6 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
               id={`actor-accordion-${actor.id}`}
               className={`actor-accordion ${isOpen ? 'is-open' : 'is-closed'}`}
             >
-              {/* 56px Yüksekliğinde Akordiyon Başlığı */}
               <div className="actor-accordion-head">
                 <button
                   type="button"
@@ -361,7 +433,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                   </span>{' '}
                   <span className="actor-accordion-name">{actor.name}</span>{' '}
                   <span className="actor-accordion-badge tabular-nums">
-                    {items.length} öneri
+                    {isOpen || actorCreditsMap[actor.id] ? `${items.length} öneri` : 'Açmak için dokun'}
                   </span>
                   {chipState.state === 'success' && (
                     <>
@@ -395,7 +467,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                   {items.length > 5 && (
                     <button
                       type="button"
-                      className="actor-all-view-btn"
+                      className="actor-all-view-btn tabular-nums"
                       onClick={() => setAllViewActor(actor)}
                       title={`${actor.name} için tüm ${items.length} öneriyi gör`}
                     >
@@ -406,7 +478,9 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                     type="button"
                     className="actor-toggle-icon-btn"
                     onClick={() => toggleAccordion(actor.id)}
-                    aria-label={isOpen ? `${actor.name} panelini kapat` : `${actor.name} panelini aç`}
+                    aria-label={
+                      isOpen ? `${actor.name} panelini kapat` : `${actor.name} panelini aç`
+                    }
                     aria-expanded={isOpen}
                     aria-controls={`actor-panel-${actor.id}`}
                   >
@@ -415,7 +489,6 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                 </div>
               </div>
 
-              {/* Yatay Raf (Shelf) */}
               {isOpen && (
                 <div
                   id={`actor-panel-${actor.id}`}
@@ -431,8 +504,11 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                     </div>
                   ) : (
                     <div className="actor-horizontal-shelf">
-                      {items.map((item) => (
-                        <div key={makeMediaKey(item.media_type, item.id)} className="actor-shelf-item">
+                      {shelfSlice.visible.map((item) => (
+                        <div
+                          key={makeMediaKey(item.media_type, item.id)}
+                          className="actor-shelf-item"
+                        >
                           <MediaCard
                             item={item}
                             savedItem={findSavedItem(savedItems, item)}
@@ -447,6 +523,26 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
                           />
                         </div>
                       ))}
+                      {shelfSlice.remaining > 0 && (
+                        <div className="actor-shelf-item shelf-load-more-wrap">
+                          <button
+                            type="button"
+                            className="shelf-load-more-card tabular-nums"
+                            onClick={() =>
+                              setShelfLimits((prev) => ({
+                                ...prev,
+                                [actor.id]: currentShelfLimit + SHELF_INITIAL_COUNT,
+                              }))
+                            }
+                          >
+                            <strong>Daha fazla göster</strong>
+                            <span>
+                              +{Math.min(SHELF_INITIAL_COUNT, shelfSlice.remaining)} yapım daha (kalan{' '}
+                              {shelfSlice.remaining})
+                            </span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -456,54 +552,21 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
         })}
       </div>
 
-      {/* Tümünü Gör Modalı */}
-      {allViewActor && (
-        <div
-          className="modal-wrap open"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="allActorTitle"
-          onClick={() => setAllViewActor(null)}
-        >
-          <div className="modal actor-all-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="actor-all-header">
-              <div>
-                <h3 id="allActorTitle" className="modal-title">
-                  {allViewActor.name} — Tüm Öneriler ({actorItemsMap.get(allViewActor.id)?.length || 0})
-                </h3>
-                <p className="modal-sub">
-                  Kişisel zevkine ve puanlarına göre filtrelenmiş yapımlar
-                </p>
-              </div>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setAllViewActor(null)}
-                aria-label="Kapat"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="actor-all-grid">
-              {(actorItemsMap.get(allViewActor.id) || []).map((item) => (
-                <MediaCard
-                  key={makeMediaKey(item.media_type, item.id)}
-                  item={item}
-                  savedItem={findSavedItem(savedItems, item)}
-                  genres={genresMap}
-                  size="md"
-                  context="actor"
-                  showMatch={true}
-                  onOpenDetails={onOpenDetails}
-                  onQuickAdd={onQuickAdd}
-                  onSetStatus={onSetStatus}
-                  onQuickSave={onQuickSave}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <PaginatedMediaModal
+        isOpen={Boolean(allViewActor)}
+        title={allViewActor ? `${allViewActor.name} — Tüm Öneriler` : ''}
+        subtitle="Kişisel zevkine ve puanlarına göre filtrelenmiş yapımlar"
+        items={allViewActor ? actorItemsMap.get(allViewActor.id) || [] : []}
+        savedItems={savedItems}
+        dislikedKeys={dislikedKeys}
+        genresMap={genresMap}
+        context="actor"
+        onClose={() => setAllViewActor(null)}
+        onOpenDetails={onOpenDetails}
+        onQuickAdd={onQuickAdd}
+        onSetStatus={onSetStatus}
+        onQuickSave={onQuickSave}
+      />
     </section>
   );
 };

@@ -76,5 +76,23 @@ export default tseslint.config(
       'no-useless-assignment': 'off',
     },
   },
+  {
+    files: [
+      'src/utils/release-window.ts',
+      'src/services/client-depots.ts',
+      'src/services/storage-idb.ts',
+      'src/services/stock-engine.ts',
+      'src/services/series-tv-seeds.ts',
+      'src/services/series-service.ts',
+      'src/services/actor-recommendations-engine.ts',
+      'src/components/PaginatedMediaModal.tsx',
+      'src/components/ActorRecommendationsSection.tsx',
+      'src/components/SeriesRecommendationsSection.tsx',
+      'src/server/config.ts',
+    ],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
 );
 

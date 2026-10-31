@@ -60,11 +60,11 @@ import type { createDataStorage } from './storage.ts';
 
 /**
  * Senkronize edilen kalıcı veri envanteri:
- * 1. data/catalog/movies.json   -> Ortak film metaverileri (`movie:<id>`), açık ve özel depoda senkronize edilir.
- * 2. data/catalog/tv.json       -> Ortak dizi metaverileri (`tv:<id>`), açık ve özel depoda senkronize edilir.
- * 3. data/catalog/manifest.json -> Katalog sayım ve içerik hash özeti, açık ve özel depoda senkronize edilir.
- * 4. data/cinetrack-data.json   -> Kullanıcı profilleri, izleme listeleri, puanlar ve tercihler (yalnızca özel depoda).
- * 5. data/profiles/*.json       -> Profil bazlı türetilmiş öneri puanları ve halkaları (yalnızca özel depoda).
+ * 1. data/catalog/movies.json   -> Ortak film metaverileri (`movie:<id>`), özel depoda varsayılan; açık depoda yalnızca `CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC=true` ile senkronize edilir.
+ * 2. data/catalog/tv.json       -> Ortak dizi metaverileri (`tv:<id>`), özel depoda varsayılan; açık depoda yalnızca `CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC=true` ile senkronize edilir.
+ * 3. data/catalog/manifest.json -> Katalog sayım ve içerik hash özeti, özel depoda varsayılan; açık depoda yalnızca `CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC=true` ile senkronize edilir.
+ * 4. data/cinetrack-data.json   -> Kullanıcı profilleri, izleme listeleri, puanlar ve tercihler (yalnızca özel depoda; açık depoda `CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC=true` gerekir).
+ * 5. data/profiles/*.json       -> Profil bazlı türetilmiş öneri puanları ve halkaları (yalnızca özel depoda; açık depoda `CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC=true` gerekir).
  *
  * Geçici önbellekler, `.bak`, `data/backups/*`, `data/sync-state.json`, `.tmp`, `.corrupt.*`,
  * `.env` ve derleme çıktıları envantere kesinlikle dahil edilmez.

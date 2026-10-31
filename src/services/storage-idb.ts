@@ -1,13 +1,22 @@
 import { get, set, del, createStore, type UseStore } from 'idb-keyval';
 import type { TmdbItem } from '../types/tmdb.ts';
 import type { SavedItem, Preferences, FavoriteActorInfo } from '../core/cinetrack-core.ts';
+import {
+  type IdbWriteResult,
+  recordDepotWriteOutcome,
+  isDepotKeyUnpersisted,
+  isForceIdbWriteFailureActive,
+  resetClientDepotsForTests,
+} from './client-depots.ts';
+
+export * from './client-depots.ts';
 
 // Check IndexedDB availability (browser vs Node.js test environment)
 export const isIndexedDBAvailable = (): boolean => {
   return typeof indexedDB !== 'undefined';
 };
 
-// Custom IndexedDB store references
+// Custom IndexedDB store references (1 dedicated DB per store to prevent upgrade collisions)
 let stockStore: UseStore | undefined;
 let surfacedStore: UseStore | undefined;
 let seriesIndexStore: UseStore | undefined;
@@ -42,15 +51,19 @@ function getStore(name: string): UseStore | undefined {
 }
 
 // In-memory fallbacks for Node / test runners / disabled IDB
-const memoryFallback = new Map<string, any>();
+const memoryFallback = new Map<string, unknown>();
 
 async function safeIdbGet<T>(storeName: string, key: string): Promise<T | null> {
+  const composite = `${storeName}:${key}`;
+  if (isDepotKeyUnpersisted(composite) && memoryFallback.has(composite)) {
+    return memoryFallback.get(composite) as T;
+  }
   const store = getStore(storeName);
   if (store) {
     try {
       const val = await get<T>(key, store);
       if (val !== undefined) {
-        memoryFallback.set(`${storeName}:${key}`, val);
+        memoryFallback.set(composite, val);
         return val;
       }
       return null;
@@ -58,32 +71,56 @@ async function safeIdbGet<T>(storeName: string, key: string): Promise<T | null> 
       console.warn(`[IDB] Read failed for ${storeName}/${key}:`, e);
     }
   }
-  const mem = memoryFallback.get(`${storeName}:${key}`);
-  return mem !== undefined ? mem : null;
+  const mem = memoryFallback.get(composite);
+  return mem !== undefined ? (mem as T) : null;
 }
 
-async function safeIdbSet<T>(storeName: string, key: string, value: T): Promise<void> {
-  memoryFallback.set(`${storeName}:${key}`, value);
+async function safeIdbSet<T>(storeName: string, key: string, value: T): Promise<IdbWriteResult> {
+  const composite = `${storeName}:${key}`;
+  memoryFallback.set(composite, value);
+
+  if (isForceIdbWriteFailureActive()) {
+    return recordDepotWriteOutcome(composite, false, 'Simulated QuotaExceededError');
+  }
+
   const store = getStore(storeName);
   if (store) {
     try {
       await set(key, value, store);
+      return recordDepotWriteOutcome(composite, true);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[IDB] Write failed for ${storeName}/${key}:`, e);
+      return recordDepotWriteOutcome(composite, false, msg);
     }
   }
+
+  if (typeof window !== 'undefined') {
+    return recordDepotWriteOutcome(composite, false, 'IndexedDB kullanılamıyor');
+  }
+  return { persisted: true };
 }
 
-export async function safeIdbDel(storeName: string, key: string): Promise<void> {
-  memoryFallback.delete(`${storeName}:${key}`);
+export async function safeIdbDel(storeName: string, key: string): Promise<IdbWriteResult> {
+  const composite = `${storeName}:${key}`;
+  memoryFallback.delete(composite);
+
+  if (isForceIdbWriteFailureActive()) {
+    return recordDepotWriteOutcome(composite, false, 'Simulated QuotaExceededError');
+  }
+
   const store = getStore(storeName);
   if (store) {
     try {
       await del(key, store);
+      return recordDepotWriteOutcome(composite, true);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[IDB] Del failed for ${storeName}/${key}:`, e);
+      return recordDepotWriteOutcome(composite, false, msg);
     }
   }
+  return { persisted: true };
 }
 
 // ==========================================
@@ -93,7 +130,7 @@ export interface IsolatedProfileRecord {
   profileId: string;
   name: string;
   theme?: string;
-  dna?: any;
+  dna?: unknown;
   preferences: Preferences;
   favoriteActors?: FavoriteActorInfo[];
   updatedAt: string;
@@ -103,8 +140,8 @@ export async function loadIsolatedProfileIdb(profileId: string): Promise<Isolate
   return safeIdbGet<IsolatedProfileRecord>('ct_profile', `profile:${profileId}`);
 }
 
-export async function saveIsolatedProfileIdb(profile: IsolatedProfileRecord): Promise<void> {
-  await safeIdbSet('ct_profile', `profile:${profile.profileId}`, profile);
+export async function saveIsolatedProfileIdb(profile: IsolatedProfileRecord): Promise<IdbWriteResult> {
+  return safeIdbSet('ct_profile', `profile:${profile.profileId}`, profile);
 }
 
 // ==========================================
@@ -123,25 +160,40 @@ export interface UserListItemCompact {
   season_progress?: Record<number, number>;
 }
 
-export function toCompactUserListItem(item: SavedItem | UserListItemCompact | any): UserListItemCompact {
-  const mediaType: 'movie' | 'tv' = item?.media_type === 'tv' ? 'tv' : 'movie';
+interface RawUserListCandidate {
+  id: number | string;
+  media_type?: string;
+  status?: string;
+  personal_rating?: number | '';
+  addedAt?: string;
+  updatedAt?: string;
+  custom?: boolean;
+  current_season?: number;
+  episodes_watched?: number;
+  season_progress?: Record<number, number>;
+}
+
+export function toCompactUserListItem(
+  item: SavedItem | UserListItemCompact | RawUserListCandidate
+): UserListItemCompact {
+  const mediaType: 'movie' | 'tv' = item.media_type === 'tv' ? 'tv' : 'movie';
   const status: 'watching' | 'watchlist' | 'completed' =
-    item?.status === 'watching' || item?.status === 'completed' ? item.status : 'watchlist';
+    item.status === 'watching' || item.status === 'completed' ? item.status : 'watchlist';
   const compact: UserListItemCompact = {
     id: item.id,
     media_type: mediaType,
     status,
     personal_rating:
-      typeof item?.personal_rating === 'number' && Number.isFinite(item.personal_rating)
+      typeof item.personal_rating === 'number' && Number.isFinite(item.personal_rating)
         ? item.personal_rating
         : '',
   };
-  if (item?.addedAt) compact.addedAt = String(item.addedAt);
-  if (item?.updatedAt) compact.updatedAt = String(item.updatedAt);
-  if (item?.custom) compact.custom = true;
-  if (typeof item?.current_season === 'number') compact.current_season = item.current_season;
-  if (typeof item?.episodes_watched === 'number') compact.episodes_watched = item.episodes_watched;
-  if (item?.season_progress && typeof item.season_progress === 'object') {
+  if (item.addedAt) compact.addedAt = String(item.addedAt);
+  if (item.updatedAt) compact.updatedAt = String(item.updatedAt);
+  if (item.custom) compact.custom = true;
+  if (typeof item.current_season === 'number') compact.current_season = item.current_season;
+  if (typeof item.episodes_watched === 'number') compact.episodes_watched = item.episodes_watched;
+  if (item.season_progress && typeof item.season_progress === 'object') {
     compact.season_progress = item.season_progress;
   }
   return compact;
@@ -152,15 +204,23 @@ export async function loadUserListsIdb(profileId: string): Promise<UserListItemC
   return Array.isArray(data) ? data.map(toCompactUserListItem) : [];
 }
 
-export async function saveUserListsIdb(
+export async function saveUserListsWithStatusIdb(
   profileId: string,
-  items: Array<SavedItem | UserListItemCompact>
-): Promise<UserListItemCompact[]> {
+  items: Array<SavedItem | UserListItemCompact | RawUserListCandidate>
+): Promise<IdbWriteResult & { items: UserListItemCompact[] }> {
   const compactList = (Array.isArray(items) ? items : [])
     .filter((it) => it && it.id != null)
     .map(toCompactUserListItem);
-  await safeIdbSet('ct_user_lists', `lists:${profileId}`, compactList);
-  return compactList;
+  const res = await safeIdbSet('ct_user_lists', `lists:${profileId}`, compactList);
+  return { ...res, items: compactList };
+}
+
+export async function saveUserListsIdb(
+  profileId: string,
+  items: Array<SavedItem | UserListItemCompact | RawUserListCandidate>
+): Promise<UserListItemCompact[]> {
+  const out = await saveUserListsWithStatusIdb(profileId, items);
+  return out.items;
 }
 
 // ==========================================
@@ -181,81 +241,183 @@ export async function loadStockIdb(): Promise<StockDepot> {
   return { movies: [], tv: [], updatedAt: '', cursors: {} };
 }
 
-export async function saveStockIdb(stock: StockDepot): Promise<void> {
-  await safeIdbSet('ct_stock', 'stock_main', stock);
+export async function saveStockIdb(stock: StockDepot): Promise<IdbWriteResult> {
+  return safeIdbSet('ct_stock', 'stock_main', stock);
 }
 
 // ==========================================
-// 4. ct:surfaced (Gösterim Geçmişi - FIFO)
+// 4. ct:surfaced (Gösterim Geçmişi - FIFO + Halka-Dönüşü Cooldown)
 // ==========================================
 export const SURFACED_FIFO_MAX_SIZE = 1000;
-let inMemorySurfacedSet = new Set<string>();
-let inMemorySurfacedList: string[] = [];
-let isSurfacedLoaded = false;
+export const SURFACED_RECYCLE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7 gün cooldown
 
-export async function loadSurfacedKeys(): Promise<string[]> {
-  const data = await safeIdbGet<string[]>('ct_surfaced', 'surfaced_keys');
-  const list = Array.isArray(data) ? [...data] : [];
-  inMemorySurfacedList = list;
-  inMemorySurfacedSet = new Set(list);
-  isSurfacedLoaded = true;
-  return [...inMemorySurfacedList];
+export interface SurfacedEntry {
+  key: string;
+  surfacedAt: number;
 }
 
-export async function recordSurfacedKeys(
+let inMemorySurfacedMap = new Map<string, number>(); // key -> surfacedAt (insertion-ordered FIFO)
+let isSurfacedLoaded = false;
+
+export async function loadSurfacedEntries(): Promise<SurfacedEntry[]> {
+  const [entriesData, legacyKeys] = await Promise.all([
+    safeIdbGet<SurfacedEntry[]>('ct_surfaced', 'surfaced_entries'),
+    safeIdbGet<string[]>('ct_surfaced', 'surfaced_keys'),
+  ]);
+
+  const nextMap = new Map<string, number>();
+  const fallbackTs = Date.now();
+
+  if (Array.isArray(entriesData) && entriesData.length > 0) {
+    for (const entry of entriesData) {
+      if (entry && typeof entry.key === 'string' && entry.key) {
+        nextMap.set(entry.key, typeof entry.surfacedAt === 'number' ? entry.surfacedAt : fallbackTs);
+      }
+    }
+  } else if (Array.isArray(legacyKeys)) {
+    for (const k of legacyKeys) {
+      if (typeof k === 'string' && k) {
+        nextMap.set(k, fallbackTs);
+      }
+    }
+  }
+
+  inMemorySurfacedMap = nextMap;
+  isSurfacedLoaded = true;
+  return Array.from(inMemorySurfacedMap.entries()).map(([key, surfacedAt]) => ({
+    key,
+    surfacedAt,
+  }));
+}
+
+export async function loadSurfacedKeys(): Promise<string[]> {
+  const entries = await loadSurfacedEntries();
+  return entries.map((e) => e.key);
+}
+
+async function persistSurfacedMap(): Promise<IdbWriteResult> {
+  const entries: SurfacedEntry[] = Array.from(inMemorySurfacedMap.entries()).map(
+    ([key, surfacedAt]) => ({ key, surfacedAt })
+  );
+  const keys = entries.map((e) => e.key);
+  const [r1, r2] = await Promise.all([
+    safeIdbSet('ct_surfaced', 'surfaced_entries', entries),
+    safeIdbSet('ct_surfaced', 'surfaced_keys', keys),
+  ]);
+  return !r1.persisted ? r1 : r2;
+}
+
+export async function recordSurfacedKeysWithStatus(
   keys: string[],
-  maxSize: number = SURFACED_FIFO_MAX_SIZE
-): Promise<string[]> {
+  maxSize: number = SURFACED_FIFO_MAX_SIZE,
+  nowMs: number = Date.now()
+): Promise<IdbWriteResult & { keys: string[] }> {
   if (!isSurfacedLoaded) {
-    await loadSurfacedKeys();
+    await loadSurfacedEntries();
   }
 
   const effectiveCap = Math.max(1, Math.floor(maxSize));
   let changed = false;
 
   for (const k of keys) {
-    if (!k || inMemorySurfacedSet.has(k)) continue;
-    inMemorySurfacedSet.add(k);
-    inMemorySurfacedList.push(k);
+    if (!k || inMemorySurfacedMap.has(k)) continue;
+    inMemorySurfacedMap.set(k, nowMs);
     changed = true;
   }
 
-  // FIFO (First-In, First-Out) eviction if exceeding max size
-  if (inMemorySurfacedList.length > effectiveCap) {
-    const overflow = inMemorySurfacedList.length - effectiveCap;
-    const evicted = inMemorySurfacedList.splice(0, overflow);
-    for (const ev of evicted) {
-      inMemorySurfacedSet.delete(ev);
+  if (inMemorySurfacedMap.size > effectiveCap) {
+    const overflow = inMemorySurfacedMap.size - effectiveCap;
+    const iter = inMemorySurfacedMap.keys();
+    for (let i = 0; i < overflow; i += 1) {
+      const oldest = iter.next();
+      if (!oldest.done) {
+        inMemorySurfacedMap.delete(oldest.value);
+      }
     }
     changed = true;
   }
 
+  let writeRes: IdbWriteResult = { persisted: true };
   if (changed) {
-    await safeIdbSet('ct_surfaced', 'surfaced_keys', [...inMemorySurfacedList]);
+    writeRes = await persistSurfacedMap();
   }
-  return [...inMemorySurfacedList];
+  return { ...writeRes, keys: Array.from(inMemorySurfacedMap.keys()) };
 }
 
-export async function removeSurfacedKey(mediaKey: string): Promise<void> {
-  if (!mediaKey) return;
+export async function recordSurfacedKeys(
+  keys: string[],
+  maxSize: number = SURFACED_FIFO_MAX_SIZE,
+  nowMs: number = Date.now()
+): Promise<string[]> {
+  const res = await recordSurfacedKeysWithStatus(keys, maxSize, nowMs);
+  return res.keys;
+}
+
+export async function removeSurfacedKey(mediaKey: string): Promise<IdbWriteResult> {
+  if (!mediaKey) return { persisted: true };
   if (!isSurfacedLoaded) {
-    await loadSurfacedKeys();
+    await loadSurfacedEntries();
   }
-  if (!inMemorySurfacedSet.has(mediaKey)) return;
-  inMemorySurfacedSet.delete(mediaKey);
-  inMemorySurfacedList = inMemorySurfacedList.filter((k) => k !== mediaKey);
-  await safeIdbSet('ct_surfaced', 'surfaced_keys', [...inMemorySurfacedList]);
+  if (!inMemorySurfacedMap.has(mediaKey)) return { persisted: true };
+  inMemorySurfacedMap.delete(mediaKey);
+  return persistSurfacedMap();
+}
+
+/**
+ * Partitions ct:surfaced into active-cooldown keys (strictly excluded) vs expired-cooldown keys
+ * (FIFO oldest-first, eligible for Halka-dönüşü recycle ONLY when fresh TMDB candidates run short).
+ */
+export async function getSurfacedPartitionForReplenishment(
+  cooldownMs: number = SURFACED_RECYCLE_COOLDOWN_MS,
+  nowMs: number = Date.now()
+): Promise<{ activeCooldownKeys: string[]; recyclableExpiredKeys: string[] }> {
+  const entries = await loadSurfacedEntries();
+  const activeCooldownKeys: string[] = [];
+  const expiredWithTs: SurfacedEntry[] = [];
+
+  for (const entry of entries) {
+    if (nowMs - entry.surfacedAt >= cooldownMs) {
+      expiredWithTs.push(entry);
+    } else {
+      activeCooldownKeys.push(entry.key);
+    }
+  }
+
+  // Oldest surfaced first (FIFO recycle order)
+  expiredWithTs.sort((a, b) => a.surfacedAt - b.surfacedAt);
+  return {
+    activeCooldownKeys,
+    recyclableExpiredKeys: expiredWithTs.map((e) => e.key),
+  };
+}
+
+/**
+ * Removes recycled keys from ct:surfaced when they are admitted back into ct:stock
+ * so they can be surfaced fresh in a future Discover cycle.
+ */
+export async function markSurfacedKeysRecycled(recycledKeys: string[]): Promise<IdbWriteResult> {
+  if (!recycledKeys.length) return { persisted: true };
+  if (!isSurfacedLoaded) {
+    await loadSurfacedEntries();
+  }
+  let changed = false;
+  for (const key of recycledKeys) {
+    if (inMemorySurfacedMap.delete(key)) {
+      changed = true;
+    }
+  }
+  return changed ? persistSurfacedMap() : { persisted: true };
 }
 
 export function isItemSurfacedSync(mediaKey: string): boolean {
-  return inMemorySurfacedSet.has(mediaKey);
+  return inMemorySurfacedMap.has(mediaKey);
 }
 
 export async function isItemSurfaced(mediaKey: string): Promise<boolean> {
   if (!isSurfacedLoaded) {
-    await loadSurfacedKeys();
+    await loadSurfacedEntries();
   }
-  return inMemorySurfacedSet.has(mediaKey);
+  return inMemorySurfacedMap.has(mediaKey);
 }
 
 // ==========================================
@@ -285,18 +447,18 @@ export interface SeriesCollection {
   backdrop_path?: string | null;
   overview?: string;
   parts: SeriesCollectionPart[];
-  partKeys: string[]; // e.g. ["movie:671", "movie:672"]
+  partKeys: string[];
   sourceItemKey?: string;
+  isStub?: boolean;
 }
 
 export interface SeriesIndexData {
-  collections: Record<string, SeriesCollection>; // collectionKey -> SeriesCollection
-  mediaKeyToSeries: Record<string, string>; // mediaKey ("movie:671") -> collectionKey
-  checkedMediaKeys?: Record<string, number>; // mediaKey -> checked epoch ms
+  collections: Record<string, SeriesCollection>;
+  mediaKeyToSeries: Record<string, string>;
+  checkedMediaKeys?: Record<string, number>;
   updatedAt: string;
 }
 
-// In-memory cache + pub/sub for synchronous MediaCard badge checks & Seriler tab reactivity
 let inMemorySeriesIndex: SeriesIndexData = {
   collections: {},
   mediaKeyToSeries: {},
@@ -340,7 +502,7 @@ export async function loadSeriesIndexIdb(): Promise<SeriesIndexData> {
   return inMemorySeriesIndex;
 }
 
-export async function saveSeriesIndexIdb(indexData: SeriesIndexData): Promise<void> {
+export async function saveSeriesIndexIdb(indexData: SeriesIndexData): Promise<IdbWriteResult> {
   inMemorySeriesIndex = {
     collections: indexData.collections || {},
     mediaKeyToSeries: indexData.mediaKeyToSeries || {},
@@ -348,8 +510,9 @@ export async function saveSeriesIndexIdb(indexData: SeriesIndexData): Promise<vo
     updatedAt: indexData.updatedAt || new Date().toISOString(),
   };
   isSeriesIndexLoaded = true;
-  await safeIdbSet('ct_series_index', 'series_index_main', inMemorySeriesIndex);
+  const res = await safeIdbSet('ct_series_index', 'series_index_main', inMemorySeriesIndex);
   notifySeriesIndexListeners();
+  return res;
 }
 
 export function isMediaInSeriesSync(mediaKey: string): boolean {
@@ -363,8 +526,8 @@ export function isSeriesMediaCheckedSync(mediaKey: string): boolean {
   );
 }
 
-export async function markSeriesMediaChecked(mediaKeys: string[]): Promise<void> {
-  if (!mediaKeys.length) return;
+export async function markSeriesMediaChecked(mediaKeys: string[]): Promise<IdbWriteResult> {
+  if (!mediaKeys.length) return { persisted: true };
   if (!isSeriesIndexLoaded) {
     await loadSeriesIndexIdb();
   }
@@ -376,9 +539,8 @@ export async function markSeriesMediaChecked(mediaKeys: string[]): Promise<void>
     checked[key] = now;
     changed = true;
   }
-  if (!changed) return;
+  if (!changed) return { persisted: true };
 
-  // Cap checkedMediaKeys at 4000 entries to bound metadata size
   const entries = Object.entries(checked);
   let trimmed = checked;
   if (entries.length > 4000) {
@@ -391,7 +553,7 @@ export async function markSeriesMediaChecked(mediaKeys: string[]): Promise<void>
     checkedMediaKeys: trimmed,
     updatedAt: new Date().toISOString(),
   };
-  await safeIdbSet('ct_series_index', 'series_index_main', inMemorySeriesIndex);
+  return safeIdbSet('ct_series_index', 'series_index_main', inMemorySeriesIndex);
 }
 
 export function getSeriesForMediaSync(mediaKey: string): SeriesCollection | null {
@@ -400,14 +562,17 @@ export function getSeriesForMediaSync(mediaKey: string): SeriesCollection | null
   return inMemorySeriesIndex.collections[collectionKey] || null;
 }
 
+export function getSeriesCollectionByKeySync(collectionKey: string): SeriesCollection | null {
+  return inMemorySeriesIndex.collections[collectionKey] || null;
+}
+
 export function getAllSeriesCollectionsSync(): SeriesCollection[] {
   return Object.values(inMemorySeriesIndex.collections);
 }
 
-/**
- * Registers an array of collection objects into ct:series-index
- */
-export async function registerSeriesCollections(collections: SeriesCollection[]): Promise<void> {
+export async function registerSeriesCollections(
+  collections: SeriesCollection[]
+): Promise<IdbWriteResult> {
   if (!isSeriesIndexLoaded) {
     await loadSeriesIndexIdb();
   }
@@ -420,6 +585,16 @@ export async function registerSeriesCollections(collections: SeriesCollection[])
 
   for (const col of collections) {
     const colKey = `collection:${col.media_type}:${col.id}`;
+    const existing = nextCollections[colKey];
+    // Never overwrite a full collection with a stub
+    if (col.isStub && existing && !existing.isStub && existing.parts.length >= 2) {
+      for (const key of col.partKeys) {
+        nextMediaToSeries[key] = colKey;
+        nextChecked[key] = now;
+      }
+      updated = true;
+      continue;
+    }
     nextCollections[colKey] = col;
     for (const key of col.partKeys) {
       nextMediaToSeries[key] = colKey;
@@ -429,13 +604,14 @@ export async function registerSeriesCollections(collections: SeriesCollection[])
   }
 
   if (updated) {
-    await saveSeriesIndexIdb({
+    return saveSeriesIndexIdb({
       collections: nextCollections,
       mediaKeyToSeries: nextMediaToSeries,
       checkedMediaKeys: nextChecked,
       updatedAt: new Date().toISOString(),
     });
   }
+  return { persisted: true };
 }
 
 export function resetIdbMemoryStateForTests(): void {
@@ -446,8 +622,7 @@ export function resetIdbMemoryStateForTests(): void {
   profileStore = undefined;
   offlineQueueStore = undefined;
   memoryFallback.clear();
-  inMemorySurfacedSet = new Set();
-  inMemorySurfacedList = [];
+  inMemorySurfacedMap = new Map();
   isSurfacedLoaded = false;
   inMemorySeriesIndex = {
     collections: {},
@@ -456,5 +631,6 @@ export function resetIdbMemoryStateForTests(): void {
     updatedAt: '',
   };
   isSeriesIndexLoaded = false;
+  resetClientDepotsForTests();
   notifySeriesIndexListeners();
 }

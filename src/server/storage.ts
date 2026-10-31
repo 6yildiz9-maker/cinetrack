@@ -1,5 +1,4 @@
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -297,7 +296,10 @@ export function createDataStorage(options: StorageOptions) {
 
     if (!worthKeeping) return;
 
-    copyFileSync(dataFile, dataBackupFile);
+    const serializedExisting = JSON.stringify(parsedExisting, null, 2);
+    writeJsonFileAtomic(dataBackupFile, serializedExisting, {
+      validateParsed: (p) => validateRawDocument(p) !== null,
+    });
 
     try {
       mkdirSync(backupsDir, { recursive: true });
@@ -307,7 +309,6 @@ export function createDataStorage(options: StorageOptions) {
         : 0;
       const snapshotName = `cinetrack-${dateStamp}-rev${rev}-${Date.now()}.json`;
       const snapshotPath = path.join(backupsDir, snapshotName);
-      const serializedExisting = JSON.stringify(parsedExisting, null, 2);
       writeJsonFileAtomic(snapshotPath, serializedExisting, {
         validateParsed: (p) => validateRawDocument(p) !== null,
       });

@@ -4,16 +4,21 @@ import {
   SavedItem,
   buildSeasonCounts,
   defaultCurrentSeason,
+  findSavedItem,
   makeMediaKey,
   getTasteRingLabel,
 } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
+import { getItemSeriesInfo, indexMovieCollection } from '../services/series-service';
+import { subscribeSeriesIndex } from '../services/storage-idb';
+import { enrichStockItemsTopCast } from '../services/stock-engine';
 import { formatMatchBadge } from '../i18n';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
 interface DetailModalProps {
   item: any | null;
   savedItem?: SavedItem;
+  savedItems?: SavedItem[];
   isOpen: boolean;
   genresMap: Record<number, string>;
   isDisliked: boolean;
@@ -29,11 +34,13 @@ interface DetailModalProps {
   onToggleDislike: (key: string) => void;
   onOpenPerson: (personId: number, personName: string) => void;
   onToggleFavoriteActor?: (actor: any) => void;
+  onSelectMedia?: (item: any) => void;
 }
 
 export const DetailModal: React.FC<DetailModalProps> = ({
   item,
   savedItem,
+  savedItems = [],
   isOpen,
   genresMap,
   isDisliked,
@@ -44,6 +51,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   onToggleDislike,
   onOpenPerson,
   onToggleFavoriteActor,
+  onSelectMedia,
 }) => {
   const [details, setDetails] = useState<any>(null);
   const [providers, setProviders] = useState<any>(null);
@@ -55,7 +63,14 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   const [currentSeason, setCurrentSeason] = useState<number>(1);
   const [seasonProgress, setSeasonProgress] = useState<Record<number, number>>({});
   const [seasonCounts, setSeasonCounts] = useState<Record<number, number>>({});
+  const [, setSeriesRevision] = useState<number>(0);
   const dialogRef = useDialogAccessibility(isOpen, onClose);
+
+  useEffect(() => {
+    return subscribeSeriesIndex(() => {
+      setSeriesRevision((v) => v + 1);
+    });
+  }, []);
 
   useEffect(() => {
     if (!item || !isOpen) {
@@ -99,6 +114,18 @@ export const DetailModal: React.FC<DetailModalProps> = ({
           overview: resolvedOverview || data.overview || '',
           media_type: mediaType,
         });
+        if (Array.isArray(data.credits?.cast) && data.credits.cast.length > 0) {
+          const top3Ids = data.credits.cast
+            .slice(0, 3)
+            .map((c: any) => Number(c?.id))
+            .filter((n: number) => Number.isInteger(n) && n > 0);
+          if (top3Ids.length > 0) {
+            void enrichStockItemsTopCast({ [makeMediaKey(mediaType, item.id)]: top3Ids });
+          }
+        }
+        if (mediaType === 'movie' && data.belongs_to_collection?.id) {
+          void indexMovieCollection(Number(data.belongs_to_collection.id));
+        }
         if (mediaType === 'tv' && data.seasons) {
           const counts = buildSeasonCounts(data);
           setSeasonCounts(counts);
@@ -639,6 +666,73 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               )}
             </section>
           )}
+
+          {/* Seri ve Evren Bağlantısı (FEAT-01 #3) */}
+          {(() => {
+            const seriesInfo = getItemSeriesInfo(currentItem);
+            if (!seriesInfo.inSeries || !seriesInfo.collectionName) return null;
+            const parts = seriesInfo.collection?.parts || [];
+            return (
+              <section
+                id="detailFranchise"
+                className="franchise-section cls-reserve-block"
+                aria-labelledby="detailFranchiseTitle"
+              >
+                <div className="franchise-section-head">
+                  <strong id="detailFranchiseTitle" className="person-section-title">
+                    Seri & Evren: {seriesInfo.collectionName}
+                  </strong>
+                  {parts.length > 1 && (
+                    <span className="franchise-count tabular-nums">{parts.length} yapım</span>
+                  )}
+                </div>
+                {parts.length > 0 && (
+                  <div className="franchise-parts-list">
+                    {parts.map((part) => {
+                      const isCurrentPart =
+                        String(part.id) === String(currentItem.id) &&
+                        part.media_type === currentItem.media_type;
+                      const partSaved = findSavedItem(savedItems, part);
+                      const partYear = (part.release_date || part.first_air_date || '').slice(0, 4);
+                      const statusLabel =
+                        partSaved?.status === 'completed'
+                          ? 'İzlendi'
+                          : partSaved?.status === 'watching'
+                            ? 'İzleniyor'
+                            : partSaved?.status === 'watchlist'
+                              ? 'İzlenecek'
+                              : '';
+                      return (
+                        <button
+                          key={`${part.media_type}:${part.id}`}
+                          type="button"
+                          className={`franchise-part-btn ${isCurrentPart ? 'is-current' : ''}`}
+                          disabled={isCurrentPart || !onSelectMedia}
+                          onClick={() => {
+                            if (!isCurrentPart && onSelectMedia) {
+                              onSelectMedia({ ...part, media_type: part.media_type });
+                            }
+                          }}
+                        >
+                          <span className="franchise-part-year tabular-nums">
+                            {partYear || '—'}
+                          </span>
+                          <span className="franchise-part-title clamp-1">
+                            {part.title || part.name}
+                          </span>
+                          {isCurrentPart ? (
+                            <span className="franchise-part-state">Şu an açık</span>
+                          ) : statusLabel ? (
+                            <span className="franchise-part-state is-saved">{statusLabel}</span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })()}
 
           {/* Kadro Şeridi */}
           {cast.length > 0 && (

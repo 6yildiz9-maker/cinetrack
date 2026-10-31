@@ -28,7 +28,7 @@ import {
   executeProfileBackupExport,
   buildProfileBackupDataset,
   EXPORT_FILE_NAME_PATTERN,
-  getPosterCacheStats,
+  getPosterCacheStatsAsync,
 } from './excel-profile-backup.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
@@ -298,7 +298,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org; connect-src 'self' https://api.themoviedb.org; base-uri 'self'; form-action 'self'"
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org; connect-src 'self' https://api.themoviedb.org; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'"
     );
     if (!process.env.APP_URL) {
       res.setHeader('X-Frame-Options', 'DENY');
@@ -343,9 +343,9 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     next(err);
   });
 
-  app.get('/api/health', (_req: Request, res: Response) => {
+  app.get('/api/health', async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    const posterCache = getPosterCacheStats(path.join(options.dataDir, 'cache', 'posters'));
+    const posterCache = await getPosterCacheStatsAsync(path.join(options.dataDir, 'cache', 'posters'));
     res.json({ ok: true, posterCache });
   });
 
