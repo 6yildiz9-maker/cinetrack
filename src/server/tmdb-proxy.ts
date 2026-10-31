@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
 export const ALLOWED_TMDB_PATH =
-  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords))?))$/;
+  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords|external_ids))?))$/;
 
 export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'language',
@@ -482,6 +482,17 @@ export function getMockTmdbResponse(endpoint: string, queryParams: Record<string
     return { id, [listKey]: kwList };
   }
 
+  const externalIdsMatch = endpoint.match(/^\/(movie|tv)\/(\d+)\/external_ids$/);
+  if (externalIdsMatch) {
+    const [, , idStr] = externalIdsMatch;
+    const id = Number(idStr);
+    return {
+      id,
+      imdb_id: 'tt' + String(id).padStart(7, '0'),
+      wikidata_id: id === 155 ? 'Q189330' : id === 27205 ? 'Q25188' : `Q${id + 100000}`,
+    };
+  }
+
   const detailMatch = endpoint.match(/^\/(movie|tv)\/(\d+)$/);
   if (detailMatch) {
     const [, type, idStr] = detailMatch;
@@ -586,6 +597,9 @@ export function getTmdbEndpointTtl(endpoint: string): number {
   }
   if (/^\/collection\/\d+$/.test(endpoint)) {
     return 6 * 60 * 60_000;
+  }
+  if (endpoint.includes('/external_ids')) {
+    return 24 * 60 * 60_000;
   }
   if (/^\/(movie|tv)\/\d+/.test(endpoint)) {
     return 60 * 60_000;

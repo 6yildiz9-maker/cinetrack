@@ -423,6 +423,8 @@ export async function isItemSurfaced(mediaKey: string): Promise<boolean> {
 // ==========================================
 // 5. ct:series-index (Seri / Franchise İndeksi)
 // ==========================================
+export type SeriesValidationStatus = 'verified' | 'probable' | 'conflict' | 'manual';
+
 export interface SeriesCollectionPart {
   id: number | string;
   media_type: 'movie' | 'tv';
@@ -437,6 +439,8 @@ export interface SeriesCollectionPart {
   genre_ids?: number[];
   overview?: string;
   order?: number;
+  wikidata_id?: string;
+  validation?: SeriesValidationStatus;
 }
 
 export interface SeriesCollection {
@@ -450,12 +454,15 @@ export interface SeriesCollection {
   partKeys: string[];
   sourceItemKey?: string;
   isStub?: boolean;
+  validation?: SeriesValidationStatus;
 }
 
 export interface SeriesIndexData {
   collections: Record<string, SeriesCollection>;
   mediaKeyToSeries: Record<string, string>;
   checkedMediaKeys?: Record<string, number>;
+  validationCache?: Record<string, { status: SeriesValidationStatus; checkedAt: number; wikidataId?: string }>;
+  reviewQueueKeys?: string[];
   updatedAt: string;
 }
 
@@ -463,6 +470,8 @@ let inMemorySeriesIndex: SeriesIndexData = {
   collections: {},
   mediaKeyToSeries: {},
   checkedMediaKeys: {},
+  validationCache: {},
+  reviewQueueKeys: [],
   updatedAt: '',
 };
 let isSeriesIndexLoaded = false;
@@ -516,7 +525,84 @@ export async function saveSeriesIndexIdb(indexData: SeriesIndexData): Promise<Id
 }
 
 export function isMediaInSeriesSync(mediaKey: string): boolean {
-  return Boolean(inMemorySeriesIndex.mediaKeyToSeries[mediaKey]);
+  const collectionKey = inMemorySeriesIndex.mediaKeyToSeries[mediaKey];
+  if (!collectionKey) return false;
+  const col = inMemorySeriesIndex.collections[collectionKey];
+  if (!col) return false;
+  // Conflict durumunda (Wikidata seriyi yalanlıyorsa) rozet GİZLENİR
+  if (col.validation === 'conflict') return false;
+  const part = col.parts.find((p) => `${p.media_type}:${p.id}` === mediaKey);
+  if (part && part.validation === 'conflict') return false;
+  return true;
+}
+
+export function getSeriesValidationStatusSync(mediaKey: string): SeriesValidationStatus | undefined {
+  const cached = inMemorySeriesIndex.validationCache?.[mediaKey];
+  if (cached) return cached.status;
+  const col = getSeriesForMediaSync(mediaKey);
+  if (!col) return undefined;
+  const part = col.parts.find((p) => `${p.media_type}:${p.id}` === mediaKey);
+  return part?.validation || col.validation;
+}
+
+export async function setSeriesItemValidation(
+  mediaKey: string,
+  status: SeriesValidationStatus,
+  wikidataId?: string
+): Promise<IdbWriteResult> {
+  if (!isSeriesIndexLoaded) {
+    await loadSeriesIndexIdb();
+  }
+  const nextCache = { ...(inMemorySeriesIndex.validationCache || {}) };
+  nextCache[mediaKey] = { status, checkedAt: Date.now(), wikidataId };
+
+  let nextQueue = [...(inMemorySeriesIndex.reviewQueueKeys || [])];
+  if (status === 'conflict') {
+    if (!nextQueue.includes(mediaKey)) {
+      nextQueue.push(mediaKey);
+    }
+  } else {
+    nextQueue = nextQueue.filter((k) => k !== mediaKey);
+  }
+
+  const nextCollections = { ...inMemorySeriesIndex.collections };
+  const colKey = inMemorySeriesIndex.mediaKeyToSeries[mediaKey];
+  if (colKey && nextCollections[colKey]) {
+    const col = nextCollections[colKey];
+    const nextParts = col.parts.map((p) => {
+      if (`${p.media_type}:${p.id}` === mediaKey) {
+        return { ...p, validation: status, wikidata_id: wikidataId || p.wikidata_id };
+      }
+      return p;
+    });
+    // If all parts are verified, collection becomes verified; if majority conflict, mark collection
+    const verifiedCount = nextParts.filter((p) => p.validation === 'verified').length;
+    const conflictCount = nextParts.filter((p) => p.validation === 'conflict').length;
+    let colValidation = col.validation || 'probable';
+    if (verifiedCount > 0 && conflictCount === 0) colValidation = 'verified';
+    else if (conflictCount >= nextParts.length) colValidation = 'conflict';
+
+    nextCollections[colKey] = {
+      ...col,
+      parts: nextParts,
+      validation: colValidation,
+    };
+  }
+
+  inMemorySeriesIndex = {
+    ...inMemorySeriesIndex,
+    collections: nextCollections,
+    validationCache: nextCache,
+    reviewQueueKeys: nextQueue,
+    updatedAt: new Date().toISOString(),
+  };
+
+  notifySeriesIndexListeners();
+  return safeIdbSet('ct_series_index', 'series_index_main', inMemorySeriesIndex);
+}
+
+export function getSeriesReviewQueueSync(): string[] {
+  return inMemorySeriesIndex.reviewQueueKeys || [];
 }
 
 export function isSeriesMediaCheckedSync(mediaKey: string): boolean {
@@ -559,7 +645,12 @@ export async function markSeriesMediaChecked(mediaKeys: string[]): Promise<IdbWr
 export function getSeriesForMediaSync(mediaKey: string): SeriesCollection | null {
   const collectionKey = inMemorySeriesIndex.mediaKeyToSeries[mediaKey];
   if (!collectionKey) return null;
-  return inMemorySeriesIndex.collections[collectionKey] || null;
+  const col = inMemorySeriesIndex.collections[collectionKey];
+  if (!col) return null;
+  if (col.validation === 'conflict') {
+    return null;
+  }
+  return col;
 }
 
 export function getSeriesCollectionByKeySync(collectionKey: string): SeriesCollection | null {
@@ -567,7 +658,7 @@ export function getSeriesCollectionByKeySync(collectionKey: string): SeriesColle
 }
 
 export function getAllSeriesCollectionsSync(): SeriesCollection[] {
-  return Object.values(inMemorySeriesIndex.collections);
+  return Object.values(inMemorySeriesIndex.collections).filter((c) => c.validation !== 'conflict');
 }
 
 export async function registerSeriesCollections(

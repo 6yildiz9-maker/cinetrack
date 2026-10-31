@@ -1,3 +1,6 @@
+import type { SeriesCollection, SeriesCollectionPart } from './storage-idb.ts';
+import { isWithinReleaseWindow } from '../utils/release-window.ts';
+
 export interface KnownTvFranchiseSeedPart {
   id: number;
   title: string;
@@ -103,3 +106,75 @@ export const GENERIC_NON_FRANCHISE_KEYWORDS = new Set([
   'sitcom',
   'remake',
 ]);
+
+// Doğrulanmış TV franchise keyword kimlikleri (Spec: keyword-ID birebir eşleşmesi tek otomatik yol)
+export const VERIFIED_TV_FRANCHISE_KEYWORD_IDS = new Set<number>([
+  7701,   // Cyberpunk Shared Universe
+  210001, // Breaking Bad evreni
+  210002, // Star Wars evreni
+  210003, // Marvel televizyon evreni
+  210004, // Game of Thrones / Westeros
+  210005, // The Walking Dead
+  210006, // Star Trek
+  210007, // The Boys
+]);
+
+export interface TvFranchiseCandidateLike {
+  id?: number | string;
+  name?: string;
+  title?: string;
+  first_air_date?: string;
+  release_date?: string;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  vote_average?: number;
+  genre_ids?: number[];
+  overview?: string;
+}
+
+export function buildKnownTvFranchiseCollection(
+  franchise: { id: number; name: string; parts: KnownTvFranchiseSeedPart[] },
+  tvId: number,
+  item: TvFranchiseCandidateLike,
+  existing: SeriesCollection | null
+): SeriesCollection {
+  const parts: SeriesCollectionPart[] = franchise.parts
+    .filter((seedPart) => isWithinReleaseWindow(seedPart.first_air_date))
+    .map((seedPart) => {
+      const prevPart = existing?.parts.find((ep) => Number(ep.id) === seedPart.id);
+      const isCurrent = seedPart.id === tvId;
+      return {
+        id: seedPart.id,
+        media_type: 'tv',
+        title: isCurrent ? item.name || item.title || seedPart.title : prevPart?.title || seedPart.title,
+        name: isCurrent ? item.name || item.title || seedPart.title : prevPart?.name || seedPart.title,
+        first_air_date:
+          (isCurrent ? item.first_air_date || item.release_date : prevPart?.first_air_date) ||
+          seedPart.first_air_date,
+        release_date:
+          (isCurrent ? item.first_air_date || item.release_date : prevPart?.release_date) ||
+          seedPart.first_air_date,
+        poster_path: (isCurrent ? item.poster_path : prevPart?.poster_path) || null,
+        backdrop_path: (isCurrent ? item.backdrop_path : prevPart?.backdrop_path) || null,
+        vote_average: Number(
+          (isCurrent ? item.vote_average : prevPart?.vote_average) || seedPart.vote_average || 0
+        ),
+        genre_ids:
+          (isCurrent && Array.isArray(item.genre_ids) && item.genre_ids.length > 0
+            ? item.genre_ids
+            : prevPart?.genre_ids) ||
+          seedPart.genre_ids,
+        overview: (isCurrent ? item.overview : prevPart?.overview) || '',
+      };
+    });
+
+  return {
+    id: franchise.id,
+    name: franchise.name,
+    media_type: 'tv',
+    poster_path: parts.find((p) => p.poster_path)?.poster_path || null,
+    parts,
+    partKeys: parts.map((p) => `tv:${p.id}`),
+    isStub: false,
+  };
+}

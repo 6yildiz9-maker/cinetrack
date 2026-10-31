@@ -833,6 +833,18 @@
     bottom: 8px;
   }
 
+  .badge-series.badge-series--probable {
+    border-color: rgba(148, 163, 184, 0.45);
+    color: var(--text-2);
+    background-color: rgba(15, 23, 42, 0.9);
+  }
+
+  .badge-series.badge-series--verified {
+    border-color: rgba(251, 191, 36, 0.55);
+    color: var(--gold);
+    background-color: rgba(11, 18, 32, 0.94);
+  }
+
   .match-badge {
     color: var(--accent);
   }

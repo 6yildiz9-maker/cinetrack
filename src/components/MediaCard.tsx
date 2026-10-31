@@ -260,22 +260,28 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           )}
         </div>
 
-        {/* Absolutely positioned SERİ badge on poster image (FEAT-01 #9) */}
+        {/* Absolutely positioned SERİ badge on poster image (FEAT-01 #9 & Section 3.1) */}
         {isSeries && size !== 'xs' && (
           <span
-            className="poster-series-badge badge-series"
+            className={`poster-series-badge badge-series ${
+              seriesInfo.validation === 'probable' ? 'badge-series--probable' : 'badge-series--verified'
+            }`}
             title={
               seriesInfo.collectionName
-                ? `Seri: ${seriesInfo.collectionName}`
+                ? seriesInfo.validation === 'probable'
+                  ? `Seri (doğrulanmadı): ${seriesInfo.collectionName}`
+                  : `Seri: ${seriesInfo.collectionName}`
+                : seriesInfo.validation === 'probable'
+                ? 'Bir serinin veya evrenin parçası (doğrulanmadı)'
                 : 'Bir serinin veya evrenin parçası'
             }
             aria-label={
               seriesInfo.collectionName
-                ? `Seri yapım: ${seriesInfo.collectionName}`
+                ? `Seri yapım: ${seriesInfo.collectionName}${seriesInfo.validation === 'probable' ? ' (doğrulanmadı)' : ''}`
                 : 'Seri yapım'
             }
           >
-            SERİ
+            {seriesInfo.validation === 'probable' ? 'SERİ ?' : 'SERİ'}
           </span>
         )}
 

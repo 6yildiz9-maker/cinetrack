@@ -1,27 +1,22 @@
 import { fetchTmdb } from './api.ts';
 import {
-  type SeriesCollection,
-  type SeriesCollectionPart,
-  registerSeriesCollections,
-  loadSeriesIndexIdb,
-  isMediaInSeriesSync,
-  isSeriesMediaCheckedSync,
-  markSeriesMediaChecked,
-  getSeriesForMediaSync,
-  getSeriesCollectionByKeySync,
-  getAllSeriesCollectionsSync,
+  type SeriesCollection, type SeriesCollectionPart, type SeriesValidationStatus,
+  registerSeriesCollections, loadSeriesIndexIdb, isMediaInSeriesSync,
+  isSeriesMediaCheckedSync, markSeriesMediaChecked, getSeriesForMediaSync,
+  getSeriesCollectionByKeySync, getAllSeriesCollectionsSync,
+  getSeriesValidationStatusSync,
 } from './storage-idb.ts';
 import {
-  RECOMMENDATION_WEIGHTS_V3,
-  determineItemEra,
-  determineItemPopularityTier,
-  scoreCandidatesV3,
-  type PoolCandidateItem,
-  type SavedItem,
-  type TasteProfileV3,
+  RECOMMENDATION_WEIGHTS_V3, determineItemEra, determineItemPopularityTier,
+  scoreCandidatesV3, type PoolCandidateItem, type SavedItem, type TasteProfileV3,
 } from '../core/cinetrack-core.ts';
 import type { TmdbCollectionInfo, TmdbGenre, TmdbItem } from '../types/tmdb.ts';
 import { compareMediaDatesAscending, isWithinReleaseWindow } from '../utils/release-window.ts';
+import {
+  setValidatorTmdbFetcher,
+  scheduleSeriesPartsValidation,
+  resetWikidataValidatorForTests,
+} from './series-wikidata-validator.ts';
 
 export interface TmdbSeriesRawResponse {
   id?: number | string;
@@ -38,8 +33,9 @@ export interface TmdbSeriesRawResponse {
   genres?: TmdbGenre[];
   belongs_to_collection?: TmdbCollectionInfo | null;
   parts?: TmdbItem[];
-  results?: Array<{ id: number; name?: string; title?: string; first_air_date?: string; poster_path?: string | null; backdrop_path?: string | null; vote_average?: number; vote_count?: number; genre_ids?: number[]; overview?: string }>;
+  results?: Array<{ id: number; name?: string; title?: string; first_air_date?: string; release_date?: string; poster_path?: string | null; backdrop_path?: string | null; vote_average?: number; vote_count?: number; genre_ids?: number[]; overview?: string }>;
   keywords?: Array<{ id: number; name: string }>;
+  wikidata_id?: string;
 }
 
 export type TmdbFetcherFn = (
@@ -53,14 +49,15 @@ let activeFetcher: TmdbFetcherFn = (path, params) =>
 export function setSeriesTmdbFetcher(fetcher?: TmdbFetcherFn | null): void {
   activeFetcher =
     fetcher || ((path, params) => fetchTmdb(path, params) as Promise<TmdbSeriesRawResponse>);
+  setValidatorTmdbFetcher(activeFetcher);
 }
 
 import {
   KNOWN_TV_FRANCHISES,
-  FRANCHISE_KEYWORD_PATTERN,
-  GENERIC_NON_FRANCHISE_KEYWORDS,
-  type KnownTvFranchiseSeedPart,
+  VERIFIED_TV_FRANCHISE_KEYWORD_IDS,
+  buildKnownTvFranchiseCollection,
 } from './series-tv-seeds.ts';
+export { VERIFIED_TV_FRANCHISE_KEYWORD_IDS };
 
 const processedCollectionIds = new Set<string>();
 const inFlightCollectionFetches = new Set<string>();
@@ -107,6 +104,7 @@ export interface SeriesAffiliationInfo {
   collectionKey: string | null;
   collectionName: string | null;
   collection: SeriesCollection | null;
+  validation?: SeriesValidationStatus;
 }
 
 interface MediaCandidateLike {
@@ -150,6 +148,18 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
 
   const mType = inferMediaType(item);
   const key = `${mType}:${item.id}`;
+  const validation = getSeriesValidationStatusSync(key);
+  if (validation === 'conflict') {
+    return {
+      inSeries: false,
+      collectionId: null,
+      collectionKey: null,
+      collectionName: null,
+      collection: null,
+      validation: 'conflict',
+    };
+  }
+
   const indexedCol = getSeriesForMediaSync(key);
   if (indexedCol) {
     return {
@@ -158,6 +168,7 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
       collectionKey: `collection:${indexedCol.media_type}:${indexedCol.id}`,
       collectionName: formatSeriesCollectionName(indexedCol.name),
       collection: indexedCol,
+      validation: validation || indexedCol.validation || 'probable',
     };
   }
 
@@ -166,6 +177,16 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
       const colId = item.belongs_to_collection.id;
       const colKey = `collection:movie:${colId}`;
       const existingByCol = getSeriesCollectionByKeySync(colKey);
+      if (existingByCol && existingByCol.validation === 'conflict') {
+        return {
+          inSeries: false,
+          collectionId: null,
+          collectionKey: null,
+          collectionName: null,
+          collection: null,
+          validation: 'conflict',
+        };
+      }
       const rawName = existingByCol?.name || item.belongs_to_collection.name || item.collectionName;
       return {
         inSeries: true,
@@ -173,11 +194,22 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
         collectionKey: colKey,
         collectionName: formatSeriesCollectionName(rawName),
         collection: existingByCol,
+        validation: validation || existingByCol?.validation || 'probable',
       };
     }
     if (typeof item.belongs_to_collection === 'number') {
       const colKey = `collection:movie:${item.belongs_to_collection}`;
       const existingByCol = getSeriesCollectionByKeySync(colKey);
+      if (existingByCol && existingByCol.validation === 'conflict') {
+        return {
+          inSeries: false,
+          collectionId: null,
+          collectionKey: null,
+          collectionName: null,
+          collection: null,
+          validation: 'conflict',
+        };
+      }
       return {
         inSeries: true,
         collectionId: item.belongs_to_collection,
@@ -188,6 +220,7 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
             ? formatSeriesCollectionName(item.collectionName)
             : null,
         collection: existingByCol,
+        validation: validation || existingByCol?.validation || 'probable',
       };
     }
   }
@@ -199,6 +232,7 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
       collectionKey: null,
       collectionName: formatSeriesCollectionName(item.collectionName),
       collection: null,
+      validation: validation || 'manual',
     };
   }
 
@@ -215,10 +249,19 @@ export async function initSeriesService(): Promise<void> {
   await loadSeriesIndexIdb();
 }
 
+export {
+  validateSeriesItemWithWikidata,
+  scheduleSeriesPartsValidation,
+  setWikidataFetcherForTests,
+  setValidatorTmdbFetcher,
+  type WikidataFetcherFn,
+} from './series-wikidata-validator.ts';
+
 export function resetSeriesServiceForTests(): void {
   processedCollectionIds.clear();
   inFlightCollectionFetches.clear();
   setSeriesTmdbFetcher(null);
+  resetWikidataValidatorForTests();
 }
 
 /**
@@ -281,6 +324,10 @@ export async function indexMovieCollection(collectionId: number): Promise<Series
 
     processedCollectionIds.add(colToken);
     await registerSeriesCollections([seriesCol]);
+
+    // Arka plan doğrulama işçisi (Spec Section 3.1): Bounded concurrency (2-3) ile Wikidata P179 kontrolü
+    scheduleSeriesPartsValidation(parts, (p) => activeFetcher(p));
+
     return seriesCol;
   } catch (err) {
     console.warn(`[SeriesService] Koleksiyon çekilemedi (${collectionId}):`, err);
@@ -293,7 +340,7 @@ export async function indexMovieCollection(collectionId: number): Promise<Series
 async function fetchTvKeywordCollectionParts(
   kwId: number,
   kwName: string,
-  sourceItem?: MediaCandidateLike
+  _sourceItem?: MediaCandidateLike
 ): Promise<SeriesCollection | null> {
   const colToken = `tv:kw-${kwId}`;
   const colKey = `collection:tv:kw-${kwId}`;
@@ -305,76 +352,55 @@ async function fetchTvKeywordCollectionParts(
 
   inFlightCollectionFetches.add(colToken);
   try {
-    const disc = await runBoundedSeriesTask(() =>
+    const raw = await runBoundedSeriesTask(() =>
       activeFetcher('/discover/tv', {
         with_keywords: String(kwId),
-        sort_by: 'popularity.desc',
-        page: '1',
+        sort_by: 'first_air_date.asc',
       })
     );
-    const results = Array.isArray(disc?.results) ? disc.results : [];
-    const mergedMap = new Map<number, SeriesCollectionPart>();
 
-    if (sourceItem && sourceItem.id != null) {
-      const srcDate = sourceItem.first_air_date || sourceItem.release_date || '';
-      if (!srcDate || isWithinReleaseWindow(srcDate)) {
-        mergedMap.set(Number(sourceItem.id), {
-          id: Number(sourceItem.id),
-          media_type: 'tv',
-          title: sourceItem.name || sourceItem.title || 'Dizi',
-          name: sourceItem.name || sourceItem.title || 'Dizi',
-          first_air_date: srcDate,
-          release_date: srcDate,
-          poster_path: sourceItem.poster_path || null,
-          backdrop_path: sourceItem.backdrop_path || null,
-          vote_average: Number(sourceItem.vote_average || 0),
-          vote_count: Number(sourceItem.vote_count || 0),
-          genre_ids: Array.isArray(sourceItem.genre_ids) ? sourceItem.genre_ids : [],
-          overview: sourceItem.overview || '',
-        });
-      }
-    }
-
-    for (const r of results.slice(0, 18)) {
-      if (!r || r.id == null) continue;
-      const rDate = r.first_air_date || '';
-      if (!isWithinReleaseWindow(rDate)) continue;
-      const rId = Number(r.id);
-      mergedMap.set(rId, {
-        id: rId,
+    const rawParts = Array.isArray(raw?.results) ? raw.results : [];
+    const parts: SeriesCollectionPart[] = rawParts
+      .filter((p) => {
+        if (!p || p.id == null) return false;
+        const releaseDate = p.first_air_date || p.release_date || '';
+        return isWithinReleaseWindow(releaseDate);
+      })
+      .map((p) => ({
+        id: p.id,
         media_type: 'tv',
-        title: r.name || r.title || 'Dizi',
-        name: r.name || r.title || 'Dizi',
-        first_air_date: rDate,
-        release_date: rDate,
-        poster_path: r.poster_path || null,
-        backdrop_path: r.backdrop_path || null,
-        vote_average: Number(r.vote_average || 0),
-        vote_count: Number(r.vote_count || 0),
-        genre_ids: Array.isArray(r.genre_ids) ? r.genre_ids : [],
-        overview: r.overview || '',
-      });
-    }
+        title: p.name || p.title || 'Dizi',
+        name: p.name || p.title || 'Dizi',
+        first_air_date: p.first_air_date || p.release_date || '',
+        release_date: p.first_air_date || p.release_date || '',
+        poster_path: p.poster_path || null,
+        backdrop_path: p.backdrop_path || null,
+        vote_average: Number(p.vote_average || 0),
+        vote_count: Number(p.vote_count || 0),
+        genre_ids: Array.isArray(p.genre_ids) ? p.genre_ids : [],
+        overview: p.overview || '',
+      }));
 
-    if (mergedMap.size >= 2) {
-      const parts = Array.from(mergedMap.values()).sort((a, b) =>
-        compareMediaDatesAscending(a.first_air_date, b.first_air_date)
-      );
+    if (parts.length >= 2) {
+      parts.sort((a, b) => compareMediaDatesAscending(a.first_air_date, b.first_air_date));
       const seriesCol: SeriesCollection = {
         id: `kw-${kwId}`,
         name: /(evreni|serisi)$/i.test(kwName) ? kwName : `${kwName} Evreni`,
         media_type: 'tv',
         poster_path: parts[0]?.poster_path || null,
+        backdrop_path: parts[0]?.backdrop_path || null,
+        overview: '',
         parts,
         partKeys: parts.map((p) => `tv:${p.id}`),
         isStub: false,
       };
       processedCollectionIds.add(colToken);
       await registerSeriesCollections([seriesCol]);
+      scheduleSeriesPartsValidation(parts, (p) => activeFetcher(p));
       return seriesCol;
     }
   } catch {
-    // Ignore transient keyword discover error
+    // Ignore transient keyword error
   } finally {
     inFlightCollectionFetches.delete(colToken);
   }
@@ -395,11 +421,10 @@ async function indexTvKeywordFranchise(
 
   if (rawKeywords.length === 0) return null;
 
+  // Spec: İsim-regex fallback kaldırıldı; keyword-ID birebir eşleşmesi tek otomatik yoldur.
   const candidateKeywords = rawKeywords.filter((kw) => {
     if (!kw || !kw.id || typeof kw.name !== 'string') return false;
-    const lower = kw.name.trim().toLowerCase();
-    if (!lower || GENERIC_NON_FRANCHISE_KEYWORDS.has(lower)) return false;
-    return FRANCHISE_KEYWORD_PATTERN.test(lower);
+    return VERIFIED_TV_FRANCHISE_KEYWORD_IDS.has(kw.id);
   });
 
   if (stubOnly && candidateKeywords.length > 0) {
@@ -416,6 +441,7 @@ async function indexTvKeywordFranchise(
       vote_average: Number(sourceItem.vote_average || 0),
       genre_ids: Array.isArray(sourceItem.genre_ids) ? sourceItem.genre_ids : [],
       overview: sourceItem.overview || '',
+      validation: 'verified',
     };
     const stubCol: SeriesCollection = {
       id: `kw-${firstKw.id}`,
@@ -425,6 +451,7 @@ async function indexTvKeywordFranchise(
       parts: [stubPart],
       partKeys: [`tv:${tvId}`],
       isStub: true,
+      validation: 'verified',
     };
     await registerSeriesCollections([stubCol]);
     return stubCol;
@@ -434,56 +461,9 @@ async function indexTvKeywordFranchise(
     const col = await fetchTvKeywordCollectionParts(kw.id, kw.name, sourceItem);
     if (col) return col;
   }
-
   return null;
 }
 
-function buildKnownTvFranchiseCollection(
-  franchise: { id: number; name: string; parts: KnownTvFranchiseSeedPart[] },
-  tvId: number,
-  item: MediaCandidateLike,
-  existing: SeriesCollection | null
-): SeriesCollection {
-  const parts: SeriesCollectionPart[] = franchise.parts
-    .filter((seedPart) => isWithinReleaseWindow(seedPart.first_air_date))
-    .map((seedPart) => {
-      const prevPart = existing?.parts.find((ep) => Number(ep.id) === seedPart.id);
-      const isCurrent = seedPart.id === tvId;
-      return {
-        id: seedPart.id,
-        media_type: 'tv',
-        title: isCurrent ? item.name || item.title || seedPart.title : prevPart?.title || seedPart.title,
-        name: isCurrent ? item.name || item.title || seedPart.title : prevPart?.name || seedPart.title,
-        first_air_date:
-          (isCurrent ? item.first_air_date || item.release_date : prevPart?.first_air_date) ||
-          seedPart.first_air_date,
-        release_date:
-          (isCurrent ? item.first_air_date || item.release_date : prevPart?.release_date) ||
-          seedPart.first_air_date,
-        poster_path: (isCurrent ? item.poster_path : prevPart?.poster_path) || null,
-        backdrop_path: (isCurrent ? item.backdrop_path : prevPart?.backdrop_path) || null,
-        vote_average: Number(
-          (isCurrent ? item.vote_average : prevPart?.vote_average) || seedPart.vote_average || 0
-        ),
-        genre_ids:
-          (isCurrent && Array.isArray(item.genre_ids) && item.genre_ids.length > 0
-            ? item.genre_ids
-            : prevPart?.genre_ids) ||
-          seedPart.genre_ids,
-        overview: (isCurrent ? item.overview : prevPart?.overview) || '',
-      };
-    });
-
-  return {
-    id: franchise.id,
-    name: franchise.name,
-    media_type: 'tv',
-    poster_path: parts.find((p) => p.poster_path)?.poster_path || null,
-    parts,
-    partKeys: parts.map((p) => `tv:${p.id}`),
-    isStub: false,
-  };
-}
 
 /**
  * Registers local `belongs_to_collection` and known TV franchise hints from savedItems with 0 network calls!
