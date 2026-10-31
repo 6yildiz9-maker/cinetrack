@@ -708,9 +708,89 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
     }
   };
 
+  const imageCache = new Map<string, { at: number; buffer: Buffer; contentType: string }>();
+  const MAX_IMAGE_CACHE_ENTRIES = 300;
+
+  const handleTmdbImage = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+      const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+      const rawSize = typeof req.query.size === 'string' ? req.query.size.trim() : 'w500';
+
+      const safeSize = /^(?:w92|w154|w185|w342|w500|w780|w1280|original)$/.test(rawSize) ? rawSize : 'w500';
+
+      let targetUrl = '';
+      if (rawUrl) {
+        try {
+          const parsed = new URL(rawUrl);
+          if (
+            parsed.protocol === 'https:' &&
+            (parsed.hostname === 'image.tmdb.org' || parsed.hostname === 'img.tmdb.org')
+          ) {
+            targetUrl = parsed.href;
+          }
+        } catch {}
+      } else if (rawPath) {
+        const cleanPath = rawPath.replace(/^\/+/, '');
+        if (/^[a-zA-Z0-9_./-]+$/.test(cleanPath) && !cleanPath.includes('..')) {
+          targetUrl = `https://image.tmdb.org/t/p/${safeSize}/${cleanPath}`;
+        }
+      }
+
+      if (!targetUrl) {
+        res.status(400).json({ error: 'Geçersiz resim yolu veya adresi.' });
+        return;
+      }
+
+      const cached = imageCache.get(targetUrl);
+      if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) {
+        res.setHeader('Content-Type', cached.contentType);
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+        res.setHeader('X-CineTrack-Image-Proxy', 'hit');
+        res.send(cached.buffer);
+        return;
+      }
+
+      const upstream = await fetchImpl(targetUrl, {
+        signal: AbortSignal.timeout(10000),
+        headers: {
+          Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'User-Agent': 'CineTrack-Proxy/1.0',
+        },
+      });
+
+      if (!upstream.ok) {
+        res.status(upstream.status).json({ error: 'Resim yüklenemedi.' });
+        return;
+      }
+
+      const contentType = upstream.headers.get('content-type') || 'image/jpeg';
+      const arrayBuf = await upstream.arrayBuffer();
+      const buffer = Buffer.from(arrayBuf);
+
+      if (buffer.byteLength <= 8 * 1024 * 1024) {
+        imageCache.set(targetUrl, { at: Date.now(), buffer, contentType });
+        while (imageCache.size > MAX_IMAGE_CACHE_ENTRIES) {
+          const oldest = imageCache.keys().next().value;
+          if (oldest) imageCache.delete(oldest);
+          else break;
+        }
+      }
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+      res.setHeader('X-CineTrack-Image-Proxy', 'miss');
+      res.send(buffer);
+    } catch (err: any) {
+      console.warn('TMDB image proxy error:', err?.message || err);
+      res.status(502).json({ error: 'Resim sunucusuna ulaşılamadı.' });
+    }
+  };
+
   return {
     tmdbCache,
     handleStatus,
     handleTmdb,
+    handleTmdbImage,
   };
 }

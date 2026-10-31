@@ -26,11 +26,13 @@ import { CorruptJsonFileError } from './atomic-json.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
 import {
   executeProfileBackupExport,
+  buildProfileBackupDataset,
   EXPORT_FILE_NAME_PATTERN,
   getPosterCacheStats,
 } from './excel-profile-backup.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
+  security?: SecurityOptions;
   maxDataBytes?: number;
   githubToken?: string;
   githubTokenSource?: TokenSourceKind;
@@ -278,14 +280,15 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   });
   persistentStore.attachDataStorage(storage, maxDataBytes);
 
-  const originGuard = createOriginMiddleware(options);
-  const tokenGuard = createTokenAuthMiddleware(options);
-  const syncStatusGuard = createTokenAuthMiddleware({ ...options, requireTokenForReads: true });
-  const tmdbRateLimiter = createTmdbRateLimitMiddleware(options);
+  const sec: SecurityOptions = { ...options, ...(options.security || {}) };
+  const originGuard = createOriginMiddleware(sec);
+  const tokenGuard = createTokenAuthMiddleware(sec);
+  const syncStatusGuard = createTokenAuthMiddleware({ ...sec, requireTokenForReads: true });
+  const tmdbRateLimiter = createTmdbRateLimitMiddleware(sec);
 
   const app = express();
   app.disable('x-powered-by');
-  if (options.trustProxy) {
+  if (sec.trustProxy) {
     app.set('trust proxy', true);
   }
 
@@ -295,7 +298,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org; connect-src 'self' https://api.themoviedb.org; base-uri 'self'; form-action 'self'"
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org; connect-src 'self' https://api.themoviedb.org; base-uri 'self'; form-action 'self'"
     );
     if (!process.env.APP_URL) {
       res.setHeader('X-Frame-Options', 'DENY');
@@ -348,6 +351,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   app.get('/api/tmdb-status', tmdbProxy.handleStatus);
   app.get('/api/tmdb', tmdbRateLimiter, tmdbProxy.handleTmdb);
+  app.get('/api/tmdb-image', tmdbProxy.handleTmdbImage);
 
   app.get('/api/data', tokenGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -638,7 +642,12 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   app.post('/api/sync/public-consent', originGuard, tokenGuard, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    const allow = req.body?.allowPersonalDataInPublicRepo;
+    const allow =
+      typeof req.body?.allowPersonalDataInPublicRepo === 'boolean'
+        ? req.body.allowPersonalDataInPublicRepo
+        : typeof req.body?.allow === 'boolean'
+          ? req.body.allow
+          : undefined;
     if (typeof allow !== 'boolean') {
       res.status(400).json({
         ok: false,
@@ -664,7 +673,12 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   app.post('/api/sync/public-catalog-consent', originGuard, tokenGuard, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    const allow = req.body?.allowCatalogInPublicRepo;
+    const allow =
+      typeof req.body?.allowCatalogInPublicRepo === 'boolean'
+        ? req.body.allowCatalogInPublicRepo
+        : typeof req.body?.allow === 'boolean'
+          ? req.body.allow
+          : undefined;
     if (typeof allow !== 'boolean') {
       res.status(400).json({
         ok: false,
@@ -960,6 +974,68 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
+  app.post('/api/backup/excel/preview', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const storedDoc = await storage.readDataAsync();
+      const exportDoc = resolveExportDocument(storedDoc, req.body);
+      const profileId =
+        typeof req.body?.profileId === 'string' && req.body.profileId.trim()
+          ? req.body.profileId.trim()
+          : exportDoc.activeProfileId;
+      const profile = exportDoc.profiles.find((p) => p.id === profileId) || exportDoc.profiles[0];
+      if (!profile) {
+        res.status(404).json({ ok: false, status_message: 'Profil bulunamadı.' });
+        return;
+      }
+      const dislikedItemsHint = Array.isArray(req.body?.dislikedItemsHint)
+        ? req.body.dislikedItemsHint
+        : undefined;
+      const genresMap =
+        req.body?.genresMap && typeof req.body.genresMap === 'object'
+          ? req.body.genresMap
+          : undefined;
+
+      const moviesCatalog = persistentStore.readCatalog('movie') || {};
+      const tvCatalog = persistentStore.readCatalog('tv') || {};
+
+      const dataset = await buildProfileBackupDataset({
+        profile,
+        schemaVersion: exportDoc.schemaVersion,
+        engineVersion: exportDoc.engineVersion,
+        moviesCatalog,
+        tvCatalog,
+        genresMap,
+        dislikedItemsHint,
+      });
+
+      res.json({
+        ok: true,
+        profileId: dataset.profileId,
+        profileName: dataset.profileName,
+        completeness: {
+          rawProfileItemsCount: dataset.rawProfileItemsCount,
+          normalizedSavedItemsCount: dataset.normalizedSavedItemsCount,
+          rawDislikedCount: dataset.rawDislikedCount,
+          uniqueDislikedCount: dataset.uniqueDislikedCount,
+          favoriteActorsCount: dataset.favoriteActorsCount,
+          customItemsCount: dataset.customItemsCount,
+          totalItemsCount: dataset.totalItemsCount,
+        },
+        sheetCounts: dataset.sheetCounts,
+        dataset,
+      });
+    } catch (err: any) {
+      res.status(500).json({
+        ok: false,
+        status_message: redactSecrets(
+          err?.message || 'Önizleme verisi oluşturulamadı.',
+          [options.githubToken, options.tmdbApiKey]
+        ),
+      });
+    }
+  });
+
   app.get('/api/backup/exports/:fileName', tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const rawName = String(req.params.fileName || '').trim();
@@ -1020,10 +1096,10 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.setHeader('Cache-Control', 'no-store');
     res.status(500).json({
       ok: false,
-      error: 'internal_error',
+      error: 'Sunucu hatası oluştu.',
       code: 'internal_error',
       requestId,
-      status_message: 'Beklenmeyen bir sunucu hatası oluştu.',
+      status_message: 'Sunucu hatası oluştu.',
     });
   });
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { displayTitle, formatMediaDates, getPoster, imageUrl } from '../utils/helpers';
+import { displayTitle, formatMediaDates, getPoster, imageUrl, handleImageError } from '../utils/helpers';
 
 interface HeroProps {
   heroItem: any | null;
@@ -139,7 +139,8 @@ export const Hero: React.FC<HeroProps> = ({
           loading="eager"
           decoding="async"
           fetchPriority="high"
-          onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
+          referrerPolicy="no-referrer"
+          onError={(e) => handleImageError(e, heroImage, backdropImage ? 'w1280' : 'w500')}
         />
       )}
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { displayTitle, getPoster, releaseYear } from '../utils/helpers';
+import { displayTitle, getPoster, releaseYear, handleImageError } from '../utils/helpers';
 import { SavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { TmdbItem } from '../types/tmdb';
@@ -355,7 +355,8 @@ export const Header: React.FC<HeaderProps> = ({
                             className="search-dropdown-thumb"
                             src={poster}
                             alt=""
-                            onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
+                            referrerPolicy="no-referrer"
+                            onError={(e) => handleImageError(e, poster, 'w92')}
                           />
                         ) : (
                           <div className="search-dropdown-thumb search-dropdown-thumb-fallback">

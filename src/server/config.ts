@@ -156,6 +156,7 @@ export interface ResolvedServerConfig {
 
 export interface ResolveConfigOptions {
   env?: Record<string, string | undefined>;
+  processEnv?: Record<string, string | undefined>;
   rootDir?: string;
   envLocalContent?: string;
   dotEnvContent?: string;
@@ -180,7 +181,7 @@ function isLoopbackBindHost(host: string): boolean {
  * Birincil GitHub anahtarı `CINETRACK_GITHUB_PAT` olarak seçilir; `CINETRACK_GITHUB_TOKEN` yalnızca geri uyumluluk yedeğidir.
  */
 export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServerConfig {
-  const env = options.env ?? process.env;
+  const env = options.processEnv ?? options.env ?? process.env;
   const warnings: string[] = [];
 
   let envLocalValues: Record<string, string> = {};
@@ -283,13 +284,13 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
     githubTokenSource = 'env:CINETRACK_GITHUB_TOKEN';
   } else if (localPat) {
     githubToken = localPat;
-    githubTokenSource = 'file:.env.local:CINETRACK_GITHUB_PAT';
+    githubTokenSource = 'dotenv_local_pat';
   } else if (localLegacyTok) {
     githubToken = localLegacyTok;
     githubTokenSource = 'file:.env.local:CINETRACK_GITHUB_TOKEN';
   } else if (dotPat) {
     githubToken = dotPat;
-    githubTokenSource = 'file:.env:CINETRACK_GITHUB_PAT';
+    githubTokenSource = 'dotenv_pat';
   } else if (dotLegacyTok) {
     githubToken = dotLegacyTok;
     githubTokenSource = 'file:.env:CINETRACK_GITHUB_TOKEN';

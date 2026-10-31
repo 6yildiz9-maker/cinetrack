@@ -560,7 +560,7 @@ export function parseBackupText(
   };
 }
 
-export const PROFILE_ID_PATTERN = /^profile-[A-Za-z0-9_-]{1,60}$/;
+export const PROFILE_ID_PATTERN = /^(?:profile-[A-Za-z0-9_-]{1,60}|p\d{1,10})$/;
 export const DISLIKED_KEY_PATTERN = /^(?:movie|tv)[:-](?:[1-9]\d{0,11}|custom-[A-Za-z0-9_-]{1,80})$/;
 
 export function normalizePreferences(

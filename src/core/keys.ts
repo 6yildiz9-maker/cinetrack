@@ -21,6 +21,18 @@ export function resolveMediaType(record: unknown): ResolvedMediaType {
     const parsed = parseMediaKey(obj.key);
     if (parsed) return parsed.type;
   }
+  if (typeof obj.first_air_date === 'string' && obj.first_air_date.trim()) {
+    return 'tv';
+  }
+  if (typeof obj.firstAirDate === 'string' && obj.firstAirDate.trim()) {
+    return 'tv';
+  }
+  if (typeof obj.release_date === 'string' && obj.release_date.trim()) {
+    return 'movie';
+  }
+  if (typeof obj.releaseDate === 'string' && obj.releaseDate.trim()) {
+    return 'movie';
+  }
   return 'unknown';
 }
 

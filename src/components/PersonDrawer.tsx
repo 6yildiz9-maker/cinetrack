@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { displayTitle, imageUrl } from '../utils/helpers';
+import { displayTitle, imageUrl, handleImageError } from '../utils/helpers';
 import { SavedItem, findSavedItem, makeMediaKey } from '../core/cinetrack-core';
 import { fetchTmdb } from '../services/api';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
@@ -132,7 +132,13 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
       >
         <div className="person-shelf-poster">
           {poster ? (
-            <img src={poster} alt="" loading="lazy" />
+            <img
+              src={poster}
+              alt=""
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={(e) => handleImageError(e, poster, 'w500')}
+            />
           ) : (
             <div className="person-shelf-fallback">
               <svg className="icon">
@@ -215,6 +221,8 @@ export const PersonDrawer: React.FC<PersonDrawerProps> = ({
                 src={imageUrl(profile.profile_path, 'w185')}
                 alt=""
                 className="person-drawer-avatar"
+                referrerPolicy="no-referrer"
+                onError={(e) => handleImageError(e, imageUrl(profile.profile_path, 'w185'), 'w185')}
               />
             ) : (
               <div className="person-drawer-avatar fallback">

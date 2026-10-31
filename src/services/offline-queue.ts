@@ -1,4 +1,4 @@
-import { type DataDocument } from '../core/cinetrack-core';
+import { type DataDocument } from '../core/cinetrack-core.ts';
 
 const OFFLINE_QUEUE_STORAGE_KEY = 'cinetrack_offline_sync_queue_v1';
 

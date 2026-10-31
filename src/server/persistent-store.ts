@@ -90,6 +90,8 @@ export type TokenSourceKind =
   | 'file:.env.local:CINETRACK_GITHUB_TOKEN'
   | 'file:.env:CINETRACK_GITHUB_PAT'
   | 'file:.env:CINETRACK_GITHUB_TOKEN'
+  | 'dotenv_local_pat'
+  | 'dotenv_pat'
   | 'options'
   | 'none';
 
@@ -607,6 +609,7 @@ export class PersistentDataStore {
   public setPublicPersonalSyncConsent(allowPersonalDataInPublicRepo: boolean): {
     allowPublicPersonalSync: boolean;
     effectiveConfiguredIsPublicRepo: boolean;
+    catalogSyncBlockedByPublicGuard: boolean;
     updatedAt: string;
   } {
     this.persistedPublicPersonalConsent = Boolean(allowPersonalDataInPublicRepo);
@@ -618,12 +621,14 @@ export class PersistentDataStore {
     return {
       allowPublicPersonalSync: this.isPersonalSyncAllowedForRepo(true),
       effectiveConfiguredIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
+      catalogSyncBlockedByPublicGuard: !this.isCatalogSyncAllowedForRepo(true),
       updatedAt: this.publicConsentUpdatedAt,
     };
   }
 
   public setPublicCatalogSyncConsent(allowCatalogInPublicRepo: boolean): {
     allowPublicCatalogSync: boolean;
+    catalogSyncBlockedByPublicGuard: boolean;
     updatedAt: string;
   } {
     this.persistedPublicCatalogConsent = Boolean(allowCatalogInPublicRepo);
@@ -634,6 +639,7 @@ export class PersistentDataStore {
     this.persistSyncState();
     return {
       allowPublicCatalogSync: this.isCatalogSyncAllowedForRepo(true),
+      catalogSyncBlockedByPublicGuard: !this.isCatalogSyncAllowedForRepo(true),
       updatedAt: this.publicCatalogConsentUpdatedAt,
     };
   }

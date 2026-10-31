@@ -1,5 +1,5 @@
-import { type DataDocument } from '../core/cinetrack-core';
-import type { BidirectionalSyncReport, SyncOperationKind } from '../core/sync-display';
+import { type DataDocument } from '../core/cinetrack-core.ts';
+import type { BidirectionalSyncReport, SyncOperationKind } from '../core/sync-display.ts';
 
 export type TmdbDataSource = 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
 

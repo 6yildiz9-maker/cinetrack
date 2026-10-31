@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
+import { displayTitle, formatMediaDates, getPoster, extractGenreNames, handleImageError } from '../utils/helpers';
 import {
   SavedItem,
   TasteRing,
@@ -77,13 +77,9 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   const statusIcon =
     status === 'watching' ? 'icon-play' : status === 'completed' ? 'icon-check' : 'icon-plus';
 
-  const genreNames = (item.genre_ids || [])
-    .map((id: number) => genres[id])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join(', ');
+  const genreNames = extractGenreNames(item, genres).slice(0, 2).join(', ');
 
-  const tmdbRating = Number(item.vote_average || 0);
+  const tmdbRating = Number(item.vote_average ?? item.voteAverage ?? item.rating ?? 0);
   const ratingClass = tmdbRating >= 8 ? 'rating-good' : tmdbRating >= 6 ? 'rating-mid' : 'rating-low';
 
   const personalRating =
@@ -178,7 +174,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
               decoding="async"
               referrerPolicy="no-referrer"
               fetchPriority={_eager ? 'high' : undefined}
-              onError={() => setPosterFailed(true)}
+              onError={(e) => handleImageError(e, poster, 'w500', () => setPosterFailed(true))}
             />
           )}
         </button>

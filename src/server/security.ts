@@ -26,10 +26,12 @@ export interface SecurityOptions {
    * Defaults to 0 (disabled) on loopback and 60 req/min on non-loopback hosts.
    */
   rateLimitMaxRequests?: number;
+  tmdbRateLimitMax?: number;
   /**
    * Sliding window duration in ms for /api/tmdb rate limiting. Defaults to 60_000 (1 minute).
    */
   rateLimitWindowMs?: number;
+  tmdbRateLimitWindowMs?: number;
   /**
    * Additional explicitly allowed origins for state-changing requests.
    */
@@ -159,7 +161,7 @@ export function createOriginMiddleware(options: SecurityOptions = {}) {
     if (!check.ok) {
       res.status(403).json({
         status_message: check.reason || 'Kaynak doğrulaması başarısız.',
-        code: 'csrf_origin_mismatch',
+        code: 'origin_denied',
       });
       return;
     }
@@ -253,13 +255,15 @@ export function createTmdbRateLimitMiddleware(options: SecurityOptions = {}) {
     rawEnvLimit !== undefined && rawEnvLimit.trim() !== '' ? Number(rawEnvLimit) : NaN;
 
   const maxReq =
-    options.rateLimitMaxRequests !== undefined
-      ? options.rateLimitMaxRequests
-      : Number.isFinite(parsedEnvLimit) && parsedEnvLimit >= 0
-        ? parsedEnvLimit
-        : !isLoopbackHostname(bindHost)
-          ? 60
-          : 0;
+    options.tmdbRateLimitMax !== undefined
+      ? options.tmdbRateLimitMax
+      : options.rateLimitMaxRequests !== undefined
+        ? options.rateLimitMaxRequests
+        : Number.isFinite(parsedEnvLimit) && parsedEnvLimit >= 0
+          ? parsedEnvLimit
+          : !isLoopbackHostname(bindHost)
+            ? 60
+            : 0;
 
   // Localhost personal default: disabled (no-op) unless explicitly enabled via options, env, or non-loopback host
   if (maxReq <= 0) {
@@ -269,6 +273,7 @@ export function createTmdbRateLimitMiddleware(options: SecurityOptions = {}) {
   }
 
   const windowMs =
+    options.tmdbRateLimitWindowMs ??
     options.rateLimitWindowMs ??
     (Number(process.env.CINETRACK_TMDB_RATE_WINDOW_MS) > 0
       ? Number(process.env.CINETRACK_TMDB_RATE_WINDOW_MS)

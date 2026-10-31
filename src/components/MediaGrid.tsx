@@ -10,7 +10,7 @@ import {
   makeMediaKey,
   normalizeFavoriteActors,
 } from '../core/cinetrack-core';
-import { imageUrl } from '../utils/helpers';
+import { imageUrl, handleImageError } from '../utils/helpers';
 import { TmdbItem } from '../types/tmdb';
 
 interface MediaGridProps {
@@ -330,7 +330,14 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                     }}
                   >
                     {photo ? (
-                      <img src={photo} alt={actor.name} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+                      <img
+                        src={photo}
+                        alt={actor.name}
+                        loading="lazy"
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => handleImageError(e, photo, 'w185')}
+                      />
                     ) : (
                       <div className="poster-fallback">
                         <svg className="icon">

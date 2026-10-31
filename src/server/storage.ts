@@ -375,7 +375,7 @@ export function createDataStorage(options: StorageOptions) {
     current: DataDocument,
     rawPayload: unknown,
     saveOptions: SaveDataOptions
-  ): { ok: true; documentToPersist: DataDocument; incomingItems: number } | SaveDataResult {
+  ): { ok: true; documentToPersist: DataDocument; incomingItems: number } | Extract<SaveDataResult, { ok: false }> {
     if (unrecoverableCorruptionError) {
       return {
         ok: false,

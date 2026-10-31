@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { displayTitle, getPoster, imageUrl, releaseYear, RATING_DESCRIPTIONS } from '../utils/helpers';
+import { displayTitle, getPoster, imageUrl, releaseYear, RATING_DESCRIPTIONS, extractGenreNames, handleImageError } from '../utils/helpers';
 import {
   SavedItem,
   buildSeasonCounts,
@@ -159,9 +159,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     ? imageUrl(currentItem.backdrop_path, 'w780')
     : getPoster(currentItem);
 
-  const genresList: string[] = currentItem.genres?.length
-    ? currentItem.genres.map((g: any) => (typeof g === 'string' ? g : g.name))
-    : (currentItem.genre_ids || []).map((id: number) => genresMap[id]).filter(Boolean);
+  const genresList: string[] = extractGenreNames(currentItem, genresMap);
 
   const trailer = (currentItem.videos?.results || []).find(
     (v: any) => v.site === 'YouTube' && v.type === 'Trailer'
@@ -274,7 +272,14 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
         {backdrop && (
           <div className="detail-backdrop-wrap">
-            <img id="detailBackdrop" className="detail-backdrop" src={backdrop} alt="" />
+            <img
+              id="detailBackdrop"
+              className="detail-backdrop"
+              src={backdrop}
+              alt=""
+              referrerPolicy="no-referrer"
+              onError={(e) => handleImageError(e, backdrop, 'w780')}
+            />
             <div className="detail-backdrop-gradient" />
           </div>
         )}
@@ -655,7 +660,8 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                             src={imageUrl(person.profile_path, 'w185')}
                             alt=""
                             loading="lazy"
-                            onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
+                            referrerPolicy="no-referrer"
+                            onError={(e) => handleImageError(e, imageUrl(person.profile_path, 'w185'), 'w185')}
                           />
                         ) : (
                           <span className="cast-photo-fallback" aria-hidden="true">

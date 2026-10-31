@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { displayTitle, formatMediaDates, getPoster } from '../utils/helpers';
+import { displayTitle, formatMediaDates, getPoster, handleImageError } from '../utils/helpers';
 import { SavedItem } from '../core/cinetrack-core';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 
@@ -92,7 +92,8 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
                 className="quick-save-thumb"
                 src={poster}
                 alt=""
-                onError={(e) => ((e.target as HTMLElement).style.display = 'none')}
+                referrerPolicy="no-referrer"
+                onError={(e) => handleImageError(e, poster, 'w185')}
               />
             )}
             <div className="quick-save-info">
