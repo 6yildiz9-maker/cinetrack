@@ -343,8 +343,8 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
   }
 
   const githubOwner = pickNonEmpty('CINETRACK_DATA_OWNER') || '6yildiz9-maker';
-  const githubRepo = pickNonEmpty('CINETRACK_DATA_REPO') || 'cinetrack-private-data';
-  const githubBranch = pickNonEmpty('CINETRACK_DATA_BRANCH') || 'main';
+  const githubRepo = pickNonEmpty('CINETRACK_DATA_REPO') || 'cinetrack';
+  const githubBranch = pickNonEmpty('CINETRACK_DATA_BRANCH') || 'master';
 
   const processEnvIsPublicRepo =
     env.CINETRACK_DATA_REPO_IS_PUBLIC !== undefined ? env.CINETRACK_DATA_REPO_IS_PUBLIC : null;
