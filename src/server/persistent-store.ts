@@ -6,6 +6,7 @@ import {
   CorruptJsonFileError,
   FileWriteSerializer,
   readJsonFileWithRecovery,
+  readJsonFileWithRecoveryAsync,
   tryParseValidJson,
   writeJsonFileAtomic,
 } from './atomic-json.ts';
@@ -910,6 +911,48 @@ export class PersistentDataStore {
 
   public readCatalogManifest(): CatalogManifest | null {
     const recovery = readJsonFileWithRecovery<CatalogManifest>(this.manifestFile, {
+      backupPaths: [`${this.manifestFile}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) && typeof raw.contentHash === 'string'
+          ? (raw as CatalogManifest)
+          : null,
+      label: 'manifest.json',
+      restoreRecoveredToTarget: true,
+    });
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
+    }
+    return null;
+  }
+
+  public async readCatalogAsync(
+    mediaType: 'movie' | 'tv',
+    options: { allowEmptyOnCorrupt?: boolean } = {}
+  ): Promise<Record<string, CatalogRecord>> {
+    const file = mediaType === 'movie' ? this.moviesFile : this.tvFile;
+    const recovery = await readJsonFileWithRecoveryAsync<Record<string, CatalogRecord>>(file, {
+      backupPaths: [`${file}.bak`],
+      validate: (raw) => (isPlainRecordObject(raw) ? (raw as Record<string, CatalogRecord>) : null),
+      label: path.basename(file),
+      restoreRecoveredToTarget: true,
+    });
+
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
+    }
+
+    if (recovery.status === 'corrupt_unrecoverable') {
+      if (options.allowEmptyOnCorrupt) {
+        return {};
+      }
+      throw new CorruptJsonFileError(file, recovery.error);
+    }
+
+    return {};
+  }
+
+  public async readCatalogManifestAsync(): Promise<CatalogManifest | null> {
+    const recovery = await readJsonFileWithRecoveryAsync<CatalogManifest>(this.manifestFile, {
       backupPaths: [`${this.manifestFile}.bak`],
       validate: (raw) =>
         isPlainRecordObject(raw) && typeof raw.contentHash === 'string'

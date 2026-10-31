@@ -62,11 +62,15 @@ export default defineConfig({
             },
           },
           {
-            urlPattern: /^https:\/\/image\.tmdb\.org\/.*/i,
+            urlPattern: /^(?:https:\/\/image\.tmdb\.org\/.*|\/api\/tmdb-image(?:\?.*)?$)/i,
             handler: 'CacheFirst',
             options: {
               cacheName: 'cinetrack-tmdb-posters',
-              expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              expiration: {
+                maxEntries: 1000,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+                purgeOnQuotaError: true,
+              },
               cacheableResponse: { statuses: [0, 200] },
             },
           },

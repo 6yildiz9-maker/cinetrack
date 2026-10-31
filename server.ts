@@ -8,7 +8,6 @@ import {
   DEFAULT_MAX_ITEMS_PER_PROFILE,
   DEFAULT_MAX_PROFILES,
 } from './src/core/limits.ts';
-import type { SavedItem } from './src/core/cinetrack-core.ts';
 import { createCineTrackApp, createSpaFallbackMiddleware } from './src/server/app.ts';
 import { resolveConfig } from './src/server/config.ts';
 import { redactSecrets } from './src/server/persistent-store.ts';
@@ -56,22 +55,22 @@ const { app, storage, persistentStore } = createCineTrackApp({
   ...(resolved.authToken ? { authToken: resolved.authToken } : {}),
 });
 
-// Başlangıçta mevcut izleme listesi ve profillerdeki yapımları kalıcı kataloğa aktar
-try {
-  const initialData = storage.readData();
-  const allItems: any[] = [];
-  for (const p of initialData.profiles || []) {
-    if (Array.isArray(p.items)) allItems.push(...p.items);
-  }
-  if (allItems.length > 0) {
-    persistentStore.upsertCatalogItems(allItems);
-  }
-} catch (e: any) {
-  console.warn('[Catalog] Başlangıç indeksleme uyarısı:', e?.message || e);
-}
-
 // Setup Vite middleware (explicit --dev only) or static dist serving (production default)
 async function startServer() {
+  // Başlangıçta mevcut izleme listesi ve profillerdeki yapımları asenkron olarak kalıcı kataloğa aktar (BUG-04)
+  try {
+    const initialData = await storage.readDataAsync();
+    const allItems: any[] = [];
+    for (const p of initialData.profiles || []) {
+      if (Array.isArray(p.items)) allItems.push(...p.items);
+    }
+    if (allItems.length > 0) {
+      await persistentStore.upsertCatalogItemsSerialized(allItems);
+    }
+  } catch (e: any) {
+    console.warn('[Catalog] Başlangıç indeksleme uyarısı:', e?.message || e);
+  }
+
   const isDevMode = process.env.NODE_ENV !== 'production' && process.argv.includes('--dev');
   const httpServer = createHttpServer(app);
 

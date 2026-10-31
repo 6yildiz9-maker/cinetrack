@@ -10,6 +10,7 @@ import {
 } from '../core/cinetrack-core';
 import { TmdbItem } from '../types/tmdb';
 import { formatMatchBadge } from '../i18n';
+import { isItemInSeries } from '../services/series-service';
 
 export interface MediaCardProps {
   item: TmdbItem | any;
@@ -146,6 +147,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   const shouldRenderRingChip =
     showRing || context === 'taste' || (Boolean(ringKey) && size !== 'xs');
 
+  const isSeries = isItemInSeries(item);
+
   return (
     <article
       className={`card card--${size} card-context--${context}`}
@@ -182,6 +185,15 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         {/* Top-left Badges row */}
         <div className="poster-badges-row">
           {size !== 'xs' && <span className="badge badge-kind">{kind}</span>}
+          {isSeries && (
+            <span
+              className="badge badge-series"
+              title="Bir serinin veya evrenin parçası"
+              aria-label="Seri yapım"
+            >
+              SERİ
+            </span>
+          )}
 
           {shouldRenderMatchBadge && roundedScore !== null && (
             <span

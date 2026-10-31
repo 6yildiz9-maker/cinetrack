@@ -742,17 +742,17 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/catalog', (_req: Request, res: Response) => {
+  app.get('/api/catalog', async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const type = _req.query.type === 'tv' ? 'tv' : _req.query.type === 'movie' ? 'movie' : 'all';
       if (type === 'all') {
-        const movies = persistentStore.readCatalog('movie');
-        const tv = persistentStore.readCatalog('tv');
-        const manifest = persistentStore.readCatalogManifest();
+        const movies = await persistentStore.readCatalogAsync('movie');
+        const tv = await persistentStore.readCatalogAsync('tv');
+        const manifest = await persistentStore.readCatalogManifestAsync();
         res.json({ movies, tv, ...(manifest ? { manifest } : {}) });
       } else {
-        res.json(persistentStore.readCatalog(type));
+        res.json(await persistentStore.readCatalogAsync(type));
       }
     } catch (err: any) {
       if (err instanceof CorruptJsonFileError) {
