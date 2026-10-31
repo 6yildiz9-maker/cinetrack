@@ -878,6 +878,7 @@ async function runWithConcurrency<T, R>(
 
 export interface PosterCacheStats {
   filesCount: number;
+  count: number;
   totalBytes: number;
   maxBytes: number;
   ttlDays: number;
@@ -890,7 +891,7 @@ export function getPosterCacheStats(
 ): PosterCacheStats {
   const ttlDays = Math.max(1, Math.round(ttlMs / (24 * 60 * 60 * 1000)));
   if (!cacheDir || !existsSync(cacheDir)) {
-    return { filesCount: 0, totalBytes: 0, maxBytes, ttlDays };
+    return { filesCount: 0, count: 0, totalBytes: 0, maxBytes, ttlDays };
   }
   let filesCount = 0;
   let totalBytes = 0;
@@ -911,7 +912,7 @@ export function getPosterCacheStats(
   } catch {
     // Ignore unreadable cache directory
   }
-  return { filesCount, totalBytes, maxBytes, ttlDays };
+  return { filesCount, count: filesCount, totalBytes, maxBytes, ttlDays };
 }
 
 export async function getPosterCacheStatsAsync(
@@ -921,7 +922,7 @@ export async function getPosterCacheStatsAsync(
 ): Promise<PosterCacheStats> {
   const ttlDays = Math.max(1, Math.round(ttlMs / (24 * 60 * 60 * 1000)));
   if (!cacheDir) {
-    return { filesCount: 0, totalBytes: 0, maxBytes, ttlDays };
+    return { filesCount: 0, count: 0, totalBytes: 0, maxBytes, ttlDays };
   }
   let filesCount = 0;
   let totalBytes = 0;
@@ -940,9 +941,9 @@ export async function getPosterCacheStatsAsync(
       }
     }
   } catch {
-    return { filesCount: 0, totalBytes: 0, maxBytes, ttlDays };
+    return { filesCount: 0, count: 0, totalBytes: 0, maxBytes, ttlDays };
   }
-  return { filesCount, totalBytes, maxBytes, ttlDays };
+  return { filesCount, count: filesCount, totalBytes, maxBytes, ttlDays };
 }
 
 export interface PosterCacheOptions {
