@@ -417,6 +417,16 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
+  app.get('/api/isolated/profile', tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(await storage.readIsolatedProfileAsync());
+  });
+
+  app.get('/api/isolated/user-lists', tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(await storage.readIsolatedUserListsAsync());
+  });
+
   app.get('/api/data/backups', tokenGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ backups: await storage.listBackupsAsync() });
@@ -779,7 +789,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/profiles/derived/:profileId', tokenGuard, (req: Request, res: Response) => {
+  app.get('/api/profiles/derived/:profileId', tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const profileId = String(req.params.profileId || '');
@@ -791,7 +801,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         typeof req.query.sourceCatalogHash === 'string' ? req.query.sourceCatalogHash : undefined;
 
       if (expectedFp && expectedAlg) {
-        const validation = persistentStore.readValidatedDerivedProfile(profileId, {
+        const validation = await persistentStore.readValidatedDerivedProfileAsync(profileId, {
           profileFingerprint: expectedFp,
           algorithmVersion: expectedAlg,
           sourceCatalogHash: expectedCatHash,
@@ -809,7 +819,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         return;
       }
 
-      const doc = persistentStore.readDerivedProfile(profileId);
+      const doc = await persistentStore.readDerivedProfileAsync(profileId);
       if (!doc) {
         res.status(404).json({ ok: false, message: 'Belirtilen profile ait işlenmiş veri bulunamadı.' });
         return;
@@ -996,8 +1006,8 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
           ? req.body.genresMap
           : undefined;
 
-      const moviesCatalog = persistentStore.readCatalog('movie') || {};
-      const tvCatalog = persistentStore.readCatalog('tv') || {};
+      const moviesCatalog = (await persistentStore.readCatalogAsync('movie')) || {};
+      const tvCatalog = (await persistentStore.readCatalogAsync('tv')) || {};
 
       const dataset = await buildProfileBackupDataset({
         profile,
@@ -1096,10 +1106,10 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.setHeader('Cache-Control', 'no-store');
     res.status(500).json({
       ok: false,
-      error: 'Sunucu hatası oluştu.',
+      error: 'Beklenmeyen bir sunucu hatası oluştu.',
       code: 'internal_error',
       requestId,
-      status_message: 'Sunucu hatası oluştu.',
+      status_message: 'Beklenmeyen bir sunucu hatası oluştu.',
     });
   });
 

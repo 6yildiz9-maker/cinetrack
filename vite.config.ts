@@ -7,7 +7,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
+      includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png', 'sw-poster-lru.js'],
       manifest: {
         id: '/',
         name: 'CineTrack — Kişisel Film & Dizi Kataloğu',
@@ -40,6 +40,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        importScripts: ['/sw-poster-lru.js'],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
@@ -108,7 +109,7 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
+    host: process.env.APP_URL ? '0.0.0.0' : '127.0.0.1',
     port: 3000,
     hmr: process.env.DISABLE_HMR === 'true' || Boolean(process.env.APP_URL) ? false : true,
   },

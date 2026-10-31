@@ -1,3 +1,4 @@
+import { get as idbGet, set as idbSet, createStore as createIdbStore, type UseStore } from 'idb-keyval';
 import {
   DEFAULT_MAX_DATA_BYTES,
   DEFAULT_MAX_ITEMS_PER_PROFILE,
@@ -5,6 +6,46 @@ import {
   formatMaxDataLimitMb,
   measureUtf8Bytes,
 } from './limits.ts';
+
+let discoveryHistoryIdbStore: UseStore | undefined;
+let candidatePoolIdbStore: UseStore | undefined;
+const idbHydratedTasteMaps = new Map<string, any>();
+const idbHydratedPools = new Map<string, any>();
+const pendingCoreIdbWrites = new Set<Promise<void>>();
+
+function getDiscoveryHistoryIdbStore(): UseStore | undefined {
+  if (typeof indexedDB === 'undefined') return undefined;
+  if (!discoveryHistoryIdbStore) {
+    discoveryHistoryIdbStore = createIdbStore('cinetrack-discovery-history-db', 'ct_discovery_history');
+  }
+  return discoveryHistoryIdbStore;
+}
+
+function getCandidatePoolIdbStore(): UseStore | undefined {
+  if (typeof indexedDB === 'undefined') return undefined;
+  if (!candidatePoolIdbStore) {
+    candidatePoolIdbStore = createIdbStore('cinetrack-candidate-pool-db', 'ct_candidate_pool');
+  }
+  return candidatePoolIdbStore;
+}
+
+function trackCoreIdbWrite(promise: Promise<void>): void {
+  pendingCoreIdbWrites.add(promise);
+  void promise.finally(() => {
+    pendingCoreIdbWrites.delete(promise);
+  });
+}
+
+export async function flushCoreIdbWrites(): Promise<void> {
+  await Promise.allSettled(Array.from(pendingCoreIdbWrites));
+}
+
+export function resetCoreIdbMirrorsForTests(): void {
+  idbHydratedTasteMaps.clear();
+  idbHydratedPools.clear();
+  discoveryHistoryIdbStore = undefined;
+  candidatePoolIdbStore = undefined;
+}
 
 export const REMINDER_WINDOW_DAYS = 3;
 
@@ -1861,10 +1902,106 @@ function compactTasteMapForQuota(data: PersistentTasteMapData): PersistentTasteM
   };
 }
 
+function sanitizeLoadedTasteMapObject(
+  profileId: string,
+  rawParsed: any
+): { loadedData: PersistentTasteMapData; needsMigrationWrite: boolean } | null {
+  if (!rawParsed || typeof rawParsed.entries !== 'object') return null;
+  const migration = migratePersistentTasteMapData(rawParsed, MAX_IMPRESSION_HISTORY_PER_ENTRY);
+  const parsed = migration.data;
+  const lastRecommendedKeys: string[] = canonicalizeMediaKeyList(parsed.lastRecommendedKeys || []);
+  let needsMigrationWrite = migration.changed;
+
+  const sanitizedEntries: Record<string, TasteMapEntry> = {};
+  for (const [k, v] of Object.entries(parsed.entries || {})) {
+    const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+    const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
+    const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
+    if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
+      needsMigrationWrite = true;
+    }
+    sanitizedEntries[mediaKey] = {
+      ...sanitized,
+      mediaKey,
+      ring: inferredRing,
+      initialRing: 'ring0',
+    };
+  }
+
+  const sanitizedArchived: Record<string, TasteMapEntry> = {};
+  if (parsed.archivedEntries && typeof parsed.archivedEntries === 'object') {
+    for (const [k, v] of Object.entries(parsed.archivedEntries)) {
+      const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
+      const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
+      if (sanitizedEntries[mediaKey]) {
+        needsMigrationWrite = true;
+        continue;
+      }
+      const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
+      if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
+        needsMigrationWrite = true;
+      }
+      sanitizedArchived[mediaKey] = {
+        ...sanitized,
+        mediaKey,
+        ring: inferredRing,
+        initialRing: 'ring0',
+      };
+    }
+  }
+
+  const loadedData: PersistentTasteMapData = {
+    profileId,
+    profileSignature: parsed.profileSignature || '',
+    profileSnapshot: parsed.profileSnapshot || undefined,
+    algorithmVersion: parsed.algorithmVersion || undefined,
+    weightsSignature: parsed.weightsSignature || undefined,
+    updatedAt: parsed.updatedAt || new Date().toISOString(),
+    entries: sanitizedEntries,
+    archivedEntries: sanitizedArchived,
+    lastRecommendedKeys,
+    lastBatchTimestamp: parsed.lastBatchTimestamp || null,
+    cachedBalancedItems: Array.isArray(parsed.cachedBalancedItems) ? parsed.cachedBalancedItems : undefined,
+    lastTargetType: parsed.lastTargetType || undefined,
+    lastExplanation: parsed.lastExplanation || undefined,
+    summary: parsed.summary || undefined,
+  };
+  return { loadedData, needsMigrationWrite };
+}
+
+export async function hydrateDiscoveryHistoryIdb(profileId: string): Promise<PersistentTasteMapData> {
+  const key = getTasteMapStorageKey(profileId);
+  const store = getDiscoveryHistoryIdbStore();
+  if (store) {
+    try {
+      const idbVal = await idbGet<PersistentTasteMapData>(key, store);
+      if (idbVal && typeof idbVal.entries === 'object') {
+        const sanitized = sanitizeLoadedTasteMapObject(profileId, idbVal);
+        if (sanitized) {
+          idbHydratedTasteMaps.set(key, sanitized.loadedData);
+          try {
+            if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+          } catch {}
+          if (sanitized.needsMigrationWrite) {
+            savePersistentTasteMap(profileId, sanitized.loadedData);
+          }
+          return sanitized.loadedData;
+        }
+      }
+    } catch {}
+  }
+  return loadPersistentTasteMap(profileId);
+}
+
 export function loadPersistentTasteMap(profileId: string): PersistentTasteMapData {
+  const key = getTasteMapStorageKey(profileId);
+  const store = getDiscoveryHistoryIdbStore();
+  if (store && idbHydratedTasteMaps.has(key)) {
+    return idbHydratedTasteMaps.get(key) as PersistentTasteMapData;
+  }
+
   try {
     if (typeof localStorage !== 'undefined') {
-      const key = getTasteMapStorageKey(profileId);
       const fallback = inMemoryTasteMapFallback.get(key);
       let raw = localStorage.getItem(key);
       if (fallback && fallback.storageRef === localStorage) {
@@ -1874,72 +2011,12 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
       }
       if (raw) {
         const rawParsed = JSON.parse(raw);
-        if (rawParsed && typeof rawParsed.entries === 'object') {
-          const migration = migratePersistentTasteMapData(rawParsed, MAX_IMPRESSION_HISTORY_PER_ENTRY);
-          const parsed = migration.data;
-          const lastRecommendedKeys: string[] = canonicalizeMediaKeyList(parsed.lastRecommendedKeys || []);
-          let needsMigrationWrite = migration.changed;
-
-          const sanitizedEntries: Record<string, TasteMapEntry> = {};
-          for (const [k, v] of Object.entries(parsed.entries || {})) {
-            const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
-            const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
-            const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
-            if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
-              needsMigrationWrite = true;
-            }
-            sanitizedEntries[mediaKey] = {
-              ...sanitized,
-              mediaKey,
-              ring: inferredRing,
-              initialRing: 'ring0',
-            };
+        const sanitized = sanitizeLoadedTasteMapObject(profileId, rawParsed);
+        if (sanitized) {
+          if (store || sanitized.needsMigrationWrite) {
+            savePersistentTasteMap(profileId, sanitized.loadedData);
           }
-
-          const sanitizedArchived: Record<string, TasteMapEntry> = {};
-          if (parsed.archivedEntries && typeof parsed.archivedEntries === 'object') {
-            for (const [k, v] of Object.entries(parsed.archivedEntries)) {
-              const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
-              const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
-              if (sanitizedEntries[mediaKey]) {
-                needsMigrationWrite = true;
-                continue;
-              }
-              const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
-              if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
-                needsMigrationWrite = true;
-              }
-              sanitizedArchived[mediaKey] = {
-                ...sanitized,
-                mediaKey,
-                ring: inferredRing,
-                initialRing: 'ring0',
-              };
-            }
-          }
-
-          const loadedData: PersistentTasteMapData = {
-            profileId,
-            profileSignature: parsed.profileSignature || '',
-            profileSnapshot: parsed.profileSnapshot || undefined,
-            algorithmVersion: parsed.algorithmVersion || undefined,
-            weightsSignature: parsed.weightsSignature || undefined,
-            updatedAt: parsed.updatedAt || new Date().toISOString(),
-            entries: sanitizedEntries,
-            archivedEntries: sanitizedArchived,
-            lastRecommendedKeys,
-            lastBatchTimestamp: parsed.lastBatchTimestamp || null,
-            cachedBalancedItems: Array.isArray(parsed.cachedBalancedItems) ? parsed.cachedBalancedItems : undefined,
-            lastTargetType: parsed.lastTargetType || undefined,
-            lastExplanation: parsed.lastExplanation || undefined,
-            summary: parsed.summary || undefined,
-          };
-
-          if (needsMigrationWrite) {
-            savePersistentTasteMap(profileId, loadedData);
-          }
-
-          return loadedData;
+          return sanitized.loadedData;
         }
       }
     }
@@ -1954,6 +2031,24 @@ export function savePersistentTasteMap(profileId: string, data: PersistentTasteM
     lastRecommendedKeys: canonicalizeMediaKeyList(data.lastRecommendedKeys || []),
     archivedEntries: pruneArchivedTasteEntries(data.archivedEntries || {}),
   };
+
+  // Primary browser storage: IndexedDB via idb-keyval (BUG-02 — zero localStorage bloat)
+  const store = getDiscoveryHistoryIdbStore();
+  if (store) {
+    idbHydratedTasteMaps.set(key, normalizedData);
+    inMemoryTasteMapFallback.delete(key);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(key);
+      }
+    } catch {}
+    trackCoreIdbWrite(
+      idbSet(key, normalizedData, store).catch((err) => {
+        console.warn('[CineTrack] Discovery history IDB write failed:', err);
+      })
+    );
+    return;
+  }
 
   if (typeof localStorage === 'undefined') return;
 
@@ -5162,13 +5257,61 @@ export async function topUpFilteredCandidates({
   return { filteredCandidates: matching, newlyDiscovered };
 }
 
+export async function hydrateCandidatePoolsIdb(
+  profileId: string
+): Promise<{ movie: PersistentCandidatePoolData; tv: PersistentCandidatePoolData }> {
+  const store = getCandidatePoolIdbStore();
+  if (store) {
+    for (const mediaType of ['movie', 'tv'] as const) {
+      const key = `cinetrack_pool_${mediaType}_${profileId}`;
+      try {
+        const idbVal = await idbGet<PersistentCandidatePoolData>(key, store);
+        if (idbVal && idbVal.mediaType === mediaType && Array.isArray(idbVal.items)) {
+          idbHydratedPools.set(key, {
+            mediaType,
+            updatedAt: idbVal.updatedAt || new Date().toISOString(),
+            items: idbVal.items,
+            cursors: {
+              ...createDefaultPoolCursors(),
+              ...(idbVal.cursors || {}),
+            },
+          });
+          try {
+            if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+          } catch {}
+        }
+      } catch {}
+    }
+  }
+  return {
+    movie: loadPersistentPoolData(profileId, 'movie'),
+    tv: loadPersistentPoolData(profileId, 'tv'),
+  };
+}
+
 export function loadPersistentPoolData(
   profileId: string,
   mediaType: 'movie' | 'tv'
 ): PersistentCandidatePoolData {
+  const key = `cinetrack_pool_${mediaType}_${profileId}`;
+  const store = getCandidatePoolIdbStore();
+  if (store && idbHydratedPools.has(key)) {
+    const cached = idbHydratedPools.get(key) as PersistentCandidatePoolData;
+    const tasteMap = loadPersistentTasteMap(profileId);
+    const syncedItems = syncPoolCandidatesWithTasteMap(cached.items || [], tasteMap);
+    return {
+      mediaType,
+      updatedAt: cached.updatedAt || new Date().toISOString(),
+      items: syncedItems,
+      cursors: {
+        ...createDefaultPoolCursors(),
+        ...(cached.cursors || {}),
+      },
+    };
+  }
+
   try {
     if (typeof localStorage !== 'undefined') {
-      const key = `cinetrack_pool_${mediaType}_${profileId}`;
       const fallback = inMemoryPoolFallback.get(key);
       let raw = localStorage.getItem(key);
       if (fallback && fallback.storageRef === localStorage) {
@@ -5181,7 +5324,7 @@ export function loadPersistentPoolData(
         if (parsed && parsed.mediaType === mediaType && Array.isArray(parsed.items)) {
           const tasteMap = loadPersistentTasteMap(profileId);
           const syncedItems = syncPoolCandidatesWithTasteMap(parsed.items, tasteMap);
-          return {
+          const loadedPool: PersistentCandidatePoolData = {
             mediaType,
             updatedAt: parsed.updatedAt || new Date().toISOString(),
             items: syncedItems,
@@ -5190,6 +5333,10 @@ export function loadPersistentPoolData(
               ...(parsed.cursors || {}),
             },
           };
+          if (store) {
+            savePersistentPoolData(profileId, loadedPool);
+          }
+          return loadedPool;
         }
       }
     }
@@ -5201,16 +5348,36 @@ export function savePersistentPoolData(
   profileId: string,
   data: PersistentCandidatePoolData
 ): void {
-  if (typeof localStorage === 'undefined') return;
   const key = `cinetrack_pool_${data.mediaType}_${profileId}`;
   const updatedAt = new Date().toISOString();
   const sliced = data.items.slice(0, POOL_TARGET_CAPACITY);
-  const fullPayload = JSON.stringify({
+  const poolRecord: PersistentCandidatePoolData = {
     mediaType: data.mediaType,
     updatedAt,
     items: sliced,
     cursors: data.cursors,
-  });
+  };
+
+  // Primary browser storage: IndexedDB via idb-keyval (BUG-02 — zero localStorage bloat)
+  const store = getCandidatePoolIdbStore();
+  if (store) {
+    idbHydratedPools.set(key, poolRecord);
+    inMemoryPoolFallback.delete(key);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(key);
+      }
+    } catch {}
+    trackCoreIdbWrite(
+      idbSet(key, poolRecord, store).catch((err) => {
+        console.warn('[CineTrack] Candidate pool IDB write failed:', err);
+      })
+    );
+    return;
+  }
+
+  if (typeof localStorage === 'undefined') return;
+  const fullPayload = JSON.stringify(poolRecord);
   try {
     localStorage.setItem(key, fullPayload);
     inMemoryPoolFallback.delete(key);
@@ -5293,6 +5460,10 @@ export async function replenishCandidatePool({
     lockKey,
     async () => {
       onProgress?.(`${labelPrefix} aday havuzu doğrulanıyor…`);
+      if (typeof indexedDB !== 'undefined') {
+        await hydrateDiscoveryHistoryIdb(profileId);
+        await hydrateCandidatePoolsIdb(profileId);
+      }
       const poolData = loadPersistentPoolData(profileId, mediaType);
 
       // 1. Beş durum kontrolü ile mevcut havuzu temizle

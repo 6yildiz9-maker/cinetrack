@@ -836,15 +836,15 @@ test('Yerel mimari güvenceleri: bun.lock yoktur, VITE_ sırrı yoktur, CINETRAC
   // 1. bun.lock temizlenmiş olmalı
   assert.equal(fs.existsSync(path.join(repoRoot, 'bun.lock')), false, 'bun.lock depoda bulunmamalı');
 
-  // 2. .env.example ve src/services/api.ts içinde VITE_CINETRACK_TOKEN veya CINETRACK_MAX_DATA_BYTES olmamalı; güvenlik değişkenleri belgelenmiş olmalı
+  // 2. .env.example ve src/services/api.ts içinde VITE_CINETRACK_TOKEN, CINETRACK_TOKEN, CINETRACK_RATE_LIMIT, CINETRACK_MAX_DATA_BYTES olmamalı
   const envExample = fs.readFileSync(path.join(repoRoot, '.env.example'), 'utf8');
   assert.equal(envExample.includes('VITE_'), false, '.env.example içinde VITE_ değişkeni bulunmamalı');
+  assert.equal(envExample.includes('CINETRACK_TOKEN'), false);
+  assert.equal(envExample.includes('CINETRACK_RATE_LIMIT'), false);
   assert.equal(envExample.includes('CINETRACK_MAX_DATA_BYTE'), false);
   assert.equal(envExample.includes('CINETRACK_HOST=127.0.0.1'), true);
-  assert.equal(envExample.includes('CINETRACK_TOKEN='), true);
-  assert.equal(envExample.includes('CINETRACK_TRUST_PROXY='), true);
-  assert.equal(envExample.includes('CINETRACK_TMDB_RATE_LIMIT='), true);
-  assert.equal(envExample.includes('CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC='), true);
+  assert.equal(envExample.includes('CINETRACK_TRUST_PROXY=false'), true);
+  assert.equal(envExample.includes('CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC=false'), true);
 
   const apiTs = fs.readFileSync(path.join(repoRoot, 'src/services/api.ts'), 'utf8');
   assert.equal(apiTs.includes('VITE_CINETRACK_TOKEN'), false, 'İstemci kodunda VITE_CINETRACK_TOKEN bulunmamalı');

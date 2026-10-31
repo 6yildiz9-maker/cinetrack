@@ -8,8 +8,9 @@ import {
   DEFAULT_MAX_ITEMS_PER_PROFILE,
   DEFAULT_MAX_PROFILES,
 } from './src/core/limits.ts';
+import type { SavedItem } from './src/core/cinetrack-core.ts';
 import { createCineTrackApp, createSpaFallbackMiddleware } from './src/server/app.ts';
-import { resolveConfig } from './src/server/config.ts';
+import { isAiStudioContainerEnv, resolveConfig } from './src/server/config.ts';
 import { redactSecrets } from './src/server/persistent-store.ts';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -60,7 +61,7 @@ async function startServer() {
   // Başlangıçta mevcut izleme listesi ve profillerdeki yapımları asenkron olarak kalıcı kataloğa aktar (BUG-04)
   try {
     const initialData = await storage.readDataAsync();
-    const allItems: any[] = [];
+    const allItems: SavedItem[] = [];
     for (const p of initialData.profiles || []) {
       if (Array.isArray(p.items)) allItems.push(...p.items);
     }
@@ -86,7 +87,7 @@ async function startServer() {
     app.use(express.static(distPath));
     app.use(createSpaFallbackMiddleware(indexHtmlPath));
   } else {
-    const hmrDisabled = process.env.DISABLE_HMR === 'true' || Boolean(process.env.APP_URL);
+    const hmrDisabled = process.env.DISABLE_HMR === 'true' || isAiStudioContainerEnv(process.env);
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {

@@ -175,6 +175,16 @@ function isLoopbackBindHost(host: string): boolean {
   return clean === '127.0.0.1' || clean === 'localhost' || clean === '::1';
 }
 
+export function isAiStudioContainerEnv(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  return Boolean(
+    env.APP_URL ||
+      env.SHARED_APP_URL ||
+      (env === process.env && existsSync('/.aistudio'))
+  );
+}
+
 /**
  * Tek kaynaklı sunucu yapılandırma çözümleyicisi (EXT-09 & BUG-01):
  * Tüm değişkenler için tek öncelik kuralı: `process.env > .env.local > .env > güvenli varsayılan`.
@@ -182,6 +192,7 @@ function isLoopbackBindHost(host: string): boolean {
  */
 export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServerConfig {
   const env = options.processEnv ?? options.env ?? process.env;
+  const inAiStudio = isAiStudioContainerEnv(env);
   const warnings: string[] = [];
 
   let envLocalValues: Record<string, string> = {};
@@ -213,13 +224,6 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
     }
   }
 
-  const pickRaw = (key: string): string | undefined => {
-    if (env[key] !== undefined) return env[key];
-    if (key in envLocalValues) return envLocalValues[key];
-    if (key in dotEnvValues) return dotEnvValues[key];
-    return undefined;
-  };
-
   const pickNonEmpty = (key: string): string | undefined => {
     const envVal = env[key]?.trim();
     if (envVal) return envVal;
@@ -231,18 +235,34 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
   };
 
   const defaultLoopbackHost = '127.0.0.1' as const;
+  const localFileHost =
+    envLocalValues.CINETRACK_HOST?.trim() ||
+    dotEnvValues.CINETRACK_HOST?.trim() ||
+    envLocalValues.HOST?.trim() ||
+    dotEnvValues.HOST?.trim() ||
+    undefined;
   const rawCinetrackHost = pickNonEmpty('CINETRACK_HOST');
   const rawHost = pickNonEmpty('HOST');
-  const explicitHost = rawCinetrackHost || rawHost;
-  const isAiStudioContainer = Boolean(env.APP_URL) && !explicitHost;
+  const explicitHost = inAiStudio ? localFileHost : rawCinetrackHost || rawHost;
   const effectiveBindHost = explicitHost || defaultLoopbackHost;
-  const listenHost = explicitHost || (isAiStudioContainer ? '0.0.0.0' : defaultLoopbackHost);
+  const listenHost = explicitHost || (inAiStudio ? '0.0.0.0' : defaultLoopbackHost);
 
-  const rawPort = Number(pickNonEmpty('PORT')) || Number(pickNonEmpty('CINETRACK_PORT')) || 3000;
-  const port = Number.isSafeInteger(rawPort) && rawPort > 0 && rawPort <= 65535 ? rawPort : 3000;
+  const rawPortCandidate = inAiStudio
+    ? Number(pickNonEmpty('CINETRACK_PORT')) ||
+      Number(envLocalValues.PORT?.trim()) ||
+      Number(dotEnvValues.PORT?.trim()) ||
+      (env.PORT && env.PORT.trim() !== '8080' ? Number(env.PORT.trim()) : 0) ||
+      3000
+    : Number(pickNonEmpty('PORT')) || Number(pickNonEmpty('CINETRACK_PORT')) || 3000;
+  const port =
+    Number.isSafeInteger(rawPortCandidate) && rawPortCandidate > 0 && rawPortCandidate <= 65535
+      ? rawPortCandidate
+      : 3000;
 
   const tmdbApiKey = pickNonEmpty('TMDB_API_KEY') || '';
-  const authToken = pickNonEmpty('CINETRACK_TOKEN') || '';
+  const authToken = inAiStudio
+    ? envLocalValues.CINETRACK_TOKEN?.trim() || dotEnvValues.CINETRACK_TOKEN?.trim() || ''
+    : pickNonEmpty('CINETRACK_TOKEN') || '';
   const isRemoteHostWithoutToken = !isLoopbackBindHost(effectiveBindHost) && !authToken;
 
   const suggestedAuthToken = !authToken ? crypto.randomBytes(24).toString('hex') : undefined;
@@ -253,9 +273,21 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
     );
   }
 
-  const trustProxy = parseOptionalBool(pickRaw('CINETRACK_TRUST_PROXY')) === true;
+  const pickValidBool = (key: string): boolean | undefined => {
+    for (const candidate of [env[key], envLocalValues[key], dotEnvValues[key]]) {
+      const parsed = parseOptionalBool(candidate);
+      if (parsed !== undefined) return parsed;
+    }
+    return undefined;
+  };
 
-  const rawRateLimit = pickNonEmpty('CINETRACK_TMDB_RATE_LIMIT');
+  const trustProxy = inAiStudio
+    ? parseOptionalBool(envLocalValues.CINETRACK_TRUST_PROXY ?? dotEnvValues.CINETRACK_TRUST_PROXY) === true
+    : pickValidBool('CINETRACK_TRUST_PROXY') === true;
+
+  const rawRateLimit = inAiStudio
+    ? envLocalValues.CINETRACK_TMDB_RATE_LIMIT?.trim() || dotEnvValues.CINETRACK_TMDB_RATE_LIMIT?.trim()
+    : pickNonEmpty('CINETRACK_TMDB_RATE_LIMIT');
   const parsedRateLimit = rawRateLimit !== undefined ? Number(rawRateLimit) : NaN;
   const tmdbRateLimit =
     Number.isFinite(parsedRateLimit) && parsedRateLimit >= 0 ? parsedRateLimit : undefined;
@@ -284,13 +316,13 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
     githubTokenSource = 'env:CINETRACK_GITHUB_TOKEN';
   } else if (localPat) {
     githubToken = localPat;
-    githubTokenSource = 'dotenv_local_pat';
+    githubTokenSource = 'file:.env.local:CINETRACK_GITHUB_PAT';
   } else if (localLegacyTok) {
     githubToken = localLegacyTok;
     githubTokenSource = 'file:.env.local:CINETRACK_GITHUB_TOKEN';
   } else if (dotPat) {
     githubToken = dotPat;
-    githubTokenSource = 'dotenv_pat';
+    githubTokenSource = 'file:.env:CINETRACK_GITHUB_PAT';
   } else if (dotLegacyTok) {
     githubToken = dotLegacyTok;
     githubTokenSource = 'file:.env:CINETRACK_GITHUB_TOKEN';
@@ -323,13 +355,9 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
         ? dotEnvValues.CINETRACK_DATA_REPO_IS_PUBLIC
         : null;
 
-  const isPublicRepo = parseOptionalBool(pickRaw('CINETRACK_DATA_REPO_IS_PUBLIC')) === true;
-  const allowPublicPersonalSync = parseOptionalBool(
-    pickRaw('CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC')
-  );
-  const allowPublicCatalogSync = parseOptionalBool(
-    pickRaw('CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC')
-  );
+  const isPublicRepo = pickValidBool('CINETRACK_DATA_REPO_IS_PUBLIC') === true;
+  const allowPublicPersonalSync = pickValidBool('CINETRACK_ALLOW_PUBLIC_PERSONAL_SYNC');
+  const allowPublicCatalogSync = pickValidBool('CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC');
 
   return {
     port,

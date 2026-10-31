@@ -29,7 +29,7 @@ const trDictionary: TranslationDictionary = {
   offlineBanner: 'Çevrimdışı mod — önbellekteki veriler kullanılıyor.',
   offlinePendingSync: 'Bağlantı geldiğinde bekleyen değişiklikler eşitlenecek.',
   offlineQuotaWarning:
-    'Tarayıcı depolama alanı dolu — bekleyen çevrimdışı değişiklikler yalnızca bu sekmede bellekte tutuluyor; Sayfayı kapatmadan bağlantıyı kontrol edin veya JSON yedeği indirin.',
+    'Tarayıcı depolama alanı dolu — bekleyen çevrimdışı değişiklikler yalnızca bu sekmede bellekte tutuluyor; sayfayı kapatmadan bağlantıyı kontrol edin veya JSON yedeği indirin.',
   matchLabel: (score: number) => `Uyum: ${Math.max(1, Math.min(100, Math.round(score)))}/100`,
   conflictTitle: 'Veri Eşitleme Uyarısı',
   keepLocalButton: 'Bu Cihazdaki Veriyi Koru',

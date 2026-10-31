@@ -52,6 +52,9 @@ interface MediaGridProps {
   onGenreChange?: (g: string) => void;
   selectedSort?: string;
   onSortChange?: (s: string) => void;
+  forYouSubTab?: 'recommendations' | 'series';
+  onForYouSubTabChange?: (sub: 'recommendations' | 'series') => void;
+  seriesCount?: number;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -93,6 +96,9 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onGenreChange,
   selectedSort = 'popular',
   onSortChange,
+  forYouSubTab = 'recommendations',
+  onForYouSubTabChange,
+  seriesCount = 0,
 }) => {
   const [actorsSubTab, setActorsSubTab] = useState<'actors' | 'recommendations'>('actors');
   const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
@@ -101,6 +107,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
     [favoriteActors]
   );
   const isActorsListMode = tab === 'list' && listStatus === 'actors';
+  const isForYouSeriesMode = tab === 'discover' && category === 'for-you' && !query.trim() && forYouSubTab === 'series';
 
   return (
     <section aria-labelledby="catalogTitle">
@@ -112,7 +119,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           <p id="catalogDescription">{description}</p>
         </div>
         <div className="section-head-actions">
-          {tab === 'discover' && category === 'for-you' && onRefreshForYou && (
+          {tab === 'discover' && category === 'for-you' && !isForYouSeriesMode && onRefreshForYou && (
             <button
               type="button"
               className="for-you-head-refresh-btn"
@@ -156,9 +163,33 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         </div>
       )}
 
-      {tab === 'discover' && category === 'for-you' && isLoading && forYouProgressStep && (
+      {tab === 'discover' && category === 'for-you' && !isForYouSeriesMode && isLoading && forYouProgressStep && (
         <div className="progress-step-banner" role="status" aria-live="polite">
           <span>{forYouProgressStep}</span>
+        </div>
+      )}
+
+      {tab === 'discover' && category === 'for-you' && !query.trim() && onForYouSubTabChange && (
+        <div className="actors-subtabs-bar for-you-subtabs-bar" role="tablist" aria-label="Sana Özel alt sekmeleri">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={forYouSubTab === 'recommendations'}
+            className={`actors-subtab-btn ${forYouSubTab === 'recommendations' ? 'is-active' : ''}`}
+            onClick={() => onForYouSubTabChange('recommendations')}
+          >
+            <span>Öneriler</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={forYouSubTab === 'series'}
+            className={`actors-subtab-btn ${forYouSubTab === 'series' ? 'is-active' : ''}`}
+            onClick={() => onForYouSubTabChange('series')}
+          >
+            <span>Seriler</span>{' '}
+            <strong className="actors-subtab-count tabular-nums">{seriesCount}</strong>
+          </button>
         </div>
       )}
 
@@ -407,6 +438,35 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   </button>
                 </div>
               </>
+            ) : isForYouSeriesMode ? (
+              <>
+                <strong>
+                  {selectedType !== 'all' || selectedGenre
+                    ? 'Seçili filtreye uygun eksik seri parçası bulunamadı'
+                    : 'Listenizdeki serilere ait eksik yapım bulunmuyor'}
+                </strong>
+                {selectedType !== 'all' || selectedGenre
+                  ? 'Tür veya Film/Dizi filtresini sıfırlayarak listenizdeki serilerin diğer tüm parçalarını görebilirsiniz.'
+                  : 'İzlediğiniz veya listenize eklediğiniz film ve dizilerin devam halkaları ya da yan yapımları bulunduğunda burada otomatik listelenir.'}
+                <div className="message-actions">
+                  {(selectedType !== 'all' || selectedGenre) && (
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      onClick={() => onEmptyAction('clear-filters')}
+                    >
+                      Filtreleri temizle
+                    </button>
+                  )}
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => onForYouSubTabChange?.('recommendations')}
+                  >
+                    Önerilere dön
+                  </button>
+                </div>
+              </>
             ) : tab === 'discover' && category === 'for-you' ? (
               <>
                 <strong>Öneri oluşturmak için yeterli veri yok</strong>
@@ -516,7 +576,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 tab={tab}
                 showMatch={tab === 'discover' && Boolean(item.tasteScore ?? item.matchScore)}
                 matchScore={item.tasteScore ?? item.matchScore}
-                showRing={tab === 'discover' && category === 'for-you'}
+                showRing={tab === 'discover' && category === 'for-you' && !isForYouSeriesMode}
                 selectionRing={item.lifecycleRing || item.ring}
                 onOpenDetails={onOpenDetails}
                 onQuickAdd={onQuickAdd}
@@ -530,7 +590,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
       </div>
       )}
 
-      {tab === 'discover' && category === 'for-you' && items.length > 0 && onRefreshForYou && (
+      {tab === 'discover' && category === 'for-you' && !isForYouSeriesMode && items.length > 0 && onRefreshForYou && (
         <div className="for-you-refresh-wrap">
           <div className="for-you-refresh-hint">
             <span>💡 Listenize eklediğiniz veya izlediğiniz yeni yapımlara göre önerileri tazelemek için:</span>

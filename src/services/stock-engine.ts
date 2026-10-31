@@ -5,14 +5,23 @@ import {
   recordSurfacedKeys,
   loadSurfacedKeys,
   loadUserListsIdb,
-  StockDepot,
+  loadIsolatedProfileIdb,
+  type StockDepot,
 } from './storage-idb.ts';
-import { indexItemForSeries } from './series-service.ts';
+import { indexItemsForSeriesBatch } from './series-service.ts';
 import type { SavedItem } from '../core/cinetrack-core.ts';
 import type { TmdbItem } from '../types/tmdb.ts';
 
 export const STOCK_TARGET_COUNT = 500;
 export const STOCK_REPLENISH_THRESHOLD = 250;
+
+export type StockTmdbFetcher = (path: string, params?: Record<string, string>) => Promise<any>;
+
+let activeStockFetcher: StockTmdbFetcher = (path, params) => fetchTmdb(path, params);
+
+export function setStockTmdbFetcher(fetcher?: StockTmdbFetcher | null): void {
+  activeStockFetcher = fetcher || ((path, params) => fetchTmdb(path, params));
+}
 
 export interface StockState {
   movies: TmdbItem[];
@@ -24,13 +33,14 @@ export interface StockState {
   lastUpdated: string;
 }
 
-let activeStock: StockDepot = { movies: [], tv: [], updatedAt: '' };
+let activeStock: StockDepot = { movies: [], tv: [], updatedAt: '', cursors: {} };
 let isInitialized = false;
 let isReplenishingActive = false;
+let replenishmentTimeout: ReturnType<typeof setTimeout> | null = null;
 const stockListeners = new Set<(state: StockState) => void>();
 
-function notifyStockListeners(): void {
-  const state: StockState = {
+function buildStockStateSnapshot(): StockState {
+  return {
     movies: activeStock.movies,
     tv: activeStock.tv,
     moviesCount: activeStock.movies.length,
@@ -39,6 +49,10 @@ function notifyStockListeners(): void {
     isReplenishing: isReplenishingActive,
     lastUpdated: activeStock.updatedAt,
   };
+}
+
+function notifyStockListeners(): void {
+  const state = buildStockStateSnapshot();
   for (const listener of stockListeners) {
     try {
       listener(state);
@@ -50,16 +64,7 @@ function notifyStockListeners(): void {
 
 export function subscribeStockState(listener: (state: StockState) => void): () => void {
   stockListeners.add(listener);
-  // Send initial state immediately
-  listener({
-    movies: activeStock.movies,
-    tv: activeStock.tv,
-    moviesCount: activeStock.movies.length,
-    tvCount: activeStock.tv.length,
-    isLoading: !isInitialized,
-    isReplenishing: isReplenishingActive,
-    lastUpdated: activeStock.updatedAt,
-  });
+  listener(buildStockStateSnapshot());
   return () => {
     stockListeners.delete(listener);
   };
@@ -77,110 +82,191 @@ export function getStockCounts(): { moviesCount: number; tvCount: number; total:
   };
 }
 
+export function resetStockEngineForTests(): void {
+  if (replenishmentTimeout) {
+    clearTimeout(replenishmentTimeout);
+    replenishmentTimeout = null;
+  }
+  activeStock = { movies: [], tv: [], updatedAt: '', cursors: {} };
+  isInitialized = false;
+  isReplenishingActive = false;
+  setStockTmdbFetcher(null);
+  notifyStockListeners();
+}
+
 /**
- * Initializes stock depot from IndexedDB or replenishes if below threshold
+ * Initializes ct:stock depot from IndexedDB and triggers initial fill to 500 movies + 500 TV shows
+ * when below threshold (< 250).
  */
-export async function initStockEngine(profileId: string): Promise<StockDepot> {
-  if (isInitialized && activeStock.movies.length >= STOCK_REPLENISH_THRESHOLD && activeStock.tv.length >= STOCK_REPLENISH_THRESHOLD) {
+export async function initStockEngine(
+  profileId: string,
+  options: { immediate?: boolean } = {}
+): Promise<StockDepot> {
+  if (
+    isInitialized &&
+    activeStock.movies.length >= STOCK_REPLENISH_THRESHOLD &&
+    activeStock.tv.length >= STOCK_REPLENISH_THRESHOLD
+  ) {
     return activeStock;
   }
 
   const loaded = await loadStockIdb();
-  activeStock = loaded;
+  activeStock = {
+    movies: Array.isArray(loaded.movies) ? loaded.movies : [],
+    tv: Array.isArray(loaded.tv) ? loaded.tv : [],
+    updatedAt: loaded.updatedAt || '',
+    cursors: loaded.cursors || {},
+  };
   isInitialized = true;
   notifyStockListeners();
 
-  // If initial stock is below 250 for movies or TV, trigger initial fill to 500
-  if (activeStock.movies.length < STOCK_REPLENISH_THRESHOLD || activeStock.tv.length < STOCK_REPLENISH_THRESHOLD) {
-    scheduleStockReplenishment(profileId);
+  if (
+    activeStock.movies.length < STOCK_REPLENISH_THRESHOLD ||
+    activeStock.tv.length < STOCK_REPLENISH_THRESHOLD
+  ) {
+    if (options.immediate) {
+      await executeStockReplenishment(profileId);
+    } else {
+      scheduleStockReplenishment(profileId, 250);
+    }
   }
 
   return activeStock;
 }
 
 /**
- * Consumes an item from stock when the user adds it to their list (Aşama 4: Adım 12)
+ * Consumes an item from ct:stock when the user adds it to their list (Aşama 4: Adım 12)
+ * and schedules autonomous replenishment if movie or TV count drops below 250 (Adım 13).
  */
 export async function consumeStockItem(
   item: TmdbItem | SavedItem | any,
   profileId: string
-): Promise<void> {
-  if (!item || !item.id) return;
-  const isTv = item.media_type === 'tv' || (!item.media_type && item.name);
-  const targetId = Number(item.id);
+): Promise<{ removed: boolean; triggeredReplenish: boolean }> {
+  if (!item || item.id == null) return { removed: false, triggeredReplenish: false };
+  if (!isInitialized) {
+    activeStock = await loadStockIdb();
+    isInitialized = true;
+  }
+
+  const isTv = item.media_type === 'tv' || (!item.media_type && Boolean(item.name) && !item.title);
+  const targetId = String(item.id);
 
   let removed = false;
   if (isTv) {
     const prevLen = activeStock.tv.length;
-    activeStock.tv = activeStock.tv.filter((it) => Number(it.id) !== targetId);
+    activeStock.tv = activeStock.tv.filter((it) => String(it.id) !== targetId);
     if (activeStock.tv.length !== prevLen) removed = true;
   } else {
     const prevLen = activeStock.movies.length;
-    activeStock.movies = activeStock.movies.filter((it) => Number(it.id) !== targetId);
+    activeStock.movies = activeStock.movies.filter((it) => String(it.id) !== targetId);
     if (activeStock.movies.length !== prevLen) removed = true;
   }
 
+  let triggeredReplenish = false;
   if (removed) {
     activeStock.updatedAt = new Date().toISOString();
     await saveStockIdb(activeStock);
     notifyStockListeners();
 
-    // Check threshold (Aşama 4: Adım 13)
-    if (activeStock.movies.length < STOCK_REPLENISH_THRESHOLD || activeStock.tv.length < STOCK_REPLENISH_THRESHOLD) {
-      scheduleStockReplenishment(profileId);
+    if (
+      activeStock.movies.length < STOCK_REPLENISH_THRESHOLD ||
+      activeStock.tv.length < STOCK_REPLENISH_THRESHOLD
+    ) {
+      triggeredReplenish = true;
+      scheduleStockReplenishment(profileId, 200);
     }
   }
+
+  return { removed, triggeredReplenish };
 }
 
 /**
- * Marks items as surfaced on discover tab (Aşama 2: Adım 6)
+ * Marks items shown on the Discover tab (that are NOT in the user's list) into ct:surfaced FIFO store (Aşama 2: Adım 6)
  */
-export async function markItemsAsSurfaced(items: (TmdbItem | any)[]): Promise<void> {
+export async function markItemsAsSurfaced(
+  items: (TmdbItem | any)[],
+  savedKeys?: Set<string>
+): Promise<void> {
   const keys: string[] = [];
   for (const it of items) {
-    if (!it || !it.id) continue;
-    const mType = it.media_type === 'tv' ? 'tv' : 'movie';
-    keys.push(`${mType}:${it.id}`);
+    if (!it || it.id == null) continue;
+    const mType = it.media_type === 'tv' || (!it.media_type && it.name && !it.title) ? 'tv' : 'movie';
+    const mediaKey = `${mType}:${it.id}`;
+    if (savedKeys && savedKeys.has(mediaKey)) continue;
+    keys.push(mediaKey);
   }
   if (keys.length > 0) {
     await recordSurfacedKeys(keys);
   }
 }
 
-let replenishmentTimeout: ReturnType<typeof setTimeout> | null = null;
-
-export function scheduleStockReplenishment(profileId: string, delayMs = 1500): void {
+export function scheduleStockReplenishment(profileId: string, delayMs = 600): void {
   if (isReplenishingActive) return;
   if (replenishmentTimeout) clearTimeout(replenishmentTimeout);
 
-  replenishmentTimeout = setTimeout(async () => {
+  replenishmentTimeout = setTimeout(() => {
     replenishmentTimeout = null;
-    await executeStockReplenishment(profileId);
+    void executeStockReplenishment(profileId);
   }, delayMs);
 }
 
 /**
- * Autonomous stock engine: fills movie and TV depot to 500 items each,
- * filtering out user-lists, ct:surfaced and already-in-stock IDs (Aşama 4: Adım 14).
+ * Autonomous stock engine: fills movie and TV depot back to 500 items each whenever
+ * either depot is below 250 (or during initial cold fill), strictly filtering out
+ * user-lists, disliked/hidden preferences, ct:surfaced, and current ct:stock IDs (Aşama 4: Adım 13–14).
  */
-export async function executeStockReplenishment(profileId: string): Promise<void> {
-  if (isReplenishingActive) return;
+export async function executeStockReplenishment(profileId: string): Promise<StockDepot> {
+  if (isReplenishingActive) return activeStock;
+  if (replenishmentTimeout) {
+    clearTimeout(replenishmentTimeout);
+    replenishmentTimeout = null;
+  }
+
   isReplenishingActive = true;
   notifyStockListeners();
 
   try {
-    const userListItems = await loadUserListsIdb(profileId);
-    const surfacedList = await loadSurfacedKeys();
+    if (!isInitialized) {
+      const loaded = await loadStockIdb();
+      activeStock = {
+        movies: Array.isArray(loaded.movies) ? loaded.movies : [],
+        tv: Array.isArray(loaded.tv) ? loaded.tv : [],
+        updatedAt: loaded.updatedAt || '',
+        cursors: loaded.cursors || {},
+      };
+      isInitialized = true;
+    }
 
-    // Build exclusion set
-    const excludedKeys = new Set<string>();
+    const [userListItems, surfacedList, isolatedProfile] = await Promise.all([
+      loadUserListsIdb(profileId),
+      loadSurfacedKeys(),
+      loadIsolatedProfileIdb(profileId),
+    ]);
+
+    const userAndSurfacedExclusions = new Set<string>();
     for (const it of userListItems) {
       const mType = it.media_type === 'tv' ? 'tv' : 'movie';
-      excludedKeys.add(`${mType}:${it.id}`);
+      userAndSurfacedExclusions.add(`${mType}:${it.id}`);
+    }
+    for (const dislikedKey of isolatedProfile?.preferences?.disliked || []) {
+      userAndSurfacedExclusions.add(dislikedKey);
+    }
+    for (const hiddenKey of isolatedProfile?.preferences?.hidden || []) {
+      userAndSurfacedExclusions.add(hiddenKey);
     }
     for (const key of surfacedList) {
-      excludedKeys.add(key);
+      userAndSurfacedExclusions.add(key);
     }
+
+    // Purge any stock items that have since entered user-lists or disliked
+    activeStock.movies = activeStock.movies.filter(
+      (m) => !userAndSurfacedExclusions.has(`movie:${m.id}`)
+    );
+    activeStock.tv = activeStock.tv.filter(
+      (t) => !userAndSurfacedExclusions.has(`tv:${t.id}`)
+    );
+
+    const excludedKeys = new Set<string>(userAndSurfacedExclusions);
     for (const m of activeStock.movies) {
       excludedKeys.add(`movie:${m.id}`);
     }
@@ -188,95 +274,123 @@ export async function executeStockReplenishment(profileId: string): Promise<void
       excludedKeys.add(`tv:${t.id}`);
     }
 
-    const movieShortage = Math.max(0, STOCK_TARGET_COUNT - activeStock.movies.length);
-    const tvShortage = Math.max(0, STOCK_TARGET_COUNT - activeStock.tv.length);
+    const cursors: Record<string, number> = { ...(activeStock.cursors || {}) };
+    const newlyIndexedCandidates: TmdbItem[] = [];
 
-    if (movieShortage > 0) {
-      const newMovies = await fetchCandidateBatch('movie', movieShortage, excludedKeys);
-      activeStock.movies.push(...newMovies);
-      for (const m of newMovies) {
-        excludedKeys.add(`movie:${m.id}`);
-        // Index franchise/collection in background
-        indexItemForSeries(m).catch(() => {});
+    const needsMoviesFill = activeStock.movies.length < STOCK_REPLENISH_THRESHOLD;
+    const needsTvFill = activeStock.tv.length < STOCK_REPLENISH_THRESHOLD;
+
+    if (needsMoviesFill) {
+      const movieShortage = Math.max(0, STOCK_TARGET_COUNT - activeStock.movies.length);
+      if (movieShortage > 0) {
+        const newMovies = await fetchCandidateBatch('movie', movieShortage, excludedKeys, cursors);
+        activeStock.movies.push(...newMovies);
+        newlyIndexedCandidates.push(...newMovies.slice(0, 60));
       }
     }
 
-    if (tvShortage > 0) {
-      const newTv = await fetchCandidateBatch('tv', tvShortage, excludedKeys);
-      activeStock.tv.push(...newTv);
-      for (const t of newTv) {
-        excludedKeys.add(`tv:${t.id}`);
-        // Index franchise/collection in background
-        indexItemForSeries(t).catch(() => {});
+    if (needsTvFill) {
+      const tvShortage = Math.max(0, STOCK_TARGET_COUNT - activeStock.tv.length);
+      if (tvShortage > 0) {
+        const newTv = await fetchCandidateBatch('tv', tvShortage, excludedKeys, cursors);
+        activeStock.tv.push(...newTv);
+        newlyIndexedCandidates.push(...newTv.slice(0, 60));
       }
     }
 
+    activeStock.cursors = cursors;
     activeStock.updatedAt = new Date().toISOString();
     await saveStockIdb(activeStock);
+
+    // Index series/franchises for stock items in background without blocking UI
+    if (newlyIndexedCandidates.length > 0) {
+      void indexItemsForSeriesBatch(newlyIndexedCandidates);
+    }
   } catch (err) {
     console.warn('[StockEngine] Replenishment error:', err);
   } finally {
     isReplenishingActive = false;
     notifyStockListeners();
   }
+
+  return activeStock;
 }
 
 /**
- * Fetches batches across popular, top_rated and discover endpoints
+ * Fetches batches across popular, top_rated, discover, and trending endpoints with persistent cursors
+ * until `targetNeeded` unique eligible items are collected (up to 500 movies / 500 TV shows).
  */
 async function fetchCandidateBatch(
   mediaType: 'movie' | 'tv',
   targetNeeded: number,
-  excludedKeys: Set<string>
+  excludedKeys: Set<string>,
+  cursors: Record<string, number>
 ): Promise<TmdbItem[]> {
   const result: TmdbItem[] = [];
-  const endpoints = [
-    { path: `/${mediaType}/popular`, pages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
-    { path: `/${mediaType}/top_rated`, pages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+  const endpoints: Array<{
+    cursorKey: string;
+    path: string;
+    params?: Record<string, string>;
+    maxPages: number;
+  }> = [
+    { cursorKey: `${mediaType}:popular`, path: `/${mediaType}/popular`, maxPages: 20 },
+    { cursorKey: `${mediaType}:top_rated`, path: `/${mediaType}/top_rated`, maxPages: 20 },
     {
+      cursorKey: `${mediaType}:discover_pop`,
       path: `/discover/${mediaType}`,
-      params: { sort_by: 'popularity.desc', 'vote_count.gte': '100' },
-      pages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      params: { sort_by: 'popularity.desc', 'vote_count.gte': '80' },
+      maxPages: 25,
     },
     {
+      cursorKey: `${mediaType}:discover_vote`,
       path: `/discover/${mediaType}`,
-      params: { sort_by: 'vote_average.desc', 'vote_count.gte': '300' },
-      pages: [1, 2, 3, 4, 5],
+      params: { sort_by: 'vote_average.desc', 'vote_count.gte': '250' },
+      maxPages: 20,
     },
-    { path: `/trending/${mediaType}/week`, pages: [1, 2, 3] },
+    { cursorKey: `${mediaType}:trending`, path: `/trending/${mediaType}/week`, maxPages: 10 },
   ];
 
   for (const ep of endpoints) {
     if (result.length >= targetNeeded) break;
 
-    for (const page of ep.pages) {
+    const startPage = Math.max(1, Number(cursors[ep.cursorKey]) || 1);
+    for (let offset = 0; offset < ep.maxPages; offset += 1) {
       if (result.length >= targetNeeded) break;
 
+      const page = ((startPage - 1 + offset) % 50) + 1;
       try {
         const queryParams: Record<string, string> = {
           page: String(page),
           ...(ep.params || {}),
         };
-        const res = await fetchTmdb(ep.path, queryParams);
+        const res = await activeStockFetcher(ep.path, queryParams);
         const items = Array.isArray(res?.results) ? res.results : [];
+        if (items.length === 0) break;
 
+        let addedFromPage = 0;
         for (const it of items) {
-          if (!it || !it.id) continue;
+          if (!it || it.id == null) continue;
           const key = `${mediaType}:${it.id}`;
           if (excludedKeys.has(key)) continue;
 
-          // Normalize item
           const normalized: TmdbItem = {
             ...it,
             media_type: mediaType,
           };
           result.push(normalized);
           excludedKeys.add(key);
+          addedFromPage += 1;
 
           if (result.length >= targetNeeded) break;
         }
-      } catch (err) {
-        // Continue to next page or endpoint
+
+        cursors[ep.cursorKey] = (page % 50) + 1;
+        const totalPages = Number(res?.total_pages) || 1;
+        if (page >= totalPages && addedFromPage === 0) {
+          break;
+        }
+      } catch {
+        break;
       }
     }
   }

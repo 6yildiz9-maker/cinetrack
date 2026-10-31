@@ -70,6 +70,8 @@ import {
   HIDE_LISTED_CATEGORIES,
   filterHiddenUserRegisteredItems,
   normalizeDeletedKeys,
+  hydrateDiscoveryHistoryIdb,
+  hydrateCandidatePoolsIdb,
 } from './core/cinetrack-core';
 import {
   fetchTmdb,
@@ -93,7 +95,24 @@ import {
   mapRecommendationBatchToDisplayItems,
 } from './core/recommendation-orchestrator';
 import { useOfflineSync } from './hooks/useOfflineSync';
+import { useStockEngine } from './hooks/useStockEngine';
 import { hasPendingOfflineSync } from './services/offline-queue';
+import {
+  saveIsolatedProfileIdb,
+  saveUserListsIdb,
+  removeSurfacedKey,
+  subscribeSeriesIndex,
+} from './services/storage-idb';
+import {
+  indexItemForSeries,
+  indexItemsForSeriesBatch,
+  computeUserSeriesUniverses,
+} from './services/series-service';
+import { consumeStockItem, markItemsAsSurfaced } from './services/stock-engine';
+import {
+  enforcePosterCacheQuota,
+  requestServiceWorkerPosterPurge,
+} from './services/poster-cache-manager';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
@@ -233,6 +252,8 @@ export function App() {
   const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph'>('poster');
   const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
+  const [forYouSubTab, setForYouSubTab] = useState<'recommendations' | 'series'>('recommendations');
+  const [seriesIndexVersion, setSeriesIndexVersion] = useState<number>(0);
   const [listStatus, setListStatus] = useState<string>('all');
   const [query, setQuery] = useState<string>('');
   const [selectedGenre, setSelectedGenre] = useState<string>('');
@@ -448,6 +469,51 @@ export function App() {
     syncDocument,
     resolveQueuedConflict,
   } = useOfflineSync(handleServerConflict);
+
+  // Autonomous 500-movie + 500-TV IndexedDB stock engine & <250 background replenisher (Aşama 2 & 4)
+  useStockEngine(activeProfileId);
+
+  // Hydrate discovery-history & candidate-pool from IndexedDB on startup/profile switch (BUG-02)
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      hydrateDiscoveryHistoryIdb(activeProfileId),
+      hydrateCandidatePoolsIdb(activeProfileId),
+    ]).then(([hydratedMap]) => {
+      if (!active || !hydratedMap) return;
+      if ((hydratedMap.updatedAt || '') > (tasteMapRef.current?.updatedAt || '')) {
+        tasteMapRef.current = hydratedMap;
+        setTasteMap(hydratedMap);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeProfileId]);
+
+  // Subscribe to ct:series-index changes & enforce 200 MiB poster LRU quota (EXT-03 & FEAT-01)
+  useEffect(() => {
+    const unsubSeries = subscribeSeriesIndex(() => {
+      setSeriesIndexVersion((v) => v + 1);
+    });
+    void enforcePosterCacheQuota();
+    requestServiceWorkerPosterPurge();
+    const quotaInterval = setInterval(() => {
+      void enforcePosterCacheQuota();
+      requestServiceWorkerPosterPurge();
+    }, 5 * 60 * 1000);
+    return () => {
+      unsubSeries();
+      clearInterval(quotaInterval);
+    };
+  }, []);
+
+  // Index user's saved items into ct:series-index so SERİ badges and Seriler tab stay populated (FEAT-01 #8)
+  useEffect(() => {
+    if (savedItems.length > 0) {
+      void indexItemsForSeriesBatch(savedItems);
+    }
+  }, [savedItems]);
 
   const applyDataDocumentToState = useCallback((rawDoc: DataDocument) => {
     const doc = normalizeDataDocument(rawDoc);
@@ -1796,6 +1862,10 @@ export function App() {
   useEffect(() => {
     if (tab === 'discover') {
       if (category === 'for-you') {
+        // FEAT-01 #11: Switching Tümü / Film / Dizi or genre inside "Seriler" filters from memory with ZERO network calls
+        if (forYouSubTab === 'series' && !query.trim()) {
+          return;
+        }
         const currentForYouKey = `${activeProfileId}|${
           selectedType === 'movie' || selectedType === 'tv' ? selectedType : 'all'
         }|${selectedGenre || ''}|${selectedProvider || ''}`;
@@ -1810,7 +1880,7 @@ export function App() {
       }
       loadCategoryResults(category, 1, false, query, selectedProvider, false, selectedType, selectedGenre);
     }
-  }, [tab, category, query, selectedProvider, selectedType, selectedGenre, hideListedItems, loadCategoryResults]);
+  }, [tab, category, forYouSubTab, query, selectedProvider, selectedType, selectedGenre, hideListedItems, loadCategoryResults]);
 
   // Load more pagination
   const handleLoadMore = () => {
@@ -1918,6 +1988,11 @@ export function App() {
       tasteMapRef.current = nextMap;
       setTasteMap(nextMap);
     } catch {}
+
+    // Aşama 3 & 4: Stoktan düş, ct:surfaced geçmişinden çıkar ve seri indeksini güncelle
+    void consumeStockItem(normalized, activeProfileIdRef.current);
+    void removeSurfacedKey(itemKey);
+    void indexItemForSeries(normalized);
 
     const title = displayTitle(item);
     if (effectiveStatus === 'completed') {
@@ -2184,8 +2259,50 @@ export function App() {
     return filtered;
   };
 
+  // FEAT-01 #10 & #11: Compute missing franchise parts strictly for franchises present in user's savedItems
+  const seriesUniverseData = React.useMemo(() => {
+    void seriesIndexVersion;
+    const universes = computeUserSeriesUniverses(savedItems);
+    const items: any[] = [];
+    const reasonsMap = new Map<string, string>();
+    const seenKeys = new Set<string>();
+    const dislikedSet = new Set(preferences.disliked || []);
+    const hiddenSet = new Set(preferences.hidden || []);
+
+    for (const u of universes) {
+      const ownedTitles = u.userOwnedParts
+        .slice(0, 2)
+        .map((p) => p.title || p.name)
+        .filter(Boolean)
+        .join(', ');
+      const reason = ownedTitles
+        ? `${u.collection.name} · Listenizdeki "${ownedTitles}" ile aynı seride`
+        : `${u.collection.name} serisinin devam halkası`;
+
+      for (const part of u.userMissingParts) {
+        const mType = part.media_type === 'tv' ? 'tv' : 'movie';
+        const key = makeMediaKey(mType, part.id);
+        if (seenKeys.has(key) || dislikedSet.has(key) || hiddenSet.has(key)) continue;
+        if (isItemSaved(savedItems, part, mType)) continue;
+        seenKeys.add(key);
+        items.push({
+          ...part,
+          media_type: mType,
+          belongs_to_collection: mType === 'movie' ? { id: u.collection.id, name: u.collection.name } : undefined,
+        });
+        reasonsMap.set(key, reason);
+      }
+    }
+
+    return { items, reasonsMap, universesCount: universes.length };
+  }, [savedItems, preferences.disliked, preferences.hidden, seriesIndexVersion]);
+
   const getDisplayedItems = () => {
     if (tab === 'discover') {
+      if (category === 'for-you' && forYouSubTab === 'series' && !query.trim()) {
+        return filterAndSortItems(seriesUniverseData.items);
+      }
+
       const rawSource = category === 'for-you' ? forYouItems : catalogItems;
       const shouldHideUserRegistered =
         !query.trim() &&
@@ -2240,6 +2357,16 @@ export function App() {
   };
 
   const displayedItems = getDisplayedItems();
+
+  // FEAT-02 #6: Record unsaved items displayed on the Discover tab into ct:surfaced FIFO ring history
+  useEffect(() => {
+    if (tab !== 'discover' || displayedItems.length === 0) return;
+    if (category === 'for-you' && forYouSubTab === 'series' && !query.trim()) return;
+    const savedKeySet = new Set(
+      savedItems.map((it) => `${it.media_type === 'tv' ? 'tv' : 'movie'}:${it.id}`)
+    );
+    void markItemsAsSurfaced(displayedItems, savedKeySet);
+  }, [tab, category, forYouSubTab, query, displayedItems, savedItems]);
 
   // Hero Item
   const watchingItem = savedItems.find((item) => item.status === 'watching') || null;
@@ -2299,6 +2426,27 @@ export function App() {
     return buildTasteProfileSummary(profile, tasteMap, genresMap);
   }, [tasteMap, savedItems, preferences.disliked, genresMap]);
 
+  // FEAT-02 #4: Persist isolated ct:profile (Theme, DNA, Preferences) and compact ct:user-lists (IDs & statuses only)
+  useEffect(() => {
+    const resolvedTheme =
+      typeof document !== 'undefined'
+        ? document.documentElement.dataset.theme || 'dark-navy'
+        : 'dark-navy';
+    void saveIsolatedProfileIdb({
+      profileId: activeProfileId,
+      name: profileName,
+      theme: resolvedTheme,
+      dna: tasteSummary,
+      preferences,
+      favoriteActors,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [activeProfileId, profileName, tasteSummary, preferences, favoriteActors]);
+
+  useEffect(() => {
+    void saveUserListsIdb(activeProfileId, savedItems);
+  }, [activeProfileId, savedItems]);
+
   // Header and Catalog Section Titles
   const getCatalogTitles = () => {
     if (tab === 'list') {
@@ -2338,16 +2486,18 @@ export function App() {
     const catMap: Record<string, { title: string; description: string }> = {
       trending: { title: 'Güncel trendler', description: 'TMDB\'den canlı olarak yükleniyor' },
       'for-you': {
-        title: 'Sana özel',
+        title: forYouSubTab === 'series' ? 'Sana özel · Seriler' : 'Sana özel',
         description:
-          forYouExplanation ||
-          (selectedGenre && genresMap[Number(selectedGenre)]
-            ? `${genresMap[Number(selectedGenre)]} türünde zevk profiline göre oluşturulan 20 öneri`
-            : selectedType === 'movie'
-            ? 'Film izleme geçmişin ve kişisel puanlarından oluşturulan 20 film önerisi'
-            : selectedType === 'tv'
-            ? 'Dizi izleme geçmişin ve kişisel puanlarından oluşturulan 20 dizi önerisi'
-            : 'İzleme listen ve kişisel puanlarından oluşturulan 20 öneri'),
+          forYouSubTab === 'series'
+            ? 'Listenizdeki film ve dizilerin aynı evrendeki diğer halkaları ve devam yapımları'
+            : forYouExplanation ||
+              (selectedGenre && genresMap[Number(selectedGenre)]
+                ? `${genresMap[Number(selectedGenre)]} türünde zevk profiline göre oluşturulan 20 öneri`
+                : selectedType === 'movie'
+                ? 'Film izleme geçmişin ve kişisel puanlarından oluşturulan 20 film önerisi'
+                : selectedType === 'tv'
+                ? 'Dizi izleme geçmişin ve kişisel puanlarından oluşturulan 20 dizi önerisi'
+                : 'İzleme listen ve kişisel puanlarından oluşturulan 20 öneri'),
       },
       gems: {
         title: 'Keşfedilmemiş mücevherler',
@@ -2731,12 +2881,18 @@ export function App() {
             <MediaGrid
               title={catalogTitle}
               description={catalogDescription}
-              isLoading={isLoading}
+              isLoading={category === 'for-you' && forYouSubTab === 'series' && !query.trim() ? false : isLoading}
               loadingMore={loadingMore}
               items={displayedItems}
               savedItems={savedItems}
               genres={genresMap}
-              recommendationReasons={category === 'for-you' ? forYouReasons : EMPTY_REASONS_MAP}
+              recommendationReasons={
+                category === 'for-you'
+                  ? forYouSubTab === 'series' && !query.trim()
+                    ? seriesUniverseData.reasonsMap
+                    : forYouReasons
+                  : EMPTY_REASONS_MAP
+              }
               dislikedKeys={preferences.disliked}
               preferredProviders={preferences.providers}
               tab={tab}
@@ -2769,6 +2925,9 @@ export function App() {
               onGenreChange={handleSelectGenre}
               selectedSort={selectedSort}
               onSortChange={setSelectedSort}
+              forYouSubTab={forYouSubTab}
+              onForYouSubTabChange={setForYouSubTab}
+              seriesCount={seriesUniverseData.items.length}
             />
           </ErrorBoundary>
         )}

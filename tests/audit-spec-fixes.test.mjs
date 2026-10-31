@@ -11,6 +11,7 @@ import {
   createCineTrackApp,
   createSpaFallbackMiddleware,
   isStaticAssetRequestPath,
+  resolveExportDocument,
 } from '../src/server/app.ts';
 import { PersistentDataStore } from '../src/server/persistent-store.ts';
 import { reconcileUserDataDocumentsLossless } from '../src/server/github-bidirectional-sync.ts';
@@ -36,7 +37,7 @@ import {
   ESTIMATED_MOVIE_MINUTES,
   ESTIMATED_TV_EPISODE_MINUTES,
   ESTIMATED_TV_FALLBACK_EPISODES,
-  formatWatchTime,
+  calculateItemWatchMinutes,
 } from '../src/utils/helpers.ts';
 import { t } from '../src/i18n/index.ts';
 
@@ -53,12 +54,12 @@ async function withServer(options, fn) {
   }
 }
 
-function makeMinimalDoc(profiles = [{ id: 'p1', name: 'Test', items: [] }]) {
+function makeMinimalDoc(profiles = [{ id: 'profile-1', name: 'Test', items: [] }]) {
   return {
     version: 3,
     schemaVersion: 3,
     engineVersion: 'v3.2.0',
-    activeProfileId: profiles[0]?.id || 'p1',
+    activeProfileId: profiles[0]?.id || 'profile-1',
     profiles,
   };
 }
@@ -70,7 +71,8 @@ test('BUG-01 & BUG-05: Loopback dışı arayüzde token yokken yazma/hassas uç 
     await withServer(
       {
         dataDir: tmpDir,
-        security: { bindHost: '0.0.0.0', trustProxy: false },
+        bindHost: '0.0.0.0',
+        trustProxy: false,
       },
       async (baseUrl) => {
         const putRes = await fetch(`${baseUrl}/api/data`, {
@@ -100,16 +102,14 @@ test('BUG-01 & BUG-05: Loopback dışı arayüzde token yokken yazma/hassas uç 
     await withServer(
       {
         dataDir: tmpDir,
-        security: {
-          bindHost: '0.0.0.0',
-          authToken: 'gizli-test-parolasi-123',
-          trustProxy: false,
-          tmdbRateLimitMax: 2,
-          tmdbRateLimitWindowMs: 60_000,
-        },
+        bindHost: '0.0.0.0',
+        authToken: 'gizli-test-parolasi-123',
+        trustProxy: false,
+        rateLimitMaxRequests: 2,
+        rateLimitWindowMs: 60_000,
       },
       async (baseUrl) => {
-        // Kötü niyetli Origin + sahte X-Forwarded-Host -> 403 origin_denied
+        // Kötü niyetli Origin + sahte X-Forwarded-Host -> 403 csrf_origin_mismatch
         const spoofedOriginRes = await fetch(`${baseUrl}/api/data`, {
           method: 'PUT',
           headers: {
@@ -122,7 +122,7 @@ test('BUG-01 & BUG-05: Loopback dışı arayüzde token yokken yazma/hassas uç 
         });
         assert.equal(spoofedOriginRes.status, 403);
         const spoofedBody = await spoofedOriginRes.json();
-        assert.equal(spoofedBody.code, 'origin_denied');
+        assert.equal(spoofedBody.code, 'csrf_origin_mismatch');
 
         // Farklı X-Forwarded-For değerleri gönderilse bile aynı soket IP'si üzerinden 3. istek 429 almalı
         const r1 = await fetch(
@@ -166,12 +166,12 @@ test('BUG-02 & BUG-07: localStorage kotası dolduğunda çevrimdışı kuyruk be
     };
 
     clearOfflineSyncSnapshot();
-    const doc = makeMinimalDoc([{ id: 'p1', name: 'Offline', items: [] }]);
+    const doc = makeMinimalDoc([{ id: 'profile-1', name: 'Offline', items: [] }]);
     const enq = enqueueOfflineSyncSnapshot(doc, 0);
     assert.equal(enq.persisted, false);
     assert.equal(enq.baseRevision, 0);
     assert.equal(hasUnpersistedOfflineFallback(), true);
-    assert.ok(t('offlineQuotaWarning').includes('Sayfayı kapatmadan'));
+    assert.ok(t().offlineQuotaWarning.includes('sayfayı kapatmadan'));
 
     const loaded = loadOfflineSyncSnapshot();
     assert.ok(loaded);
@@ -184,10 +184,10 @@ test('BUG-02 & BUG-07: localStorage kotası dolduğunda çevrimdışı kuyruk be
       return new Response(
         JSON.stringify({
           code: 'revision_conflict',
-          error: 'Revizyon uyuşmazlığı',
+          status_message: 'Revizyon uyuşmazlığı',
           currentRevision: 4,
           expectedRevision: 0,
-          serverDocument: makeMinimalDoc([{ id: 'p1', name: 'Sunucu', items: [] }]),
+          serverDocument: makeMinimalDoc([{ id: 'profile-1', name: 'Sunucu', items: [] }]),
         }),
         { status: 409, headers: { 'Content-Type': 'application/json' } }
       );
@@ -213,7 +213,7 @@ test('BUG-12 & EXT-05: Güvenlik başlıkları, /api/sync/status token koruması
     await withServer(
       {
         dataDir: tmpDir,
-        security: { authToken: 'guclu-token-999' },
+        authToken: 'guclu-token-999',
       },
       async (baseUrl) => {
         // 1) Güvenlik başlıkları
@@ -300,32 +300,58 @@ test('BUG-12 & EXT-05: Güvenlik başlıkları, /api/sync/status token koruması
 test('BUG-08 & EXT-12: Excel dışa aktarma profileSnapshot beyaz liste doğrulaması ve boş disliked: [] temizlemesinin korunması', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-bug08-'));
   try {
-    await withServer({ dataDir: tmpDir }, async (baseUrl) => {
-      // Sunucuya başlangıçta 1 adet disliked öğesi olan profil kaydet
-      const seedDoc = makeMinimalDoc([
-        {
-          id: 'p1',
-          name: 'Ana Profil',
-          items: [
-            {
-              id: 550,
-              media_type: 'movie',
-              title: 'Fight Club',
-              status: 'completed',
-              personal_rating: 9,
-              addedAt: '2026-01-01T00:00:00.000Z',
-            },
-          ],
-          preferences: {
-            disliked: ['movie:999'],
-            providers: [],
-            mood: '',
-            reminders: false,
-            notified: [],
+    const seedDoc = makeMinimalDoc([
+      {
+        id: 'profile-1',
+        name: 'Ana Profil',
+        items: [
+          {
+            id: 550,
+            media_type: 'movie',
+            title: 'Fight Club',
+            status: 'completed',
+            personal_rating: 9,
+            addedAt: '2026-01-01T00:00:00.000Z',
           },
+        ],
+        preferences: {
+          disliked: ['movie:999'],
+          providers: [],
+          mood: '',
+          reminders: false,
+          notified: [],
         },
-      ]);
+      },
+    ]);
 
+    // 1) Doğrudan resolveExportDocument beyaz liste denetimi
+    const sanitized = resolveExportDocument(seedDoc, {
+      profileSnapshot: {
+        id: 'profile-1',
+        name: 'Ana Profil',
+        __injectedSecret: 'evil-payload',
+        items: [
+          {
+            id: 550,
+            media_type: 'movie',
+            title: 'Fight Club',
+            status: 'completed',
+            personal_rating: 9,
+            __evilField: 'drop-me',
+          },
+        ],
+        preferences: {
+          disliked: [],
+        },
+      },
+    });
+    const sanitizedProfile = sanitized.profiles[0];
+    assert.equal('__injectedSecret' in sanitizedProfile, false);
+    assert.equal('__evilField' in sanitizedProfile.items[0], false);
+    assert.deepEqual(sanitizedProfile.preferences.disliked, []);
+
+    // 2) HTTP /api/backup/profile-export uçtan uca kontrolü
+    await withServer({ dataDir: tmpDir }, async (baseUrl) => {
       const seedRes = await fetch(`${baseUrl}/api/data`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -333,15 +359,16 @@ test('BUG-08 & EXT-12: Excel dışa aktarma profileSnapshot beyaz liste doğrula
       });
       assert.equal(seedRes.status, 200);
 
-      // İstemci anlık görüntüsünde disliked: [] açıkça boşaltılmış ve yabancı enjekte alanlar eklenmiş
-      const previewRes = await fetch(`${baseUrl}/api/backup/excel/preview`, {
+      const exportRes = await fetch(`${baseUrl}/api/backup/profile-export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          profileId: 'p1',
-          embedPosters: false,
+          profileId: 'profile-1',
+          includeJson: true,
+          includeXlsx: true,
+          uploadToGithub: false,
           profileSnapshot: {
-            id: 'p1',
+            id: 'profile-1',
             name: 'Ana Profil',
             __injectedSecret: 'evil-payload',
             items: [
@@ -351,7 +378,6 @@ test('BUG-08 & EXT-12: Excel dışa aktarma profileSnapshot beyaz liste doğrula
                 title: 'Fight Club',
                 status: 'completed',
                 personal_rating: 9,
-                __evilField: 'drop-me',
               },
             ],
             preferences: {
@@ -360,13 +386,12 @@ test('BUG-08 & EXT-12: Excel dışa aktarma profileSnapshot beyaz liste doğrula
           },
         }),
       });
-      assert.equal(previewRes.status, 200);
-      const previewJson = await previewRes.json();
-      assert.equal(previewJson.ok, true);
-      // EXT-12: Açıkça gönderilen disliked: [] sunucudaki eski ['movie:999'] ile ezilmemeli!
-      assert.equal(previewJson.completeness.uniqueDislikedCount, 0);
-      assert.equal(previewJson.sheetCounts['İlgilenmiyorum'].total, 0);
-      assert.equal(previewJson.sheetCounts['İzlenen'].total, 1);
+      assert.equal(exportRes.status, 200);
+      const exportJson = await exportRes.json();
+      assert.equal(exportJson.ok, true);
+      assert.equal(exportJson.excelBackup.sourceDiagnostics.uniqueDislikedCount, 0);
+      assert.equal(exportJson.excelBackup.sheetCounts['İlgilenmiyorum'].total, 0);
+      assert.equal(exportJson.excelBackup.sheetCounts['İzlenen'].total, 1);
     });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -393,7 +418,6 @@ test('EXT-01, EXT-03 & EXT-04: Poster SSRF engeli, önbellek TTL/boyut tahliyesi
     fs.writeFileSync(fMid, Buffer.alloc(600, 0xbb));
     fs.writeFileSync(fNew, Buffer.alloc(600, 0xcc));
 
-    // fOld süresi dolmuş (10 gün önce), fMid 2 saat önce, fNew 1 saat önce
     const tenDaysAgoSec = (baseNow - 10 * 24 * 60 * 60 * 1000) / 1000;
     const twoHoursAgoSec = (baseNow - 2 * 60 * 60 * 1000) / 1000;
     const oneHourAgoSec = (baseNow - 1 * 60 * 60 * 1000) / 1000;
@@ -401,7 +425,6 @@ test('EXT-01, EXT-03 & EXT-04: Poster SSRF engeli, önbellek TTL/boyut tahliyesi
     fs.utimesSync(fMid, twoHoursAgoSec, twoHoursAgoSec);
     fs.utimesSync(fNew, oneHourAgoSec, oneHourAgoSec);
 
-    // TTL = 5 gün, maxBytes = 800 bayt -> fOld TTL'den, fMid boyuttan silinmeli; yalnızca fNew kalmalı
     const mgr = new PosterCacheManager(cacheDir, {
       ttlMs: 5 * 24 * 60 * 60 * 1000,
       maxBytes: 800,
@@ -419,16 +442,17 @@ test('EXT-01, EXT-03 & EXT-04: Poster SSRF engeli, önbellek TTL/boyut tahliyesi
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
 
-  // EXT-04: Tür ipucu olmayan kayıtlar sessizce 'movie' sayılmamalı
+  // EXT-04: Açık media_type veya kanonik anahtar yoksa tarih/başlık üzerinden sessizce tahmin yapılmamalı
   assert.equal(resolveMediaType({ id: 42 }), 'unknown');
+  assert.equal(resolveMediaType({ id: 42, first_air_date: '2024-05-01' }), 'unknown');
   assert.equal(makeMediaKey({ id: 42 }), 'unknown:42');
-  assert.equal(resolveMediaType({ id: 42, first_air_date: '2024-05-01' }), 'tv');
-  assert.equal(resolveMediaType({ id: 42, release_date: '2024-05-01' }), 'movie');
+  assert.equal(resolveMediaType({ key: 'tv:42' }), 'tv');
+  assert.equal(resolveMediaType({ id: 42, media_type: 'movie' }), 'movie');
 
   const filteredMovies = enforceStrictMediaTypePool(
     [
       { id: 1, media_type: 'movie', title: 'Gerçek Film' },
-      { id: 2, name: 'Belirsiz Kayıt' }, // first_air_date yok, media_type yok -> unknown -> elenmeli
+      { id: 2, name: 'Belirsiz Kayıt' },
     ],
     'movie'
   );
@@ -452,6 +476,7 @@ test('EXT-06, EXT-07 & EXT-08: Global hata maskeleme, SPA fallback eksik varlık
       {
         dataDir: tmpDir,
         persistentStore: store,
+        githubToken: fakeSecretPat,
         registerCustomRoutes: (app) => {
           app.get('/api/test-boom', () => {
             throw new Error(`Beklenmeyen patlama: token=${fakeSecretPat}`);
@@ -465,7 +490,8 @@ test('EXT-06, EXT-07 & EXT-08: Global hata maskeleme, SPA fallback eksik varlık
         const rawText = await boomRes.text();
         assert.equal(rawText.includes(fakeSecretPat), false);
         const boomJson = JSON.parse(rawText);
-        assert.equal(boomJson.error, 'Sunucu hatası oluştu.');
+        assert.equal(boomJson.code, 'internal_error');
+        assert.equal(boomJson.status_message, 'Beklenmeyen bir sunucu hatası oluştu.');
         assert.equal(typeof boomJson.requestId, 'string');
         assert.equal('stack' in boomJson, false);
 
@@ -547,22 +573,22 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
 
     const cfg = resolveConfig({
       rootDir: cfgDir,
-      processEnv: {
+      env: {
         PORT: '3300',
       },
     });
     assert.equal(cfg.port, 3300);
     assert.equal(cfg.githubToken, 'pat-from-dotenv-local');
-    assert.equal(cfg.githubTokenSource, 'dotenv_local_pat');
+    assert.equal(cfg.githubTokenSource, 'file:.env.local:CINETRACK_GITHUB_PAT');
     assert.ok(cfg.warnings.every((w) => !w.includes('pat-from-dotenv')));
 
     // EXT-10: /api/sync/public-catalog-consent TMDB atıf onayı zorunluluğu
     const store = new PersistentDataStore({
       dataDir: cfgDir,
       githubToken: 'ghp_testtoken123456',
-      owner: 'owner',
-      repo: 'public-repo',
-      branch: 'main',
+      githubOwner: 'owner',
+      githubRepo: 'public-repo',
+      githubBranch: 'main',
       isPublicRepo: false,
       allowPublicCatalogSync: false,
     });
@@ -570,14 +596,14 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
       const missingAttribution = await fetch(`${baseUrl}/api/sync/public-catalog-consent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allow: true, confirmTmdbAttribution: false }),
+        body: JSON.stringify({ allowCatalogInPublicRepo: true, confirmTmdbAttribution: false }),
       });
       assert.equal(missingAttribution.status, 400);
 
       const granted = await fetch(`${baseUrl}/api/sync/public-catalog-consent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allow: true, confirmTmdbAttribution: true }),
+        body: JSON.stringify({ allowCatalogInPublicRepo: true, confirmTmdbAttribution: true }),
       });
       assert.equal(granted.status, 200);
       const grantedJson = await granted.json();
@@ -594,7 +620,7 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
   const expiredDeleteIso = new Date(nowMs - 45 * 24 * 60 * 60 * 1000).toISOString();
 
   const normalizedProf = normalizeProfile({
-    id: 'p1',
+    id: 'profile-1',
     name: 'Profil',
     items: [],
     deleted_keys: {
@@ -607,7 +633,7 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
 
   const localDoc = makeMinimalDoc([
     {
-      id: 'p1',
+      id: 'profile-1',
       name: 'Profil',
       items: [],
       deleted_keys: { 'movie:100': recentDeleteIso },
@@ -615,7 +641,7 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
   ]);
   const remoteDoc = makeMinimalDoc([
     {
-      id: 'p1',
+      id: 'profile-1',
       name: 'Profil',
       items: [
         {
@@ -635,9 +661,12 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
   assert.equal(mergedProfile.items.length, 0, 'Yerelde daha yeni mezar taşı olan öğe uzaktan geri dönmemeli');
   assert.equal(mergedProfile.deleted_keys?.['movie:100'], recentDeleteIso);
 
-  // BUG-13.2: Sabitler dışa aktarılmış ve formatWatchTime ile tutarlı olmalı
+  // BUG-13.2: Sabitler dışa aktarılmış ve calculateItemWatchMinutes ile tutarlı olmalı
   assert.equal(ESTIMATED_MOVIE_MINUTES, 110);
   assert.equal(ESTIMATED_TV_EPISODE_MINUTES, 45);
   assert.equal(ESTIMATED_TV_FALLBACK_EPISODES, 10);
-  assert.equal(formatWatchTime(ESTIMATED_MOVIE_MINUTES), '1 sa 50 dk');
+  assert.equal(
+    calculateItemWatchMinutes({ media_type: 'movie', status: 'completed' }),
+    ESTIMATED_MOVIE_MINUTES
+  );
 });

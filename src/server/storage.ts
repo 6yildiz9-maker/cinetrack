@@ -10,9 +10,11 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import {
   normalizeDataDocument,
+  buildTasteProfileV3,
   CURRENT_SCHEMA_VERSION,
   ENGINE_VERSION,
   type DataDocument,
+  type SavedItem,
 } from '../core/cinetrack-core.ts';
 import {
   DEFAULT_MAX_DATA_BYTES,
@@ -104,6 +106,8 @@ export function createDataStorage(options: StorageOptions) {
   const dataDir = options.dataDir;
   const dataFile = path.join(dataDir, 'cinetrack-data.json');
   const dataBackupFile = path.join(dataDir, 'cinetrack-data.bak.json');
+  const isolatedProfileFile = path.join(dataDir, 'profile.json');
+  const isolatedUserListsFile = path.join(dataDir, 'user-lists.json');
   const backupsDir = path.join(dataDir, 'backups');
   const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   const maxProfiles = options.maxProfiles ?? DEFAULT_MAX_PROFILES;
@@ -349,6 +353,61 @@ export function createDataStorage(options: StorageOptions) {
     }
   }
 
+  function buildIsolatedProfilePayload(doc: DataDocument) {
+    const nowIso = doc.updatedAt || new Date().toISOString();
+    return {
+      schemaVersion: doc.schemaVersion ?? CURRENT_SCHEMA_VERSION,
+      activeProfileId: doc.activeProfileId,
+      updatedAt: nowIso,
+      profiles: (doc.profiles || []).map((p) => {
+        const taste = buildTasteProfileV3(p.items || [], {
+          dislikedKeys: p.preferences?.disliked || [],
+        });
+        return {
+          profileId: p.id,
+          name: p.name,
+          theme: 'dark-navy',
+          dna: {
+            positiveGenres: taste.positiveGenres.slice(0, 6),
+            mediaPreference: taste.mediaPreference,
+          },
+          preferences: p.preferences,
+          favoriteActors: p.favoriteActors || [],
+          isDemo: Boolean(p.isDemo),
+        };
+      }),
+    };
+  }
+
+  function toCompactListItem(it: SavedItem) {
+    return {
+      id: it.id,
+      media_type: it.media_type,
+      status: it.status,
+      personal_rating: it.personal_rating,
+      ...(it.addedAt ? { addedAt: it.addedAt } : {}),
+      ...(it.updatedAt ? { updatedAt: it.updatedAt } : {}),
+      ...(it.custom ? { custom: true } : {}),
+      ...(it.current_season !== undefined ? { current_season: it.current_season } : {}),
+      ...(it.episodes_watched !== undefined ? { episodes_watched: it.episodes_watched } : {}),
+      ...(it.season_progress ? { season_progress: it.season_progress } : {}),
+    };
+  }
+
+  function buildIsolatedUserListsPayload(doc: DataDocument) {
+    const nowIso = doc.updatedAt || new Date().toISOString();
+    const lists: Record<string, ReturnType<typeof toCompactListItem>[]> = {};
+    for (const p of doc.profiles || []) {
+      lists[p.id] = Array.isArray(p.items) ? p.items.map(toCompactListItem) : [];
+    }
+    return {
+      schemaVersion: doc.schemaVersion ?? CURRENT_SCHEMA_VERSION,
+      activeProfileId: doc.activeProfileId,
+      updatedAt: nowIso,
+      lists,
+    };
+  }
+
   function writeDataAtomic(doc: DataDocument): DataDocument {
     mkdirSync(dataDir, { recursive: true });
     backupExistingData();
@@ -356,6 +415,18 @@ export function createDataStorage(options: StorageOptions) {
     writeJsonFileAtomic(dataFile, serialized, {
       validateParsed: (p) => validateRawDocument(p) !== null,
     });
+    try {
+      writeJsonFileAtomic(
+        isolatedProfileFile,
+        JSON.stringify(buildIsolatedProfilePayload(doc), null, 2),
+        { validateParsed: (p) => Boolean(p && typeof p === 'object' && Array.isArray(p.profiles)) }
+      );
+      writeJsonFileAtomic(
+        isolatedUserListsFile,
+        JSON.stringify(buildIsolatedUserListsPayload(doc), null, 2),
+        { validateParsed: (p) => Boolean(p && typeof p === 'object' && p.lists && typeof p.lists === 'object') }
+      );
+    } catch {}
     unrecoverableCorruptionError = null;
     return doc;
   }
@@ -367,8 +438,54 @@ export function createDataStorage(options: StorageOptions) {
     await writeJsonFileAtomicAsync(dataFile, serialized, {
       validateParsed: (p) => validateRawDocument(p) !== null,
     });
+    try {
+      await Promise.all([
+        writeJsonFileAtomicAsync(
+          isolatedProfileFile,
+          JSON.stringify(buildIsolatedProfilePayload(doc), null, 2),
+          { validateParsed: (p) => Boolean(p && typeof p === 'object' && Array.isArray(p.profiles)) }
+        ),
+        writeJsonFileAtomicAsync(
+          isolatedUserListsFile,
+          JSON.stringify(buildIsolatedUserListsPayload(doc), null, 2),
+          { validateParsed: (p) => Boolean(p && typeof p === 'object' && p.lists && typeof p.lists === 'object') }
+        ),
+      ]);
+    } catch {}
     unrecoverableCorruptionError = null;
     return doc;
+  }
+
+  async function readIsolatedProfileAsync() {
+    const recovery = await readJsonFileWithRecoveryAsync<ReturnType<typeof buildIsolatedProfilePayload>>(
+      isolatedProfileFile,
+      {
+        validate: (raw) =>
+          raw && typeof raw === 'object' && Array.isArray(raw.profiles) ? raw : null,
+        label: 'profile.json',
+      }
+    );
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
+    }
+    const doc = await readDataAsync();
+    return buildIsolatedProfilePayload(doc);
+  }
+
+  async function readIsolatedUserListsAsync() {
+    const recovery = await readJsonFileWithRecoveryAsync<ReturnType<typeof buildIsolatedUserListsPayload>>(
+      isolatedUserListsFile,
+      {
+        validate: (raw) =>
+          raw && typeof raw === 'object' && raw.lists && typeof raw.lists === 'object' ? raw : null,
+        label: 'user-lists.json',
+      }
+    );
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
+    }
+    const doc = await readDataAsync();
+    return buildIsolatedUserListsPayload(doc);
   }
 
   function validateAndPrepareSave(
@@ -710,11 +827,15 @@ export function createDataStorage(options: StorageOptions) {
   return {
     dataFile,
     dataBackupFile,
+    isolatedProfileFile,
+    isolatedUserListsFile,
     backupsDir,
     maxDataBytes,
     hasUnrecoverableCorruption: () => Boolean(unrecoverableCorruptionError),
     readData,
     readDataAsync,
+    readIsolatedProfileAsync,
+    readIsolatedUserListsAsync,
     saveData,
     saveDataAsync,
     saveDataSerialized,

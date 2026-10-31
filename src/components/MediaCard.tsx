@@ -11,6 +11,8 @@ import {
 import { TmdbItem } from '../types/tmdb';
 import { formatMatchBadge } from '../i18n';
 import { isItemInSeries } from '../services/series-service';
+import { subscribeSeriesIndex } from '../services/storage-idb';
+import { recordPosterAccess } from '../services/poster-cache-manager';
 
 export interface MediaCardProps {
   item: TmdbItem | any;
@@ -61,10 +63,17 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   const poster = getPoster(item);
   const status = savedItem?.status || '';
   const [posterFailed, setPosterFailed] = useState(false);
+  const [, setSeriesRevision] = useState(0);
 
   useEffect(() => {
     setPosterFailed(false);
   }, [poster]);
+
+  useEffect(() => {
+    return subscribeSeriesIndex(() => {
+      setSeriesRevision((v) => v + 1);
+    });
+  }, []);
 
   const statusText =
     status === 'watching'
@@ -177,6 +186,9 @@ export const MediaCard: React.FC<MediaCardProps> = ({
               decoding="async"
               referrerPolicy="no-referrer"
               fetchPriority={_eager ? 'high' : undefined}
+              onLoad={() => {
+                void recordPosterAccess(poster);
+              }}
               onError={(e) => handleImageError(e, poster, 'w500', () => setPosterFailed(true))}
             />
           )}
@@ -185,15 +197,6 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         {/* Top-left Badges row */}
         <div className="poster-badges-row">
           {size !== 'xs' && <span className="badge badge-kind">{kind}</span>}
-          {isSeries && (
-            <span
-              className="badge badge-series"
-              title="Bir serinin veya evrenin parçası"
-              aria-label="Seri yapım"
-            >
-              SERİ
-            </span>
-          )}
 
           {shouldRenderMatchBadge && roundedScore !== null && (
             <span
@@ -255,6 +258,17 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             </span>
           )}
         </div>
+
+        {/* Absolutely positioned SERİ badge on poster image (FEAT-01 #9) */}
+        {isSeries && size !== 'xs' && (
+          <span
+            className="poster-series-badge badge-series"
+            title="Bir serinin veya evrenin parçası"
+            aria-label="Seri yapım"
+          >
+            SERİ
+          </span>
+        )}
 
         {/* Quick action buttons stack (top-right) */}
         {(onSetStatus || onToggleDislike || onQuickSave) && size !== 'xs' && (

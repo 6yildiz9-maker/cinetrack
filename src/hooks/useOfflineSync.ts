@@ -11,6 +11,7 @@ import {
   hasPendingOfflineSync,
   hasUnpersistedOfflineFallback,
   loadOfflineSyncSnapshot,
+  loadOfflineSyncSnapshotAsync,
 } from '../services/offline-queue';
 import { useOnlineStatus } from './useOnlineStatus';
 
@@ -21,6 +22,18 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
     hasUnpersistedOfflineFallback()
   );
   const conflictPausedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    void loadOfflineSyncSnapshotAsync().then((snap) => {
+      if (active && snap) {
+        setPendingSync(true);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const resolveQueuedConflict = useCallback(() => {
     conflictPausedRef.current = false;
@@ -33,7 +46,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
     if (conflictPausedRef.current) {
       return;
     }
-    const queued = loadOfflineSyncSnapshot();
+    const queued = (await loadOfflineSyncSnapshotAsync()) || loadOfflineSyncSnapshot();
     if (!queued) {
       setPendingSync(false);
       setUnpersistedWarning(false);

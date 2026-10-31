@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -9,6 +10,7 @@ import {
   readJsonFileWithRecoveryAsync,
   tryParseValidJson,
   writeJsonFileAtomic,
+  writeJsonFileAtomicAsync,
 } from './atomic-json.ts';
 import {
   computeDerivedProfileContentHash,
@@ -1004,6 +1006,48 @@ export class PersistentDataStore {
     }
   }
 
+  public async ensureCatalogFilesAsync(): Promise<void> {
+    await fsPromises.mkdir(this.catalogDir, { recursive: true });
+    const existsAsync = async (p: string) => {
+      try {
+        await fsPromises.access(p);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (!(await existsAsync(this.moviesFile))) {
+      await writeJsonFileAtomicAsync(this.moviesFile, '{}', {
+        backupPath: `${this.moviesFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+    if (!(await existsAsync(this.tvFile))) {
+      await writeJsonFileAtomicAsync(this.tvFile, '{}', {
+        backupPath: `${this.tvFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+    if (!(await existsAsync(this.manifestFile))) {
+      const movies = await this.readCatalogAsync('movie', { allowEmptyOnCorrupt: true });
+      const tv = await this.readCatalogAsync('tv', { allowEmptyOnCorrupt: true });
+      const serializedMovies = stringifyDeterministic(movies);
+      const serializedTv = stringifyDeterministic(tv);
+      const combinedHash = hashContent(serializedMovies + serializedTv);
+      const manifest: CatalogManifest = {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        movieCount: Object.keys(movies).length,
+        tvCount: Object.keys(tv).length,
+        contentHash: combinedHash,
+      };
+      await writeJsonFileAtomicAsync(this.manifestFile, stringifyDeterministic(manifest), {
+        backupPath: `${this.manifestFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+  }
+
   /**
    * Güvenli bağlantı testi (Aşama 5):
    * Tam senkronizasyon çalıştırmadan önce depo meta verilerini, `main` dalını ve
@@ -1024,16 +1068,19 @@ export class PersistentDataStore {
     error?: string;
     errorCategory?: GitHubSyncErrorCategory;
   }> {
-    this.ensureCatalogFiles();
-    const manifestContent = existsSync(this.manifestFile)
-      ? readFileSync(this.manifestFile, 'utf8')
-      : stringifyDeterministic({
-          version: 1,
-          updatedAt: new Date().toISOString(),
-          movieCount: 0,
-          tvCount: 0,
-          contentHash: hashContent('{}{}'),
-        });
+    await this.ensureCatalogFilesAsync();
+    let manifestContent: string;
+    try {
+      manifestContent = await fsPromises.readFile(this.manifestFile, 'utf8');
+    } catch {
+      manifestContent = stringifyDeterministic({
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        movieCount: 0,
+        tvCount: 0,
+        contentHash: hashContent('{}{}'),
+      });
+    }
     const probeSizeBytes = Buffer.byteLength(manifestContent, 'utf8');
     const localHash = hashContent(manifestContent.trim());
 
@@ -1249,10 +1296,108 @@ export class PersistentDataStore {
     };
   }
 
+  public async upsertCatalogItemsAsync(
+    items: any[]
+  ): Promise<{ inserted: number; updated: number; unchanged: number; total: number; contentHash: string }> {
+    const movies = await this.readCatalogAsync('movie', { allowEmptyOnCorrupt: false });
+    const tv = await this.readCatalogAsync('tv', { allowEmptyOnCorrupt: false });
+
+    if (!Array.isArray(items) || items.length === 0) {
+      const existingManifest = await this.readCatalogManifestAsync();
+      return {
+        inserted: 0,
+        updated: 0,
+        unchanged: 0,
+        total: 0,
+        contentHash:
+          existingManifest?.contentHash ||
+          hashContent(stringifyDeterministic(movies) + stringifyDeterministic(tv)),
+      };
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let moviesChanged = false;
+    let tvChanged = false;
+
+    for (const item of items) {
+      const key = toCanonicalKey(item);
+      if (!key) continue;
+      const isTv = key.startsWith('tv:');
+      const targetMap = isTv ? tv : movies;
+      const existing = targetMap[key];
+      const merged = mergeCatalogItem(existing, item);
+
+      if (!existing) {
+        targetMap[key] = merged;
+        inserted++;
+        if (isTv) tvChanged = true;
+        else moviesChanged = true;
+      } else {
+        const existingCopy = { ...existing, firstStoredAt: '', lastUpdatedAt: '' };
+        const mergedCopy = { ...merged, firstStoredAt: '', lastUpdatedAt: '' };
+        if (stringifyDeterministic(existingCopy) !== stringifyDeterministic(mergedCopy)) {
+          targetMap[key] = merged;
+          updated++;
+          if (isTv) tvChanged = true;
+          else moviesChanged = true;
+        } else {
+          unchanged++;
+        }
+      }
+    }
+
+    if (moviesChanged) {
+      await writeJsonFileAtomicAsync(this.moviesFile, stringifyDeterministic(movies), {
+        backupPath: `${this.moviesFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+    if (tvChanged) {
+      await writeJsonFileAtomicAsync(this.tvFile, stringifyDeterministic(tv), {
+        backupPath: `${this.tvFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+
+    const serializedMovies = stringifyDeterministic(movies);
+    const serializedTv = stringifyDeterministic(tv);
+    const combinedHash = hashContent(serializedMovies + serializedTv);
+
+    let manifestExists = false;
+    try {
+      await fsPromises.access(this.manifestFile);
+      manifestExists = true;
+    } catch {}
+
+    if (moviesChanged || tvChanged || !manifestExists) {
+      const manifest: CatalogManifest = {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        movieCount: Object.keys(movies).length,
+        tvCount: Object.keys(tv).length,
+        contentHash: combinedHash,
+      };
+      await writeJsonFileAtomicAsync(this.manifestFile, stringifyDeterministic(manifest), {
+        backupPath: `${this.manifestFile}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+    }
+
+    return {
+      inserted,
+      updated,
+      unchanged,
+      total: inserted + updated + unchanged,
+      contentHash: combinedHash,
+    };
+  }
+
   public upsertCatalogItemsSerialized(
     items: any[]
   ): Promise<{ inserted: number; updated: number; unchanged: number; total: number; contentHash: string }> {
-    return this.writeSerializer.run(this.manifestFile, () => this.upsertCatalogItems(items));
+    return this.writeSerializer.run(this.manifestFile, () => this.upsertCatalogItemsAsync(items));
   }
 
   // --- DERIVED PROFILE OPERATIONS ---
@@ -1446,11 +1591,179 @@ export class PersistentDataStore {
     };
   }
 
+  public async readDerivedProfileAsync(
+    profileId: string,
+    options: { allowNullOnCorrupt?: boolean } = {}
+  ): Promise<DerivedProfileDocument | null> {
+    const filePath = this.getProfileFilePath(profileId);
+    const recovery = await readJsonFileWithRecoveryAsync<DerivedProfileDocument>(filePath, {
+      backupPaths: [`${filePath}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) &&
+        typeof raw.profileId === 'string' &&
+        isPlainRecordObject(raw.items)
+          ? (raw as DerivedProfileDocument)
+          : null,
+      label: path.basename(filePath),
+      restoreRecoveredToTarget: true,
+    });
+
+    if (recovery.status === 'ok' || recovery.status === 'recovered') {
+      return recovery.data;
+    }
+    if (recovery.status === 'corrupt_unrecoverable') {
+      if (options.allowNullOnCorrupt) return null;
+      throw new CorruptJsonFileError(filePath, recovery.error);
+    }
+    return null;
+  }
+
+  public async readValidatedDerivedProfileAsync(
+    profileId: string,
+    expected: {
+      profileFingerprint: string;
+      algorithmVersion: string;
+      sourceCatalogHash?: string;
+      expectedSchemaVersion?: number;
+    }
+  ): Promise<DerivedProfileValidationResult> {
+    const rawDoc = await this.readDerivedProfileAsync(profileId, { allowNullOnCorrupt: true });
+    if (!rawDoc) {
+      return { valid: false, reason: 'missing_document' };
+    }
+    return validateDerivedProfileCache(rawDoc, {
+      profileId,
+      profileFingerprint: expected.profileFingerprint,
+      algorithmVersion: expected.algorithmVersion,
+      sourceCatalogHash: expected.sourceCatalogHash,
+      expectedSchemaVersion: expected.expectedSchemaVersion,
+    });
+  }
+
+  public async upsertDerivedProfileAsync(
+    input: Parameters<PersistentDataStore['upsertDerivedProfile']>[0]
+  ): Promise<{ updated: boolean; count: number; contentHash: string }> {
+    const { profileId, algorithmVersion, profileFingerprint, items } = input;
+    const targetSchemaVersion = input.schemaVersion ?? DERIVED_PROFILE_SCHEMA_VERSION;
+    const resolvedSourceCatalogHash =
+      input.sourceCatalogHash !== undefined
+        ? String(input.sourceCatalogHash)
+        : (await this.readCatalogManifestAsync())?.contentHash || '';
+
+    const existing = await this.readDerivedProfileAsync(profileId, { allowNullOnCorrupt: false });
+    const filePath = this.getProfileFilePath(profileId);
+
+    const sameContext = Boolean(
+      existing &&
+        Number(existing.schemaVersion) === targetSchemaVersion &&
+        existing.algorithmVersion === algorithmVersion &&
+        existing.profileFingerprint === profileFingerprint &&
+        String(existing.sourceCatalogHash || '') === resolvedSourceCatalogHash
+    );
+
+    const mergedItems: Record<string, DerivedProfileItem> = {};
+    if (sameContext && existing?.items) {
+      for (const [k, prevVal] of Object.entries(existing.items)) {
+        const normPrev = normalizeDerivedProfileItem(k, prevVal);
+        if (normPrev) {
+          mergedItems[normPrev.mediaKey] = normPrev;
+        }
+      }
+    }
+
+    for (const [rawKey, item] of Object.entries(items || {})) {
+      const normalized = normalizeDerivedProfileItem(rawKey, item);
+      if (!normalized) continue;
+      const prevItem = mergedItems[normalized.mediaKey];
+      if (prevItem) {
+        const prevSingleHash = computeDerivedProfileContentHash({
+          schemaVersion: targetSchemaVersion,
+          profileId,
+          algorithmVersion,
+          profileFingerprint,
+          sourceCatalogHash: resolvedSourceCatalogHash,
+          items: { [normalized.mediaKey]: prevItem },
+        });
+        const nextSingleHash = computeDerivedProfileContentHash({
+          schemaVersion: targetSchemaVersion,
+          profileId,
+          algorithmVersion,
+          profileFingerprint,
+          sourceCatalogHash: resolvedSourceCatalogHash,
+          items: { [normalized.mediaKey]: normalized },
+        });
+        if (prevSingleHash === nextSingleHash) {
+          mergedItems[normalized.mediaKey] = prevItem;
+          continue;
+        }
+      }
+      mergedItems[normalized.mediaKey] = normalized;
+    }
+
+    const nextContentHash = computeDerivedProfileContentHash({
+      schemaVersion: targetSchemaVersion,
+      profileId,
+      algorithmVersion,
+      profileFingerprint,
+      sourceCatalogHash: resolvedSourceCatalogHash,
+      items: mergedItems,
+    });
+
+    if (sameContext && existing) {
+      const existingContentHash =
+        existing.contentHash ||
+        computeDerivedProfileContentHash({
+          schemaVersion: Number(existing.schemaVersion) || 1,
+          profileId: existing.profileId,
+          algorithmVersion: existing.algorithmVersion,
+          profileFingerprint: existing.profileFingerprint,
+          sourceCatalogHash: existing.sourceCatalogHash || '',
+          items: existing.items || {},
+        });
+
+      if (
+        existingContentHash === nextContentHash &&
+        Object.keys(existing.items || {}).length === Object.keys(mergedItems).length
+      ) {
+        return {
+          updated: false,
+          count: Object.keys(mergedItems).length,
+          contentHash: existingContentHash,
+        };
+      }
+    }
+
+    const doc: DerivedProfileDocument = {
+      schemaVersion: targetSchemaVersion,
+      profileId,
+      algorithmVersion,
+      profileFingerprint,
+      sourceCatalogHash: resolvedSourceCatalogHash,
+      contentHash: nextContentHash,
+      generatedAt: new Date().toISOString(),
+      items: mergedItems,
+    };
+
+    await writeJsonFileAtomicAsync(filePath, stringifyDeterministic(doc), {
+      backupPath: `${filePath}.bak`,
+      validateParsed: (parsed) =>
+        isPlainRecordObject(parsed) &&
+        typeof parsed.profileId === 'string' &&
+        isPlainRecordObject(parsed.items),
+    });
+
+    return {
+      updated: true,
+      count: Object.keys(mergedItems).length,
+      contentHash: nextContentHash,
+    };
+  }
+
   public upsertDerivedProfileSerialized(
     input: Parameters<PersistentDataStore['upsertDerivedProfile']>[0]
   ): Promise<{ updated: boolean; count: number; contentHash: string }> {
     const filePath = this.getProfileFilePath(input.profileId);
-    return this.writeSerializer.run(filePath, () => this.upsertDerivedProfile(input));
+    return this.writeSerializer.run(filePath, () => this.upsertDerivedProfileAsync(input));
   }
 
   // --- SYNC & GITHUB OPERATIONS ---

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
 export const ALLOWED_TMDB_PATH =
-  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers))?))$/;
+  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords))?))$/;
 
 export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'language',
@@ -10,6 +10,7 @@ export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'include_adult',
   'append_to_response',
   'with_genres',
+  'with_keywords',
   'sort_by',
   'vote_average.gte',
   'vote_count.gte',
@@ -39,6 +40,8 @@ export function validateTmdbParam(key: string, value: string): string {
     return 'Dil parametresi geçersiz.';
   if (key === 'query' && value.length > 120) return 'Arama ifadesi çok uzun.';
   if (key === 'with_genres' && !/^\d+(?:\|\d+)*$/.test(value)) return 'Tür kimlikleri geçersiz.';
+  if (key === 'with_keywords' && !/^\d+(?:[|,]\d+)*$/.test(value))
+    return 'Anahtar kelime kimlikleri geçersiz.';
   if (key === 'sort_by' && !/^(?:popularity|vote_average|release_date)\.(?:asc|desc)$/.test(value))
     return 'Sıralama seçeneği geçersiz.';
   if (key === 'vote_average.gte' && (!/^\d+(?:\.\d+)?$/.test(value) || Number(value) > 10))
@@ -63,7 +66,7 @@ export function validateTmdbParam(key: string, value: string): string {
     return 'Sayfa numarası geçersiz.';
   if (
     key === 'append_to_response' &&
-    value.split(',').some((part) => !['credits', 'videos'].includes(part))
+    value.split(',').some((part) => !['credits', 'videos', 'keywords'].includes(part))
   )
     return 'İstenen detay genişletmesi desteklenmiyor.';
   if (key === 'include_adult' && !['true', 'false'].includes(value))
@@ -395,6 +398,90 @@ export function getMockTmdbResponse(endpoint: string, queryParams: Record<string
     };
   }
 
+  const collectionMatch = endpoint.match(/^\/collection\/(\d+)$/);
+  if (collectionMatch) {
+    const colId = Number(collectionMatch[1]);
+    if (colId === 726871) {
+      return {
+        id: 726871,
+        name: 'Dune Serisi',
+        overview: 'Frank Herbert uyarlaması Dune bilim kurgu serisi.',
+        poster_path: '/8b8R8l88Qje9dn9OE8PY05Nxl1X.jpg',
+        backdrop_path: '/xOMo8BRK7PfcJv9JCnx7s520fff.jpg',
+        parts: [
+          {
+            id: 438631,
+            media_type: 'movie',
+            title: 'Dune: Çöl Gezegeni',
+            release_date: '2021-09-15',
+            vote_average: 7.8,
+            genre_ids: [878, 12],
+            poster_path: '/d5NXSklXo0qyIYkgV94XAgMIckC.jpg',
+          },
+          {
+            id: 693134,
+            media_type: 'movie',
+            title: 'Dune: Çöl Gezegeni Bölüm İki',
+            release_date: '2024-02-27',
+            vote_average: 8.2,
+            genre_ids: [878, 12],
+            poster_path: '/8b8R8l88Qje9dn9OE8PY05Nxl1X.jpg',
+          },
+        ],
+      };
+    }
+    return {
+      id: colId,
+      name: 'Kara Şövalye Üçlemesi',
+      overview: 'Christopher Nolan yönetmenliğindeki Batman üçlemesi.',
+      poster_path: '/qJ2tW6WMUDux911r6m7haRef0WH.jpg',
+      backdrop_path: '/nMKdUUepR0i5zn0y1T4CsSB5chy.jpg',
+      parts: [
+        {
+          id: 272,
+          media_type: 'movie',
+          title: 'Batman Başlıyor',
+          release_date: '2005-06-10',
+          vote_average: 7.7,
+          genre_ids: [28, 80, 18],
+          poster_path: '/8RW2runSEc34IwKN2D1aPcJd2UL.jpg',
+        },
+        {
+          id: 155,
+          media_type: 'movie',
+          title: 'Kara Şövalye',
+          release_date: '2008-07-16',
+          vote_average: 8.5,
+          genre_ids: [18, 28, 80, 53],
+          poster_path: '/qJ2tW6WMUDux911r6m7haRef0WH.jpg',
+        },
+        {
+          id: 49026,
+          media_type: 'movie',
+          title: 'Kara Şövalye Yükseliyor',
+          release_date: '2012-07-17',
+          vote_average: 7.8,
+          genre_ids: [28, 80, 18, 53],
+          poster_path: '/hr0L2aueqlP2BYUblTTjmtn0hw4.jpg',
+        },
+      ],
+    };
+  }
+
+  const keywordsMatch = endpoint.match(/^\/(movie|tv)\/(\d+)\/keywords$/);
+  if (keywordsMatch) {
+    const [, type, idStr] = keywordsMatch;
+    const id = Number(idStr);
+    const listKey = type === 'tv' ? 'results' : 'keywords';
+    const kwList =
+      id === 1396 || id === 60059
+        ? [{ id: 210001, name: 'breaking bad shared universe' }, { id: 9717, name: 'spin off' }]
+        : id === 82856 || id === 83867
+        ? [{ id: 210002, name: 'star wars universe' }]
+        : [];
+    return { id, [listKey]: kwList };
+  }
+
   const detailMatch = endpoint.match(/^\/(movie|tv)\/(\d+)$/);
   if (detailMatch) {
     const [, type, idStr] = detailMatch;
@@ -407,10 +494,17 @@ export function getMockTmdbResponse(endpoint: string, queryParams: Record<string
       { id: 104, name: 'Tom Hardy', character: 'Eames', popularity: 38.0, profile_path: '/yVGF93vbhGKlhuSJqq9caNTQIbk.jpg' },
     ];
     const crew = [{ id: 201, name: 'Christopher Nolan', job: 'Director', department: 'Directing' }];
+    const belongsToCollection =
+      type === 'movie' && (id === 155 || id === 272 || id === 49026)
+        ? { id: 263, name: 'Kara Şövalye Üçlemesi', poster_path: '/qJ2tW6WMUDux911r6m7haRef0WH.jpg' }
+        : type === 'movie' && (id === 693134 || id === 438631)
+        ? { id: 726871, name: 'Dune Serisi', poster_path: '/8b8R8l88Qje9dn9OE8PY05Nxl1X.jpg' }
+        : null;
     return {
       ...existing,
       id,
       media_type: type,
+      ...(type === 'movie' ? { belongs_to_collection: belongsToCollection } : {}),
       credits: { cast, crew },
       videos: {
         results: [{ id: 'v1', key: 'YoHD9XEInc0', site: 'YouTube', type: 'Trailer', official: true, name: 'Resmi Fragman' }],
@@ -489,6 +583,9 @@ export function getTmdbEndpointTtl(endpoint: string): number {
   }
   if (/^\/tv\/\d+\/season\/\d+$/.test(endpoint)) {
     return 60 * 60_000;
+  }
+  if (/^\/collection\/\d+$/.test(endpoint)) {
+    return 6 * 60 * 60_000;
   }
   if (/^\/(movie|tv)\/\d+/.test(endpoint)) {
     return 60 * 60_000;

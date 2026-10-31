@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { isAiStudioContainerEnv } from './config.ts';
 
 export interface SecurityOptions {
   /**
@@ -72,7 +73,12 @@ function isTrustedProxyEnabled(
   options?: Pick<SecurityOptions, 'trustProxy'>
 ): boolean {
   if (options?.trustProxy !== undefined) return options.trustProxy;
-  if (process.env.CINETRACK_TRUST_PROXY?.trim().toLowerCase() === 'true') return true;
+  if (
+    !isAiStudioContainerEnv(process.env) &&
+    process.env.CINETRACK_TRUST_PROXY?.trim().toLowerCase() === 'true'
+  ) {
+    return true;
+  }
   return Boolean(req.app?.get?.('trust proxy'));
 }
 
@@ -114,6 +120,15 @@ export function verifyOriginGuard(
   const normalizedAllowed = new Set(
     allowedOrigins.map((item) => item.trim().toLowerCase()).filter(Boolean)
   );
+  for (const envUrl of [process.env.APP_URL, process.env.SHARED_APP_URL]) {
+    if (envUrl) {
+      try {
+        normalizedAllowed.add(new URL(envUrl).origin.toLowerCase());
+      } catch {
+        // ignore invalid URL
+      }
+    }
+  }
   if (normalizedAllowed.has(parsedOrigin.origin.toLowerCase())) {
     return { ok: true };
   }
@@ -131,7 +146,7 @@ export function verifyOriginGuard(
     return { ok: true };
   }
 
-  // Allow localhost <-> 127.0.0.1 when port matches
+  // Allow localhost <-> 127.0.0.1 when port matches, and AI Studio preview origins when proxied to loopback
   let expectedHostUrl: URL | null = null;
   try {
     expectedHostUrl = new URL(`http://${hostHeader}`);
@@ -144,6 +159,16 @@ export function verifyOriginGuard(
     isLoopbackHostname(parsedOrigin.hostname) &&
     isLoopbackHostname(expectedHostUrl.hostname) &&
     (parsedOrigin.port || '80') === (expectedHostUrl.port || '80')
+  ) {
+    return { ok: true };
+  }
+
+  if (
+    expectedHostUrl &&
+    isLoopbackHostname(expectedHostUrl.hostname) &&
+    parsedOrigin.protocol === 'https:' &&
+    /^ais-(?:dev|pre)-[a-z0-9-]+-\d+\.[a-z0-9-]+\.run\.app$/i.test(parsedOrigin.hostname) &&
+    isAiStudioContainerEnv(process.env)
   ) {
     return { ok: true };
   }
@@ -161,7 +186,7 @@ export function createOriginMiddleware(options: SecurityOptions = {}) {
     if (!check.ok) {
       res.status(403).json({
         status_message: check.reason || 'Kaynak doğrulaması başarısız.',
-        code: 'origin_denied',
+        code: 'csrf_origin_mismatch',
       });
       return;
     }
@@ -171,7 +196,10 @@ export function createOriginMiddleware(options: SecurityOptions = {}) {
 
 export function createTokenAuthMiddleware(options: SecurityOptions = {}) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const configuredToken = (options.authToken ?? process.env.CINETRACK_TOKEN ?? '').trim();
+    const fallbackEnvToken = isAiStudioContainerEnv(process.env)
+      ? ''
+      : process.env.CINETRACK_TOKEN ?? '';
+    const configuredToken = (options.authToken ?? fallbackEnvToken).trim();
     const bindHost = (options.bindHost ?? '127.0.0.1').trim() || '127.0.0.1';
     const isRead = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
 
@@ -250,7 +278,9 @@ export class SlidingWindowRateLimiter {
 
 export function createTmdbRateLimitMiddleware(options: SecurityOptions = {}) {
   const bindHost = (options.bindHost ?? '127.0.0.1').trim() || '127.0.0.1';
-  const rawEnvLimit = process.env.CINETRACK_TMDB_RATE_LIMIT;
+  const rawEnvLimit = isAiStudioContainerEnv(process.env)
+    ? undefined
+    : process.env.CINETRACK_TMDB_RATE_LIMIT;
   const parsedEnvLimit =
     rawEnvLimit !== undefined && rawEnvLimit.trim() !== '' ? Number(rawEnvLimit) : NaN;
 
