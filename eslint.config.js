@@ -106,6 +106,11 @@ export default tseslint.config(
       'src/components/Controls.tsx',
       'src/components/SeasonCalendarSection.tsx',
       'src/components/PersonDrawer.tsx',
+      'src/components/ErrorBoundary.tsx',
+      'src/components/RelationshipCanvas.ts',
+      'src/services/idb-schema-version.ts',
+      'src/services/relationship-cache.ts',
+      'src/core/encoding.ts',
       'src/server/config.ts',
     ],
     rules: {

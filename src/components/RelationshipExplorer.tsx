@@ -681,6 +681,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   const visibleContentNodeCount = graphData
     ? graphData.nodes.filter((node) => node.mediaType !== 'profile').length
     : 0;
+  const isInitialPreparing = (loading || isRestoringCache) && !graphData;
 
   const listNodes = useMemo(() => {
     if (!graphData) return [];
@@ -688,8 +689,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       .filter((node) => node.mediaType !== 'profile')
       .map((node) => {
         const nodeLinks = graphData.links.filter(
-          (link) =>
-            linkEndpointId(link.source) === node.id || linkEndpointId(link.target) === node.id,
+          (l) => linkEndpointId(l.source) === node.id || linkEndpointId(l.target) === node.id,
         );
         const topLinkScore = nodeLinks.reduce((max, l) => Math.max(max, Number(l.score || 0)), 0);
         return { node, links: nodeLinks, topLinkScore };
@@ -697,22 +697,17 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       .sort((a, b) => {
         if (a.node.kind === 'source' && b.node.kind !== 'source') return -1;
         if (b.node.kind === 'source' && a.node.kind !== 'source') return 1;
-        if (b.topLinkScore !== a.topLinkScore) return b.topLinkScore - a.topLinkScore;
-        return b.node.personalScore - a.node.personalScore;
+        return b.topLinkScore !== a.topLinkScore
+          ? b.topLinkScore - a.topLinkScore
+          : b.node.personalScore - a.node.personalScore;
       });
   }, [graphData]);
 
   const liveAnnouncement = selectedNode
     ? `Seçili düğüm: ${selectedNode.title}. Kişisel uyum yüzde ${selectedNode.personalScore}. ${selectedLinks.length} bağlantı kanıtı listeleniyor.`
     : '';
-
-  const nodeCanvasObject = (
-    rawNode: any,
-    ctx: CanvasRenderingContext2D,
-    globalScale: number,
-  ) => {
+  const nodeCanvasObject = (rawNode: unknown, ctx: CanvasRenderingContext2D, globalScale: number) =>
     renderRelationshipCanvasNode(rawNode, ctx, globalScale, selectedNode?.id);
-  };
 
   return (
     <section className="relationship-explorer">
@@ -917,18 +912,26 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
                 </div>
               )}
               <h3>
-                {mode === 'relationships' && !sourceKey
-                  ? 'Kaynak yapım seçilmedi'
-                  : graphData && graphData.nodes.length <= 1
-                    ? 'Bu yapım için yeterli ilişki bulunamadı'
-                    : graphData
-                      ? 'Bu filtrede gösterilecek ilişki yok'
-                      : 'Harita henüz oluşturulmadı'}
+                {isInitialPreparing
+                  ? 'Harita hazırlanıyor…'
+                  : mode === 'relationships' && !sourceKey
+                    ? 'Kaynak yapım seçilmedi'
+                    : graphData && graphData.nodes.length <= 1
+                      ? 'Bu yapım için yeterli ilişki bulunamadı'
+                      : graphData
+                        ? 'Bu filtrede gösterilecek ilişki yok'
+                        : savedItems.length === 0
+                          ? 'Haritayı başlatmak için ilk içeriğini ekle veya havuzu yükle'
+                          : 'Harita henüz oluşturulmadı'}
               </h3>
               <p>
-                {graphData
-                  ? 'Daha geniş bir ilişki filtresi deneyebilir veya farklı bir kaynak yapım seçebilirsin.'
-                  : 'Yerel aday havuzunu kullanmak için “Haritayı Güncelle” düğmesine bas.'}
+                {isInitialPreparing
+                  ? 'Kişisel zevk vektörleri ve metaveri bağlantıları hesaplanıyor; birkaç saniye içinde hazır olacak.'
+                  : graphData
+                    ? 'Daha geniş bir ilişki filtresi deneyebilir veya farklı bir kaynak yapım seçebilirsin.'
+                    : savedItems.length === 0
+                      ? 'Listene birkaç film/dizi eklediğinde kişisel bağlantı ağı zenginleşir. Yerel aday havuzuyla hemen oluşturmak için “Haritayı Güncelle” düğmesine bas.'
+                      : 'Yerel aday havuzunu kullanmak için “Haritayı Güncelle” düğmesine bas.'}
               </p>
               <div className="relationship-empty-actions">
                 {graphData && (mediaFilter !== 'all' || relationFilter !== 'all') && (

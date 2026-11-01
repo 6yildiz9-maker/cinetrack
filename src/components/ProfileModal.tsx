@@ -21,6 +21,7 @@ import {
   type ServerBackupMetadata,
 } from '../services/api';
 import { recordManualBackupSuccess } from '../services/auto-backup-service';
+import { resetDerivedCachesPreserveProfileAndStock } from '../services/idb-schema-version';
 import { PROVIDER_OPTIONS } from '../utils/helpers';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits';
@@ -111,6 +112,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     fileName: string;
   } | null>(null);
   const [downloadBinaryError, setDownloadBinaryError] = useState<string | null>(null);
+  const [isResettingCaches, setIsResettingCaches] = useState(false);
+  const [cacheResetMessage, setCacheResetMessage] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -129,6 +132,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setImportStatus('');
       setCsvStatus('');
       setBackupMessage('');
+      setCacheResetMessage('');
       setExcelExportReport(null);
       setVerifiedDownloadInfo(null);
       setDownloadBinaryError(null);
@@ -166,6 +170,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     setSelectedProviders((prev) =>
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
     );
+  };
+
+  const handleResetDerivedCaches = async () => {
+    setIsResettingCaches(true);
+    setCacheResetMessage('');
+    try {
+      const report = await resetDerivedCachesPreserveProfileAndStock();
+      setCacheResetMessage(
+        report.ok
+          ? '✓ Zevk vektörü (ct:encodings) ve ilişki haritası önbelleği sıfırlandı. İzleme listeniz ve yerel stok havuzunuz korundu.'
+          : 'Önbelleklerin bir kısmı sıfırlandı; tam temizlik için sayfayı yenileyebilirsiniz.'
+      );
+    } catch {
+      setCacheResetMessage('Önbellek sıfırlama sırasında bir hata oluştu.');
+    } finally {
+      setIsResettingCaches(false);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -926,6 +947,25 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 savedItems={savedItems}
                 onApplyRestoredDocument={onApplyRestoredDocument}
               />
+
+              {/* REG-03: Türetilmiş Önbellekleri Sıfırla */}
+              <div className="profile-tools-section">
+                <strong className="profile-tools-heading">Önbellek Bakımı (Vektör & Harita)</strong>
+                <p className="cache-reset-note">
+                  Zevk vektörü (<code>ct:encodings</code>) ve ilişki haritası önbelleğini temizler. İzleme listenize, profil ayarlarınıza ve yerel stok havuzunuza (<code>ct:stock</code>) dokunulmaz.
+                </p>
+                <div className="csv-actions-row">
+                  <button
+                    type="button"
+                    className="btn whitespace-nowrap"
+                    disabled={isResettingCaches}
+                    onClick={() => void handleResetDerivedCaches()}
+                  >
+                    {isResettingCaches ? 'Önbellekler sıfırlanıyor…' : 'Önbellekleri Sıfırla'}
+                  </button>
+                </div>
+                {cacheResetMessage && <p className="provider-message">{cacheResetMessage}</p>}
+              </div>
 
               <button type="submit" className="btn btn-primary whitespace-nowrap">
                 Profil Adını Kaydet ve Kapat

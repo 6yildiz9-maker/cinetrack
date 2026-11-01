@@ -341,13 +341,43 @@ export const TasteMapView: React.FC<TasteMapViewProps> = ({
 
       {/* Akıcı Poster Duvarı: minmax(148px, 1fr) -> 8 kolon @ 1440px */}
       {displayedEntries.length === 0 ? (
-        <div className="message" role="status">
-          <strong>Bu halkada gösterilecek yapım bulunmuyor</strong>
-          <p>
-            {activeViewTab === 'active'
-              ? 'Öneri listesini yeniledikçe veya yeni yapımlar izledikçe zevk haritası dinamik olarak dolacaktır.'
-              : 'Henüz arşivlenmiş bir yapım bulunmuyor.'}
-          </p>
+        <div className="message empty-guide-card" role="status">
+          {isLoading && entriesList.length === 0 ? (
+            <>
+              <strong>Harita hazırlanıyor…</strong>
+              <p>
+                Aday havuzunuz ve kişisel uyum halkalarınız hesaplanıyor. Bu işlem yalnızca birkaç saniye sürer.
+              </p>
+            </>
+          ) : entriesList.length === 0 && savedItems.length === 0 ? (
+            <>
+              <strong>Zevk haritanızı oluşturmak için ilk adımı atın</strong>
+              <p>
+                İzlediğiniz veya merak ettiğiniz birkaç film ve diziyi listenize ekleyip puanladığınızda Yeni Eşleşme, Son Öneri ve Yedek halkaları kişisel zevkinize göre otomatik şekillenir.
+              </p>
+              <div className="message-actions">
+                <button type="button" className="btn btn-primary btn-sm" onClick={onRefreshTasteMap}>
+                  Başlangıç Haritasını Hazırla
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <strong>Bu halkada gösterilecek yapım bulunmuyor</strong>
+              <p>
+                {activeViewTab === 'active'
+                  ? 'Öneri listesini yeniledikçe veya yeni yapımlar izledikçe zevk haritası dinamik olarak dolacaktır.'
+                  : 'Henüz arşivlenmiş bir yapım bulunmuyor.'}
+              </p>
+              {activeViewTab === 'active' && entriesList.length === 0 && (
+                <div className="message-actions">
+                  <button type="button" className="btn btn-primary btn-sm" onClick={onRefreshTasteMap}>
+                    Haritayı Hazırla
+                  </button>
+                </div>
+              )}
+            </>
+          )}
         </div>
       ) : (
         <div className="taste-poster-wall" role="region" aria-label="Zevk Haritası Poster Duvarı">

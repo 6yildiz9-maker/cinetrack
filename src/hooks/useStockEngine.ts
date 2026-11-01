@@ -18,6 +18,7 @@ export function useStockEngine(profileId: string): StockState {
     isLoading: true,
     isReplenishing: false,
     lastUpdated: '',
+    lastError: null,
   });
 
   useEffect(() => {

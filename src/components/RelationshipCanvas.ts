@@ -2,19 +2,25 @@ import type { RelationshipGraphNode } from '../core/relationship-explorer.ts';
 import { getRelationshipNodeColor } from '../core/relationship-wordlists.ts';
 
 export function renderRelationshipCanvasNode(
-  rawNode: any,
+  rawNode: unknown,
   ctx: CanvasRenderingContext2D,
   globalScale: number,
   selectedNodeId?: string,
 ): void {
-  if (!rawNode || !ctx) return;
+  if (!rawNode || typeof rawNode !== 'object' || !ctx) return;
   const node = rawNode as RelationshipGraphNode & { x?: number; y?: number };
-  const x = Number(node.x) || 0;
-  const y = Number(node.y) || 0;
-  const personalScore = Number(node.personalScore) || 50;
-  const radius =
+  const rawX = Number(node.x);
+  const rawY = Number(node.y);
+  const x = Number.isFinite(rawX) ? rawX : 0;
+  const y = Number.isFinite(rawY) ? rawY : 0;
+  const rawScore = Number(node.personalScore);
+  const personalScore = Number.isFinite(rawScore) ? rawScore : 50;
+  const rawStatusWeight = Number(node.statusWeight);
+  const statusWeight = Number.isFinite(rawStatusWeight) ? Math.max(0, rawStatusWeight) : 0;
+  const computedRadius =
     (node.kind === 'profile' || node.kind === 'source' ? 10 : 6 + personalScore / 35) +
-    Math.max(0, Number(node.statusWeight) || 0) * 1.5;
+    statusWeight * 1.5;
+  const radius = Number.isFinite(computedRadius) && computedRadius > 0 ? computedRadius : 6;
 
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI, false);

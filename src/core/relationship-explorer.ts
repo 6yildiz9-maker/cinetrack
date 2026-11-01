@@ -12,6 +12,7 @@ import {
 import {
   cosineSimilarity,
   computeProfileCentroid,
+  ENCODING_LAYOUT_VERSION,
   type ItemFeatureEncoding,
 } from './encoding.ts';
 import { getItemEncodingSync } from '../services/encoding-service.ts';
@@ -137,7 +138,7 @@ export interface BuildRelationshipGraphOptions {
 }
 
 export const RELATIONSHIP_MODEL_VERSION = 'relationship-v3';
-export const RELATIONSHIP_GRAPH_SCHEMA_VERSION = 1;
+export const RELATIONSHIP_GRAPH_SCHEMA_VERSION = 2;
 
 function stableHash(input: unknown): string {
   const text = JSON.stringify(input);
@@ -189,6 +190,8 @@ export function computeRelationshipProfileSignature(args: {
     profileId,
     mediaFilter,
     relationshipModelVersion: RELATIONSHIP_MODEL_VERSION,
+    graphSchemaVersion: RELATIONSHIP_GRAPH_SCHEMA_VERSION,
+    encodingLayoutVersion: ENCODING_LAYOUT_VERSION,
     history,
     preferences: {
       disliked: sortedStrings(preferences.disliked).filter(

@@ -40,6 +40,9 @@ export default defineConfig({
         ],
       },
       workbox: {
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
         importScripts: ['/sw-poster-lru.js'],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
         navigateFallbackDenylist: [/^\/api\//],
@@ -88,7 +91,7 @@ export default defineConfig({
         ],
       },
       devOptions: {
-        enabled: true,
+        enabled: false,
         type: 'module',
       },
     }),
@@ -97,11 +100,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
-          if (id.includes('react-force-graph-2d') || id.includes('force-graph') || id.includes('/d3-')) {
-            return 'd3-graph';
-          }
-          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+          if (/[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) {
             return 'react-vendor';
+          }
+          if (
+            /[\\/]node_modules[\\/](react-force-graph-2d|force-graph|react-kapsule|three|d3-[^\\/]+)[\\/]/.test(
+              id
+            )
+          ) {
+            return 'd3-graph';
           }
           return undefined;
         },

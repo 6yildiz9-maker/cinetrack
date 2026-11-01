@@ -23,9 +23,13 @@ const GENERIC_PLOT_WORDS = new Set([
   'movie', 'series', 'story', 'about', 'follows', 'lives', 'begins', 'character',
 ]);
 
+export const ENCODING_LAYOUT_VERSION = 2;
+export const DENSE_VECTOR_DIM = 48;
+
 export interface ItemFeatureEncoding {
   id: string | number;
   media_type: 'movie' | 'tv';
+  layoutVersion: number;
   signature: string;
   genreVector: number[];
   eraBucket: number;
@@ -61,7 +65,33 @@ export function tokenizeText(text: string): Set<string> {
   );
 }
 
-export function computeItemContentSignature(item: any): string {
+export interface EncodableMediaInput {
+  id?: string | number;
+  media_type?: string;
+  title?: string;
+  name?: string;
+  overview?: string;
+  genre_ids?: Array<number | string>;
+  release_date?: string;
+  first_air_date?: string;
+  vote_average?: number | string;
+  vote_count?: number | string;
+  popularity?: number | string;
+  keywords?: Array<{ id?: number | string } | number | string>;
+  keyword_ids?: Array<number | string>;
+  cast?: Array<{ id?: number | string } | number | string>;
+  topCastIds?: Array<number | string>;
+  crew?: Array<{ id?: number | string } | number | string>;
+}
+
+function extractNumericId(entry: unknown): number {
+  if (typeof entry === 'object' && entry !== null && 'id' in entry) {
+    return Number((entry as { id?: unknown }).id);
+  }
+  return Number(entry);
+}
+
+export function computeItemContentSignature(item: EncodableMediaInput | null | undefined): string {
   if (!item || typeof item !== 'object') return '';
   const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
   const id = String(item.id ?? '');
@@ -72,25 +102,26 @@ export function computeItemContentSignature(item: any): string {
     : [];
 
   const rawKeywords: number[] = Array.isArray(item.keywords)
-    ? item.keywords.map((k: any) => (typeof k === 'object' && k ? Number(k.id) : Number(k))).filter(Number.isFinite)
+    ? item.keywords.map(extractNumericId).filter(Number.isFinite)
     : Array.isArray(item.keyword_ids)
       ? item.keyword_ids.map(Number).filter(Number.isFinite)
       : [];
   const keywordIds: number[] = [...new Set(rawKeywords)].sort((a: number, b: number) => a - b);
 
   const rawCast: number[] = Array.isArray(item.cast)
-    ? item.cast.map((c: any) => (typeof c === 'object' && c ? Number(c.id) : Number(c))).filter(Number.isFinite)
+    ? item.cast.map(extractNumericId).filter(Number.isFinite)
     : Array.isArray(item.topCastIds)
       ? item.topCastIds.map(Number).filter(Number.isFinite)
       : [];
   const castIds: number[] = [...new Set(rawCast)].slice(0, 10).sort((a: number, b: number) => a - b);
 
   const rawCrew: number[] = Array.isArray(item.crew)
-    ? item.crew.map((c: any) => (typeof c === 'object' && c ? Number(c.id) : Number(c))).filter(Number.isFinite)
+    ? item.crew.map(extractNumericId).filter(Number.isFinite)
     : [];
   const crewIds: number[] = [...new Set(rawCrew)].slice(0, 5).sort((a: number, b: number) => a - b);
 
   const payload = {
+    layoutVersion: ENCODING_LAYOUT_VERSION,
     id,
     mediaType,
     title,
@@ -104,7 +135,7 @@ export function computeItemContentSignature(item: any): string {
   return hashDeterministic(canonicalJsonStringify(payload));
 }
 
-export function encodeItemContent(item: any): ItemFeatureEncoding {
+export function encodeItemContent(item: EncodableMediaInput): ItemFeatureEncoding {
   const mediaType: 'movie' | 'tv' = item.media_type === 'tv' || (!item.media_type && Boolean(item.name) && !item.title)
     ? 'tv'
     : 'movie';
@@ -133,7 +164,7 @@ export function encodeItemContent(item: any): ItemFeatureEncoding {
 
   // 4. Keyword IDs
   const rawItemKeywords: number[] = Array.isArray(item.keywords)
-    ? item.keywords.map((k: any) => (typeof k === 'object' && k ? Number(k.id) : Number(k))).filter(Number.isFinite)
+    ? item.keywords.map(extractNumericId).filter(Number.isFinite)
     : Array.isArray(item.keyword_ids)
       ? item.keyword_ids.map(Number).filter(Number.isFinite)
       : [];
@@ -141,14 +172,14 @@ export function encodeItemContent(item: any): ItemFeatureEncoding {
 
   // 5. Cast and Crew IDs
   const rawItemCast: number[] = Array.isArray(item.cast)
-    ? item.cast.map((c: any) => (typeof c === 'object' && c ? Number(c.id) : Number(c))).filter(Number.isFinite)
+    ? item.cast.map(extractNumericId).filter(Number.isFinite)
     : Array.isArray(item.topCastIds)
       ? item.topCastIds.map(Number).filter(Number.isFinite)
       : [];
   const castIds: number[] = [...new Set(rawItemCast)].slice(0, 10).sort((a: number, b: number) => a - b);
 
   const rawItemCrew: number[] = Array.isArray(item.crew)
-    ? item.crew.map((c: any) => (typeof c === 'object' && c ? Number(c.id) : Number(c))).filter(Number.isFinite)
+    ? item.crew.map(extractNumericId).filter(Number.isFinite)
     : [];
   const crewIds: number[] = [...new Set(rawItemCrew)].slice(0, 5).sort((a: number, b: number) => a - b);
 
@@ -172,6 +203,7 @@ export function encodeItemContent(item: any): ItemFeatureEncoding {
   return {
     id,
     media_type: mediaType,
+    layoutVersion: ENCODING_LAYOUT_VERSION,
     signature,
     genreVector,
     eraBucket,
@@ -198,25 +230,30 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   for (let i = 0; i < a.length; i++) {
     const valA = a[i];
     const valB = b[i];
+    if (!Number.isFinite(valA) || !Number.isFinite(valB)) {
+      return 0;
+    }
     dot += valA * valB;
     normA += valA * valA;
     normB += valB * valB;
   }
-  if (normA <= 0 || normB <= 0) return 0;
+  if (!Number.isFinite(normA) || !Number.isFinite(normB) || normA <= 0 || normB <= 0) return 0;
   const sim = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  if (!Number.isFinite(sim)) return 0;
   return Math.max(0, Math.min(1, sim));
 }
 
 /**
  * Computes profile centroid vector as the status-weighted average of saved item dense vectors.
  * completed: weight +1.0, interest: +0.5, disliked: -0.5, scaled by personal rating if available.
+ * Strictly ignores legacy/mismatched vector lengths or non-finite entries so NaN never propagates.
  */
 export function computeProfileCentroid(
   items: Array<ItemFeatureEncoding | { encoding?: ItemFeatureEncoding | null; personal_rating?: number | '' }>,
   statusWeights: Record<string, number> = {}
 ): number[] {
   if (!items || items.length === 0) return [];
-  const normalizedEncodings: Array<{ enc: ItemFeatureEncoding; weight: number }> = [];
+  const rawCandidates: Array<{ enc: ItemFeatureEncoding; weight: number }> = [];
 
   for (const item of items) {
     if (!item) continue;
@@ -233,25 +270,40 @@ export function computeProfileCentroid(
       const rating = item.personal_rating !== '' && item.personal_rating != null ? Number(item.personal_rating) : 7;
       weight = baseWeight * (rating / 10);
     }
-    if (enc && weight !== 0) {
-      normalizedEncodings.push({ enc, weight });
+    if (
+      enc &&
+      weight !== 0 &&
+      Number.isFinite(weight) &&
+      Array.isArray(enc.denseVector) &&
+      enc.denseVector.length > 0 &&
+      enc.denseVector.every((v) => typeof v === 'number' && Number.isFinite(v))
+    ) {
+      rawCandidates.push({ enc, weight });
     }
   }
 
+  if (rawCandidates.length === 0) return [];
+  const preferredDim = rawCandidates.some((c) => c.enc.denseVector.length === DENSE_VECTOR_DIM)
+    ? DENSE_VECTOR_DIM
+    : rawCandidates[0].enc.denseVector.length;
+
+  const normalizedEncodings = rawCandidates.filter(
+    (c) => c.enc.denseVector.length === preferredDim
+  );
   if (normalizedEncodings.length === 0) return [];
-  const dim = normalizedEncodings[0].enc.denseVector.length;
-  const centroid = new Array<number>(dim).fill(0);
+
+  const centroid = new Array<number>(preferredDim).fill(0);
   let totalWeight = 0;
 
   for (const { enc, weight } of normalizedEncodings) {
-    for (let i = 0; i < dim; i++) {
+    for (let i = 0; i < preferredDim; i++) {
       centroid[i] += enc.denseVector[i] * weight;
     }
     totalWeight += Math.abs(weight);
   }
 
   if (totalWeight <= 0) return centroid;
-  for (let i = 0; i < dim; i++) {
+  for (let i = 0; i < preferredDim; i++) {
     centroid[i] /= totalWeight;
   }
   return centroid;

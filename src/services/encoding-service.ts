@@ -1,6 +1,8 @@
 import {
   encodeItemContent,
   computeItemContentSignature,
+  ENCODING_LAYOUT_VERSION,
+  DENSE_VECTOR_DIM,
   type ItemFeatureEncoding,
 } from '../core/encoding.ts';
 import {
@@ -8,6 +10,7 @@ import {
   saveStoredEncodingIdb,
   getAllStoredEncodingsIdb,
   clearManyStoredEncodingsIdb,
+  clearAllStoredEncodingsIdb,
 } from './client-depots.ts';
 import { fetchTmdb } from './api.ts';
 
@@ -22,9 +25,23 @@ export function setEncodingTmdbFetcherForTests(fetcher?: EncodingFetcherFn | nul
 }
 
 function makeEncodingStorageKey(item: any, signature: string): string {
-  const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
-  const id = String(item.id ?? '');
-  return `${mediaType}:${id}:${signature}`;
+  const mediaType = item?.media_type || (item?.title ? 'movie' : 'tv');
+  const id = String(item?.id ?? '');
+  return `v${ENCODING_LAYOUT_VERSION}:${mediaType}:${id}:${signature}`;
+}
+
+function isValidStoredEncoding(
+  candidate: ItemFeatureEncoding | null | undefined,
+  expectedSignature: string
+): candidate is ItemFeatureEncoding {
+  return Boolean(
+    candidate &&
+      candidate.signature === expectedSignature &&
+      candidate.layoutVersion === ENCODING_LAYOUT_VERSION &&
+      Array.isArray(candidate.denseVector) &&
+      candidate.denseVector.length === DENSE_VECTOR_DIM &&
+      candidate.denseVector.every((v) => typeof v === 'number' && Number.isFinite(v))
+  );
 }
 
 export function getItemEncodingSync(item: any): ItemFeatureEncoding {
@@ -33,7 +50,7 @@ export function getItemEncodingSync(item: any): ItemFeatureEncoding {
   const key = makeEncodingStorageKey(item, signature);
 
   const cached = memoryEncodingCache.get(key);
-  if (cached && cached.signature === signature) {
+  if (isValidStoredEncoding(cached, signature)) {
     return cached;
   }
 
@@ -51,7 +68,7 @@ export async function getItemEncoding(item: any): Promise<ItemFeatureEncoding> {
 
   // 1. Fast in-memory hit
   const mem = memoryEncodingCache.get(key);
-  if (mem && mem.signature === signature) {
+  if (isValidStoredEncoding(mem, signature)) {
     return mem;
   }
 
@@ -64,7 +81,7 @@ export async function getItemEncoding(item: any): Promise<ItemFeatureEncoding> {
     try {
       // 3. Try IndexedDB Depo 13 (ct:encodings)
       const stored = await getStoredEncodingIdb<ItemFeatureEncoding>(key);
-      if (stored && stored.signature === signature) {
+      if (isValidStoredEncoding(stored, signature)) {
         memoryEncodingCache.set(key, stored);
         return stored;
       }
@@ -129,7 +146,7 @@ export async function batchGetEncodings(items: any[]): Promise<ItemFeatureEncodi
     const sig = computeItemContentSignature(it);
     const key = makeEncodingStorageKey(it, sig);
     const cached = memoryEncodingCache.get(key);
-    if (cached && cached.signature === sig) {
+    if (isValidStoredEncoding(cached, sig)) {
       results[i] = cached;
     } else {
       uncachedItems.push(it);
@@ -190,6 +207,18 @@ export async function maintainEncodingsDepot(maxEntries: number = ENCODINGS_DEPO
 
     for (const [key, enc] of all) {
       if (!enc || typeof enc !== 'object') {
+        keysToDelete.push(key);
+        continue;
+      }
+      // Prune legacy 47-dim vectors or mismatched layoutVersion records (REG-02/03)
+      const hasLegacyVector =
+        Array.isArray(enc.denseVector) &&
+        (enc.denseVector.length !== DENSE_VECTOR_DIM ||
+          enc.layoutVersion !== ENCODING_LAYOUT_VERSION ||
+          !enc.denseVector.every((v) => typeof v === 'number' && Number.isFinite(v)));
+      const hasMismatchedVersion =
+        enc.layoutVersion !== undefined && enc.layoutVersion !== ENCODING_LAYOUT_VERSION;
+      if (hasLegacyVector || hasMismatchedVersion) {
         keysToDelete.push(key);
         continue;
       }
@@ -347,6 +376,14 @@ export function getEncodingServiceMetricsForTests() {
     cacheSize: memoryEncodingCache.size,
     inFlightCount: inFlightEncodingFetches.size,
   };
+}
+
+export async function clearAllEncodingsCache(): Promise<{ cleared: boolean; error?: string }> {
+  memoryEncodingCache.clear();
+  inFlightEncodingFetches.clear();
+  enrichedItemKeys.clear();
+  const res = await clearAllStoredEncodingsIdb();
+  return { cleared: res.persisted, error: res.error };
 }
 
 export { makeEncodingStorageKey };

@@ -7,7 +7,8 @@ import type {
 } from '../core/relationship-explorer';
 
 const DB_NAME = 'cinetrack-relationship-cache';
-const DB_VERSION = 1;
+export const RELATIONSHIP_CACHE_DB_VERSION = 2;
+const DB_VERSION = RELATIONSHIP_CACHE_DB_VERSION;
 const STORE_NAMES = ['graphs', 'features', 'edges'] as const;
 export type RelationshipCacheStore = (typeof STORE_NAMES)[number];
 
@@ -42,11 +43,14 @@ function openRelationshipDb(): Promise<IDBDatabase> {
 
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
+      const upgradeTx = request.transaction;
       for (const storeName of STORE_NAMES) {
         if (!db.objectStoreNames.contains(storeName)) {
           db.createObjectStore(storeName, { keyPath: 'key' });
+        } else if (event.oldVersion > 0 && event.oldVersion < DB_VERSION && upgradeTx) {
+          upgradeTx.objectStore(storeName).clear();
         }
       }
     };
@@ -56,6 +60,32 @@ function openRelationshipDb(): Promise<IDBDatabase> {
     request.onblocked = () =>
       reject(new Error('İlişki önbelleği güncellemesi başka bir sekme tarafından engellendi.'));
   });
+}
+
+export async function clearAllRelationshipCache(): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') {
+    return true;
+  }
+  try {
+    const db = await openRelationshipDb();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction([...STORE_NAMES], 'readwrite');
+        for (const storeName of STORE_NAMES) {
+          tx.objectStore(storeName).clear();
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('İlişki önbelleği temizlenemedi.'));
+        tx.onabort = () => reject(tx.error || new Error('İlişki önbelleği temizleme işlemi iptal edildi.'));
+      });
+      return true;
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    console.warn('[RelationshipCache] Önbellek sıfırlama uyarısı:', err);
+    return false;
+  }
 }
 
 export async function readRelationshipCache<T>(

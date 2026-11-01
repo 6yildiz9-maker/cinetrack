@@ -31,11 +31,8 @@ import {
   writeJsonFileAtomic,
   writeJsonFileAtomicAsync,
 } from './atomic-json.ts';
-import type { UserDataRepository } from './user-data-repository.ts';
-
 export interface StorageOptions {
   dataDir?: string;
-  repository?: UserDataRepository;
   maxDataBytes?: number;
   maxProfiles?: number;
   maxItemsPerProfile?: number;
@@ -116,18 +113,15 @@ export function createDataStorage(options: StorageOptions) {
   const isolatedUserListsFile = path.join(resolvedDataDir, 'user-lists.json');
   const backupsDir = path.join(resolvedDataDir, 'backups');
 
-  const repo = options.repository ?? null;
   const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   const maxProfiles = options.maxProfiles ?? DEFAULT_MAX_PROFILES;
   const maxItemsPerProfile = options.maxItemsPerProfile ?? DEFAULT_MAX_ITEMS_PER_PROFILE;
   const maxSnapshots = Math.max(1, options.maxSnapshots ?? DEFAULT_MAX_SNAPSHOTS);
 
-  if (!repo) {
-    mkdirSync(resolvedDataDir, { recursive: true });
-    mkdirSync(backupsDir, { recursive: true });
-    cleanupStaleTempFiles(resolvedDataDir);
-    cleanupStaleTempFiles(backupsDir);
-  }
+  mkdirSync(resolvedDataDir, { recursive: true });
+  mkdirSync(backupsDir, { recursive: true });
+  cleanupStaleTempFiles(resolvedDataDir);
+  cleanupStaleTempFiles(backupsDir);
 
   let unrecoverableCorruptionError: string | null = null;
   let writeQueue: Promise<unknown> = Promise.resolve();
@@ -200,9 +194,6 @@ export function createDataStorage(options: StorageOptions) {
   }
 
   function readData(): DataDocument {
-    if (repo) {
-      return emptyDocument();
-    }
     const recovery = readJsonFileWithRecovery<DataDocument>(dataFile, {
       backupPaths: getDiskRecoveryBackupPathsSync(),
       validate: validateRawDocument,
@@ -221,30 +212,6 @@ export function createDataStorage(options: StorageOptions) {
   }
 
   async function readDataAsync(): Promise<DataDocument> {
-    if (repo) {
-      const raw = await repo.load();
-      if (raw === null || raw === undefined) {
-        unrecoverableCorruptionError = null;
-        return emptyDocument();
-      }
-      const rawObj = raw as Record<string, unknown>;
-      if (
-        Array.isArray(rawObj.profiles) &&
-        rawObj.profiles.length === 0 &&
-        Number(rawObj.revision) === 0
-      ) {
-        unrecoverableCorruptionError = null;
-        return emptyDocument();
-      }
-      const doc = validateRawDocument(raw);
-      if (!doc) {
-        unrecoverableCorruptionError = 'Veritabanındaki kullanıcı verisi doğrulanamadı';
-        return emptyDocument();
-      }
-      unrecoverableCorruptionError = null;
-      return doc;
-    }
-
     const recovery = await readJsonFileWithRecoveryAsync<DataDocument>(dataFile, {
       backupPaths: await getDiskRecoveryBackupPathsAsync(),
       validate: validateRawDocument,
@@ -518,15 +485,6 @@ export function createDataStorage(options: StorageOptions) {
   }
 
   async function persistDocument(current: DataDocument, next: DataDocument): Promise<void> {
-    if (repo) {
-      await repo.save({
-        document: next,
-        snapshot: isWorthKeeping(current) ? current : null,
-        keepSnapshots: maxSnapshots,
-      });
-      return;
-    }
-
     if (isWorthKeeping(current)) {
       await writeDiskSnapshotAsync(current);
     }
@@ -589,17 +547,6 @@ export function createDataStorage(options: StorageOptions) {
   }
 
   async function listBackupsAsync(): Promise<BackupMetadata[]> {
-    if (repo) {
-      const snapshots = await repo.listSnapshots();
-      return snapshots.map((s) => ({
-        id: s.id,
-        createdAt: s.createdAt,
-        revision: s.revision,
-        profilesCount: s.profilesCount,
-        itemsCount: s.itemsCount,
-      }));
-    }
-
     const files = await listDiskSnapshotFilesNewestFirstAsync();
     const backups: BackupMetadata[] = [];
     for (const fileName of files) {
@@ -648,27 +595,15 @@ export function createDataStorage(options: StorageOptions) {
 
   async function restoreBackupAsync(backupId: string): Promise<DataDocument | null> {
     const id = String(backupId || '').trim();
-    if (!id) return null;
-
-    let backupDoc: DataDocument | null = null;
-    if (repo) {
-      const raw = await repo.getSnapshot(id);
-      if (!raw) return null;
-      backupDoc = validateRawDocument(raw);
-    } else {
-      if (!SNAPSHOT_FILE_PATTERN.test(id)) return null;
-      const fullPath = path.resolve(backupsDir, id);
-      if (!fullPath.startsWith(backupsDir + path.sep) || !existsSync(fullPath)) return null;
-      const parsed = await tryParseValidJsonAsync<DataDocument>(fullPath, validateRawDocument);
-      if (!parsed.ok) return null;
-      backupDoc = parsed.data;
-    }
-
-    if (!backupDoc) return null;
+    if (!id || !SNAPSHOT_FILE_PATTERN.test(id)) return null;
+    const fullPath = path.resolve(backupsDir, id);
+    if (!fullPath.startsWith(backupsDir + path.sep) || !existsSync(fullPath)) return null;
+    const parsed = await tryParseValidJsonAsync<DataDocument>(fullPath, validateRawDocument);
+    if (!parsed.ok) return null;
 
     const current = await readDataAsync();
     const restoredDoc: DataDocument = {
-      ...backupDoc,
+      ...parsed.data,
       revision: (current.revision ?? 0) + 1,
       updatedAt: new Date().toISOString(),
     };
@@ -685,11 +620,7 @@ export function createDataStorage(options: StorageOptions) {
     return serialize(async () => {
       const current = await readDataAsync();
       if (current.profiles.length === 0 && (current.revision ?? 0) === 0) return;
-      if (repo) {
-        await repo.createSnapshot(current, maxSnapshots);
-      } else {
-        await writeDiskSnapshotAsync(current);
-      }
+      await writeDiskSnapshotAsync(current);
     });
   }
 
@@ -697,11 +628,7 @@ export function createDataStorage(options: StorageOptions) {
     return serialize(async () => {
       const current = await readDataAsync();
       if (!isWorthKeeping(current)) return;
-      if (repo) {
-        await repo.createSnapshot(current, maxSnapshots);
-      } else {
-        await writeDiskSnapshotAsync(current);
-      }
+      await writeDiskSnapshotAsync(current);
     });
   }
 

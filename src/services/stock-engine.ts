@@ -69,11 +69,13 @@ export interface StockState {
   isLoading: boolean;
   isReplenishing: boolean;
   lastUpdated: string;
+  lastError?: string | null;
 }
 
 let activeStock: StockDepot = { movies: [], tv: [], updatedAt: '', cursors: {} };
 let isInitialized = false;
 let isReplenishingActive = false;
+let lastReplenishmentError: string | null = null;
 let replenishmentTimeout: ReturnType<typeof setTimeout> | null = null;
 const stockListeners = new Set<(state: StockState) => void>();
 
@@ -113,6 +115,7 @@ function buildStockStateSnapshot(): StockState {
     isLoading: !isInitialized,
     isReplenishing: isReplenishingActive,
     lastUpdated: activeStock.updatedAt,
+    lastError: lastReplenishmentError,
   };
 }
 
@@ -155,6 +158,7 @@ export function resetStockEngineForTests(): void {
   activeStock = { movies: [], tv: [], updatedAt: '', cursors: {} };
   isInitialized = false;
   isReplenishingActive = false;
+  lastReplenishmentError = null;
   setStockTmdbFetcher(null);
   notifyStockListeners();
 }
@@ -484,6 +488,7 @@ export async function executeStockReplenishment(
   }
 
   isReplenishingActive = true;
+  lastReplenishmentError = null;
   notifyStockListeners();
 
   try {
@@ -508,39 +513,44 @@ export async function executeStockReplenishment(
       getActiveSkippedKeys(profileId, undefined, nowMs),
     ]);
 
-    // Hard exclusions: NEVER enter stock or recycle
-    const hardExclusions = new Set<string>();
+    // Exclusions that permanently remove items even from existing ct:stock (saved, disliked, hidden, skipped)
+    const stockPurgeExclusions = new Set<string>();
     for (const it of userListItems) {
       const mType = it.media_type === 'tv' ? 'tv' : 'movie';
-      hardExclusions.add(`${mType}:${it.id}`);
+      stockPurgeExclusions.add(`${mType}:${it.id}`);
     }
     for (const dislikedKey of isolatedProfile?.preferences?.disliked || []) {
-      hardExclusions.add(dislikedKey);
+      stockPurgeExclusions.add(dislikedKey);
     }
     for (const hiddenKey of isolatedProfile?.preferences?.hidden || []) {
-      hardExclusions.add(hiddenKey);
+      stockPurgeExclusions.add(hiddenKey);
     }
     for (const skipKey of activeSkipKeys) {
-      hardExclusions.add(skipKey);
+      stockPurgeExclusions.add(skipKey);
     }
-    for (const activeSurfacedKey of surfacedPartition.activeCooldownKeys) {
-      hardExclusions.add(activeSurfacedKey);
-    }
+
+    // Purge stock items ONLY if saved/disliked/hidden/skipped — NEVER purge existing stock just because it was surfaced (REG-01)
+    activeStock.movies = activeStock.movies.filter((m) => !stockPurgeExclusions.has(`movie:${m.id}`));
+    activeStock.tv = activeStock.tv.filter((t) => !stockPurgeExclusions.has(`tv:${t.id}`));
+
+    // Hard exclusions for Pass 1 & Pass 2 incoming candidates (includes active 7d surfaced cooldown)
+    const hardExclusions = new Set<string>([
+      ...stockPurgeExclusions,
+      ...surfacedPartition.activeCooldownKeys,
+    ]);
 
     const allSurfacedExclusions = new Set<string>([
       ...hardExclusions,
       ...surfacedPartition.recyclableExpiredKeys,
     ]);
 
-    // Purge any stock items that have entered user-lists, disliked/hidden, skip-log, or active surfaced
-    activeStock.movies = activeStock.movies.filter((m) => !hardExclusions.has(`movie:${m.id}`));
-    activeStock.tv = activeStock.tv.filter((t) => !hardExclusions.has(`tv:${t.id}`));
-
     for (const m of activeStock.movies) {
+      stockPurgeExclusions.add(`movie:${m.id}`);
       hardExclusions.add(`movie:${m.id}`);
       allSurfacedExclusions.add(`movie:${m.id}`);
     }
     for (const t of activeStock.tv) {
+      stockPurgeExclusions.add(`tv:${t.id}`);
       hardExclusions.add(`tv:${t.id}`);
       allSurfacedExclusions.add(`tv:${t.id}`);
     }
@@ -570,7 +580,9 @@ export async function executeStockReplenishment(
       );
       currentList.push(...freshItems);
       for (const item of freshItems) {
-        hardExclusions.add(`${mediaType}:${item.id}`);
+        const key = `${mediaType}:${item.id}`;
+        stockPurgeExclusions.add(key);
+        hardExclusions.add(key);
       }
       newlyIndexedCandidates.push(...freshItems.slice(0, 60));
 
@@ -597,9 +609,30 @@ export async function executeStockReplenishment(
           }
           if (candidate) {
             currentList.push(candidate);
+            stockPurgeExclusions.add(recycleKey);
             hardExclusions.add(recycleKey);
             recycledKeysUsed.push(recycleKey);
           }
+        }
+      }
+
+      // Pass 3 (REG-01 Constrained / Demo Catalog Fallback):
+      // If the depot is still completely empty (0 items) because all items in a small/demo catalog
+      // were recently surfaced on Trending, populate non-listed, non-disliked items so Stok is never 0/0.
+      if (currentList.length === 0) {
+        const fallbackCursors: Record<string, number> = {};
+        const fallbackItems = await fetchCandidateBatch(
+          mediaType,
+          shortage,
+          stockPurgeExclusions,
+          fallbackCursors
+        );
+        if (fallbackItems.length > 0) {
+          currentList.push(...fallbackItems);
+          for (const item of fallbackItems) {
+            stockPurgeExclusions.add(`${mediaType}:${item.id}`);
+          }
+          newlyIndexedCandidates.push(...fallbackItems.slice(0, 60));
         }
       }
     };
@@ -613,13 +646,19 @@ export async function executeStockReplenishment(
 
     activeStock.cursors = cursors;
     activeStock.updatedAt = new Date().toISOString();
-    await saveStockIdb(activeStock);
+    const saveRes = await saveStockIdb(activeStock);
+    if (!saveRes.persisted && saveRes.error) {
+      lastReplenishmentError = `Stok IndexedDB kaydı tamamlanamadı: ${saveRes.error}`;
+      console.error('[StockEngine] saveStockIdb hatası:', saveRes.error);
+    }
 
     if (newlyIndexedCandidates.length > 0) {
       void indexItemsForSeriesBatch(newlyIndexedCandidates);
     }
   } catch (err) {
-    console.warn('[StockEngine] Replenishment error:', err);
+    lastReplenishmentError =
+      err instanceof Error ? err.message : 'Stok doldurma sırasında beklenmeyen bir hata oluştu.';
+    console.error('[StockEngine] Stok doldurma hatası:', err);
   } finally {
     isReplenishingActive = false;
     notifyStockListeners();

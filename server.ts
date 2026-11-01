@@ -1,5 +1,5 @@
 import express from 'express';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,10 +12,6 @@ import type { SavedItem } from './src/core/cinetrack-core.ts';
 import { createCineTrackApp, createSpaFallbackMiddleware } from './src/server/app.ts';
 import { isAiStudioContainerEnv, resolveConfig } from './src/server/config.ts';
 import { redactSecrets } from './src/server/persistent-store.ts';
-import {
-  createServiceClient,
-  createSupabaseUserDataRepository,
-} from './src/server/user-data-repository.ts';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const CINETRACK_HOST = '127.0.0.1';
@@ -33,18 +29,7 @@ for (const warnMsg of resolved.warnings) {
   console.warn(warnMsg);
 }
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const hasSupabaseConfig = Boolean(supabaseUrl && supabaseServiceRoleKey);
-
 const { app, storage, persistentStore } = createCineTrackApp({
-  ...(hasSupabaseConfig
-    ? {
-        repository: createSupabaseUserDataRepository(
-          createServiceClient(supabaseUrl!, supabaseServiceRoleKey!)
-        ),
-      }
-    : {}),
   dataDir,
   maxDataBytes,
   maxProfiles,
@@ -71,28 +56,7 @@ const { app, storage, persistentStore } = createCineTrackApp({
   ...(resolved.authToken ? { authToken: resolved.authToken } : {}),
 });
 
-// Setup Vite middleware (explicit --dev only) or static dist serving (production default)
-const legacyDataFile = path.join(dataDir, 'cinetrack-data.json');
-
-async function importLegacyDataIfNeeded() {
-  if (!hasSupabaseConfig || !existsSync(legacyDataFile)) return;
-  const current = await storage.readDataAsync();
-  if (current.profiles.length > 0) return;
-  const legacy = JSON.parse(readFileSync(legacyDataFile, 'utf8'));
-  const result = await storage.applySyncedDocumentSerialized(legacy);
-  if (!result.ok) {
-    throw new Error(result.message);
-  }
-  console.log(`[Migration] Yerel veri dosyası veritabanına aktarıldı (rev-${result.document.revision}).`);
-}
-
 async function startServer() {
-  try {
-    await importLegacyDataIfNeeded();
-  } catch (e: any) {
-    console.error('[Migration] Yerel veri veritabanına aktarılamadı:', e?.message || e);
-    process.exit(1);
-  }
 
   // Başlangıçta mevcut izleme listesi ve profillerdeki yapımları asenkron olarak kalıcı kataloğa aktar (BUG-04)
   try {
@@ -141,9 +105,7 @@ async function startServer() {
     console.log(
       `CineTrack is running at http://${listenHost}:${port} (bind policy: ${bindHost}, ${isDevMode ? 'development' : 'production'})`
     );
-    console.log(
-      `Profil ve izleme listesi: ${hasSupabaseConfig ? 'Supabase veritabanı' : 'Yerel dosya sistemi (data/cinetrack-data.json)'}`
-    );
+    console.log('Profil ve izleme listesi: Yerel dosya sistemi (data/cinetrack-data.json)');
     const syncStatus = persistentStore.getSyncStatus();
     console.log(
       `Kalıcı Veri Deposu: ${syncStatus.mode === 'github' ? `GitHub Uzak Eşitleme (${syncStatus.remoteTarget?.repo})` : 'Yerel Depolama (data/catalog & data/profiles)'}`

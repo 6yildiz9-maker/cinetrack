@@ -1,4 +1,4 @@
-import { get, set, del, createStore, entries, delMany, type UseStore } from 'idb-keyval';
+import { get, set, del, clear, createStore, entries, delMany, type UseStore } from 'idb-keyval';
 import type { TmdbPersonCreditItem } from '../types/tmdb.ts';
 import type { ActorFetchStatus } from '../core/cinetrack-core.ts';
 
@@ -369,12 +369,12 @@ export async function clearActorCreditsIdb(actorId: number): Promise<IdbWriteRes
   return depotDel('ct_actor_credits', makeActorCreditsDepotKey(actorId));
 }
 
-// Depo 13: ct:encodings (FEAT-03)
-export async function getStoredEncodingIdb<T = any>(key: string): Promise<T | null> {
+// Depo 13: ct:encodings (FEAT-03 + REG-02/03)
+export async function getStoredEncodingIdb<T = unknown>(key: string): Promise<T | null> {
   return depotGet<T>('ct_encodings', key);
 }
 
-export async function saveStoredEncodingIdb<T = any>(key: string, value: T): Promise<IdbWriteResult> {
+export async function saveStoredEncodingIdb<T = unknown>(key: string, value: T): Promise<IdbWriteResult> {
   return depotSet('ct_encodings', key, value);
 }
 
@@ -382,7 +382,7 @@ export async function clearStoredEncodingIdb(key: string): Promise<IdbWriteResul
   return depotDel('ct_encodings', key);
 }
 
-export async function getAllStoredEncodingsIdb<T = any>(): Promise<Array<[string, T]>> {
+export async function getAllStoredEncodingsIdb<T = unknown>(): Promise<Array<[string, T]>> {
   const store = getExtraDepotStore('ct_encodings');
   if (store) {
     try {
@@ -412,8 +412,29 @@ export async function clearManyStoredEncodingsIdb(keys: string[]): Promise<IdbWr
     try {
       await delMany(keys, store);
       return { persisted: true };
-    } catch (err: any) {
-      return { persisted: false, error: err?.message || 'Toplu silme hatası' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Toplu silme hatası';
+      return { persisted: false, error: msg };
+    }
+  }
+  return { persisted: true };
+}
+
+export async function clearAllStoredEncodingsIdb(): Promise<IdbWriteResult> {
+  const prefix = 'ct_encodings:';
+  for (const key of Array.from(extraMemoryFallback.keys())) {
+    if (key.startsWith(prefix)) {
+      extraMemoryFallback.delete(key);
+    }
+  }
+  const store = getExtraDepotStore('ct_encodings');
+  if (store) {
+    try {
+      await clear(store);
+      return { persisted: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Önbellek temizleme hatası';
+      return { persisted: false, error: msg };
     }
   }
   return { persisted: true };

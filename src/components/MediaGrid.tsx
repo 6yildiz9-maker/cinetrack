@@ -60,6 +60,11 @@ interface MediaGridProps {
   mood?: string;
   isDemo?: boolean;
   onIncrementEpisode?: (item: SavedItem) => void;
+  stockStats?: { movieCount: number; tvCount: number };
+  isStockReplenishing?: boolean;
+  stockReplenishError?: string | null;
+  onReplenishStock?: () => void;
+  onOpenAddCustom?: () => void;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -108,6 +113,11 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   mood = '',
   isDemo = false,
   onIncrementEpisode,
+  stockStats,
+  isStockReplenishing = false,
+  stockReplenishError = null,
+  onReplenishStock,
+  onOpenAddCustom,
 }) => {
   const [actorsSubTab, setActorsSubTab] = useState<'actors' | 'recommendations'>('actors');
   const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
@@ -524,6 +534,65 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   </button>
                 </div>
               </>
+            ) : tab === 'discover' && category === 'stock' ? (
+              (() => {
+                const totalStockCount = (stockStats?.movieCount ?? 0) + (stockStats?.tvCount ?? 0);
+                if (totalStockCount === 0) {
+                  return (
+                    <>
+                      <strong>
+                        {isStockReplenishing
+                          ? 'Yerel stok havuzu hazırlanıyor…'
+                          : 'Yerel stok havuzu henüz boş'}
+                      </strong>
+                      <span>
+                        Çevrimdışı erişime hazır yerel aday havuzu (<code>ct:stock</code>) henüz doldurulmadı veya ilk kurulum tamamlanmadı. Aşağıdaki düğmeyle stok havuzunu hemen indirebilirsiniz.
+                      </span>
+                      {stockReplenishError && (
+                        <p className="empty-guide-error" role="status">
+                          Son stok doldurma uyarısı: {stockReplenishError}
+                        </p>
+                      )}
+                      <div className="message-actions">
+                        {onReplenishStock && (
+                          <button
+                            className="btn btn-primary"
+                            type="button"
+                            disabled={isStockReplenishing}
+                            onClick={onReplenishStock}
+                          >
+                            {isStockReplenishing ? 'Stok havuzu indiriliyor…' : 'Stok havuzunu indir'}
+                          </button>
+                        )}
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => onEmptyAction('trending')}
+                        >
+                          Gündemde olanlara dön
+                        </button>
+                      </div>
+                    </>
+                  );
+                }
+                return (
+                  <>
+                    <strong>Seçili filtrelerle eşleşen stok kaydı bulunamadı</strong>
+                    <span>
+                      Yerel stok havuzunda toplam {totalStockCount} içerik ({stockStats?.movieCount ?? 0} film · {stockStats?.tvCount ?? 0} dizi) bulunuyor; ancak seçili tür veya &ldquo;Listemdekileri Gizle&rdquo; filtresi sonuçları daralttı.
+                    </span>
+                    <div className="message-actions">
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => onEmptyAction('clear-filters')}
+                      >
+                        Filtreleri temizle
+                      </button>
+                    </div>
+                  </>
+                );
+              })()
             ) : tab === 'discover' ? (
               <>
                 <strong>Bu filtrelerle sonuç bulunamadı</strong>
@@ -577,16 +646,27 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
               </>
             ) : (
               <>
-                <strong>Listen henüz boş</strong>
-                Keşfet sekmesinden içerik bulabilir veya kendin ekleyebilirsin.
+                <strong>İzleme listen henüz boş — ilk içeriğini ekle</strong>
+                <span>
+                  Keşfet sekmesinden izlediğin veya merak ettiğin yapımları işaretle ya da özel içerik ekle. İlk birkaç kayıttan sonra Sana Özel önerileri, Zevk Haritası ve Seriler otomatik aktifleşir.
+                </span>
                 <div className="message-actions">
                   <button
-                    className="btn"
+                    className="btn btn-primary"
                     type="button"
                     onClick={() => onEmptyAction('discover')}
                   >
-                    Keşfet'e git
+                    Keşfet&apos;e git
                   </button>
+                  {onOpenAddCustom && (
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={onOpenAddCustom}
+                    >
+                      Özel içerik ekle
+                    </button>
+                  )}
                 </div>
               </>
             )}

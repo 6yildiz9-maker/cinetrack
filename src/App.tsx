@@ -15,8 +15,21 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { ConflictBanner } from './components/ConflictBanner';
 
-const TasteMapView = lazy(() => import('./components/TasteMapView'));
-const RelationshipExplorer = lazy(() => import('./components/RelationshipExplorer'));
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  importer: () => Promise<{ default: T }>
+): React.LazyExoticComponent<T> {
+  return lazy(async () => {
+    try {
+      return await importer();
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return importer();
+    }
+  });
+}
+
+const TasteMapView = lazyWithRetry(() => import('./components/TasteMapView'));
+const RelationshipExplorer = lazyWithRetry(() => import('./components/RelationshipExplorer'));
 
 import {
   SavedItem,
@@ -117,6 +130,7 @@ import {
 import {
   consumeStockItem,
   enrichStockItemsTopCast,
+  executeStockReplenishment,
   markItemsAsSurfaced,
   seedCandidatePoolFromStock,
   subscribeStockState,
@@ -126,6 +140,7 @@ import {
   requestServiceWorkerPosterPurge,
 } from './services/poster-cache-manager';
 import { getItemEncodingSync, maintainEncodingsDepot } from './services/encoding-service';
+import { runIdbSchemaMigrationsOnce } from './services/idb-schema-version';
 import { computeProfileCentroid, cosineSimilarity } from './core/encoding';
 import { advanceTvEpisodeProgress } from './core/tv-progress';
 import { mergeDuplicateSavedPair } from './core/duplicate-detector';
@@ -386,8 +401,9 @@ export function App() {
     };
   }, [refreshStockStats]);
 
-  // IMP-16 (Weekly Auto-Backup Check) + IMP-11 (Idle Stock Enrichment)
+  // IMP-17 (IDB Schema Migration) + IMP-16 (Weekly Auto-Backup Check) + IMP-11 (Idle Stock Enrichment)
   useEffect(() => {
+    void runIdbSchemaMigrationsOnce();
     void checkWeeklyAutoBackup();
     const stopIdleEnrichment = startIdleStockEnrichment();
     return () => {
@@ -586,7 +602,7 @@ export function App() {
   } = useOfflineSync(handleServerConflict);
 
   // Autonomous 500-movie + 500-TV IndexedDB stock engine & <250 background replenisher (Aşama 2 & 4)
-  useStockEngine(activeProfileId);
+  const stockEngineState = useStockEngine(activeProfileId);
 
   // Hydrate discovery-history & candidate-pool from IndexedDB on startup/profile switch (BUG-02)
   useEffect(() => {
@@ -933,6 +949,14 @@ export function App() {
             const stock = await loadStockIdb();
             const rawMovies = (stock.movies || []).map((m: any) => ({ ...m, media_type: 'movie' }));
             const rawTv = (stock.tv || []).map((t: any) => ({ ...t, media_type: 'tv' }));
+            console.info('[CineTrack Stock] loadStockIdb:', {
+              movies: rawMovies.length,
+              tv: rawTv.length,
+              updatedAt: stock.updatedAt || null,
+            });
+            if (rawMovies.length === 0 && rawTv.length === 0) {
+              void executeStockReplenishment(activeProfileIdRef.current);
+            }
 
             let filtered: any[] = [];
             if (targetType === 'movie') {
@@ -2099,8 +2123,19 @@ export function App() {
     }
   }, [tab, activeProfileId, isLoading, loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
 
+  const stockHasItems = stockStats.movieCount + stockStats.tvCount > 0;
+
+  const handleManualStockReplenish = useCallback(() => {
+    void executeStockReplenishment(activeProfileId).then(() => {
+      loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
+    });
+  }, [activeProfileId, loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
+
   useEffect(() => {
     if (tab === 'discover') {
+      if (category === 'stock' && !query.trim()) {
+        return;
+      }
       if (category === 'for-you') {
         // FEAT-01 #11: Switching Tümü / Film / Dizi or genre inside "Seriler" filters from memory with ZERO network calls
         if (forYouSubTab === 'series' && !query.trim()) {
@@ -2126,7 +2161,7 @@ export function App() {
     if (tab === 'discover' && category === 'stock' && !query.trim()) {
       loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
     }
-  }, [selectedSort, tab, category, query, selectedProvider, selectedType, selectedGenre, loadCategoryResults]);
+  }, [selectedSort, hideListedItems, stockHasItems, tab, category, query, selectedProvider, selectedType, selectedGenre, loadCategoryResults]);
 
   // Load more pagination
   const handleLoadMore = () => {
@@ -2688,8 +2723,10 @@ export function App() {
   const displayedItems = getDisplayedItems();
 
   // FEAT-02 #6: Record unsaved items displayed on the Discover tab into ct:surfaced FIFO ring history
+  // REG-01: Never mark local ct:stock browsing as surfaced so stock items do not self-poison cooldowns
   useEffect(() => {
     if (tab !== 'discover' || displayedItems.length === 0) return;
+    if (category === 'stock') return;
     if (category === 'for-you' && forYouSubTab === 'series' && !query.trim()) return;
     const savedKeySet = new Set(
       savedItems.map((it) => `${it.media_type === 'tv' ? 'tv' : 'movie'}:${it.id}`)
@@ -3279,6 +3316,11 @@ export function App() {
               mood={preferences.mood}
               isDemo={Boolean(activeProfile?.isDemo)}
               onIncrementEpisode={handleIncrementTvEpisode}
+              stockStats={stockStats}
+              isStockReplenishing={stockEngineState.isReplenishing}
+              stockReplenishError={stockEngineState.lastError}
+              onReplenishStock={handleManualStockReplenish}
+              onOpenAddCustom={() => setAddCustomOpen(true)}
             />
           </ErrorBoundary>
         )}
