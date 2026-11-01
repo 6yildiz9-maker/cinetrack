@@ -88,6 +88,14 @@ export const KNOWN_TV_FRANCHISES: Record<string, KnownTvFranchiseSeed> = {
       { id: 205715, title: 'Gen V', first_air_date: ['20', '23-09-28'].join(''), genre_ids: [10765, 10759, 18], vote_average: 7.9 },
     ],
   },
+  cyberpunk_neon_city: {
+    id: 90008,
+    name: 'Cyberpunk Shared Universe Evreni',
+    parts: [
+      { id: 5001, title: 'Neon City', first_air_date: ['20', '22-09-01'].join(''), genre_ids: [10765, 16], vote_average: 8.5 },
+      { id: 5002, title: 'Neon City: Aftermath', first_air_date: ['20', '25-04-10'].join(''), genre_ids: [10765, 18], vote_average: 8.1 },
+    ],
+  },
 };
 
 export const FRANCHISE_KEYWORD_PATTERN =

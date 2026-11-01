@@ -86,3 +86,15 @@ export function compareMediaDatesAscending(
   if (!cleanB) return -1;
   return cleanA.localeCompare(cleanB);
 }
+
+export function compareMediaDatesDescending(
+  dateA?: string | null,
+  dateB?: string | null
+): number {
+  const cleanA = typeof dateA === 'string' ? dateA.trim() : '';
+  const cleanB = typeof dateB === 'string' ? dateB.trim() : '';
+  if (!cleanA && !cleanB) return 0;
+  if (!cleanA) return 1;
+  if (!cleanB) return -1;
+  return cleanB.localeCompare(cleanA);
+}

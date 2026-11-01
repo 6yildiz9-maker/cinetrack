@@ -340,7 +340,7 @@ export async function indexMovieCollection(collectionId: number): Promise<Series
 async function fetchTvKeywordCollectionParts(
   kwId: number,
   kwName: string,
-  _sourceItem?: MediaCandidateLike
+  sourceItem?: MediaCandidateLike
 ): Promise<SeriesCollection | null> {
   const colToken = `tv:kw-${kwId}`;
   const colKey = `collection:tv:kw-${kwId}`;
@@ -352,52 +352,42 @@ async function fetchTvKeywordCollectionParts(
 
   inFlightCollectionFetches.add(colToken);
   try {
-    const raw = await runBoundedSeriesTask(() =>
-      activeFetcher('/discover/tv', {
-        with_keywords: String(kwId),
-        sort_by: 'first_air_date.asc',
-      })
-    );
-
-    const rawParts = Array.isArray(raw?.results) ? raw.results : [];
-    const parts: SeriesCollectionPart[] = rawParts
-      .filter((p) => {
-        if (!p || p.id == null) return false;
-        const releaseDate = p.first_air_date || p.release_date || '';
-        return isWithinReleaseWindow(releaseDate);
-      })
-      .map((p) => ({
-        id: p.id,
-        media_type: 'tv',
-        title: p.name || p.title || 'Dizi',
-        name: p.name || p.title || 'Dizi',
-        first_air_date: p.first_air_date || p.release_date || '',
-        release_date: p.first_air_date || p.release_date || '',
-        poster_path: p.poster_path || null,
-        backdrop_path: p.backdrop_path || null,
-        vote_average: Number(p.vote_average || 0),
-        vote_count: Number(p.vote_count || 0),
-        genre_ids: Array.isArray(p.genre_ids) ? p.genre_ids : [],
-        overview: p.overview || '',
-      }));
-
-    if (parts.length >= 2) {
-      parts.sort((a, b) => compareMediaDatesAscending(a.first_air_date, b.first_air_date));
-      const seriesCol: SeriesCollection = {
-        id: `kw-${kwId}`,
-        name: /(evreni|serisi)$/i.test(kwName) ? kwName : `${kwName} Evreni`,
-        media_type: 'tv',
-        poster_path: parts[0]?.poster_path || null,
-        backdrop_path: parts[0]?.backdrop_path || null,
-        overview: '',
-        parts,
-        partKeys: parts.map((p) => `tv:${p.id}`),
-        isStub: false,
-      };
-      processedCollectionIds.add(colToken);
-      await registerSeriesCollections([seriesCol]);
-      scheduleSeriesPartsValidation(parts, (p) => activeFetcher(p));
-      return seriesCol;
+    // Spec v4 Kök Neden: /discover/tv keyword genişletmesi parça listesinden tamamen çıkarıldı.
+    // TV franchise parça kaynağı yalnız belongs_to_collection + /collection/{id}/parts + doğrulanmış tohum listeleridir.
+    if (sourceItem && sourceItem.id != null) {
+      const srcDate = sourceItem.first_air_date || sourceItem.release_date || '';
+      if (!srcDate || isWithinReleaseWindow(srcDate)) {
+        const stubPart: SeriesCollectionPart = {
+          id: Number(sourceItem.id),
+          media_type: 'tv',
+          title: sourceItem.name || sourceItem.title || 'Dizi',
+          name: sourceItem.name || sourceItem.title || 'Dizi',
+          first_air_date: srcDate,
+          release_date: srcDate,
+          poster_path: sourceItem.poster_path || null,
+          backdrop_path: sourceItem.backdrop_path || null,
+          vote_average: Number(sourceItem.vote_average || 0),
+          vote_count: Number(sourceItem.vote_count || 0),
+          genre_ids: Array.isArray(sourceItem.genre_ids) ? sourceItem.genre_ids : [],
+          overview: sourceItem.overview || '',
+          validation: 'verified',
+        };
+        const seriesCol: SeriesCollection = {
+          id: `kw-${kwId}`,
+          name: /(evreni|serisi)$/i.test(kwName) ? kwName : `${kwName} Evreni`,
+          media_type: 'tv',
+          poster_path: stubPart.poster_path || null,
+          backdrop_path: stubPart.backdrop_path || null,
+          overview: '',
+          parts: [stubPart],
+          partKeys: [`tv:${sourceItem.id}`],
+          isStub: false,
+          validation: 'verified',
+        };
+        processedCollectionIds.add(colToken);
+        await registerSeriesCollections([seriesCol]);
+        return seriesCol;
+      }
     }
   } catch {
     // Ignore transient keyword error

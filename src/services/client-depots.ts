@@ -77,9 +77,10 @@ const isIdbReady = (): boolean => typeof indexedDB !== 'undefined';
 let skipLogStore: UseStore | undefined;
 let uiPrefsStore: UseStore | undefined;
 let actorCreditsStore: UseStore | undefined;
+let encodingsStore: UseStore | undefined;
 
 function getExtraDepotStore(
-  name: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits'
+  name: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits' | 'ct_encodings'
 ): UseStore | undefined {
   if (!isIdbReady()) return undefined;
   switch (name) {
@@ -94,13 +95,18 @@ function getExtraDepotStore(
         actorCreditsStore = createStore('cinetrack-actor-credits-db', 'ct_actor_credits');
       }
       return actorCreditsStore;
+    case 'ct_encodings':
+      if (!encodingsStore) {
+        encodingsStore = createStore('cinetrack-encodings-db', 'ct_encodings');
+      }
+      return encodingsStore;
   }
 }
 
 const extraMemoryFallback = new Map<string, unknown>();
 
 async function depotGet<T>(
-  storeName: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits',
+  storeName: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits' | 'ct_encodings',
   key: string
 ): Promise<T | null> {
   const composite = `${storeName}:${key}`;
@@ -125,7 +131,7 @@ async function depotGet<T>(
 }
 
 async function depotSet<T>(
-  storeName: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits',
+  storeName: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits' | 'ct_encodings',
   key: string,
   value: T
 ): Promise<IdbWriteResult> {
@@ -156,7 +162,7 @@ async function depotSet<T>(
 }
 
 async function depotDel(
-  storeName: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits',
+  storeName: 'ct_skip_log' | 'ct_ui_prefs' | 'ct_actor_credits' | 'ct_encodings',
   key: string
 ): Promise<IdbWriteResult> {
   const composite = `${storeName}:${key}`;
@@ -363,10 +369,24 @@ export async function clearActorCreditsIdb(actorId: number): Promise<IdbWriteRes
   return depotDel('ct_actor_credits', makeActorCreditsDepotKey(actorId));
 }
 
+// Depo 13: ct:encodings (FEAT-03)
+export async function getStoredEncodingIdb<T = any>(key: string): Promise<T | null> {
+  return depotGet<T>('ct_encodings', key);
+}
+
+export async function saveStoredEncodingIdb<T = any>(key: string, value: T): Promise<IdbWriteResult> {
+  return depotSet('ct_encodings', key, value);
+}
+
+export async function clearStoredEncodingIdb(key: string): Promise<IdbWriteResult> {
+  return depotDel('ct_encodings', key);
+}
+
 export function resetClientDepotsForTests(): void {
   skipLogStore = undefined;
   uiPrefsStore = undefined;
   actorCreditsStore = undefined;
+  encodingsStore = undefined;
   extraMemoryFallback.clear();
   unpersistedDepotKeys = new Set();
   lastDepotWriteError = null;

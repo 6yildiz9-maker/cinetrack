@@ -28,6 +28,7 @@ interface ControlsProps {
   onListStatusChange: (status: string) => void;
   hideListedItems?: boolean;
   onHideListedItemsChange?: (checked: boolean) => void;
+  stockStats?: { movieCount: number; tvCount: number };
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -55,6 +56,7 @@ export const Controls: React.FC<ControlsProps> = ({
   onListStatusChange,
   hideListedItems = false,
   onHideListedItemsChange,
+  stockStats,
 }) => {
   // If in taste-map or relationships tab, those views provide their own dedicated toolbars
   if (tab === 'taste-map' || tab === 'relationships') {
@@ -212,6 +214,13 @@ export const Controls: React.FC<ControlsProps> = ({
               onClick={() => onCategoryChange('gems')}
             >
               Gizli Cevherler
+            </button>
+            <button
+              type="button"
+              className={`category-pill ${selectedCategory === 'stock' ? 'active' : ''}`}
+              onClick={() => onCategoryChange('stock')}
+            >
+              {stockStats ? `Stok (${stockStats.movieCount}+${stockStats.tvCount})` : 'Stok'}
             </button>
           </div>
         )}

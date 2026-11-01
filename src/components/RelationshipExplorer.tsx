@@ -5,7 +5,6 @@ import {
   computeRelationshipPoolSignature,
   computeRelationshipProfileSignature,
   getRelationshipLinkColor,
-  getRelationshipNodeColor,
   getRelationshipTypeLabel,
   RELATIONSHIP_GRAPH_SCHEMA_VERSION,
   RELATIONSHIP_MODEL_VERSION,
@@ -18,7 +17,9 @@ import {
   type RelationshipType,
 } from '../core/relationship-explorer';
 import {
+  isCandidateEligibleInPool,
   loadPersistentPoolData,
+  makeMediaKey,
   type FavoriteActorInfo,
   type PoolCandidateItem,
   type Preferences,
@@ -30,6 +31,12 @@ import {
   writeRelationshipCache,
   type RelationshipGraphSnapshot,
 } from '../services/relationship-cache';
+import { loadStockIdb } from '../services/storage-idb';
+import { computeProfileCentroid, cosineSimilarity } from '../core/encoding';
+import { getItemEncodingSync } from '../services/encoding-service';
+import { RelationshipDetailsPanel } from './RelationshipDetailsPanel';
+import { renderRelationshipCanvasNode } from './RelationshipCanvas';
+import { RelationshipListView } from './RelationshipListView';
 
 interface RelationshipExplorerProps {
   mode: RelationshipMode;
@@ -61,20 +68,6 @@ function readLocalPoolForFilter(profileId: string, filter: MediaFilter): PoolCan
     : loadPersistentPoolData(profileId, filter).items;
 }
 
-function getStatusSignalDescription(
-  signal: RelationshipGraphNode['statusSignal'],
-  status?: string,
-): string {
-  if (signal === 'completed-history') {
-    return 'İzlenmiş geçmiş içerik (puan verilmediyse kişisel uyum nötr kalır)';
-  }
-  if (signal === 'interest') {
-    return status === 'watching' ? 'Şu an izleniyor (ilgi sinyali)' : 'İzleme listesinde (ilgi sinyali)';
-  }
-  if (signal === 'disliked') return 'İlgilenilmiyor olarak işaretli';
-  if (signal === 'hidden') return 'Gizlenmiş içerik';
-  return status ? `Listendeki durum: ${status}` : 'Kayıtlı yapım';
-}
 
 export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   mode,
@@ -106,6 +99,55 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   const [isRestoringCache, setIsRestoringCache] = useState(true);
   const [hasGeneratedGraph, setHasGeneratedGraph] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 560 });
+  const [stockSuggestions, setStockSuggestions] = useState<PoolCandidateItem[]>([]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    async function loadStockSuggestions() {
+      try {
+        const stock = await loadStockIdb();
+        const allStock: any[] = [
+          ...(stock.movies || []).map((m) => ({ ...m, media_type: 'movie' as const })),
+          ...(stock.tv || []).map((t) => ({ ...t, media_type: 'tv' as const })),
+        ];
+        if (!allStock.length) return;
+
+        const savedKeys = new Set(
+          savedItems.map((item) => makeMediaKey(item.media_type, item.id)),
+        );
+        const filtered = allStock.filter(
+          (item) =>
+            (mediaFilter === 'all' || item.media_type === mediaFilter) &&
+            !savedKeys.has(makeMediaKey(item.media_type, item.id)) &&
+            isCandidateEligibleInPool(item, savedItems, preferences),
+        );
+
+        const centroid = computeProfileCentroid(
+          savedItems.map((item) => ({
+            encoding: getItemEncodingSync(item),
+            personal_rating: item.personal_rating,
+          })),
+        );
+
+        const ranked = filtered.map((item) => {
+          const enc = getItemEncodingSync(item);
+          const sim = centroid.length > 0 ? cosineSimilarity(centroid, enc.vector) : 0;
+          return { item, sim };
+        });
+        ranked.sort((a, b) => b.sim - a.sim);
+        const top24 = ranked.slice(0, 24).map((r) => r.item as PoolCandidateItem);
+        if (!isCancelled) {
+          setStockSuggestions(top24);
+        }
+      } catch {
+        // IDB offline or empty
+      }
+    }
+    loadStockSuggestions();
+    return () => {
+      isCancelled = true;
+    };
+  }, [savedItems, preferences, mediaFilter]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<any>(null);
@@ -350,10 +392,23 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             : ''
         : requestedSourceKey;
 
+    const mergePoolWithStock = (pool: PoolCandidateItem[]): PoolCandidateItem[] => {
+      const seen = new Set<string>();
+      const merged: PoolCandidateItem[] = [];
+      for (const item of [...stockSuggestions, ...pool]) {
+        const k = relationshipNodeKey(item);
+        if (!seen.has(k)) {
+          seen.add(k);
+          merged.push(item);
+        }
+      }
+      return merged;
+    };
+
     return buildRelationshipGraph({
       mode,
       profileId,
-      candidates: candidateSnapshot,
+      candidates: mergePoolWithStock(candidateSnapshot),
       savedItems,
       preferences,
       mediaFilter,
@@ -399,10 +454,20 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         }
       }
 
+      const seen = new Set<string>();
+      const combinedCandidates: PoolCandidateItem[] = [];
+      for (const item of [...stockSuggestions, ...loadedCandidates]) {
+        const k = relationshipNodeKey(item);
+        if (!seen.has(k)) {
+          seen.add(k);
+          combinedCandidates.push(item);
+        }
+      }
+
       const nextGraph = buildRelationshipGraph({
         mode,
         profileId,
-        candidates: loadedCandidates,
+        candidates: combinedCandidates,
         savedItems,
         preferences,
         mediaFilter,
@@ -637,56 +702,7 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
     ctx: CanvasRenderingContext2D,
     globalScale: number,
   ) => {
-    if (!rawNode || !ctx) return;
-    const node = rawNode as RelationshipGraphNode & { x?: number; y?: number };
-    const x = Number(node.x) || 0;
-    const y = Number(node.y) || 0;
-    const personalScore = Number(node.personalScore) || 50;
-    const radius =
-      (node.kind === 'profile' || node.kind === 'source' ? 10 : 6 + personalScore / 35) +
-      Math.max(0, Number(node.statusWeight) || 0) * 1.5;
-
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, 2 * Math.PI, false);
-    ctx.fillStyle = getRelationshipNodeColor(node);
-    ctx.globalAlpha = node.id === selectedNode?.id ? 1 : 0.88;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    // İzleme geçmişi ve ilgi durumunu kişisel uyum puanından bağımsız dış halka olarak çiz
-    if (node.statusSignal === 'completed-history' || node.statusSignal === 'interest') {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, radius + 2.2, 0, 2 * Math.PI, false);
-      ctx.lineWidth = 1.25;
-      if (node.statusSignal === 'interest') {
-        ctx.setLineDash([2.5, 2]);
-        ctx.strokeStyle = '#fbbf24';
-      } else {
-        ctx.strokeStyle = '#7dd3fc';
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    if (node.id === selectedNode?.id) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, radius + 4, 0, 2 * Math.PI, false);
-      ctx.lineWidth = 1.4;
-      ctx.strokeStyle = '#f8fafc';
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    if (globalScale > 0.7 || node.id === selectedNode?.id) {
-      const fontSize = Math.max(4, Math.min(12, 10 / globalScale));
-      ctx.font = `${node.id === selectedNode?.id ? '600 ' : ''}${fontSize}px Inter, Arial, sans-serif`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#dbeafe';
-      ctx.fillText(node.label, x + radius + 4, y);
-    }
+    renderRelationshipCanvasNode(rawNode, ctx, globalScale, selectedNode?.id);
   };
 
   return (
@@ -836,88 +852,16 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
         >
           {hasUsefulGraph && graphData ? (
             displayMode === 'list' && mode === 'relationships' ? (
-              <div className="relationship-list-view" role="list" aria-label="İlişkili yapımlar listesi">
-                {listNodes.map(({ node, links }) => {
-                  const isSelected = selectedNode?.id === node.id;
-                  const itemObj = [...snapshotCandidates, ...savedItems].find(
-                    (it) => relationshipNodeKey(it) === node.id,
-                  );
-                  return (
-                    <article
-                      key={node.id}
-                      role="listitem"
-                      className={`relationship-list-card ${isSelected ? 'is-selected' : ''}`}
-                    >
-                      <div className="relationship-list-card-head">
-                        <button
-                          type="button"
-                          className="relationship-list-select-btn"
-                          onClick={() => setSelectedNode(node)}
-                          aria-pressed={isSelected}
-                        >
-                          <span className="relationship-list-title">{node.title}</span>
-                          <span className="relationship-list-badges">
-                            <span className="relationship-list-badge">
-                              {node.mediaType === 'tv' ? 'Dizi' : 'Film'}
-                            </span>
-                            {node.kind === 'source' && (
-                              <span className="relationship-list-badge is-source">Kaynak Yapım</span>
-                            )}
-                            <span className="relationship-list-badge is-score tabular-nums">
-                              Uyum: {node.personalScore}/100
-                            </span>
-                          </span>
-                        </button>
-                      </div>
-
-                      {links.length > 0 && (
-                        <ul className="relationship-list-links">
-                          {links.slice(0, 3).map((lnk, idx) => {
-                            const sId = linkEndpointId(lnk.source);
-                            const tId = linkEndpointId(lnk.target);
-                            const otherTitle = nodeTitleById.get(sId === node.id ? tId : sId);
-                            return (
-                              <li key={`${node.id}-lnk-${idx}`}>
-                                <strong>{getRelationshipTypeLabel(lnk.type)}</strong> ({lnk.score}/100)
-                                {otherTitle ? ` · ${otherTitle}` : ''}
-                                {lnk.evidence[0] ? ` — ${lnk.evidence[0]}` : ''}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
-
-                      <div className="relationship-list-actions">
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => setSelectedNode(node)}
-                        >
-                          Kanıtları İncele
-                        </button>
-                        {itemObj && onOpenDetails && (
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={() => onOpenDetails(itemObj)}
-                          >
-                            Ayrıntılar
-                          </button>
-                        )}
-                        {itemObj && onQuickSave && node.kind === 'candidate' && (
-                          <button
-                            type="button"
-                            className="btn btn-primary"
-                            onClick={() => onQuickSave(itemObj)}
-                          >
-                            Listeye Ekle
-                          </button>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
+              <RelationshipListView
+                listNodes={listNodes}
+                selectedNode={selectedNode}
+                setSelectedNode={setSelectedNode}
+                snapshotCandidates={snapshotCandidates}
+                savedItems={savedItems}
+                nodeTitleById={nodeTitleById}
+                onOpenDetails={onOpenDetails}
+                onQuickSave={onQuickSave}
+              />
             ) : (
               <ForceGraph2D
                 ref={graphRef}
@@ -1020,119 +964,14 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
           )}
         </div>
 
-        <aside className="relationship-details">
-          <h3>{selectedNode?.title || 'Düğüm ayrıntıları'}</h3>
-          {selectedNode ? (
-            <>
-              <p className="relationship-score">
-                Kişisel uyum: <strong>{selectedNode.personalScore}/100</strong>
-              </p>
-              <p className="relationship-muted">
-                {selectedNode.kind === 'saved'
-                  ? getStatusSignalDescription(selectedNode.statusSignal, selectedNode.status)
-                  : selectedNode.kind === 'profile'
-                    ? 'Kullanıcı profili'
-                    : selectedNode.kind === 'source'
-                      ? selectedNode.status
-                        ? `Seçilmiş kaynak yapım · ${getStatusSignalDescription(selectedNode.statusSignal, selectedNode.status)}`
-                        : 'Seçilmiş kaynak yapım'
-                      : 'Keşif adayı'}
-              </p>
-              {selectedLinks.map((link, linkIndex) => {
-                const srcId = linkEndpointId(link.source);
-                const tgtId = linkEndpointId(link.target);
-                const counterpartId = srcId === selectedNode.id ? tgtId : srcId;
-                const counterpartTitle = nodeTitleById.get(counterpartId);
-
-                const details = link.relationshipDetails?.length
-                  ? link.relationshipDetails
-                  : [
-                      {
-                        type: link.type,
-                        score: link.score,
-                        confidence: link.confidence,
-                        evidence: Array.isArray(link.evidence) ? link.evidence : [],
-                      },
-                    ];
-
-                return details.map((detail, detailIndex) => (
-                  <div
-                    className="relationship-evidence"
-                    key={`${linkIndex}-${detail.type}-${detailIndex}`}
-                  >
-                    {counterpartTitle && (
-                      <span className="relationship-counterpart">
-                        Bağlantı: {counterpartTitle}
-                      </span>
-                    )}
-                    <strong>
-                      {getRelationshipTypeLabel(detail.type)} · {detail.score}/100
-                    </strong>
-                    <span>
-                      Kanıt güveni: {detail.confidence}/100
-                      {detail.type === 'semantic' ? ' · Özet ve tür verisine dayalı' : ''}
-                    </span>
-                    <ul>
-                      {(Array.isArray(detail.evidence) ? detail.evidence : []).map((evidence) => (
-                        <li key={evidence}>{evidence}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ));
-              })}
-              <div className="relationship-detail-actions">
-                {selectedItem && onOpenDetails && selectedNode.mediaType !== 'profile' && (
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => onOpenDetails(selectedItem)}
-                  >
-                    İçerik ayrıntısını aç
-                  </button>
-                )}
-                {selectedItem && onQuickSave && selectedNode.kind === 'candidate' && (
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    onClick={() => onQuickSave(selectedItem)}
-                  >
-                    Listeye ekle
-                  </button>
-                )}
-              </div>
-            </>
-          ) : (
-            <p className="relationship-muted">
-              Haritadaki bir düğüme tıklayarak kişisel uyumunu ve bağlantı kanıtlarını ayrı ayrı incele.
-            </p>
-          )}
-          <div className="relationship-legend">
-            <span>
-              <i className="legend-dot legend-dot-profile" /> Kullanıcı profili
-            </span>
-            <span>
-              <i className="legend-dot legend-dot-saved" /> Kayıtlı yapım (düz halka: izlendi, kesikli: listede)
-            </span>
-            <span>
-              <i className="legend-dot legend-dot-match" /> Yüksek kişisel uyum
-            </span>
-            <span>
-              <i className="legend-line legend-line-semantic" /> Özet / tür benzerliği
-            </span>
-            <span>
-              <i className="legend-line legend-line-atmosphere" /> Atmosferik yakınlık
-            </span>
-            <span>
-              <i className="legend-line legend-line-contrast" /> Karşıt ton
-            </span>
-            <span>
-              <i className="legend-line legend-line-person" /> Kişi bağlantısı
-            </span>
-            <span>
-              <i className="legend-line legend-line-universe" /> Seri / evren
-            </span>
-          </div>
-        </aside>
+        <RelationshipDetailsPanel
+          selectedNode={selectedNode}
+          selectedLinks={selectedLinks}
+          nodeTitleById={nodeTitleById}
+          selectedItem={selectedItem}
+          onOpenDetails={onOpenDetails}
+          onQuickSave={onQuickSave}
+        />
       </div>
     </section>
   );

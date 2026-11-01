@@ -106,6 +106,7 @@ import {
   saveUiPrefsIdb,
   recordSkippedKeysIdb,
   removeSkippedKeyIdb,
+  loadStockIdb,
 } from './services/storage-idb';
 import {
   indexItemForSeries,
@@ -123,7 +124,11 @@ import {
   requestServiceWorkerPosterPurge,
 } from './services/poster-cache-manager';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
-import { compareMediaDatesAscending, isWithinReleaseWindow } from './utils/release-window';
+import {
+  compareMediaDatesAscending,
+  compareMediaDatesDescending,
+  isWithinReleaseWindow,
+} from './utils/release-window';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
 const ACTIVE_PROFILE_STORAGE = 'cinetrack.activeProfile.v1';
@@ -343,6 +348,20 @@ export function App() {
   deletedKeysRef.current = deletedKeys;
 
   const uiPrefsHydratedProfileRef = useRef<string>('');
+  const [stockStats, setStockStats] = useState({ movieCount: 0, tvCount: 0 });
+
+  const refreshStockStats = useCallback(() => {
+    void loadStockIdb().then((stock) => {
+      setStockStats({
+        movieCount: (stock.movies || []).length,
+        tvCount: (stock.tv || []).length,
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    refreshStockStats();
+  }, [refreshStockStats]);
 
   useEffect(() => {
     try {
@@ -870,6 +889,58 @@ export function App() {
         }
 
         const fetchDiscoverPageByCategory = async (pageNum: number): Promise<{ rawItems: any[]; totalPages: number }> => {
+          if (cat === 'stock') {
+            const stock = await loadStockIdb();
+            const rawMovies = (stock.movies || []).map((m: any) => ({ ...m, media_type: 'movie' }));
+            const rawTv = (stock.tv || []).map((t: any) => ({ ...t, media_type: 'tv' }));
+
+            let filtered: any[] = [];
+            if (targetType === 'movie') {
+              filtered = rawMovies;
+            } else if (targetType === 'tv') {
+              filtered = rawTv;
+            } else {
+              filtered = mergeDiscoverResults(cat, rawMovies, rawTv);
+            }
+
+            filtered = filtered.filter((it) => {
+              const d = it.release_date || it.first_air_date || '';
+              return d ? isWithinReleaseWindow(d) : true;
+            });
+
+            if (activeGenre) {
+              const targetGenreId = Number(activeGenre);
+              if (Number.isFinite(targetGenreId)) {
+                filtered = filtered.filter((it) =>
+                  Array.isArray(it.genre_ids) && it.genre_ids.includes(targetGenreId)
+                );
+              }
+            }
+
+            if (selectedSort === 'rating.desc' || selectedSort === 'vote_average.desc') {
+              filtered.sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
+            } else if (selectedSort === 'date.desc' || selectedSort === 'primary_release_date.desc') {
+              filtered.sort((a, b) =>
+                compareMediaDatesDescending(
+                  a.release_date || a.first_air_date,
+                  b.release_date || b.first_air_date
+                )
+              );
+            } else {
+              filtered.sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
+            }
+
+            const PAGE_SIZE = 24;
+            const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+            const startIdx = (pageNum - 1) * PAGE_SIZE;
+            const pageSlice = filtered.slice(startIdx, startIdx + PAGE_SIZE);
+
+            return {
+              rawItems: pageSlice,
+              totalPages,
+            };
+          }
+
           const movieGenreParam = resolveDiscoverGenreParam(activeGenre, 'movie');
           const tvGenreParam = resolveDiscoverGenreParam(activeGenre, 'tv');
 
@@ -1839,6 +1910,7 @@ export function App() {
 
           let extraScans = 0;
           while (
+            cat !== 'stock' &&
             countVisibleItems(combinedRawItems) < TARGET_RECOMMENDATION_COUNT &&
             effectiveLastPage < totalPages &&
             extraScans < 5
@@ -2887,6 +2959,7 @@ export function App() {
           onListStatusChange={setListStatus}
           hideListedItems={hideListedItems}
           onHideListedItemsChange={setHideListedItems}
+          stockStats={stockStats}
         />
 
         {tab === 'relationships' ? (
