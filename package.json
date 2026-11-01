@@ -16,6 +16,7 @@
     "test": "tsx --test tests/core.test.mjs tests/relationship-explorer.test.mjs tests/phases-all.test.mjs tests/persistent-store.test.mjs tests/github-bidirectional-sync.test.mjs tests/excel-profile-backup.test.mjs tests/audit-spec-fixes.test.mjs tests/phases-1-to-4-architecture.test.mjs tests/spec-v2-remaining.test.mjs tests/spec-v3-validation.test.mjs tests/feat-03-encoding-relationships.test.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
     "exceljs": "^4.4.0",
     "express": "^5.3.0",
     "idb-keyval": "^6.3.0",

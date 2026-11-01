@@ -1813,7 +1813,7 @@ export interface BidirectionalSyncDependencies {
   dataDir: string;
   maxDataBytes?: number;
   store: PersistentDataStore;
-  storage?: ReturnType<typeof createDataStorage>;
+  storage: ReturnType<typeof createDataStorage>;
   getGitHubConfig: () => {
     token?: string;
     owner?: string;
@@ -1883,7 +1883,7 @@ export class GitHubBidirectionalSyncManager {
     return this.deps.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   }
 
-  public inspectLocalSide(): ParsedSideBundle {
+  public async inspectLocalSide(): Promise<ParsedSideBundle> {
     const inspectedAt = new Date().toISOString();
     const files: Record<string, SyncFileInspection> = {};
     const errors: SyncErrorRecord[] = [];
@@ -1891,7 +1891,6 @@ export class GitHubBidirectionalSyncManager {
     const moviesPath = path.join(this.deps.dataDir, 'catalog', 'movies.json');
     const tvPath = path.join(this.deps.dataDir, 'catalog', 'tv.json');
     const manifestPath = path.join(this.deps.dataDir, 'catalog', 'manifest.json');
-    const userDataPath = path.join(this.deps.dataDir, 'cinetrack-data.json');
     const profilesDir = path.join(this.deps.dataDir, 'profiles');
 
     let movies: Record<string, CatalogRecord> = {};
@@ -2005,8 +2004,9 @@ export class GitHubBidirectionalSyncManager {
 
     let userRawItems = 0;
     let userUniqueItems = 0;
-    if (existsSync(userDataPath)) {
-      const raw = readFileSync(userDataPath, 'utf8');
+    const storedUserDoc = await this.deps.storage.readDataAsync();
+    if (storedUserDoc.profiles.length > 0 || (storedUserDoc.revision ?? 0) > 0) {
+      const raw = JSON.stringify(storedUserDoc, null, 2);
       const res = inspectUserDataRawContent(raw, this.maxBytes);
       if (!res.inspection.valid && res.inspection.errorCategory === 'corrupt_remote_json') {
         res.inspection.errorCategory = 'corrupt_local_file';
@@ -2920,7 +2920,7 @@ export class GitHubBidirectionalSyncManager {
     return this.runSerialized(async () => {
       const startedAt = new Date().toISOString();
       const cfg = this.deps.getGitHubConfig();
-      const localBefore = this.inspectLocalSide();
+      const localBefore = await this.inspectLocalSide();
       const remoteTarget =
         cfg.owner && cfg.repo
           ? { owner: cfg.owner, repo: cfg.repo, branch: cfg.branch }
@@ -3079,7 +3079,7 @@ export class GitHubBidirectionalSyncManager {
       const conflictStrategy = options.conflictStrategy || 'ask';
       const startedAt = new Date().toISOString();
       const cfg = this.deps.getGitHubConfig();
-      const localBefore = this.inspectLocalSide();
+      const localBefore = await this.inspectLocalSide();
       const remoteTarget =
         cfg.owner && cfg.repo
           ? { owner: cfg.owner, repo: cfg.repo, branch: cfg.branch }
@@ -3270,9 +3270,7 @@ export class GitHubBidirectionalSyncManager {
       }
 
       // İşlemden önce yerel verinin döner yedeğini al (Spec Bölüm 4.7)
-      if (this.deps.storage) {
-        await this.deps.storage.createSafetySnapshotSerialized();
-      }
+      await this.deps.storage.createSafetySnapshotSerialized();
 
       const filesDownloaded: string[] = [];
       const filesUnchanged: string[] = [];
@@ -3453,30 +3451,19 @@ export class GitHubBidirectionalSyncManager {
               recordsAdded += remoteInspect.bundle.summary.userUniqueSavedItemsCount;
             }
 
-            if (this.deps.storage) {
-              const saveRes = await this.deps.storage.applySyncedDocumentSerialized(docToWrite);
-              if (saveRes.ok) {
-                finalUserData = saveRes.document;
-                updatedDataDocument = saveRes.document;
-                serverRevision = saveRes.document.revision;
-                filesDownloaded.push('data/cinetrack-data.json');
-              } else {
-                filesFailed.push('data/cinetrack-data.json');
-                errors.push({
-                  repoPath: 'data/cinetrack-data.json',
-                  category: 'corrupt_local_file',
-                  message: saveRes.message,
-                });
-              }
-            } else {
-              const userDataPath = path.join(this.deps.dataDir, 'cinetrack-data.json');
-              writeJsonFileAtomic(userDataPath, JSON.stringify(docToWrite, null, 2), {
-                backupPath: `${this.deps.dataDir}/cinetrack-data.bak.json`,
-                validateParsed: isPlainObject,
-              });
-              finalUserData = docToWrite;
-              updatedDataDocument = docToWrite;
+            const saveRes = await this.deps.storage.applySyncedDocumentSerialized(docToWrite);
+            if (saveRes.ok) {
+              finalUserData = saveRes.document;
+              updatedDataDocument = saveRes.document;
+              serverRevision = saveRes.document.revision;
               filesDownloaded.push('data/cinetrack-data.json');
+            } else {
+              filesFailed.push('data/cinetrack-data.json');
+              errors.push({
+                repoPath: 'data/cinetrack-data.json',
+                category: 'corrupt_local_file',
+                message: saveRes.message,
+              });
             }
           }
         }
@@ -3543,7 +3530,7 @@ export class GitHubBidirectionalSyncManager {
       }
 
       // Yeniden yerel durumu oku ve gerçek uzak durumla karşılaştır (Spec Bölüm 4.9 & Bölüm 7)
-      const localAfter = this.inspectLocalSide();
+      const localAfter = await this.inspectLocalSide();
       const postComparison = compareSyncSides(localAfter, remoteInspect.bundle, {
         includePersonalFiles: includePersonal,
         includeCatalogFiles: includeCatalog,
@@ -3604,7 +3591,7 @@ export class GitHubBidirectionalSyncManager {
     return this.runSerialized(async () => {
       const startedAt = new Date().toISOString();
       const cfg = this.deps.getGitHubConfig();
-      const localBefore = this.inspectLocalSide();
+      const localBefore = await this.inspectLocalSide();
       const remoteTarget =
         cfg.owner && cfg.repo
           ? { owner: cfg.owner, repo: cfg.repo, branch: cfg.branch }
@@ -3703,7 +3690,7 @@ export class GitHubBidirectionalSyncManager {
         );
       }
 
-      const localReady = this.inspectLocalSide();
+      const localReady = await this.inspectLocalSide();
       const localProfilePaths = Object.keys(localReady.derivedProfiles);
 
       const remoteBeforeInspect = await this.inspectRemoteSide(
@@ -3847,7 +3834,7 @@ export class GitHubBidirectionalSyncManager {
     return this.runSerialized(async () => {
       const startedAt = new Date().toISOString();
       const cfg = this.deps.getGitHubConfig();
-      const localBefore = this.inspectLocalSide();
+      const localBefore = await this.inspectLocalSide();
       const remoteTarget =
         cfg.owner && cfg.repo
           ? { owner: cfg.owner, repo: cfg.repo, branch: cfg.branch }
@@ -3987,9 +3974,7 @@ export class GitHubBidirectionalSyncManager {
       }
 
       // Yerel güvenlik yedeği al
-      if (this.deps.storage) {
-        await this.deps.storage.createSafetySnapshotSerialized();
-      }
+      await this.deps.storage.createSafetySnapshotSerialized();
 
       const filesDownloaded: string[] = [];
       const filesUploaded: string[] = [];
@@ -4222,54 +4207,32 @@ export class GitHubBidirectionalSyncManager {
             recordsUpdated += mergedUser.updatedItems;
             conflicts.push(...mergedUser.conflicts);
 
-            if (this.deps.storage) {
-              const saveRes = await this.deps.storage.applySyncedDocumentSerialized(
-                mergedUser.mergedDoc
-              );
-              if (saveRes.ok) {
-                reconciledUserData = saveRes.document;
-                updatedDataDocument = saveRes.document;
-                serverRevision = saveRes.document.revision;
-                filesMerged.push('data/cinetrack-data.json');
-              } else {
-                filesFailed.push('data/cinetrack-data.json');
-                pathsBlockedFromPush.add('data/cinetrack-data.json');
-                errors.push({
-                  repoPath: 'data/cinetrack-data.json',
-                  category: 'corrupt_local_file',
-                  message: saveRes.message,
-                });
-              }
-            } else {
-              const userDataPath = path.join(this.deps.dataDir, 'cinetrack-data.json');
-              writeJsonFileAtomic(userDataPath, JSON.stringify(mergedUser.mergedDoc, null, 2), {
-                backupPath: `${this.deps.dataDir}/cinetrack-data.bak.json`,
-                validateParsed: isPlainObject,
-              });
-              reconciledUserData = mergedUser.mergedDoc;
-              updatedDataDocument = mergedUser.mergedDoc;
+            const saveRes = await this.deps.storage.applySyncedDocumentSerialized(
+              mergedUser.mergedDoc
+            );
+            if (saveRes.ok) {
+              reconciledUserData = saveRes.document;
+              updatedDataDocument = saveRes.document;
+              serverRevision = saveRes.document.revision;
               filesMerged.push('data/cinetrack-data.json');
+            } else {
+              filesFailed.push('data/cinetrack-data.json');
+              pathsBlockedFromPush.add('data/cinetrack-data.json');
+              errors.push({
+                repoPath: 'data/cinetrack-data.json',
+                category: 'corrupt_local_file',
+                message: saveRes.message,
+              });
             }
           }
         } else if (!localBefore.userData && remoteBeforeInspect.bundle.userData) {
           const remoteDoc = remoteBeforeInspect.bundle.userData;
           recordsAdded += remoteBeforeInspect.bundle.summary.userUniqueSavedItemsCount;
-          if (this.deps.storage) {
-            const saveRes = await this.deps.storage.applySyncedDocumentSerialized(remoteDoc);
-            if (saveRes.ok) {
-              reconciledUserData = saveRes.document;
-              updatedDataDocument = saveRes.document;
-              serverRevision = saveRes.document.revision;
-              filesDownloaded.push('data/cinetrack-data.json');
-            }
-          } else {
-            const userDataPath = path.join(this.deps.dataDir, 'cinetrack-data.json');
-            writeJsonFileAtomic(userDataPath, JSON.stringify(remoteDoc, null, 2), {
-              backupPath: `${this.deps.dataDir}/cinetrack-data.bak.json`,
-              validateParsed: isPlainObject,
-            });
-            reconciledUserData = remoteDoc;
-            updatedDataDocument = remoteDoc;
+          const saveRes = await this.deps.storage.applySyncedDocumentSerialized(remoteDoc);
+          if (saveRes.ok) {
+            reconciledUserData = saveRes.document;
+            updatedDataDocument = saveRes.document;
+            serverRevision = saveRes.document.revision;
             filesDownloaded.push('data/cinetrack-data.json');
           }
         }
@@ -4428,7 +4391,7 @@ export class GitHubBidirectionalSyncManager {
       }
 
       // --- D. BİRLEŞTİRİLMİŞ GÜNCEL YEREL DOSYALARI GITHUB'A YÜKLE ---
-      const localPrepared = this.inspectLocalSide();
+      const localPrepared = await this.inspectLocalSide();
       const uploadCandidates: Array<{ repoPath: string; localPath: string; commitMsg: string }> = [];
 
       if (includeCatalog) {
@@ -4468,20 +4431,28 @@ export class GitHubBidirectionalSyncManager {
 
       for (const candidate of uploadCandidates) {
         if (pathsBlockedFromPush.has(candidate.repoPath)) continue;
-        if (!existsSync(candidate.localPath)) continue;
 
-        const validCheck = tryParseValidJson(candidate.localPath);
-        if (!validCheck.ok) {
-          filesFailed.push(candidate.repoPath);
-          errors.push({
-            repoPath: candidate.repoPath,
-            category: 'corrupt_local_file',
-            message: `${candidate.repoPath}: Yerel dosya geçerli JSON değil (${validCheck.error}).`,
-          });
-          continue;
+        let localContent: string;
+        if (candidate.repoPath === 'data/cinetrack-data.json') {
+          const storedDoc = await this.deps.storage.readDataAsync();
+          if (storedDoc.profiles.length === 0 && (storedDoc.revision ?? 0) === 0) continue;
+          localContent = JSON.stringify(storedDoc, null, 2);
+        } else {
+          if (!existsSync(candidate.localPath)) continue;
+
+          const validCheck = tryParseValidJson(candidate.localPath);
+          if (!validCheck.ok) {
+            filesFailed.push(candidate.repoPath);
+            errors.push({
+              repoPath: candidate.repoPath,
+              category: 'corrupt_local_file',
+              message: `${candidate.repoPath}: Yerel dosya geçerli JSON değil (${validCheck.error}).`,
+            });
+            continue;
+          }
+
+          localContent = readFileSync(candidate.localPath, 'utf8');
         }
-
-        const localContent = readFileSync(candidate.localPath, 'utf8');
         const localInspection = localPrepared.summary.files[candidate.repoPath];
         const remoteBeforeFile = remoteBeforeInspect.bundle.summary.files[candidate.repoPath];
 
@@ -4537,7 +4508,7 @@ export class GitHubBidirectionalSyncManager {
       }
 
       // --- E. İŞLEM SONRASI GERÇEK UZAK DOSYALARI YENİDEN OKU VE DOĞRULA ---
-      const localAfter = this.inspectLocalSide();
+      const localAfter = await this.inspectLocalSide();
       const remoteAfterInspect = await this.inspectRemoteSide(
         { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {

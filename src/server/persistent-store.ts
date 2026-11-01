@@ -508,8 +508,8 @@ export class PersistentDataStore {
   private fileStates: Record<string, SyncFileStateRecord> = {};
   private writeSerializer = new FileWriteSerializer();
   private maxDataBytes?: number;
-  private attachedStorage?: ReturnType<typeof createDataStorage>;
-  private bidirectionalManager: GitHubBidirectionalSyncManager;
+  private attachedStorage!: ReturnType<typeof createDataStorage>;
+  private bidirectionalManager!: GitHubBidirectionalSyncManager;
 
   private githubToken?: string;
   private githubTokenSource: TokenSourceKind;
@@ -546,7 +546,6 @@ export class PersistentDataStore {
 
     this.initDirectories();
     this.loadPersistedSyncState();
-    this.bidirectionalManager = this.createBidirectionalManager();
   }
 
   public getEffectiveConfiguredIsPublicRepo(): boolean {
