@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { DISCOVER_PROVIDER_CHIPS } from '../utils/helpers';
+import { StockHealthPanel } from './StockHealthPanel';
 
 interface ControlsProps {
   tab: 'discover' | 'list' | 'taste-map' | 'relationships';
@@ -58,6 +59,8 @@ export const Controls: React.FC<ControlsProps> = ({
   onHideListedItemsChange,
   stockStats,
 }) => {
+  const [showStockHealth, setShowStockHealth] = useState(false);
+
   // If in taste-map or relationships tab, those views provide their own dedicated toolbars
   if (tab === 'taste-map' || tab === 'relationships') {
     return null;
@@ -217,10 +220,19 @@ export const Controls: React.FC<ControlsProps> = ({
             </button>
             <button
               type="button"
-              className={`category-pill ${selectedCategory === 'stock' ? 'active' : ''}`}
+              className={`category-pill tabular-nums ${selectedCategory === 'stock' ? 'active' : ''}`}
               onClick={() => onCategoryChange('stock')}
             >
               {stockStats ? `Stok (${stockStats.movieCount}+${stockStats.tvCount})` : 'Stok'}
+            </button>
+            <button
+              type="button"
+              className={`category-pill stock-health-trigger whitespace-nowrap ${showStockHealth ? 'active' : ''}`}
+              onClick={() => setShowStockHealth((prev) => !prev)}
+              aria-expanded={showStockHealth}
+              title="Stok çeşitlilik ve önbellek sağlığı panelini aç/kapat"
+            >
+              Stok Kalitesi
             </button>
           </div>
         )}
@@ -309,6 +321,14 @@ export const Controls: React.FC<ControlsProps> = ({
             </label>
           )}
       </div>
+      )}
+
+      {tab === 'discover' && showStockHealth && (
+        <StockHealthPanel
+          isOpen={showStockHealth}
+          onClose={() => setShowStockHealth(false)}
+          stockSignature={stockStats ? `${stockStats.movieCount}:${stockStats.tvCount}` : ''}
+        />
       )}
     </div>
   );

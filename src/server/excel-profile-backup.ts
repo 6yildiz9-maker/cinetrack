@@ -28,6 +28,7 @@ import {
 import { canonicalizeMediaKeyList } from '../core/keys.ts';
 import type { CatalogRecord, PersistentDataStore } from './persistent-store.ts';
 import { redactSecrets } from './persistent-store.ts';
+import { populateTasteDnaWorksheet } from './excel-taste-dna-sheet.ts';
 
 export const EXCEL_SHEET_NAMES = Object.freeze([
   'Özet',
@@ -2095,11 +2096,16 @@ export function inspectXlsxPackageBuffer(buffer: Buffer): XlsxPackageInspection 
 
   const totalImageAnchors = totalOneCellAnchors + totalTwoCellAnchors;
 
-  const validOpenXmlStructure =
-    hasContentTypes &&
-    Boolean(workbookXml) &&
-    sheetNames.length === EXCEL_SHEET_NAMES.length &&
+  const hasExpectedCoreSheets =
+    sheetNames.length >= EXCEL_SHEET_NAMES.length &&
     EXCEL_SHEET_NAMES.every((expected, idx) => sheetNames[idx] === expected);
+  const hasAllowedExtraSheets =
+    sheetNames.length === EXCEL_SHEET_NAMES.length ||
+    (sheetNames.length === EXCEL_SHEET_NAMES.length + 1 &&
+      sheetNames[EXCEL_SHEET_NAMES.length] === 'tasteDna');
+
+  const validOpenXmlStructure =
+    hasContentTypes && Boolean(workbookXml) && hasExpectedCoreSheets && hasAllowedExtraSheets;
 
   return {
     validZip: true,
@@ -2184,6 +2190,7 @@ export interface GenerateExcelOptions extends BuildDatasetOptions {
   posterCacheMaxBytes?: number;
   posterCacheTtlMs?: number;
   embedPlaceholderOnMissingPoster?: boolean;
+  includeTasteDnaSheet?: boolean;
 }
 
 /**
@@ -2419,6 +2426,14 @@ export async function generateProfileExcelBuffer(
       placeholderImageMeta
     );
     writtenRowsBySheet[sheetName] = dataset.sheets[sheetName].length;
+  }
+
+  if (options.includeTasteDnaSheet) {
+    populateTasteDnaWorksheet(
+      workbook,
+      options.profile,
+      options.genresMap || { ...DEFAULT_TR_GENRES }
+    );
   }
 
   const arrayLike = await workbook.xlsx.writeBuffer();
@@ -3125,6 +3140,7 @@ export interface ExecuteProfileBackupOptions {
   profileId?: string;
   includeJson?: boolean;
   includeXlsx?: boolean;
+  includeTasteDnaSheet?: boolean;
   uploadToGithub?: boolean;
   allowPersonalDataInPublicRepo?: boolean;
   dislikedItemsHint?: Array<Record<string, any>>;
@@ -3299,6 +3315,7 @@ async function writeBufferAtomicAsync(targetPath: string, data: Buffer): Promise
         tvCatalog,
         dislikedItemsHint: options.dislikedItemsHint,
         genresMap: options.genresMap,
+        includeTasteDnaSheet: options.includeTasteDnaSheet,
         posterCacheDir,
         posterFetcher: options.posterFetcher,
         posterTimeoutMs: options.posterTimeoutMs,

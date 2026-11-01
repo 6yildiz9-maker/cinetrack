@@ -132,9 +132,9 @@ export function validateTmdbResponseShape(
     return { valid: true };
   }
 
-  if (path.endsWith('/combined_credits')) {
+  if (path.endsWith('/combined_credits') || /^\/(?:movie|tv)\/\d+\/credits$/.test(path)) {
     if (!Array.isArray(record.cast)) {
-      return { valid: false, reason: 'Oyuncu filmografisi yanıtında "cast" dizisi eksik.' };
+      return { valid: false, reason: 'Kadro yanıtında "cast" dizisi eksik.' };
     }
     return { valid: true };
   }
@@ -907,6 +907,8 @@ export async function createProfileBackupExport(params: {
   genresMap?: Record<number, string>;
   includeJson?: boolean;
   includeXlsx?: boolean;
+  includeTasteDnaSheet?: boolean;
+  exportMode?: 'xlsx_only' | 'json_and_xlsx';
   uploadToGithub?: boolean;
   allowPersonalDataInPublicRepo?: boolean;
 }): Promise<ProfileBackupExportReportClient> {
@@ -1072,6 +1074,8 @@ export async function downloadVerifiedBackupBinary(params: {
     profileSnapshot?: any;
     dislikedItemsHint?: any[];
     genresMap?: Record<number, string>;
+    includeTasteDnaSheet?: boolean;
+    exportMode?: 'xlsx_only' | 'json_and_xlsx';
   };
   customFetch?: typeof fetch;
 }): Promise<VerifiedBackupBlobDownload> {

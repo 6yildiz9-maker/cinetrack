@@ -157,8 +157,8 @@ export function encodeItemContent(item: any): ItemFeatureEncoding {
   const toneList = Array.from(ENCODING_TONE_WORDS).slice(0, 16);
   const toneVector = toneList.map((w) => (textTokens.has(w) ? 1.0 : 0.0));
 
-  // 7. Dense continuous vector (~48 dimensions)
-  // [0..26: genreVector (norm), 27: mediaType, 28: era, 29: vote, 30: pop, 31..46: toneVector]
+  // 7. Dense continuous vector (48 dimensions)
+  // [0..26: genreVector (norm), 27: isMovie, 28: era, 29: vote, 30: pop, 31..46: toneVector, 47: isTv]
   const denseVector: number[] = [
     ...genreVector,
     mediaType === 'movie' ? 1.0 : 0.0,
@@ -166,6 +166,7 @@ export function encodeItemContent(item: any): ItemFeatureEncoding {
     normalizedVote,
     normalizedPop,
     ...toneVector,
+    mediaType === 'tv' ? 1.0 : 0.0,
   ];
 
   return {

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
 export const ALLOWED_TMDB_PATH =
-  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords|external_ids))?))$/;
+  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords|external_ids|credits))?))$/;
 
 export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'language',
@@ -493,6 +493,23 @@ export function getMockTmdbResponse(endpoint: string, queryParams: Record<string
     };
   }
 
+  const creditsMatch = endpoint.match(/^\/(movie|tv)\/(\d+)\/credits$/);
+  if (creditsMatch) {
+    const [, , idStr] = creditsMatch;
+    const id = Number(idStr);
+    return {
+      id,
+      cast: [
+        { id: 101, name: 'Leonardo DiCaprio', character: 'Dom Cobb', popularity: 45.0, profile_path: '/wo2hJpn04vbtmh0B9utCFdsQ2v9.jpg' },
+        { id: 102, name: 'Joseph Gordon-Levitt', character: 'Arthur', popularity: 28.0, profile_path: '/4PCObFw9Zgn02KkG7t0i44sXF10.jpg' },
+        { id: 104, name: 'Tom Hardy', character: 'Eames', popularity: 38.0, profile_path: '/yVGF93vbhGKlhuSJqq9caNTQIbk.jpg' },
+      ],
+      crew: [
+        { id: 201, name: 'Christopher Nolan', job: 'Director', department: 'Directing' },
+      ],
+    };
+  }
+
   const detailMatch = endpoint.match(/^\/(movie|tv)\/(\d+)$/);
   if (detailMatch) {
     const [, type, idStr] = detailMatch;
@@ -539,14 +556,23 @@ export function getMockTmdbResponse(endpoint: string, queryParams: Record<string
   const personMatch = endpoint.match(/^\/person\/(\d+)(?:\/combined_credits)?$/);
   if (personMatch) {
     const [, personIdStr] = personMatch;
+    const personId = Number(personIdStr);
     const isCredits = endpoint.endsWith('/combined_credits');
     if (isCredits) {
-      return { id: Number(personIdStr), cast: mockItems, crew: [] };
+      const directorCrew = mockItems
+        .filter((it) => it.media_type === 'movie')
+        .slice(0, 3)
+        .map((it) => ({
+          ...it,
+          job: 'Director',
+          department: 'Directing',
+        }));
+      return { id: personId, cast: mockItems, crew: directorCrew };
     }
     return {
-      id: Number(personIdStr),
-      name: 'Öne Çıkan Sanatçı',
-      biography: 'Ödüllü oyuncu ve yapımcı.',
+      id: personId,
+      name: personId === 201 ? 'Christopher Nolan' : 'Öne Çıkan Sanatçı',
+      biography: 'Ödüllü yönetmen, senarist ve oyuncu.',
       profile_path: '/wo2hJpn04vbtmh0B9utCFdsQ2v9.jpg',
     };
   }

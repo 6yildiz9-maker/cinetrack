@@ -13,6 +13,7 @@ import { formatMatchBadge } from '../i18n';
 import { getItemSeriesInfo } from '../services/series-service';
 import { subscribeSeriesIndex } from '../services/storage-idb';
 import { recordPosterAccess } from '../services/poster-cache-manager';
+import { deriveTvProgressSummary } from '../core/tv-progress';
 
 export interface MediaCardProps {
   item: TmdbItem | any;
@@ -109,31 +110,21 @@ export const MediaCard: React.FC<MediaCardProps> = ({
     }
   }
 
-  // Calculate TV season progress bar if saved
-  let seasonProgressInfo: { watched: number; total: number; percent: number } | null = null;
+  // Calculate TV season/episode progress bar if saved (IMP-10)
+  let seasonProgressInfo: {
+    watched: number;
+    total: number | null;
+    percent: number;
+    positionLabel: string;
+  } | null = null;
   if (savedItem && savedItem.media_type === 'tv' && !savedItem.custom && size !== 'xs' && size !== 'sm') {
-    const progress = savedItem.season_progress || {};
-    const counts = savedItem.season_episode_counts || {};
-    const seasons = new Set([
-      ...Object.keys(counts).map(Number),
-      ...Object.keys(progress).map(Number),
-    ]);
-    let watched = 0;
-    let total = 0;
-    for (const season of seasons) {
-      if (!Number.isSafeInteger(season) || season < 1) continue;
-      const count = Number(counts[season]) || 0;
-      const seen = count
-        ? Math.min(count, Math.max(0, Number(progress[season]) || 0))
-        : Math.max(0, Number(progress[season]) || 0);
-      watched += seen;
-      total += count;
-    }
-    if (total > 0 && watched > 0) {
+    const tvSummary = deriveTvProgressSummary(savedItem);
+    if (tvSummary.watchedEpisodesCount > 0 || savedItem.status === 'watching') {
       seasonProgressInfo = {
-        watched,
-        total,
-        percent: Math.min(100, Math.round((watched / total) * 100)),
+        watched: tvSummary.watchedEpisodesCount,
+        total: tvSummary.totalEpisodesCount,
+        percent: tvSummary.progressPercent,
+        positionLabel: tvSummary.positionLabel,
       };
     }
   }
@@ -500,14 +491,21 @@ export const MediaCard: React.FC<MediaCardProps> = ({
 
         {seasonProgressInfo && (
           <div className="season-progress">
-            <progress
-              className="season-progress-native"
-              value={seasonProgressInfo.percent}
-              max={100}
-              aria-label={`Toplam sezon ilerlemesi: %${seasonProgressInfo.percent}`}
-            />{' '}
+            {seasonProgressInfo.total && seasonProgressInfo.total > 0 ? (
+              <progress
+                className="season-progress-native"
+                value={seasonProgressInfo.percent}
+                max={100}
+                aria-label={`Toplam sezon ilerlemesi: %${seasonProgressInfo.percent}`}
+              />
+            ) : null}{' '}
             <span className="season-progress-label tabular-nums">
-              %{seasonProgressInfo.percent} · {seasonProgressInfo.watched}/{seasonProgressInfo.total}
+              {seasonProgressInfo.positionLabel}
+              {seasonProgressInfo.total && seasonProgressInfo.total > 0
+                ? ` · %${seasonProgressInfo.percent} (${seasonProgressInfo.watched}/${seasonProgressInfo.total})`
+                : seasonProgressInfo.watched > 0
+                  ? ` · ${seasonProgressInfo.watched} bl.`
+                  : ''}
             </span>
           </div>
         )}

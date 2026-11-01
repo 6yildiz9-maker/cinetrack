@@ -1800,7 +1800,7 @@ export class PersistentDataStore {
 
     let localSummary: SyncSideSummary | undefined;
     try {
-      localSummary = this.bidirectionalManager.inspectLocalSide().summary;
+      localSummary = this.bidirectionalManager.inspectLocalSideSync().summary;
     } catch {
       localSummary = undefined;
     }

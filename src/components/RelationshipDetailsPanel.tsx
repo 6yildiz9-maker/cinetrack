@@ -1,5 +1,6 @@
 import React from 'react';
 import type {
+  RelationshipEvidenceDetail,
   RelationshipGraphLink,
   RelationshipGraphNode,
 } from '../core/relationship-explorer.ts';
@@ -69,11 +70,11 @@ export const RelationshipDetailsPanel: React.FC<RelationshipDetailsPanelProps> =
             const counterpartId = srcId === selectedNode.id ? tgtId : srcId;
             const counterpartTitle = nodeTitleById.get(counterpartId);
 
-            const details = link.relationshipDetails?.length
+            const details: RelationshipEvidenceDetail[] = link.relationshipDetails?.length
               ? link.relationshipDetails
               : [
                   {
-                    type: link.type,
+                    type: link.type === 'personal' ? 'semantic' : link.type,
                     score: link.score,
                     confidence: link.confidence,
                     evidence: Array.isArray(link.evidence) ? link.evidence : [],

@@ -204,6 +204,76 @@ export async function enrichStockItemsTopCast(
   return updatedCount;
 }
 
+export interface EnrichedStockItemPatch {
+  cast?: TmdbCastMember[];
+  crew?: Array<{ id: number; name: string; job: string; department?: string }>;
+  keywords?: Array<{ id: number; name: string }>;
+}
+
+/**
+ * Persists lazily enriched metadata (cast, crew, keywords, topCastIds) back into ct:stock
+ * so encodings, person insights, and stock health metrics stay enriched across reloads (IMP-11).
+ */
+export async function updateStockItemsMetadata(
+  patchesByMediaKey: Record<string, EnrichedStockItemPatch>
+): Promise<number> {
+  const keys = Object.keys(patchesByMediaKey);
+  if (keys.length === 0) return 0;
+
+  if (!isInitialized) {
+    activeStock = await loadStockIdb();
+    isInitialized = true;
+  }
+
+  let updatedCount = 0;
+  const applyPatches = (list: TmdbItem[], mType: 'movie' | 'tv') => {
+    for (let i = 0; i < list.length; i += 1) {
+      const item = list[i];
+      const key = `${mType}:${item.id}`;
+      const patch = patchesByMediaKey[key];
+      if (!patch) continue;
+
+      let changed = false;
+      const nextItem: TmdbItem & { keywords?: Array<{ id: number; name: string }> } = { ...item };
+
+      if (Array.isArray(patch.cast) && patch.cast.length > 0) {
+        nextItem.cast = patch.cast;
+        const topThree = patch.cast
+          .map((c) => Number(c.id))
+          .filter((id) => Number.isInteger(id) && id > 0)
+          .slice(0, 3);
+        if (topThree.length > 0) {
+          nextItem.topCastIds = topThree;
+        }
+        changed = true;
+      }
+      if (Array.isArray(patch.crew) && patch.crew.length > 0) {
+        nextItem.crew = patch.crew;
+        changed = true;
+      }
+      if (Array.isArray(patch.keywords) && patch.keywords.length > 0) {
+        nextItem.keywords = patch.keywords;
+        changed = true;
+      }
+
+      if (changed) {
+        list[i] = nextItem;
+        updatedCount += 1;
+      }
+    }
+  };
+
+  applyPatches(activeStock.movies, 'movie');
+  applyPatches(activeStock.tv, 'tv');
+
+  if (updatedCount > 0) {
+    activeStock.updatedAt = new Date().toISOString();
+    await saveStockIdb(activeStock);
+    notifyStockListeners();
+  }
+  return updatedCount;
+}
+
 /**
  * Synchronously retrieves stock items matching a favorite actor via `topCastIds` (0 network calls).
  */

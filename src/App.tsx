@@ -119,6 +119,7 @@ import {
   enrichStockItemsTopCast,
   markItemsAsSurfaced,
   seedCandidatePoolFromStock,
+  subscribeStockState,
 } from './services/stock-engine';
 import {
   enforcePosterCacheQuota,
@@ -126,6 +127,13 @@ import {
 } from './services/poster-cache-manager';
 import { getItemEncodingSync, maintainEncodingsDepot } from './services/encoding-service';
 import { computeProfileCentroid, cosineSimilarity } from './core/encoding';
+import { advanceTvEpisodeProgress } from './core/tv-progress';
+import { mergeDuplicateSavedPair } from './core/duplicate-detector';
+import {
+  checkWeeklyAutoBackup,
+  recordProfileChangeAndMaybeBackup,
+} from './services/auto-backup-service';
+import { startIdleStockEnrichment } from './services/idle-enrichment-service';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 import {
   compareMediaDatesAscending,
@@ -309,6 +317,7 @@ export function App() {
   const [quickSaveItem, setQuickSaveItem] = useState<any | null>(null);
   const [personId, setPersonId] = useState<number | null>(null);
   const [personName, setPersonName] = useState<string>('');
+  const [relationshipInitialSourceKey, setRelationshipInitialSourceKey] = useState<string>('');
   const [addCustomOpen, setAddCustomOpen] = useState<boolean>(false);
   const [profileOpen, setProfileOpen] = useState<boolean>(false);
   const [pendingBackup, setPendingBackup] = useState<any | null>(null);
@@ -322,6 +331,8 @@ export function App() {
   selectedTypeRef.current = selectedType;
   const selectedGenreRef = useRef<string>(selectedGenre);
   selectedGenreRef.current = selectedGenre;
+  const selectedSortRef = useRef<string>(selectedSort);
+  selectedSortRef.current = selectedSort;
   const hideListedItemsRef = useRef<boolean>(hideListedItems);
   hideListedItemsRef.current = hideListedItems;
   const activeProfileIdRef = useRef<string>(activeProfileId);
@@ -364,7 +375,25 @@ export function App() {
 
   useEffect(() => {
     refreshStockStats();
+    const unsubscribeStock = subscribeStockState((state) => {
+      setStockStats({
+        movieCount: state.moviesCount,
+        tvCount: state.tvCount,
+      });
+    });
+    return () => {
+      unsubscribeStock();
+    };
   }, [refreshStockStats]);
+
+  // IMP-16 (Weekly Auto-Backup Check) + IMP-11 (Idle Stock Enrichment)
+  useEffect(() => {
+    void checkWeeklyAutoBackup();
+    const stopIdleEnrichment = startIdleStockEnrichment();
+    return () => {
+      stopIdleEnrichment();
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -446,10 +475,10 @@ export function App() {
     onEscape: () => {
       setDetailItem(null);
       setQuickSaveItem(null);
-      setSelectedPersonId(null);
+      setPersonId(null);
       setAddCustomOpen(false);
       setProfileOpen(false);
-      setImportModalOpen(false);
+      setPendingBackup(null);
     },
   });
 
@@ -914,10 +943,24 @@ export function App() {
               filtered = mergeDiscoverResults(cat, rawMovies, rawTv);
             }
 
+            const dislikedSet = new Set(preferencesRef.current.disliked || []);
+            const hiddenSet = new Set(preferencesRef.current.hidden || []);
+
             filtered = filtered.filter((it) => {
+              const key = makeMediaKey(it.media_type === 'tv' ? 'tv' : 'movie', it.id);
+              if (dislikedSet.has(key) || hiddenSet.has(key)) return false;
               const d = it.release_date || it.first_air_date || '';
               return d ? isWithinReleaseWindow(d) : true;
             });
+
+            if (hideListedItemsRef.current) {
+              filtered = filterHiddenUserRegisteredItems(filtered, {
+                savedItems: savedItemsRef.current,
+                preferences: preferencesRef.current,
+                tasteMap: tasteMapRef.current,
+                hideListedItems: true,
+              });
+            }
 
             if (activeGenre) {
               const targetGenreId = Number(activeGenre);
@@ -928,7 +971,8 @@ export function App() {
               }
             }
 
-            if (selectedSort === 'similarity') {
+            const activeSort = selectedSortRef.current;
+            if (activeSort === 'similarity') {
               const savedEncodings = savedItemsRef.current.map((it) => ({
                 encoding: getItemEncodingSync(it),
                 personal_rating: it.personal_rating,
@@ -945,16 +989,16 @@ export function App() {
               } else {
                 filtered.sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
               }
-            } else if (selectedSort === 'rating' || selectedSort === 'rating.desc' || selectedSort === 'vote_average.desc') {
+            } else if (activeSort === 'rating' || activeSort === 'rating.desc' || activeSort === 'vote_average.desc') {
               filtered.sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
-            } else if (selectedSort === 'recent' || selectedSort === 'date.desc' || selectedSort === 'primary_release_date.desc') {
+            } else if (activeSort === 'recent' || activeSort === 'date.desc' || activeSort === 'primary_release_date.desc') {
               filtered.sort((a, b) =>
                 compareMediaDatesDescending(
                   a.release_date || a.first_air_date,
                   b.release_date || b.first_air_date
                 )
               );
-            } else if (selectedSort === 'title') {
+            } else if (activeSort === 'title') {
               filtered.sort((a, b) => displayTitle(a).localeCompare(displayTitle(b), 'tr'));
             } else {
               filtered.sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
@@ -2078,6 +2122,12 @@ export function App() {
     }
   }, [tab, category, forYouSubTab, query, selectedProvider, selectedType, selectedGenre, hideListedItems, loadCategoryResults]);
 
+  useEffect(() => {
+    if (tab === 'discover' && category === 'stock' && !query.trim()) {
+      loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
+    }
+  }, [selectedSort, tab, category, query, selectedProvider, selectedType, selectedGenre, loadCategoryResults]);
+
   // Load more pagination
   const handleLoadMore = () => {
     if (tab === 'discover' && category !== 'for-you' && catalogPage < catalogTotalPages) {
@@ -2190,6 +2240,7 @@ export function App() {
     void removeSurfacedKey(itemKey);
     void removeSkippedKeyIdb(activeProfileIdRef.current, itemKey);
     void indexItemForSeries(normalized);
+    void recordProfileChangeAndMaybeBackup();
 
     const title = displayTitle(item);
     if (effectiveStatus === 'completed') {
@@ -2270,6 +2321,61 @@ export function App() {
         ]);
       }
     });
+    void recordProfileChangeAndMaybeBackup();
+  };
+
+  const handleIncrementTvEpisode = (targetItem: SavedItem) => {
+    const updatedItem = advanceTvEpisodeProgress(targetItem);
+    const transitionedToCompleted =
+      targetItem.status !== 'completed' && updatedItem.status === 'completed';
+    setSavedItems((prev) => {
+      const next = prev.map((entry) =>
+        makeMediaKey(entry) === makeMediaKey(targetItem) ? updatedItem : entry
+      );
+      savedItemsRef.current = next;
+      return next;
+    });
+    void recordProfileChangeAndMaybeBackup();
+    const seriesTitle = displayTitle(updatedItem);
+    if (transitionedToCompleted) {
+      showToast(`✓ "${seriesTitle}" tüm bölümler izlendi olarak tamamlandı!`);
+    } else {
+      showToast(
+        `▶ "${seriesTitle}" S${updatedItem.current_season || 1} · B${
+          (updatedItem.season_progress || {})[updatedItem.current_season || 1] || 1
+        } kaydedildi.`
+      );
+    }
+  };
+
+  const handleMergeDuplicates = (
+    keepId: SavedItem['id'],
+    dropId: SavedItem['id'],
+    mediaType: 'movie' | 'tv'
+  ) => {
+    const { mergedItems, mergedItem, removedKey } = mergeDuplicateSavedPair(
+      savedItemsRef.current,
+      keepId,
+      dropId,
+      mediaType
+    );
+    if (!mergedItem) return;
+
+    const dropKey = removedKey || makeMediaKey(mediaType, dropId);
+
+    setDeletedKeys((prev) => {
+      const nextDeleted = normalizeDeletedKeys({ ...prev, [dropKey]: new Date().toISOString() });
+      deletedKeysRef.current = nextDeleted;
+      return nextDeleted;
+    });
+
+    setSavedItems(() => {
+      savedItemsRef.current = mergedItems;
+      return mergedItems;
+    });
+
+    void recordProfileChangeAndMaybeBackup();
+    showToast(`✓ "${displayTitle(mergedItem)}" çift kaydı başarıyla birleştirildi.`);
   };
 
   const handleRemoveItem = (item: any) => {
@@ -2305,6 +2411,7 @@ export function App() {
       setTasteMap(nextMap);
     } catch {}
 
+    void recordProfileChangeAndMaybeBackup();
     showToast(`"${displayTitle(item)}" listeden kaldırıldı.`);
   };
 
@@ -2355,6 +2462,7 @@ export function App() {
 
       return { ...prev, disliked };
     });
+    void recordProfileChangeAndMaybeBackup();
   };
 
   // Background fetch for any missing disliked items when entering disliked tab
@@ -2728,6 +2836,10 @@ export function App() {
       'popular-movies': { title: 'Popüler filmler', description: 'TMDB\'de en çok ilgi gören filmler' },
       'popular-tv': { title: 'Popüler diziler', description: 'TMDB\'de en çok ilgi gören diziler' },
       'top-rated': { title: 'Yüksek puanlı filmler', description: 'TMDB puanına göre sıralanır' },
+      stock: {
+        title: 'Yerel katalog stoku',
+        description: 'Çevrimdışı erişime hazır kişisel aday havuzu ve zevk vektörü sıralaması',
+      },
     };
     return catMap[category] || catMap.trending;
   };
@@ -2981,7 +3093,17 @@ export function App() {
         )}
 
         {tab === 'list' && (
-          <Stats items={savedItems} profileName={profileName} genresMap={genresMap} />
+          <Stats
+            items={savedItems}
+            profileName={profileName}
+            favoriteActors={favoriteActors}
+            genresMap={genresMap}
+            onSelectItem={(id, mediaType) => {
+              const found = findSavedItem(savedItems, { id, media_type: mediaType });
+              setDetailItem(found || { id, media_type: mediaType });
+            }}
+            onMergeDuplicates={handleMergeDuplicates}
+          />
         )}
 
         <Controls
@@ -3034,6 +3156,7 @@ export function App() {
                 onRefresh={handleLoadRelationshipCandidates}
                 onOpenDetails={(item) => setDetailItem(item as SavedItem)}
                 onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
+                initialSourceKey={relationshipInitialSourceKey}
               />
             </Suspense>
           </ErrorBoundary>
@@ -3155,6 +3278,7 @@ export function App() {
               hiddenKeys={preferences.hidden}
               mood={preferences.mood}
               isDemo={Boolean(activeProfile?.isDemo)}
+              onIncrementEpisode={handleIncrementTvEpisode}
             />
           </ErrorBoundary>
         )}
@@ -3185,13 +3309,14 @@ export function App() {
                 ? 'Örnek Katalog'
                 : 'Bağlantı Bekleniyor'}
             </strong>
-          <div className="footer-shortcuts-hint" style={{ fontSize: '11px', color: '#64748b', marginTop: '6px' }}>
+          </div>
+          <div className="footer-shortcuts-hint">
             <span>Kısayollar: </span>
-            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>1-4</kbd> Sekmeler ·{' '}
-            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>/</kbd> Ara ·{' '}
-            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>S</kbd> Eşitle ·{' '}
-            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>N</kbd> Ekle ·{' '}
-            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>Esc</kbd> Kapat
+            <kbd className="footer-kbd">1-4</kbd> Sekmeler ·{' '}
+            <kbd className="footer-kbd">/</kbd> Ara ·{' '}
+            <kbd className="footer-kbd">S</kbd> Eşitle ·{' '}
+            <kbd className="footer-kbd">N</kbd> Ekle ·{' '}
+            <kbd className="footer-kbd">Esc</kbd> Kapat
           </div>
         </div>
       </footer>
@@ -3286,6 +3411,7 @@ export function App() {
       <PersonDrawer
         personId={personId}
         personName={personName}
+        profileId={activeProfileId}
         isOpen={Boolean(personId)}
         savedItems={savedItems}
         isFavoriteActor={favoriteActors.some((a) => a.id === personId)}
@@ -3295,6 +3421,11 @@ export function App() {
         onMarkCompleted={handleMarkCompleted}
         onQuickSave={(item) => setQuickSaveItem(item)}
         onToggleFavoriteActor={handleToggleFavoriteActor}
+        onOpenInRelationships={(mediaKey) => {
+          setPersonId(null);
+          setRelationshipInitialSourceKey(mediaKey);
+          setTab('relationships');
+        }}
       />
 
       <AddCustomModal
@@ -3330,12 +3461,14 @@ export function App() {
         onImportCsvItems={(items) => {
           const merged = dedupeItems([...savedItems, ...items]);
           setSavedItems(merged);
+          void recordProfileChangeAndMaybeBackup();
           showToast(`${items.length} yapım CSV'den listenize eklendi.`);
         }}
         onApplyRestoredDocument={(doc) => {
           applyDataDocumentToState(doc);
           showToast('Sunucu yedeği başarıyla geri yüklendi.');
         }}
+        onMergeDuplicates={handleMergeDuplicates}
         isDemo={Boolean(activeProfile?.isDemo)}
         onToggleDemoMode={handleToggleDemoMode}
       />

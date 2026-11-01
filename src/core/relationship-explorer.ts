@@ -40,12 +40,7 @@ export { getRelationshipTypeLabel, getRelationshipNodeColor, getRelationshipLink
 export type RelationshipMode = 'taste-map' | 'relationships';
 export type MediaFilter = 'all' | 'movie' | 'tv';
 export type RelationshipType = 'semantic' | 'person' | 'universe' | 'atmosphere' | 'contrast' | 'personal';
-export type RelationshipStatusSignal =
-  | 'completed-history'
-  | 'interest'
-  | 'neutral'
-  | 'disliked'
-  | 'hidden';
+export type RelationshipStatusSignal = 'completed-history' | 'interest' | 'neutral' | 'disliked' | 'hidden';
 
 export interface RelationshipMetadataCoverage {
   overview: boolean;
@@ -147,12 +142,10 @@ export const RELATIONSHIP_GRAPH_SCHEMA_VERSION = 1;
 function stableHash(input: unknown): string {
   const text = JSON.stringify(input);
   let hash = 2166136261;
-
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
@@ -366,18 +359,8 @@ function deriveMetadataCoverage(
   return {
     overview: Boolean(item.overview?.trim()),
     genres: Boolean(item.genre_ids?.length),
-    cast:
-      existing?.cast === 'complete'
-        ? 'complete'
-        : item.cast?.length
-          ? 'partial'
-          : 'unknown',
-    crew:
-      existing?.crew === 'complete'
-        ? 'complete'
-        : item.crew?.length
-          ? 'partial'
-          : 'unknown',
+    cast: existing?.cast === 'complete' ? 'complete' : item.cast?.length ? 'partial' : 'unknown',
+    crew: existing?.crew === 'complete' ? 'complete' : item.crew?.length ? 'partial' : 'unknown',
     collection:
       item.belongs_to_collection?.id != null
         ? 'present'
@@ -389,25 +372,25 @@ function deriveMetadataCoverage(
   };
 }
 
-function personEvidenceConfidence(a: RelationshipContent, b: RelationshipContent): number {
+export function personEvidenceConfidence(a: RelationshipContent, b: RelationshipContent): number {
   const aKnown = Boolean(a.cast?.length || a.crew?.length);
   const bKnown = Boolean(b.cast?.length || b.crew?.length);
   if (!aKnown || !bKnown) return 45;
 
   const aCoverage = a.metadataCoverage ?? deriveMetadataCoverage(a);
   const bCoverage = b.metadataCoverage ?? deriveMetadataCoverage(b);
-
   const aComplete = aCoverage.cast === 'complete' && aCoverage.crew === 'complete';
   const bComplete = bCoverage.cast === 'complete' && bCoverage.crew === 'complete';
-
   if (aComplete && bComplete) return 96;
 
-  // Kapsama oranına göre skalanmış güven formülü (v5 Spec W5 / Bölüm 2.2)
-  const castDepth = (a.cast?.length || 0) + (b.cast?.length || 0);
-  const crewDepth = (a.crew?.length || 0) + (b.crew?.length || 0);
-  const depthBonus = Math.round(Math.min(22, Math.max(0, castDepth - 2) * 1.5 + Math.max(0, crewDepth - 2) * 2));
+  // Sürekli kapsama oranı (coverage ratio ∈ [0, 1]) ile [72..94] bandında ölçekleme (Bölüm 2.2 W5)
+  const castRatioA = aCoverage.cast === 'complete' ? 1 : Math.min(1, Math.max(0, ((a.cast?.length || 0) - 1) / 9));
+  const castRatioB = bCoverage.cast === 'complete' ? 1 : Math.min(1, Math.max(0, ((b.cast?.length || 0) - 1) / 9));
+  const crewRatioA = aCoverage.crew === 'complete' ? 1 : Math.min(1, Math.max(0, (a.crew?.length || 0) / 4));
+  const crewRatioB = bCoverage.crew === 'complete' ? 1 : Math.min(1, Math.max(0, (b.crew?.length || 0) / 4));
+  const coverageRatio = castRatioA * 0.3 + castRatioB * 0.3 + crewRatioA * 0.2 + crewRatioB * 0.2;
 
-  return clamp(72 + depthBonus, 72, 94);
+  return clamp(Math.round(72 + coverageRatio * 22), 72, 94);
 }
 
 export function pairRelationships(
@@ -930,16 +913,9 @@ export function buildRelationshipGraph(
     };
   }
 
-  const sources = mergedItems;
-  const source = sourceKey ? sources.find((item) => relationshipNodeKey(item) === sourceKey) : null;
-
+  const source = sourceKey ? mergedItems.find((item) => relationshipNodeKey(item) === sourceKey) : null;
   if (!source) {
-    return {
-      nodes: [],
-      links: [],
-      profileSignature: computedProfileSignature,
-      createdAt: new Date().toISOString(),
-    };
+    return { nodes: [], links: [], profileSignature: computedProfileSignature, createdAt: new Date().toISOString() };
   }
 
   const sourceId = relationshipNodeKey(source);
@@ -1006,10 +982,5 @@ export function buildRelationshipGraph(
   secondaryLinks.sort((a, b) => b.score - a.score);
   links.push(...secondaryLinks.slice(0, Math.max(0, maxLinks - links.length)));
 
-  return {
-    nodes,
-    links,
-    profileSignature: computedProfileSignature,
-    createdAt: new Date().toISOString(),
-  };
+  return { nodes, links, profileSignature: computedProfileSignature, createdAt: new Date().toISOString() };
 }

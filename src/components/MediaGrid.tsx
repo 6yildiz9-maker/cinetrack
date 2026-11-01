@@ -59,6 +59,7 @@ interface MediaGridProps {
   hiddenKeys?: string[];
   mood?: string;
   isDemo?: boolean;
+  onIncrementEpisode?: (item: SavedItem) => void;
 }
 
 export const MediaGrid: React.FC<MediaGridProps> = ({
@@ -106,6 +107,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   hiddenKeys = [],
   mood = '',
   isDemo = false,
+  onIncrementEpisode,
 }) => {
   const [actorsSubTab, setActorsSubTab] = useState<'actors' | 'recommendations'>('actors');
   const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
@@ -203,6 +205,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
       {tab === 'list' && (listStatus === 'all' || listStatus === 'watching' || listStatus === 'watchlist') && (
         <SeasonCalendarSection
           savedItems={savedItems}
+          onIncrementEpisode={onIncrementEpisode}
           onSelectMedia={(id, mediaType) =>
             onOpenDetails({ id: Number(id) || (id as any), media_type: mediaType } as TmdbItem)
           }

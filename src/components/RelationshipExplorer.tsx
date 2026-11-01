@@ -49,6 +49,7 @@ interface RelationshipExplorerProps {
   onRefresh: (mediaFilter: MediaFilter) => Promise<PoolCandidateItem[]>;
   onOpenDetails?: (item: PoolCandidateItem | SavedItem) => void;
   onQuickSave?: (item: PoolCandidateItem | SavedItem) => void;
+  initialSourceKey?: string;
 }
 
 type RelationFilter = RelationshipType | 'all';
@@ -80,10 +81,11 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
   onRefresh,
   onOpenDetails,
   onQuickSave,
+  initialSourceKey,
 }) => {
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all');
   const [relationFilter, setRelationFilter] = useState<RelationFilter>('all');
-  const [sourceKey, setSourceKey] = useState('');
+  const [sourceKey, setSourceKey] = useState(() => initialSourceKey || '');
   const [sourceQuery, setSourceQuery] = useState('');
   const [displayMode, setDisplayMode] = useState<'graph' | 'list'>('graph');
   const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(() => {
@@ -353,6 +355,13 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
       return title.includes(normalizedQuery);
     });
   }, [sourceOptions, sourceQuery, sourceKey]);
+
+  useEffect(() => {
+    if (initialSourceKey && mode === 'relationships' && !isRestoringCache) {
+      setMediaFilter('all');
+      setSourceKey(initialSourceKey);
+    }
+  }, [initialSourceKey, mode, isRestoringCache]);
 
   // Medya filtresi değiştiğinde seçili kaynak yeni filtreye uymuyorsa ilk geçerli kaynağa geçir ve seçili düğümü temizle
   useEffect(() => {

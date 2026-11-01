@@ -1,4 +1,12 @@
 import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+} from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import path from 'node:path';
+import {
   normalizeDataDocument,
   buildTasteProfileV3,
   CURRENT_SCHEMA_VERSION,
@@ -14,10 +22,20 @@ import {
   formatMaxDataLimitMb,
   measureUtf8Bytes,
 } from '../core/limits.ts';
+import {
+  cleanupStaleTempFiles,
+  readJsonFileWithRecovery,
+  readJsonFileWithRecoveryAsync,
+  tryParseValidJson,
+  tryParseValidJsonAsync,
+  writeJsonFileAtomic,
+  writeJsonFileAtomicAsync,
+} from './atomic-json.ts';
 import type { UserDataRepository } from './user-data-repository.ts';
 
 export interface StorageOptions {
-  repository: UserDataRepository;
+  dataDir?: string;
+  repository?: UserDataRepository;
   maxDataBytes?: number;
   maxProfiles?: number;
   maxItemsPerProfile?: number;
@@ -77,16 +95,39 @@ function isWorthKeeping(doc: DataDocument): boolean {
   return (
     profiles.length > 0 &&
     (profiles.some((profile) => Array.isArray(profile?.items) && profile.items.length > 0) ||
-      profiles.length > 1)
+      profiles.length > 1 ||
+      (doc.revision ?? 0) > 0)
   );
 }
 
+const SNAPSHOT_FILE_PATTERN = /^cinetrack-[a-zA-Z0-9._-]+\.json$/;
+
+function formatSnapshotFileName(revision: number): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const suffix = Math.random().toString(16).slice(2, 6);
+  return `cinetrack-${stamp}-rev${revision}-${suffix}.json`;
+}
+
 export function createDataStorage(options: StorageOptions) {
-  const repo = options.repository;
+  const resolvedDataDir = path.resolve(options.dataDir || path.join(process.cwd(), 'data'));
+  const dataFile = path.join(resolvedDataDir, 'cinetrack-data.json');
+  const backupFile = `${dataFile}.bak`;
+  const isolatedProfileFile = path.join(resolvedDataDir, 'profile.json');
+  const isolatedUserListsFile = path.join(resolvedDataDir, 'user-lists.json');
+  const backupsDir = path.join(resolvedDataDir, 'backups');
+
+  const repo = options.repository ?? null;
   const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   const maxProfiles = options.maxProfiles ?? DEFAULT_MAX_PROFILES;
   const maxItemsPerProfile = options.maxItemsPerProfile ?? DEFAULT_MAX_ITEMS_PER_PROFILE;
   const maxSnapshots = Math.max(1, options.maxSnapshots ?? DEFAULT_MAX_SNAPSHOTS);
+
+  if (!repo) {
+    mkdirSync(resolvedDataDir, { recursive: true });
+    mkdirSync(backupsDir, { recursive: true });
+    cleanupStaleTempFiles(resolvedDataDir);
+    cleanupStaleTempFiles(backupsDir);
+  }
 
   let unrecoverableCorruptionError: string | null = null;
   let writeQueue: Promise<unknown> = Promise.resolve();
@@ -109,36 +150,116 @@ export function createDataStorage(options: StorageOptions) {
     };
   }
 
-  function validateRawDocument(raw: any): DataDocument | null {
+  function validateRawDocument(raw: unknown): DataDocument | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const obj = raw as Record<string, unknown>;
     const normalized = normalizeDataDocument(raw, {
       maxProfiles,
       maxItems: maxItemsPerProfile,
     });
     if (!normalized) return null;
-    const rawRev = Number(raw?.revision);
+    const rawRev = Number(obj.revision);
     normalized.revision = Number.isSafeInteger(rawRev) && rawRev >= 0 ? rawRev : 0;
     normalized.updatedAt =
-      typeof raw?.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : undefined;
+      typeof obj.updatedAt === 'string' && obj.updatedAt ? obj.updatedAt : undefined;
     return normalized;
   }
 
-  async function readDataAsync(): Promise<DataDocument> {
-    const raw: any = await repo.load();
-    if (raw === null || raw === undefined) {
+  function listDiskSnapshotFilesNewestFirstSync(): string[] {
+    if (!existsSync(backupsDir)) return [];
+    try {
+      return readdirSync(backupsDir)
+        .filter((f) => f.startsWith('cinetrack-') && f.endsWith('.json'))
+        .sort((a, b) => b.localeCompare(a));
+    } catch {
+      return [];
+    }
+  }
+
+  async function listDiskSnapshotFilesNewestFirstAsync(): Promise<string[]> {
+    try {
+      const entries = await fsPromises.readdir(backupsDir);
+      return entries
+        .filter((f) => f.startsWith('cinetrack-') && f.endsWith('.json'))
+        .sort((a, b) => b.localeCompare(a));
+    } catch {
+      return [];
+    }
+  }
+
+  function getDiskRecoveryBackupPathsSync(): string[] {
+    const snaps = listDiskSnapshotFilesNewestFirstSync().map((f) => path.join(backupsDir, f));
+    return [backupFile, ...snaps];
+  }
+
+  async function getDiskRecoveryBackupPathsAsync(): Promise<string[]> {
+    const snaps = (await listDiskSnapshotFilesNewestFirstAsync()).map((f) =>
+      path.join(backupsDir, f)
+    );
+    return [backupFile, ...snaps];
+  }
+
+  function readData(): DataDocument {
+    if (repo) {
+      return emptyDocument();
+    }
+    const recovery = readJsonFileWithRecovery<DataDocument>(dataFile, {
+      backupPaths: getDiskRecoveryBackupPathsSync(),
+      validate: validateRawDocument,
+      label: 'cinetrack-data.json',
+    });
+    if (recovery.status === 'missing') {
       unrecoverableCorruptionError = null;
       return emptyDocument();
     }
-    if (Array.isArray(raw.profiles) && raw.profiles.length === 0 && Number(raw.revision) === 0) {
-      unrecoverableCorruptionError = null;
-      return emptyDocument();
-    }
-    const doc = validateRawDocument(raw);
-    if (!doc) {
-      unrecoverableCorruptionError = 'Veritabanındaki kullanıcı verisi doğrulanamadı';
+    if (recovery.status === 'corrupt_unrecoverable') {
+      unrecoverableCorruptionError = recovery.error;
       return emptyDocument();
     }
     unrecoverableCorruptionError = null;
-    return doc;
+    return recovery.data;
+  }
+
+  async function readDataAsync(): Promise<DataDocument> {
+    if (repo) {
+      const raw = await repo.load();
+      if (raw === null || raw === undefined) {
+        unrecoverableCorruptionError = null;
+        return emptyDocument();
+      }
+      const rawObj = raw as Record<string, unknown>;
+      if (
+        Array.isArray(rawObj.profiles) &&
+        rawObj.profiles.length === 0 &&
+        Number(rawObj.revision) === 0
+      ) {
+        unrecoverableCorruptionError = null;
+        return emptyDocument();
+      }
+      const doc = validateRawDocument(raw);
+      if (!doc) {
+        unrecoverableCorruptionError = 'Veritabanındaki kullanıcı verisi doğrulanamadı';
+        return emptyDocument();
+      }
+      unrecoverableCorruptionError = null;
+      return doc;
+    }
+
+    const recovery = await readJsonFileWithRecoveryAsync<DataDocument>(dataFile, {
+      backupPaths: await getDiskRecoveryBackupPathsAsync(),
+      validate: validateRawDocument,
+      label: 'cinetrack-data.json',
+    });
+    if (recovery.status === 'missing') {
+      unrecoverableCorruptionError = null;
+      return emptyDocument();
+    }
+    if (recovery.status === 'corrupt_unrecoverable') {
+      unrecoverableCorruptionError = recovery.error;
+      return emptyDocument();
+    }
+    unrecoverableCorruptionError = null;
+    return recovery.data;
   }
 
   function buildIsolatedProfilePayload(doc: DataDocument) {
@@ -208,7 +329,9 @@ export function createDataStorage(options: StorageOptions) {
     current: DataDocument,
     rawPayload: unknown,
     saveOptions: SaveDataOptions
-  ): { ok: true; documentToPersist: DataDocument; incomingItems: number } | Extract<SaveDataResult, { ok: false }> {
+  ):
+    | { ok: true; documentToPersist: DataDocument; incomingItems: number }
+    | Extract<SaveDataResult, { ok: false }> {
     if (unrecoverableCorruptionError) {
       return {
         ok: false,
@@ -282,7 +405,11 @@ export function createDataStorage(options: StorageOptions) {
           serverDocument: current,
         };
       }
-    } else if (saveOptions.requirePrecondition && !saveOptions.forceOverwrite && currentRevision > 0) {
+    } else if (
+      saveOptions.requirePrecondition &&
+      !saveOptions.forceOverwrite &&
+      currentRevision > 0
+    ) {
       return {
         ok: false,
         status: 428,
@@ -334,12 +461,106 @@ export function createDataStorage(options: StorageOptions) {
     return { ok: true, documentToPersist, incomingItems };
   }
 
-  async function persistDocument(current: DataDocument, next: DataDocument): Promise<void> {
-    await repo.save({
-      document: next,
-      snapshot: isWorthKeeping(current) ? current : null,
-      keepSnapshots: maxSnapshots,
+  function writeDiskSnapshotSync(doc: DataDocument): void {
+    mkdirSync(backupsDir, { recursive: true });
+    const snapName = formatSnapshotFileName(doc.revision ?? 0);
+    const snapPath = path.join(backupsDir, snapName);
+    writeJsonFileAtomic(snapPath, JSON.stringify(doc, null, 2), {
+      validateParsed: (p) => validateRawDocument(p) !== null,
     });
+    const allSnaps = listDiskSnapshotFilesNewestFirstSync();
+    for (const staleName of allSnaps.slice(maxSnapshots)) {
+      try {
+        unlinkSync(path.join(backupsDir, staleName));
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }
+
+  async function writeDiskSnapshotAsync(doc: DataDocument): Promise<void> {
+    await fsPromises.mkdir(backupsDir, { recursive: true });
+    const snapName = formatSnapshotFileName(doc.revision ?? 0);
+    const snapPath = path.join(backupsDir, snapName);
+    await writeJsonFileAtomicAsync(snapPath, JSON.stringify(doc, null, 2), {
+      validateParsed: (p) => validateRawDocument(p) !== null,
+    });
+    const allSnaps = await listDiskSnapshotFilesNewestFirstAsync();
+    for (const staleName of allSnaps.slice(maxSnapshots)) {
+      try {
+        await fsPromises.unlink(path.join(backupsDir, staleName));
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }
+
+  function persistDocumentDiskSync(current: DataDocument, next: DataDocument): void {
+    if (isWorthKeeping(current)) {
+      writeDiskSnapshotSync(current);
+    }
+    writeJsonFileAtomic(dataFile, JSON.stringify(next, null, 2), {
+      backupPath: backupFile,
+      validateParsed: (p) => validateRawDocument(p) !== null,
+    });
+    try {
+      writeJsonFileAtomic(
+        isolatedProfileFile,
+        JSON.stringify(buildIsolatedProfilePayload(next), null, 2)
+      );
+      writeJsonFileAtomic(
+        isolatedUserListsFile,
+        JSON.stringify(buildIsolatedUserListsPayload(next), null, 2)
+      );
+    } catch {
+      // Isolated mirror files are best-effort
+    }
+  }
+
+  async function persistDocument(current: DataDocument, next: DataDocument): Promise<void> {
+    if (repo) {
+      await repo.save({
+        document: next,
+        snapshot: isWorthKeeping(current) ? current : null,
+        keepSnapshots: maxSnapshots,
+      });
+      return;
+    }
+
+    if (isWorthKeeping(current)) {
+      await writeDiskSnapshotAsync(current);
+    }
+    await writeJsonFileAtomicAsync(dataFile, JSON.stringify(next, null, 2), {
+      backupPath: backupFile,
+      validateParsed: (p) => validateRawDocument(p) !== null,
+    });
+    try {
+      await writeJsonFileAtomicAsync(
+        isolatedProfileFile,
+        JSON.stringify(buildIsolatedProfilePayload(next), null, 2)
+      );
+      await writeJsonFileAtomicAsync(
+        isolatedUserListsFile,
+        JSON.stringify(buildIsolatedUserListsPayload(next), null, 2)
+      );
+    } catch {
+      // Isolated mirror files are best-effort
+    }
+  }
+
+  function saveData(rawPayload: unknown, saveOptions: SaveDataOptions = {}): SaveDataResult {
+    const current = readData();
+    const prepared = validateAndPrepareSave(current, rawPayload, saveOptions);
+    if (!prepared.ok) {
+      return prepared;
+    }
+    persistDocumentDiskSync(current, prepared.documentToPersist);
+    unrecoverableCorruptionError = null;
+    return {
+      ok: true,
+      document: prepared.documentToPersist,
+      totalItems: prepared.incomingItems,
+    };
   }
 
   async function saveDataAsync(
@@ -368,22 +589,81 @@ export function createDataStorage(options: StorageOptions) {
   }
 
   async function listBackupsAsync(): Promise<BackupMetadata[]> {
-    const snapshots = await repo.listSnapshots();
-    return snapshots.map((s) => ({
-      id: s.id,
-      createdAt: s.createdAt,
-      revision: s.revision,
-      profilesCount: s.profilesCount,
-      itemsCount: s.itemsCount,
-    }));
+    if (repo) {
+      const snapshots = await repo.listSnapshots();
+      return snapshots.map((s) => ({
+        id: s.id,
+        createdAt: s.createdAt,
+        revision: s.revision,
+        profilesCount: s.profilesCount,
+        itemsCount: s.itemsCount,
+      }));
+    }
+
+    const files = await listDiskSnapshotFilesNewestFirstAsync();
+    const backups: BackupMetadata[] = [];
+    for (const fileName of files) {
+      const fullPath = path.join(backupsDir, fileName);
+      const parsed = await tryParseValidJsonAsync<DataDocument>(fullPath, validateRawDocument);
+      if (!parsed.ok) continue;
+      let createdAt = parsed.data.updatedAt || '';
+      if (!createdAt) {
+        try {
+          const stat = await fsPromises.stat(fullPath);
+          createdAt = stat.mtime.toISOString();
+        } catch {
+          createdAt = new Date().toISOString();
+        }
+      }
+      backups.push({
+        id: fileName,
+        createdAt,
+        revision: parsed.data.revision ?? 0,
+        profilesCount: parsed.data.profiles.length,
+        itemsCount: countTotalItems(parsed.data),
+      });
+    }
+    return backups;
+  }
+
+  function restoreBackup(backupId: string): DataDocument | null {
+    const id = String(backupId || '').trim();
+    if (!id || !SNAPSHOT_FILE_PATTERN.test(id)) return null;
+    const fullPath = path.resolve(backupsDir, id);
+    if (!fullPath.startsWith(backupsDir + path.sep) || !existsSync(fullPath)) return null;
+
+    const parsed = tryParseValidJson<DataDocument>(fullPath, validateRawDocument);
+    if (!parsed.ok) return null;
+
+    const current = readData();
+    const restoredDoc: DataDocument = {
+      ...parsed.data,
+      revision: (current.revision ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    persistDocumentDiskSync(current, restoredDoc);
+    unrecoverableCorruptionError = null;
+    return restoredDoc;
   }
 
   async function restoreBackupAsync(backupId: string): Promise<DataDocument | null> {
     const id = String(backupId || '').trim();
     if (!id) return null;
-    const raw = await repo.getSnapshot(id);
-    if (!raw) return null;
-    const backupDoc = validateRawDocument(raw);
+
+    let backupDoc: DataDocument | null = null;
+    if (repo) {
+      const raw = await repo.getSnapshot(id);
+      if (!raw) return null;
+      backupDoc = validateRawDocument(raw);
+    } else {
+      if (!SNAPSHOT_FILE_PATTERN.test(id)) return null;
+      const fullPath = path.resolve(backupsDir, id);
+      if (!fullPath.startsWith(backupsDir + path.sep) || !existsSync(fullPath)) return null;
+      const parsed = await tryParseValidJsonAsync<DataDocument>(fullPath, validateRawDocument);
+      if (!parsed.ok) return null;
+      backupDoc = parsed.data;
+    }
+
     if (!backupDoc) return null;
 
     const current = await readDataAsync();
@@ -401,11 +681,27 @@ export function createDataStorage(options: StorageOptions) {
     return serialize(() => restoreBackupAsync(backupId));
   }
 
+  function backupExistingDataAsync(): Promise<void> {
+    return serialize(async () => {
+      const current = await readDataAsync();
+      if (current.profiles.length === 0 && (current.revision ?? 0) === 0) return;
+      if (repo) {
+        await repo.createSnapshot(current, maxSnapshots);
+      } else {
+        await writeDiskSnapshotAsync(current);
+      }
+    });
+  }
+
   function createSafetySnapshotSerialized(): Promise<void> {
     return serialize(async () => {
       const current = await readDataAsync();
       if (!isWorthKeeping(current)) return;
-      await repo.createSnapshot(current, maxSnapshots);
+      if (repo) {
+        await repo.createSnapshot(current, maxSnapshots);
+      } else {
+        await writeDiskSnapshotAsync(current);
+      }
     });
   }
 
@@ -420,15 +716,22 @@ export function createDataStorage(options: StorageOptions) {
   }
 
   return {
+    dataDir: resolvedDataDir,
+    dataFile,
+    backupsDir,
     maxDataBytes,
     hasUnrecoverableCorruption: () => Boolean(unrecoverableCorruptionError),
+    readData,
     readDataAsync,
     readIsolatedProfileAsync,
     readIsolatedUserListsAsync,
+    saveData,
     saveDataSerialized,
+    backupExistingDataAsync,
     createSafetySnapshotSerialized,
     applySyncedDocumentSerialized,
     listBackupsAsync,
+    restoreBackup,
     restoreBackupSerialized,
   };
 }

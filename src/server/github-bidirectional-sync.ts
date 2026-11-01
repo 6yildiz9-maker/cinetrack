@@ -1883,7 +1883,24 @@ export class GitHubBidirectionalSyncManager {
     return this.deps.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   }
 
+  public inspectLocalSideSync(): ParsedSideBundle {
+    return this.buildLocalSideBundle(null);
+  }
+
   public async inspectLocalSide(): Promise<ParsedSideBundle> {
+    const userDataPath = path.join(this.deps.dataDir, 'cinetrack-data.json');
+    let remoteRepoDoc: DataDocument | null = null;
+    if (!existsSync(userDataPath) && this.deps.storage?.readDataAsync) {
+      try {
+        remoteRepoDoc = await this.deps.storage.readDataAsync();
+      } catch {
+        remoteRepoDoc = null;
+      }
+    }
+    return this.buildLocalSideBundle(remoteRepoDoc);
+  }
+
+  private buildLocalSideBundle(fallbackStoredDoc: DataDocument | null): ParsedSideBundle {
     const inspectedAt = new Date().toISOString();
     const files: Record<string, SyncFileInspection> = {};
     const errors: SyncErrorRecord[] = [];
@@ -1891,6 +1908,7 @@ export class GitHubBidirectionalSyncManager {
     const moviesPath = path.join(this.deps.dataDir, 'catalog', 'movies.json');
     const tvPath = path.join(this.deps.dataDir, 'catalog', 'tv.json');
     const manifestPath = path.join(this.deps.dataDir, 'catalog', 'manifest.json');
+    const userDataPath = path.join(this.deps.dataDir, 'cinetrack-data.json');
     const profilesDir = path.join(this.deps.dataDir, 'profiles');
 
     let movies: Record<string, CatalogRecord> = {};
@@ -2004,9 +2022,28 @@ export class GitHubBidirectionalSyncManager {
 
     let userRawItems = 0;
     let userUniqueItems = 0;
-    const storedUserDoc = await this.deps.storage.readDataAsync();
-    if (storedUserDoc.profiles.length > 0 || (storedUserDoc.revision ?? 0) > 0) {
-      const raw = JSON.stringify(storedUserDoc, null, 2);
+    if (existsSync(userDataPath)) {
+      const raw = readFileSync(userDataPath, 'utf8');
+      const res = inspectUserDataRawContent(raw, this.maxBytes);
+      if (!res.inspection.valid && res.inspection.errorCategory === 'corrupt_remote_json') {
+        res.inspection.errorCategory = 'corrupt_local_file';
+      }
+      files['data/cinetrack-data.json'] = res.inspection;
+      if (res.doc) userData = res.doc;
+      userRawItems = res.rawItemsCount;
+      userUniqueItems = res.uniqueItemsCount;
+      if (!res.inspection.valid && res.inspection.error) {
+        errors.push({
+          repoPath: 'data/cinetrack-data.json',
+          category: res.inspection.errorCategory || 'corrupt_local_file',
+          message: res.inspection.error,
+        });
+      }
+    } else if (
+      fallbackStoredDoc &&
+      (fallbackStoredDoc.profiles.length > 0 || (fallbackStoredDoc.revision ?? 0) > 0)
+    ) {
+      const raw = JSON.stringify(fallbackStoredDoc, null, 2);
       const res = inspectUserDataRawContent(raw, this.maxBytes);
       if (!res.inspection.valid && res.inspection.errorCategory === 'corrupt_remote_json') {
         res.inspection.errorCategory = 'corrupt_local_file';

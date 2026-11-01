@@ -32,6 +32,8 @@ import {
 } from './excel-profile-backup.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
+  dataDir?: string;
+  persistentStore?: PersistentDataStore;
   security?: SecurityOptions;
   maxDataBytes?: number;
   githubToken?: string;
@@ -261,23 +263,26 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   tmdbProxy: ReturnType<typeof createTmdbProxyService>;
   persistentStore: PersistentDataStore;
 } {
+  const resolvedDataDir = path.resolve(options.dataDir || path.join(process.cwd(), 'data'));
   const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
-  const storage = createDataStorage({ ...options, maxDataBytes });
+  const storage = createDataStorage({ ...options, dataDir: resolvedDataDir, maxDataBytes });
   const tmdbProxy = createTmdbProxyService(options);
-  const persistentStore = new PersistentDataStore({
-    dataDir: options.dataDir,
-    maxDataBytes,
-    githubToken: options.githubToken,
-    githubTokenSource: options.githubTokenSource,
-    githubOwner: options.githubOwner,
-    githubRepo: options.githubRepo,
-    githubBranch: options.githubBranch,
-    isPublicRepo: options.isPublicRepo,
-    allowPublicPersonalSync: options.allowPublicPersonalSync,
-    allowPublicCatalogSync: options.allowPublicCatalogSync,
-    processEnvIsPublicRepo: options.processEnvIsPublicRepo,
-    localEnvIsPublicRepo: options.localEnvIsPublicRepo,
-  });
+  const persistentStore =
+    options.persistentStore ??
+    new PersistentDataStore({
+      dataDir: resolvedDataDir,
+      maxDataBytes,
+      githubToken: options.githubToken,
+      githubTokenSource: options.githubTokenSource,
+      githubOwner: options.githubOwner,
+      githubRepo: options.githubRepo,
+      githubBranch: options.githubBranch,
+      isPublicRepo: options.isPublicRepo,
+      allowPublicPersonalSync: options.allowPublicPersonalSync,
+      allowPublicCatalogSync: options.allowPublicCatalogSync,
+      processEnvIsPublicRepo: options.processEnvIsPublicRepo,
+      localEnvIsPublicRepo: options.localEnvIsPublicRepo,
+    });
   persistentStore.attachDataStorage(storage, maxDataBytes);
 
   const sec: SecurityOptions = { ...options, ...(options.security || {}) };
@@ -345,7 +350,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   app.get('/api/health', async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    const posterCache = await getPosterCacheStatsAsync(path.join(options.dataDir, 'cache', 'posters'));
+    const posterCache = await getPosterCacheStatsAsync(path.join(resolvedDataDir, 'cache', 'posters'));
     res.json({ ok: true, posterCache });
   });
 
@@ -898,12 +903,17 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
           ? req.body.genresMap
           : undefined;
 
+      const includeTasteDnaSheet = Boolean(
+        req.body?.includeTasteDnaSheet || req.body?.exportMode === 'xlsx_only'
+      );
+
       const report = await executeProfileBackupExport({
-        dataDir: options.dataDir,
+        dataDir: resolvedDataDir,
         document: exportDoc,
         profileId,
         includeJson,
         includeXlsx,
+        includeTasteDnaSheet,
         uploadToGithub,
         allowPersonalDataInPublicRepo,
         dislikedItemsHint,
@@ -942,12 +952,17 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
           ? req.body.genresMap
           : undefined;
 
+      const includeTasteDnaSheet = Boolean(
+        req.body?.includeTasteDnaSheet || req.body?.exportMode === 'xlsx_only'
+      );
+
       const report = await executeProfileBackupExport({
-        dataDir: options.dataDir,
+        dataDir: resolvedDataDir,
         document: exportDoc,
         profileId,
         includeJson: false,
         includeXlsx: true,
+        includeTasteDnaSheet,
         uploadToGithub: false,
         dislikedItemsHint,
         genresMap,
@@ -1064,7 +1079,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       res.status(400).json({ ok: false, status_message: 'Geçersiz yedek dosya adı.' });
       return;
     }
-    const exportsDir = path.resolve(options.dataDir, 'exports');
+    const exportsDir = path.resolve(resolvedDataDir, 'exports');
     const fullPath = path.resolve(exportsDir, rawName);
     if (!fullPath.startsWith(exportsDir + path.sep) || !existsSync(fullPath)) {
       res.status(404).json({ ok: false, status_message: 'Yedek dosyası bulunamadı.' });

@@ -35,15 +35,16 @@ for (const warnMsg of resolved.warnings) {
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!supabaseUrl || !supabaseServiceRoleKey) {
-  console.error('SUPABASE_URL ve SUPABASE_SERVICE_ROLE_KEY ortam değişkenleri tanımlı olmalıdır.');
-  process.exit(1);
-}
+const hasSupabaseConfig = Boolean(supabaseUrl && supabaseServiceRoleKey);
 
 const { app, storage, persistentStore } = createCineTrackApp({
-  repository: createSupabaseUserDataRepository(
-    createServiceClient(supabaseUrl, supabaseServiceRoleKey)
-  ),
+  ...(hasSupabaseConfig
+    ? {
+        repository: createSupabaseUserDataRepository(
+          createServiceClient(supabaseUrl!, supabaseServiceRoleKey!)
+        ),
+      }
+    : {}),
   dataDir,
   maxDataBytes,
   maxProfiles,
@@ -74,7 +75,7 @@ const { app, storage, persistentStore } = createCineTrackApp({
 const legacyDataFile = path.join(dataDir, 'cinetrack-data.json');
 
 async function importLegacyDataIfNeeded() {
-  if (!existsSync(legacyDataFile)) return;
+  if (!hasSupabaseConfig || !existsSync(legacyDataFile)) return;
   const current = await storage.readDataAsync();
   if (current.profiles.length > 0) return;
   const legacy = JSON.parse(readFileSync(legacyDataFile, 'utf8'));
@@ -140,7 +141,9 @@ async function startServer() {
     console.log(
       `CineTrack is running at http://${listenHost}:${port} (bind policy: ${bindHost}, ${isDevMode ? 'development' : 'production'})`
     );
-    console.log('Profil ve izleme listesi: Supabase veritabanı');
+    console.log(
+      `Profil ve izleme listesi: ${hasSupabaseConfig ? 'Supabase veritabanı' : 'Yerel dosya sistemi (data/cinetrack-data.json)'}`
+    );
     const syncStatus = persistentStore.getSyncStatus();
     console.log(
       `Kalıcı Veri Deposu: ${syncStatus.mode === 'github' ? `GitHub Uzak Eşitleme (${syncStatus.remoteTarget?.repo})` : 'Yerel Depolama (data/catalog & data/profiles)'}`
