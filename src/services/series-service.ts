@@ -247,6 +247,18 @@ export function getItemSeriesInfo(item: MediaCandidateLike | null | undefined): 
 
 export async function initSeriesService(): Promise<void> {
   await loadSeriesIndexIdb();
+  const knownCols: SeriesCollection[] = [];
+  for (const franchise of Object.values(KNOWN_TV_FRANCHISES)) {
+    const seedPart = franchise.parts[0];
+    const col = buildKnownTvFranchiseCollection(
+      franchise,
+      seedPart ? seedPart.id : franchise.id,
+      seedPart ? { id: seedPart.id, name: seedPart.title } : {},
+      null
+    );
+    knownCols.push(col);
+  }
+  await registerSeriesCollections(knownCols);
 }
 
 export {

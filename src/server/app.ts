@@ -432,6 +432,17 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.json({ backups: await storage.listBackupsAsync() });
   });
 
+  app.post('/api/data/backup-now', originGuard, tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      await storage.backupExistingDataAsync();
+      const backups = await storage.listBackupsAsync();
+      res.json({ ok: true, message: 'Yedek anlık görüntüsü başarıyla alındı.', backups });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, status_message: err?.message || 'Yedek alınamadı.' });
+    }
+  });
+
   app.post('/api/data/restore', originGuard, tokenGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const backupId = typeof req.body?.backupId === 'string' ? req.body.backupId.trim() : '';

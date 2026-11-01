@@ -96,6 +96,7 @@ import {
 } from './core/recommendation-orchestrator';
 import { useOfflineSync } from './hooks/useOfflineSync';
 import { useStockEngine } from './hooks/useStockEngine';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { hasPendingOfflineSync } from './services/offline-queue';
 import {
   saveIsolatedProfileIdb,
@@ -123,6 +124,8 @@ import {
   enforcePosterCacheQuota,
   requestServiceWorkerPosterPurge,
 } from './services/poster-cache-manager';
+import { getItemEncodingSync, maintainEncodingsDepot } from './services/encoding-service';
+import { computeProfileCentroid, cosineSimilarity } from './core/encoding';
 import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
 import {
   compareMediaDatesAscending,
@@ -421,28 +424,34 @@ export function App() {
     toastTimerRef.current = setTimeout(() => setToastMessage(null), 7000);
   }, []);
 
-  // Keyboard shortcut: 'n' opens Add Custom Item modal (spec Section 6.5)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      ) {
-        return;
+  // Global Keyboard Shortcuts (IMP-08 & Section 6.5)
+  useKeyboardShortcuts({
+    onFocusSearch: () => {
+      const searchInput = document.querySelector<HTMLInputElement>('.search-input');
+      if (searchInput) {
+        searchInput.focus();
+        searchInput.select();
       }
-      if (e.key === 'n' || e.key === 'N') {
-        e.preventDefault();
-        setAddCustomOpen(true);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+    },
+    onSelectTab: (targetTab) => {
+      setTab(targetTab);
+    },
+    onQuickSaveOrSync: () => {
+      void pushToServer();
+      showToast('Değişiklikler kaydedildi ve yerel sunucuyla eşitlendi.');
+    },
+    onOpenAddCustom: () => {
+      setAddCustomOpen(true);
+    },
+    onEscape: () => {
+      setDetailItem(null);
+      setQuickSaveItem(null);
+      setSelectedPersonId(null);
+      setAddCustomOpen(false);
+      setProfileOpen(false);
+      setImportModalOpen(false);
+    },
+  });
 
   // Sync to localStorage (quota-safe for >2 MB libraries: metadata-only in PROFILES_STORAGE + isolated watchlist write)
   useEffect(() => {
@@ -574,9 +583,11 @@ export function App() {
       setSeriesIndexVersion((v) => v + 1);
     });
     void enforcePosterCacheQuota();
+    void maintainEncodingsDepot();
     requestServiceWorkerPosterPurge();
     const quotaInterval = setInterval(() => {
       void enforcePosterCacheQuota();
+      void maintainEncodingsDepot();
       requestServiceWorkerPosterPurge();
     }, 5 * 60 * 1000);
     return () => {
@@ -917,15 +928,34 @@ export function App() {
               }
             }
 
-            if (selectedSort === 'rating.desc' || selectedSort === 'vote_average.desc') {
+            if (selectedSort === 'similarity') {
+              const savedEncodings = savedItemsRef.current.map((it) => ({
+                encoding: getItemEncodingSync(it),
+                personal_rating: it.personal_rating,
+              }));
+              const profileCentroid = computeProfileCentroid(savedEncodings);
+              if (profileCentroid.length > 0) {
+                const simMap = new Map<string, number>();
+                for (const it of filtered) {
+                  const enc = getItemEncodingSync(it);
+                  const sim = cosineSimilarity(profileCentroid, enc.denseVector);
+                  simMap.set(`${it.media_type}:${it.id}`, sim);
+                }
+                filtered.sort((a, b) => (simMap.get(`${b.media_type}:${b.id}`) ?? 0) - (simMap.get(`${a.media_type}:${a.id}`) ?? 0));
+              } else {
+                filtered.sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
+              }
+            } else if (selectedSort === 'rating' || selectedSort === 'rating.desc' || selectedSort === 'vote_average.desc') {
               filtered.sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
-            } else if (selectedSort === 'date.desc' || selectedSort === 'primary_release_date.desc') {
+            } else if (selectedSort === 'recent' || selectedSort === 'date.desc' || selectedSort === 'primary_release_date.desc') {
               filtered.sort((a, b) =>
                 compareMediaDatesDescending(
                   a.release_date || a.first_air_date,
                   b.release_date || b.first_air_date
                 )
               );
+            } else if (selectedSort === 'title') {
+              filtered.sort((a, b) => displayTitle(a).localeCompare(displayTitle(b), 'tr'));
             } else {
               filtered.sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
             }
@@ -2408,7 +2438,26 @@ export function App() {
       return filtered;
     }
 
-    if (selectedSort === 'rating') {
+    if (selectedSort === 'similarity') {
+      const savedEncodings = savedItemsRef.current.map((it) => ({
+        encoding: getItemEncodingSync(it),
+        personal_rating: it.personal_rating,
+      }));
+      const profileCentroid = computeProfileCentroid(savedEncodings);
+      if (profileCentroid.length > 0) {
+        const simMap = new Map<string, number>();
+        for (const it of filtered) {
+          const enc = getItemEncodingSync(it);
+          const sim = cosineSimilarity(profileCentroid, enc.denseVector);
+          simMap.set(`${it.media_type}:${it.id}`, sim);
+        }
+        filtered = [...filtered].sort(
+          (a, b) =>
+            (simMap.get(`${b.media_type}:${b.id}`) ?? 0) -
+            (simMap.get(`${a.media_type}:${a.id}`) ?? 0)
+        );
+      }
+    } else if (selectedSort === 'rating') {
       filtered = [...filtered].sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0));
     } else if (selectedSort === 'title') {
       filtered = [...filtered].sort((a, b) =>
@@ -2931,7 +2980,9 @@ export function App() {
           />
         )}
 
-        {tab === 'list' && <Stats items={savedItems} />}
+        {tab === 'list' && (
+          <Stats items={savedItems} profileName={profileName} genresMap={genresMap} />
+        )}
 
         <Controls
           tab={tab}
@@ -3134,6 +3185,13 @@ export function App() {
                 ? 'Örnek Katalog'
                 : 'Bağlantı Bekleniyor'}
             </strong>
+          <div className="footer-shortcuts-hint" style={{ fontSize: '11px', color: '#64748b', marginTop: '6px' }}>
+            <span>Kısayollar: </span>
+            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>1-4</kbd> Sekmeler ·{' '}
+            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>/</kbd> Ara ·{' '}
+            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>S</kbd> Eşitle ·{' '}
+            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>N</kbd> Ekle ·{' '}
+            <kbd style={{ background: 'rgba(51, 65, 85, 0.4)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(100, 116, 139, 0.3)' }}>Esc</kbd> Kapat
           </div>
         </div>
       </footer>

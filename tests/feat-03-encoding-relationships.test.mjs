@@ -16,6 +16,8 @@ import {
 import {
   getItemEncoding,
   getItemEncodingSync,
+  batchGetEncodings,
+  maintainEncodingsDepot,
   enrichItemMetadataLazy,
   getEncodingServiceMetricsForTests,
   resetEncodingServiceForTests,
@@ -321,4 +323,66 @@ test('FEAT-03 Acceptance Tests: İlişki Motoru, Kodlama Katmanı & Stok Sekmesi
     const centroidSim = cosineSimilarity(centroid, encA.denseVector);
     assert.ok(centroidSim > 0.7, 'Öğe ile profil centroidi uyumlu olmalı');
   });
+
+  await t.test('9. IMP-06: strongestRelationship ilişki kanıtlarında açıklanabilir breakdown sinyalleri taşır', async () => {
+    const item1 = {
+      id: 5001,
+      media_type: 'movie',
+      title: 'Galaksi Savaşı',
+      overview: 'Uzayda karanlık bir savaş',
+      genre_ids: [878, 28],
+    };
+    const item2 = {
+      id: 5002,
+      media_type: 'movie',
+      title: 'Galaksi İstilası',
+      overview: 'Uzayda karanlık bir istila',
+      genre_ids: [878, 28],
+    };
+
+    const link = strongestRelationship(item1, item2, 'all', { 878: 'Bilim Kurgu', 28: 'Aksiyon' });
+    assert.ok(link, 'İki yapım arasında bağ kurulmalı');
+    assert.ok(Array.isArray(link.relationshipDetails), 'relationshipDetails bulunmalı');
+    assert.ok(link.relationshipDetails.length > 0);
+
+    const firstDetail = link.relationshipDetails[0];
+    assert.ok(firstDetail.breakdown, 'Açıklanabilir breakdown sinyali bulunmalı');
+    assert.ok(
+      typeof firstDetail.breakdown.vectorContribution === 'number' ||
+      typeof firstDetail.breakdown.genreContribution === 'number' ||
+      typeof firstDetail.breakdown.personContribution === 'number' ||
+      typeof firstDetail.breakdown.seriesContribution === 'number'
+    );
+  });
+
+  await t.test('10. IMP-04: maintainEncodingsDepot eski imzaları temizler ve üst sınırı (maxEntries) uygular', async () => {
+    // 5 farklı kayıt ve 1 eski imza ekle
+    await saveStoredEncodingIdb('movie:101:sig1', { id: 101, media_type: 'movie', signature: 'sig1', encodedAt: new Date(Date.now() - 50000).toISOString() });
+    await saveStoredEncodingIdb('movie:101:sig2', { id: 101, media_type: 'movie', signature: 'sig2', encodedAt: new Date(Date.now() - 1000).toISOString() });
+    await saveStoredEncodingIdb('movie:102:sig1', { id: 102, media_type: 'movie', signature: 'sig1', encodedAt: new Date(Date.now() - 40000).toISOString() });
+    await saveStoredEncodingIdb('movie:103:sig1', { id: 103, media_type: 'movie', signature: 'sig1', encodedAt: new Date(Date.now() - 30000).toISOString() });
+
+    const result = await maintainEncodingsDepot(2);
+    assert.ok(result.scanned >= 4, 'Tüm kayıtlar taranmalı');
+    assert.ok(result.prunedStaleSignatures >= 1, 'Eski sig1 movie:101 için budanmalı');
+    assert.ok(result.remaining <= 2, 'Kalan öğe sayısı maxEntries sınırına uymalı');
+  });
+
+  await t.test('11. IMP-05: batchGetEncodings toplu yapımları başarıyla kodlar ve önbelleğe alır', async () => {
+    const batch = Array.from({ length: 25 }, (_, i) => ({
+      id: 6000 + i,
+      media_type: 'movie',
+      title: `Toplu Film ${i}`,
+      genre_ids: [18, 53],
+      overview: 'Gerilimli ve dramatik bir hikaye',
+    }));
+
+    const results = await batchGetEncodings(batch);
+    assert.equal(results.length, 25);
+    for (let i = 0; i < 25; i++) {
+      assert.equal(results[i].id, 6000 + i);
+      assert.equal(results[i].denseVector.length, 48);
+    }
+  });
 });
+

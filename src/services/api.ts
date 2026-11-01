@@ -475,6 +475,24 @@ export async function fetchServerBackups(): Promise<ServerBackupMetadata[]> {
   }
 }
 
+export async function triggerImmediateServerBackup(): Promise<{ ok: boolean; message: string; backups?: ServerBackupMetadata[] }> {
+  try {
+    const res = await fetch('/api/data/backup-now', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, message: data?.status_message || 'Yedek alınamadı.' };
+    }
+    return { ok: true, message: data?.message || 'Yedek alındı.', backups: data?.backups || [] };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Yedek servisine ulaşılamadı.' };
+  }
+}
+
 export async function restoreServerBackup(backupId: string): Promise<DataDocument | null> {
   try {
     const res = await fetch('/api/data/restore', {

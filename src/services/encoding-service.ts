@@ -6,6 +6,8 @@ import {
 import {
   getStoredEncodingIdb,
   saveStoredEncodingIdb,
+  getAllStoredEncodingsIdb,
+  clearManyStoredEncodingsIdb,
 } from './client-depots.ts';
 import { fetchTmdb } from './api.ts';
 
@@ -81,9 +83,171 @@ export async function getItemEncoding(item: any): Promise<ItemFeatureEncoding> {
   return promise;
 }
 
+let encodingWorker: Worker | null = null;
+let nextWorkerTaskId = 1;
+const pendingWorkerRequests = new Map<number, (results: ItemFeatureEncoding[]) => void>();
+
+function getOrCreateEncodingWorker(): Worker | null {
+  if (typeof Worker === 'undefined') return null;
+  if (!encodingWorker) {
+    try {
+      encodingWorker = new Worker(new URL('../workers/encoding.worker.ts', import.meta.url), {
+        type: 'module',
+      });
+      encodingWorker.onmessage = (event: MessageEvent<{ taskId: number; results: ItemFeatureEncoding[] }>) => {
+        const { taskId, results } = event.data || {};
+        const resolver = pendingWorkerRequests.get(taskId);
+        if (resolver) {
+          pendingWorkerRequests.delete(taskId);
+          resolver(results);
+        }
+      };
+      encodingWorker.onerror = () => {
+        encodingWorker?.terminate();
+        encodingWorker = null;
+      };
+    } catch {
+      encodingWorker = null;
+    }
+  }
+  return encodingWorker;
+}
+
 export async function batchGetEncodings(items: any[]): Promise<ItemFeatureEncoding[]> {
   if (!Array.isArray(items) || items.length === 0) return [];
-  return Promise.all(items.map((it) => getItemEncoding(it)));
+  
+  if (items.length < 20) {
+    return Promise.all(items.map((it) => getItemEncoding(it)));
+  }
+
+  const results: ItemFeatureEncoding[] = [];
+  const uncachedItems: any[] = [];
+  const uncachedIndices: number[] = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const sig = computeItemContentSignature(it);
+    const key = makeEncodingStorageKey(it, sig);
+    const cached = memoryEncodingCache.get(key);
+    if (cached && cached.signature === sig) {
+      results[i] = cached;
+    } else {
+      uncachedItems.push(it);
+      uncachedIndices.push(i);
+    }
+  }
+
+  if (uncachedItems.length === 0) {
+    return results;
+  }
+
+  const worker = uncachedItems.length >= 10 ? getOrCreateEncodingWorker() : null;
+  if (worker) {
+    const taskId = nextWorkerTaskId++;
+    const workerPromise = new Promise<ItemFeatureEncoding[]>((resolve) => {
+      pendingWorkerRequests.set(taskId, resolve);
+      worker.postMessage({ taskId, items: uncachedItems });
+    });
+
+    const computed = await workerPromise;
+    for (let j = 0; j < computed.length; j++) {
+      const enc = computed[j];
+      const origItem = uncachedItems[j];
+      const origIndex = uncachedIndices[j];
+      results[origIndex] = enc;
+
+      const key = makeEncodingStorageKey(origItem, enc.signature);
+      memoryEncodingCache.set(key, enc);
+      void saveStoredEncodingIdb(key, enc).catch(() => {});
+    }
+    return results;
+  }
+
+  const computedFallback = await Promise.all(uncachedItems.map((it) => getItemEncoding(it)));
+  for (let j = 0; j < computedFallback.length; j++) {
+    results[uncachedIndices[j]] = computedFallback[j];
+  }
+  return results;
+}
+
+export const ENCODINGS_DEPOT_MAX_ENTRIES = 3000;
+
+export async function maintainEncodingsDepot(maxEntries: number = ENCODINGS_DEPOT_MAX_ENTRIES): Promise<{
+  scanned: number;
+  prunedStaleSignatures: number;
+  prunedLru: number;
+  remaining: number;
+}> {
+  try {
+    const all = await getAllStoredEncodingsIdb<ItemFeatureEncoding>();
+    const scanned = all.length;
+    if (scanned === 0) {
+      return { scanned: 0, prunedStaleSignatures: 0, prunedLru: 0, remaining: 0 };
+    }
+
+    const itemLatestSignatures = new Map<string, { key: string; encodedAt: number; signature: string }>();
+    const keysToDelete: string[] = [];
+
+    for (const [key, enc] of all) {
+      if (!enc || typeof enc !== 'object') {
+        keysToDelete.push(key);
+        continue;
+      }
+      const mediaKey = `${enc.media_type || 'movie'}:${enc.id}`;
+      const encodedAtMs = enc.encodedAt ? new Date(enc.encodedAt).getTime() : 0;
+      const existing = itemLatestSignatures.get(mediaKey);
+      if (!existing) {
+        itemLatestSignatures.set(mediaKey, { key, encodedAt: encodedAtMs, signature: enc.signature });
+      } else {
+        if (encodedAtMs > existing.encodedAt) {
+          keysToDelete.push(existing.key);
+          itemLatestSignatures.set(mediaKey, { key, encodedAt: encodedAtMs, signature: enc.signature });
+        } else {
+          keysToDelete.push(key);
+        }
+      }
+    }
+
+    const prunedStaleSignatures = keysToDelete.length;
+    const survivingEntries = all.filter(([k]) => !keysToDelete.includes(k));
+
+    let prunedLru = 0;
+    if (survivingEntries.length > maxEntries) {
+      survivingEntries.sort((a, b) => {
+        const timeA = a[1]?.encodedAt ? new Date(a[1].encodedAt).getTime() : 0;
+        const timeB = b[1]?.encodedAt ? new Date(b[1].encodedAt).getTime() : 0;
+        return timeA - timeB;
+      });
+      const overflowCount = survivingEntries.length - maxEntries;
+      const lruKeys = survivingEntries.slice(0, overflowCount).map(([k]) => k);
+      keysToDelete.push(...lruKeys);
+      prunedLru = lruKeys.length;
+    }
+
+    if (keysToDelete.length > 0) {
+      for (const k of keysToDelete) {
+        memoryEncodingCache.delete(k);
+      }
+      await clearManyStoredEncodingsIdb(keysToDelete);
+    }
+
+    if (memoryEncodingCache.size > maxEntries) {
+      const keysToDrop = Array.from(memoryEncodingCache.keys()).slice(0, memoryEncodingCache.size - maxEntries);
+      for (const k of keysToDrop) {
+        memoryEncodingCache.delete(k);
+      }
+    }
+
+    return {
+      scanned,
+      prunedStaleSignatures,
+      prunedLru,
+      remaining: scanned - keysToDelete.length,
+    };
+  } catch (err) {
+    console.warn('[EncodingService] Depot maintenance error:', err);
+    return { scanned: 0, prunedStaleSignatures: 0, prunedLru: 0, remaining: 0 };
+  }
 }
 
 // Bounded enrichment worker for items lacking cast/keywords (FEAT-03 Section 3B)
@@ -169,6 +333,13 @@ export function resetEncodingServiceForTests(): void {
   inFlightEncodingFetches.clear();
   enrichedItemKeys.clear();
   activeTmdbFetcher = fetchTmdb;
+  if (encodingWorker) {
+    try {
+      encodingWorker.terminate();
+    } catch {}
+    encodingWorker = null;
+  }
+  pendingWorkerRequests.clear();
 }
 
 export function getEncodingServiceMetricsForTests() {

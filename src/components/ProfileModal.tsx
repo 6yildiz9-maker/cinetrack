@@ -23,6 +23,7 @@ import {
   pushGitHubSync,
   reconcileGitHubSync,
   restoreServerBackup,
+  triggerImmediateServerBackup,
   setPublicRepoPersonalSyncConsent,
   testGitHubConnection,
   type ProfileBackupExportReportClient,
@@ -566,6 +567,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setServerBackups(list);
       if (list.length === 0) {
         setBackupMessage('Sunucuda henüz döner yedek (snapshot) kaydı bulunmuyor.');
+      }
+  const handleCreateInstantBackup = async () => {
+    setLoadingBackups(true);
+    setBackupMessage('');
+    try {
+      const res = await triggerImmediateServerBackup();
+      if (res.ok) {
+        setBackupMessage('✅ Anlık sunucu yedeği başarıyla alındı.');
+        if (res.backups && res.backups.length > 0) {
+          setServerBackups(res.backups);
+        } else {
+          const list = await fetchServerBackups();
+          setServerBackups(list);
+        }
+      } else {
+        setBackupMessage(`Yedek alınamadı: ${res.message}`);
       }
     } finally {
       setLoadingBackups(false);
@@ -1389,6 +1406,14 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <div className="profile-tools-section">
                 <strong className="profile-tools-heading">Sunucu Yedekleri ve Geri Yükleme</strong>
                 <div className="csv-actions-row">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={loadingBackups}
+                    onClick={handleCreateInstantBackup}
+                  >
+                    {loadingBackups ? 'İşleniyor…' : 'Şimdi Yedek Al (Snapshot)'}
+                  </button>
                   <button
                     type="button"
                     className="btn"

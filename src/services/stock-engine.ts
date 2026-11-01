@@ -21,6 +21,8 @@ import {
 } from '../core/cinetrack-core.ts';
 import type { TmdbCastMember, TmdbItem } from '../types/tmdb.ts';
 import { isWithinReleaseWindow } from '../utils/release-window.ts';
+import { getItemEncodingSync } from './encoding-service.ts';
+import { cosineSimilarity } from '../core/encoding.ts';
 
 export const STOCK_TARGET_COUNT = 500;
 export const STOCK_REPLENISH_THRESHOLD = 250;
@@ -585,6 +587,11 @@ async function fetchCandidateBatch(
   seenRecyclableOut?: Map<string, TmdbItem>
 ): Promise<TmdbItem[]> {
   const result: TmdbItem[] = [];
+  const overflowClusterBuffer: TmdbItem[] = [];
+  const recentVectors: number[][] = [];
+  const MAX_RECENT_VECTORS = 25;
+  const CLUSTER_SIMILARITY_THRESHOLD = 0.88;
+
   const endpoints: Array<{
     cursorKey: string;
     path: string;
@@ -637,9 +644,33 @@ async function fetchCandidateBatch(
           if (excludedKeys.has(key)) continue;
 
           const normalized = normalizeStockCandidate(it, mediaType);
-          result.push(normalized);
           excludedKeys.add(key);
-          addedFromPage += 1;
+
+          // IMP-01: MMR diversity filtering
+          const candEnc = getItemEncodingSync(normalized);
+          let isTooSimilar = false;
+          if (recentVectors.length > 0 && candEnc?.denseVector?.length) {
+            for (const v of recentVectors) {
+              const sim = cosineSimilarity(v, candEnc.denseVector);
+              if (sim > CLUSTER_SIMILARITY_THRESHOLD) {
+                isTooSimilar = true;
+                break;
+              }
+            }
+          }
+
+          if (isTooSimilar) {
+            overflowClusterBuffer.push(normalized);
+          } else {
+            result.push(normalized);
+            if (candEnc?.denseVector?.length) {
+              recentVectors.push(candEnc.denseVector);
+              if (recentVectors.length > MAX_RECENT_VECTORS) {
+                recentVectors.shift();
+              }
+            }
+            addedFromPage += 1;
+          }
 
           if (result.length >= targetNeeded) break;
         }
@@ -652,6 +683,14 @@ async function fetchCandidateBatch(
       } catch {
         break;
       }
+    }
+  }
+
+  // Quota discipline: if diversity filter was strict and result < targetNeeded, backfill from overflow
+  if (result.length < targetNeeded && overflowClusterBuffer.length > 0) {
+    for (const overflowItem of overflowClusterBuffer) {
+      if (result.length >= targetNeeded) break;
+      result.push(overflowItem);
     }
   }
 

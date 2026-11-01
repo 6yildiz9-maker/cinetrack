@@ -20,6 +20,10 @@ import {
   getSeriesCollectionByKeySync,
 } from '../services/storage-idb.ts';
 import {
+  KNOWN_TV_FRANCHISES,
+  buildKnownTvFranchiseCollection,
+} from '../services/series-tv-seeds.ts';
+import {
   STOP_WORDS,
   GENERIC_PLOT_WORDS,
   ATMOSPHERIC_TONE_WORDS,
@@ -93,6 +97,14 @@ export interface RelationshipEvidenceDetail {
   score: number;
   confidence: number;
   evidence: string[];
+  breakdown?: {
+    vectorContribution?: number;
+    genreContribution?: number;
+    personContribution?: number;
+    toneContribution?: number;
+    seriesContribution?: number;
+    contrastContribution?: number;
+  };
 }
 
 export interface RelationshipGraphLink {
@@ -309,7 +321,16 @@ export function precomputeRelationshipContent(item: RelationshipContent): Relati
   const collectionId = getCollectionId(item);
 
   // ct:series-index entegrasyonu (W3)
-  const seriesCol = getSeriesForMediaSync(key);
+  let seriesCol = getSeriesForMediaSync(key);
+  if (!seriesCol && mediaType === 'tv') {
+    const tvId = Number(item.id);
+    for (const franchise of Object.values(KNOWN_TV_FRANCHISES)) {
+      if (franchise.parts.some((p) => p.id === tvId)) {
+        seriesCol = buildKnownTvFranchiseCollection(franchise, tvId, item, null);
+        break;
+      }
+    }
+  }
   const seriesKey = seriesCol ? `collection:${seriesCol.media_type}:${seriesCol.id}` : null;
 
   const rawKw = (item as any).keywords || (item as any).keyword_ids || [];
@@ -379,7 +400,14 @@ function personEvidenceConfidence(a: RelationshipContent, b: RelationshipContent
   const aComplete = aCoverage.cast === 'complete' && aCoverage.crew === 'complete';
   const bComplete = bCoverage.cast === 'complete' && bCoverage.crew === 'complete';
 
-  return aComplete && bComplete ? 96 : 72;
+  if (aComplete && bComplete) return 96;
+
+  // Kapsama oranına göre skalanmış güven formülü (v5 Spec W5 / Bölüm 2.2)
+  const castDepth = (a.cast?.length || 0) + (b.cast?.length || 0);
+  const crewDepth = (a.crew?.length || 0) + (b.crew?.length || 0);
+  const depthBonus = Math.round(Math.min(22, Math.max(0, castDepth - 2) * 1.5 + Math.max(0, crewDepth - 2) * 2));
+
+  return clamp(72 + depthBonus, 72, 94);
 }
 
 export function pairRelationships(
@@ -433,7 +461,9 @@ export function pairRelationships(
 
   if (commonActors.length || commonCrew.length) {
     const score = clamp(
-      65 + Math.min(25, Math.max(0, commonActors.length - 1) * 5 + Math.max(0, commonCrew.length - 1) * 7),
+      86 + Math.min(10, Math.max(0, commonActors.length - 1) * 4 + Math.max(0, commonCrew.length - 1) * 5),
+      75,
+      96
     );
     relationships.push({
       type: 'person',
@@ -566,6 +596,23 @@ export function pairRelationships(
   return relationships.sort((left, right) => right.score - left.score);
 }
 
+function computeRelationshipBreakdown(type: Exclude<RelationshipType, 'personal'>): RelationshipEvidenceDetail['breakdown'] {
+  switch (type) {
+    case 'semantic':
+      return { vectorContribution: 45, genreContribution: 35, toneContribution: 20 };
+    case 'person':
+      return { personContribution: 75, genreContribution: 25 };
+    case 'universe':
+      return { seriesContribution: 85, genreContribution: 15 };
+    case 'atmosphere':
+      return { toneContribution: 50, genreContribution: 35, vectorContribution: 15 };
+    case 'contrast':
+      return { contrastContribution: 60, personContribution: 25, genreContribution: 15 };
+    default:
+      return { vectorContribution: 50, genreContribution: 50 };
+  }
+}
+
 export function strongestRelationship(
   a: RelationshipContent | RelationshipContentPrecomputed,
   b: RelationshipContent | RelationshipContentPrecomputed,
@@ -594,6 +641,7 @@ export function strongestRelationship(
       score: relationship.score,
       confidence: relationship.confidence,
       evidence: relationship.evidence,
+      breakdown: computeRelationshipBreakdown(relationship.type),
     })),
     distance: 175 - best.score * 0.85,
   };

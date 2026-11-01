@@ -1,4 +1,4 @@
-import { get, set, del, createStore, type UseStore } from 'idb-keyval';
+import { get, set, del, createStore, entries, delMany, type UseStore } from 'idb-keyval';
 import type { TmdbPersonCreditItem } from '../types/tmdb.ts';
 import type { ActorFetchStatus } from '../core/cinetrack-core.ts';
 
@@ -380,6 +380,43 @@ export async function saveStoredEncodingIdb<T = any>(key: string, value: T): Pro
 
 export async function clearStoredEncodingIdb(key: string): Promise<IdbWriteResult> {
   return depotDel('ct_encodings', key);
+}
+
+export async function getAllStoredEncodingsIdb<T = any>(): Promise<Array<[string, T]>> {
+  const store = getExtraDepotStore('ct_encodings');
+  if (store) {
+    try {
+      const all = await entries<string, T>(store);
+      return all;
+    } catch (err) {
+      console.warn('[IDB] Failed to read all encodings:', err);
+    }
+  }
+  const prefix = 'ct_encodings:';
+  const fallbackList: Array<[string, T]> = [];
+  for (const [k, v] of extraMemoryFallback.entries()) {
+    if (k.startsWith(prefix)) {
+      fallbackList.push([k.slice(prefix.length), v as T]);
+    }
+  }
+  return fallbackList;
+}
+
+export async function clearManyStoredEncodingsIdb(keys: string[]): Promise<IdbWriteResult> {
+  if (!Array.isArray(keys) || keys.length === 0) return { persisted: true };
+  for (const key of keys) {
+    extraMemoryFallback.delete(`ct_encodings:${key}`);
+  }
+  const store = getExtraDepotStore('ct_encodings');
+  if (store) {
+    try {
+      await delMany(keys, store);
+      return { persisted: true };
+    } catch (err: any) {
+      return { persisted: false, error: err?.message || 'Toplu silme hatası' };
+    }
+  }
+  return { persisted: true };
 }
 
 export function resetClientDepotsForTests(): void {

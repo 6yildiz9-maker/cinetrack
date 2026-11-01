@@ -1,12 +1,15 @@
 import React, { useMemo } from 'react';
 import { SavedItem } from '../core/cinetrack-core';
 import { calculateItemWatchMinutes } from '../utils/helpers';
+import { buildTasteDnaProfile } from '../core/exporters';
 
 interface StatsProps {
   items: SavedItem[];
+  profileName?: string;
+  genresMap?: Record<number, string>;
 }
 
-export const Stats: React.FC<StatsProps> = ({ items }) => {
+export const Stats: React.FC<StatsProps> = ({ items, profileName, genresMap }) => {
   const statsData = useMemo(() => {
     const total = items.length;
     let totalMinutes = 0;
@@ -50,6 +53,16 @@ export const Stats: React.FC<StatsProps> = ({ items }) => {
       (item) => (item.addedAt || '').startsWith(currentYear)
     ).length;
 
+    const tasteDna = buildTasteDnaProfile(
+      {
+        id: 'active',
+        name: profileName || 'Profilim',
+        items,
+        preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+      } as any,
+      genresMap || {}
+    );
+
     return {
       total,
       watchTimeString,
@@ -58,8 +71,9 @@ export const Stats: React.FC<StatsProps> = ({ items }) => {
       topActor,
       currentYearCount,
       currentYear,
+      tasteDna,
     };
-  }, [items]);
+  }, [items, profileName, genresMap]);
 
   if (items.length === 0) {
     return null;
@@ -124,6 +138,75 @@ export const Stats: React.FC<StatsProps> = ({ items }) => {
           <span className="stat-sub">Bu yıl listene eklenenler</span>
         </div>
       </div>
+
+      {/* IMP-03: Zevk İmzası (Taste DNA) Özet Kartı */}
+      {statsData.tasteDna && statsData.total >= 3 && (
+        <div
+          className="taste-dna-summary-card"
+          style={{
+            marginTop: '12px',
+            padding: '14px 18px',
+            background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.85) 100%)',
+            border: '1px solid rgba(99, 102, 241, 0.25)',
+            borderRadius: '14px',
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: '#818cf8', letterSpacing: '0.02em' }}>
+                🧬 Sinematik Zevk İmzası
+              </span>
+              <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                · {statsData.tasteDna.profileName}
+              </span>
+            </div>
+            <span style={{ fontSize: '11px', color: '#a5b4fc', background: 'rgba(99, 102, 241, 0.15)', padding: '2px 8px', borderRadius: '999px' }}>
+              {statsData.tasteDna.dominantEra}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+            {statsData.tasteDna.signatureTraits.map((trait) => (
+              <div
+                key={trait.label}
+                style={{
+                  background: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid rgba(51, 65, 85, 0.5)',
+                  borderRadius: '8px',
+                  padding: '6px 10px',
+                  fontSize: '12px',
+                  flex: '1 1 180px',
+                }}
+              >
+                <div style={{ color: '#94a3b8', fontSize: '11px' }}>{trait.label}</div>
+                <div style={{ fontWeight: 600, color: '#f1f5f9', marginTop: '2px' }}>{trait.value}</div>
+                <div style={{ color: '#64748b', fontSize: '10px', marginTop: '1px' }}>{trait.detail}</div>
+              </div>
+            ))}
+          </div>
+
+          {statsData.tasteDna.topGenres.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', fontSize: '11px', color: '#94a3b8' }}>
+              <span style={{ color: '#64748b' }}>Baskın Türler:</span>
+              {statsData.tasteDna.topGenres.map((g) => (
+                <span
+                  key={g.id}
+                  style={{
+                    background: 'rgba(99, 102, 241, 0.12)',
+                    color: '#c7d2fe',
+                    padding: '2px 7px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(99, 102, 241, 0.2)',
+                  }}
+                >
+                  {g.name} (%{g.sharePercent})
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 };

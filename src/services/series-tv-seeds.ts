@@ -98,23 +98,6 @@ export const KNOWN_TV_FRANCHISES: Record<string, KnownTvFranchiseSeed> = {
   },
 };
 
-export const FRANCHISE_KEYWORD_PATTERN =
-  /\b(shared universe|cinematic universe|expanded universe|universe|franchise|spin[\s-]*off|sequel|prequel|star wars|star trek|marvel|dc extended|dc universe|middle-earth|wizarding world|walking dead|westeros|game of thrones|breaking bad|the boys|witcher|avatar|dragon ball|naruto|one piece|alien|predator|jurassic|dune|lord of the rings)\b/i;
-
-export const GENERIC_NON_FRANCHISE_KEYWORDS = new Set([
-  'based on novel or book',
-  'based on comic',
-  'based on video game',
-  'based on manga',
-  'based on true story',
-  'superhero',
-  'anime',
-  'miniseries',
-  'anthology',
-  'sitcom',
-  'remake',
-]);
-
 // Doğrulanmış TV franchise keyword kimlikleri (Spec: keyword-ID birebir eşleşmesi tek otomatik yol)
 export const VERIFIED_TV_FRANCHISE_KEYWORD_IDS = new Set<number>([
   7701,   // Cyberpunk Shared Universe

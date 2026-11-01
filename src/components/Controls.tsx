@@ -280,6 +280,7 @@ export const Controls: React.FC<ControlsProps> = ({
                 ? 'Zevk Uyumu (Varsayılan)'
                 : 'Popülerlik (Varsayılan)'}
             </option>
+            <option value="similarity">Sana Yakın (Zevk Vektörü)</option>
             <option value="rating">Puan (Yüksekten Düşüğe)</option>
             <option value="recent">
               {tab === 'list' ? 'Eklenme Tarihi (Yeni)' : 'Yayın Tarihi (Yeni)'}
@@ -288,12 +289,13 @@ export const Controls: React.FC<ControlsProps> = ({
           </select>
         </div>
 
-        {/* Listemdekileri Gizle (Gündemdekiler, Yüksek Puanlılar, Gizli Cevherler) */}
+        {/* Listemdekileri Gizle (Gündemdekiler, Yüksek Puanlılar, Gizli Cevherler, Stok) */}
         {tab === 'discover' &&
           !isSearchActive &&
           (selectedCategory === 'trending' ||
             selectedCategory === 'top-rated' ||
-            selectedCategory === 'gems') && (
+            selectedCategory === 'gems' ||
+            selectedCategory === 'stock') && (
             <label
               className={`filter-checkbox-control ${hideListedItems ? 'is-active' : ''}`}
             >
