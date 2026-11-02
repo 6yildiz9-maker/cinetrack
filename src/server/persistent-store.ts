@@ -678,6 +678,14 @@ export class PersistentDataStore {
     this.bidirectionalManager = this.createBidirectionalManager();
   }
 
+  // Çalışan sunucuda GitHub token'ını değiştirir; yönetici token'ı getGitHubConfig
+  // üzerinden canlı okuduğu için yeniden başlatma gerekmez.
+  public updateGitHubToken(token: string): void {
+    const trimmed = (token || '').trim();
+    if (!trimmed || trimmed === this.githubToken) return;
+    this.githubToken = trimmed;
+  }
+
   public isSyncBusy(): boolean {
     return this.bidirectionalManager.isBusy();
   }

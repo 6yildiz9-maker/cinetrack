@@ -11,6 +11,7 @@ import {
 import type { SavedItem } from './src/core/cinetrack-core.ts';
 import { createCineTrackApp, createSpaFallbackMiddleware } from './src/server/app.ts';
 import { isAiStudioContainerEnv, resolveConfig } from './src/server/config.ts';
+import { refreshEnvGitHubPat } from './src/server/github-token-refresh.ts';
 import { redactSecrets } from './src/server/persistent-store.ts';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +58,29 @@ const { app, storage, persistentStore } = createCineTrackApp({
 });
 
 async function startServer() {
+  // GitHub OAuth token'ları (~8 saat) süresi dolduğunda Windows Kimlik Yöneticisi'nden
+  // (Git Credential Manager) taze token alınır; .env ve canlı senkron yapılandırması güncellenir.
+  const envFilePath = path.join(root, '.env');
+  let githubTokenLive = resolved.githubToken;
+  const applyFreshGitHubToken = async (reason: string, timeoutMs = 45_000): Promise<void> => {
+    if (isAiStudioContainerEnv(process.env)) return;
+    try {
+      const fresh = await refreshEnvGitHubPat({
+        envFilePath,
+        currentToken: githubTokenLive,
+        username: resolved.githubOwner || '',
+        timeoutMs,
+      });
+      if (fresh) {
+        githubTokenLive = fresh;
+        persistentStore.updateGitHubToken(fresh);
+        console.log(`[GitHub-Token] ${reason}: Kimlik Yöneticisi'nden taze token alındı (.env güncellendi).`);
+      }
+    } catch (e: any) {
+      console.warn('[GitHub-Token] Yenileme atlandı:', e?.message || e);
+    }
+  };
+  await applyFreshGitHubToken('başlangıç', 8_000);
 
   // Başlangıçta mevcut izleme listesi ve profillerdeki yapımları asenkron olarak kalıcı kataloğa aktar (BUG-04)
   try {
@@ -135,7 +159,7 @@ async function startServer() {
               '[Auto-Sync] Eşitleme uyarısı:',
               redactSecrets(
                 report.errors.map((e) => e.message).join('; '),
-                [resolved.githubToken]
+                [githubTokenLive]
               )
             );
           }
@@ -143,13 +167,23 @@ async function startServer() {
       } catch (err: any) {
         console.error(
           '[Auto-Sync] Otomatik senkronizasyon hatası:',
-          redactSecrets(err?.message || String(err), [resolved.githubToken])
+          redactSecrets(err?.message || String(err), [githubTokenLive])
         );
       }
     }, AUTO_SYNC_INTERVAL_MS);
 
     if (typeof autoSyncTimer.unref === 'function') {
       autoSyncTimer.unref();
+    }
+
+    // GitHub OAuth token süresi (~8 saat) dolmadan 6 saatte bir tazele
+    const TOKEN_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+    const tokenRefreshTimer = setInterval(() => {
+      applyFreshGitHubToken('periyodik').catch(() => undefined);
+    }, TOKEN_REFRESH_INTERVAL_MS);
+
+    if (typeof tokenRefreshTimer.unref === 'function') {
+      tokenRefreshTimer.unref();
     }
   });
 }
