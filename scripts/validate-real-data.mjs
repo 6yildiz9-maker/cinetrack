@@ -63,11 +63,11 @@ const BEHAVIOR_SIGNALS = {
   rating_1_29: -1.0,
 };
 
-// === Anahtar Kelime Eşlemesi (tmdb-mappings.ts → KEYWORD_TO_METRIC) ===
-// v1.0'da BOŞ: keyword'den türetilen metrikler (mood, narrative, concept,
-// character, style, setting + TV horror/thriller/romance) bilinçli olarak
-// unknown kalır. Faz 0/1'de gerçek keyword ID'leri doldurulacak.
-const KEYWORD_TO_METRIC = {};
+// === Anahtar Kelime Eşlemesi (Faz 6.5 çıktısı: data/taste/keyword-mappings.json) ===
+const keywordMappingsPath = path.join(PROJECT_ROOT, "data", "taste", "keyword-mappings.json");
+const KEYWORD_TO_METRIC = fs.existsSync(keywordMappingsPath)
+  ? JSON.parse(fs.readFileSync(keywordMappingsPath, "utf8")).KEYWORD_TO_METRIC
+  : {};
 
 // ===========================================================================
 // KOMUT SATIRI
@@ -137,15 +137,18 @@ function loadEnvFile(envPath) {
 }
 
 function resolveApiKey() {
-  if (process.env.TMDB_API_KEY) return process.env.TMDB_API_KEY;
+  if (process.env.TMDB_API_KEY?.trim()) return process.env.TMDB_API_KEY.trim();
+  const envLocalPath = path.join(PROJECT_ROOT, ".env.local");
+  const fromLocal = loadEnvFile(envLocalPath).TMDB_API_KEY?.trim();
+  if (fromLocal) return fromLocal;
   const envPath = path.join(PROJECT_ROOT, ".env");
-  const fromFile = loadEnvFile(envPath).TMDB_API_KEY;
+  const fromFile = loadEnvFile(envPath).TMDB_API_KEY?.trim();
   if (fromFile) return fromFile;
   console.error(
     "HATA: TMDB_API_KEY bulunamadı.\n" +
       "  a) node --env-file=.env scripts/validate-real-data.mjs ...  ile çalıştırın, veya\n" +
       "  b) TMDB_API_KEY ortam değişkenini tanımlayın, veya\n" +
-      `  c) ${envPath} dosyasında TMDB_API_KEY satırı olduğundan emin olun.`
+      `  c) ${envPath} / ${envLocalPath} dosyasında TMDB_API_KEY satırı olduğundan emin olun.`
   );
   process.exit(1);
 }
@@ -395,10 +398,14 @@ function selectSample(entries, args, warnings) {
     pick(allRatedPool, 10 - ratedInSample);
   }
 
-  // Örneklem büyüklüğüne tamamla (args.sampleSize)
+  // Örneklem büyüklüğüne tamamla (args.sampleSize > 12 ise önce kalan puanlıları dahil et)
   if (sample.length < args.sampleSize) {
-    const rest = entries.filter((e) => !used.has(`${e.mediaType}:${e.tmdbId}`));
-    pick(rest, args.sampleSize - sample.length);
+    const remainingRated = rated.filter((e) => !used.has(`${e.mediaType}:${e.tmdbId}`));
+    const leftAfterRated = pick(remainingRated, args.sampleSize - sample.length);
+    if (leftAfterRated > 0) {
+      const remainingUnrated = unrated.filter((e) => !used.has(`${e.mediaType}:${e.tmdbId}`));
+      pick(remainingUnrated, leftAfterRated);
+    }
   }
 
   return sample.slice(0, Math.min(args.maxCalls, args.sampleSize));
@@ -567,14 +574,16 @@ function extractRawFeatures(meta, mappings, warnings) {
         };
       }
     }
-    const missingTvGenres = ["genre.thriller", "genre.horror", "genre.romance"];
-    const produced = Object.keys(features);
-    const absent = missingTvGenres.filter((m) => !produced.includes(m));
-    if (absent.length > 0) {
-      warnings.push(
-        `UYARI: TV içeriği ${meta.contentId} — TV'de ${absent.join(", ")} için tür ID'si yok; ` +
-          "bu metrikler yalnızca keyword'den türetilebilir (KEYWORD_TO_METRIC boş olduğundan unknown kalır)."
-      );
+    if (Object.keys(KEYWORD_TO_METRIC).length === 0) {
+      const missingTvGenres = ["genre.thriller", "genre.horror", "genre.romance"];
+      const produced = Object.keys(features);
+      const absent = missingTvGenres.filter((m) => !produced.includes(m));
+      if (absent.length > 0) {
+        warnings.push(
+          `UYARI: TV içeriği ${meta.contentId} — TV'de ${absent.join(", ")} için tür ID'si yok; ` +
+            "bu metrikler yalnızca keyword'den türetilebilir (KEYWORD_TO_METRIC boş olduğundan unknown kalır)."
+        );
+      }
     }
   }
 

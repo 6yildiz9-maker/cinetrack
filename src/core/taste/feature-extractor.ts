@@ -357,9 +357,16 @@ export function extractContentTasteItem(input: TasteMetadataInput): ContentTaste
 
   Object.assign(features, genreFeatures);
 
-  // 2. Keyword features (KEYWORD_TO_METRIC boşsa hiçbir şey üretme)
+  // 2. Keyword features (mevcut direct genre gücünü/güvenini düşürmeden kanıtları birleştir)
   const kwFeatures = extractKeywordFeatures(keywords);
-  Object.assign(features, kwFeatures);
+  for (const [metricId, kwFeat] of Object.entries(kwFeatures)) {
+    const existing = features[metricId];
+    if (!existing) {
+      features[metricId] = kwFeat;
+    } else {
+      existing.evidence = [...(existing.evidence ?? []), ...(kwFeat.evidence ?? [])];
+    }
+  }
 
   // 3. Origin features
   const originFeatures = extractOriginFeatures(

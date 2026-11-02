@@ -234,3 +234,57 @@ describe("Taxonomy — Metrik Alanları Bütünlüğü", () => {
     });
   }
 });
+
+// --- Faz 6.5: Keyword Mapping Bütünlüğü ---
+describe("TMDB Eşlemeleri — Faz 6.5 Keyword Mapping", async () => {
+  const { KEYWORD_TO_METRIC, getKeywordIdsForMetric } = await import(
+    "../../src/core/taste/tmdb-mappings.ts"
+  );
+
+  it("KEYWORD_TO_METRIC en az 200 doğrulanmış sayısal TMDB keyword ID'si içermeli", () => {
+    const entries = Object.entries(KEYWORD_TO_METRIC);
+    assert.ok(entries.length >= 200, `Beklenen >=200, bulunan: ${entries.length}`);
+    for (const [idStr, metricId] of entries) {
+      const numId = Number(idStr);
+      assert.ok(Number.isInteger(numId) && numId > 0, `Geçersiz keyword ID: ${idStr}`);
+      const def = getMetricById(metricId);
+      assert.ok(def !== undefined, `Tanımsız metrik: ${metricId}`);
+      assert.strictEqual(def.scoringEnabled, true, `Gölge metrik eşlenmiş: ${metricId}`);
+    }
+  });
+
+  it("Keyword tabanlı tüm 25 aktif metrik en az 1 keyword ID'sine sahip olmalı", () => {
+    const expectedKeywordMetrics = [
+      "mood.melancholic",
+      "mood.dark",
+      "mood.hopeful",
+      "mood.tense",
+      "mood.cozy",
+      "mood.unsettling",
+      "narrative.non_linear",
+      "narrative.open_ending",
+      "narrative.twist",
+      "concept.identity",
+      "concept.mortality",
+      "concept.technology",
+      "concept.freedom",
+      "concept.love",
+      "concept.power",
+      "character.antihero",
+      "character.solitary",
+      "style.surreal",
+      "style.stylized",
+      "setting.dystopia",
+      "setting.space",
+      "setting.historical",
+      "genre.thriller",
+      "genre.horror",
+      "genre.romance",
+    ];
+    for (const metricId of expectedKeywordMetrics) {
+      const ids = getKeywordIdsForMetric(metricId);
+      assert.ok(ids.length > 0, `${metricId} için hiç keyword ID bulunamadı`);
+    }
+  });
+});
+

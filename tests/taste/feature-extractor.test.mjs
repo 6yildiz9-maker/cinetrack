@@ -121,22 +121,54 @@ describe("Feature Extractor — TV Genre ID'leri", () => {
 
 // === Keyword mapping testi ===
 
-describe("Feature Extractor — Keyword Mapping", () => {
-  it("Keyword mapping boşsa (KEYWORD_TO_METRIC={}) metin eşleşmesi yapılmamalı", () => {
-    // Keyword ID'ler var ama KEYWORD_TO_METRIC boş → hiç keyword feature üretilmemeli
+describe("Feature Extractor — Keyword Mapping (Faz 6.5)", () => {
+  it("Eşleşmeyen sayısal ID'lerde keyword.name metin eşleşmesi yapılmamalı", () => {
+    // 99999991 ve 99999992 map'te yok → name "horror" / "melancholy" olsa da feature üretilmez
     const item = extractContentTasteItem(
       makeMovieInput({
         genreIds: [],
         keywords: [
-          { id: 9999, name: "horror" },   // ID eşleşmesi yok
-          { id: 8888, name: "melancholy" }, // metin eşleşmesi yapılmamalı
+          { id: 99999991, name: "horror" },
+          { id: 99999992, name: "melancholy" },
         ],
       })
     );
-    // Yalnızca keyword name eşleştirmesiyle oluşmuş herhangi bir feature olmamalı
-    // (KEYWORD_TO_METRIC placeholder olduğundan 9999 ve 8888 map'te yok)
     assert.ok(!item.features["mood.melancholic"], "Keyword name eşleştirmesi yapılmamalı");
     assert.ok(!item.features["genre.horror"], "Keyword name eşleştirmesi yapılmamalı");
+  });
+
+  it("Doğrulanmış sayısal keyword ID'leri mood/concept/narrative/character/style/setting üretmeli", () => {
+    const item = extractContentTasteItem(
+      makeMovieInput({
+        genreIds: [878],
+        keywords: [
+          { id: 4232, name: "melancholy" },
+          { id: 310, name: "artificial intelligence (a.i.)" },
+          { id: 4379, name: "time travel" },
+          { id: 2095, name: "anti hero" },
+          { id: 3307, name: "surreal" },
+          { id: 4565, name: "dystopia" },
+        ],
+      })
+    );
+    assert.strictEqual(item.features["mood.melancholic"]?.strength, 80);
+    assert.strictEqual(item.features["concept.technology"]?.strength, 80);
+    assert.strictEqual(item.features["narrative.non_linear"]?.strength, 80);
+    assert.strictEqual(item.features["character.antihero"]?.strength, 80);
+    assert.strictEqual(item.features["style.surreal"]?.strength, 80);
+    assert.strictEqual(item.features["setting.dystopia"]?.strength, 80);
+  });
+
+  it("Filmde hem direct genre (27) hem keyword (12339 slasher) varsa direct genre gücü (100 / 0.95) korunmalı", () => {
+    const item = extractContentTasteItem(
+      makeMovieInput({
+        genreIds: [27],
+        keywords: [{ id: 12339, name: "slasher" }],
+      })
+    );
+    assert.strictEqual(item.features["genre.horror"]?.strength, 100);
+    assert.strictEqual(item.features["genre.horror"]?.confidence, 0.95);
+    assert.deepStrictEqual(item.features["genre.horror"]?.evidence, ["27", "12339"]);
   });
 });
 
