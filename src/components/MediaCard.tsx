@@ -32,6 +32,7 @@ export interface MediaCardProps {
   onSetStatus?: (item: any, status: 'watching' | 'watchlist' | 'completed') => void;
   onQuickSave?: (item: any) => void;
   onToggleDislike?: (key: string) => void;
+  onOpenWhyModal?: (item: any) => void;
   matchScore?: number;
   selectionRing?: string;
   eager?: boolean;
