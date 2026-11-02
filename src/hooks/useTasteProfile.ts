@@ -5,7 +5,12 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { TasteProfile } from "../core/taste/types";
-import { fetchTasteProfile, postManualOverride, deleteManualOverride } from "../services/taste-api";
+import {
+  fetchTasteProfile,
+  postManualOverride,
+  deleteManualOverride,
+  subscribeTasteProfileUpdated,
+} from "../services/taste-api";
 import type { OverrideRequest } from "../services/taste-api";
 
 export type TasteProfileStatus = "idle" | "loading" | "success" | "error";
@@ -23,7 +28,8 @@ export interface UseTasteProfileResult {
 }
 
 /**
- * Taste profilini yükleyen ve manuel kontrol işlemlerini yöneten React hook.
+ * Taste profilini yükleyen, arka plan worker tamamlandığında canlı güncelleyen
+ * ve manuel kontrol işlemlerini yöneten React hook.
  *
  * Kullanım:
  *   const { profile, status, error, reload, applyOverride, removeOverride } = useTasteProfile();
@@ -33,8 +39,10 @@ export function useTasteProfile(): UseTasteProfileResult {
   const [status, setStatus] = useState<TasteProfileStatus>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setStatus("loading");
+  const loadFromServer = useCallback(async (silent = false) => {
+    if (!silent) {
+      setStatus("loading");
+    }
     setError(null);
     try {
       const data = await fetchTasteProfile();
@@ -43,14 +51,27 @@ export function useTasteProfile(): UseTasteProfileResult {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Profil yüklenemedi";
       setError(msg);
-      setStatus("error");
+      if (!silent) {
+        setStatus("error");
+      }
     }
   }, []);
 
+  const reload = useCallback(async () => {
+    await loadFromServer(false);
+  }, [loadFromServer]);
+
   // İlk yükleme
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    void loadFromServer(false);
+  }, [loadFromServer]);
+
+  // Arka planda profil yeniden hesaplandığında veya override değiştiğinde canlı güncelle (Sorun 2 — Adım 3)
+  useEffect(() => {
+    return subscribeTasteProfileUpdated(() => {
+      void loadFromServer(true);
+    });
+  }, [loadFromServer]);
 
   /** Manuel kontrol uygula */
   const applyOverride = useCallback(

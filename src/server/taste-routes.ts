@@ -13,7 +13,13 @@ import {
   readTasteIndex,
 } from "./taste-store";
 import { explainMetric } from "../core/taste/profile-explainer";
-import type { TasteEvent } from "../core/taste/types";
+import type { TasteEvent, TasteMetadataInput } from "../core/taste/types";
+import {
+  coerceItemToTasteMetadata,
+  ensureInitialTasteBootstrap,
+  triggerTasteProfileRebuild,
+  upsertTasteMetadataInputs,
+} from "./taste-rebuild-coordinator";
 
 export function createTasteRouter(): Router {
   const router = Router();
@@ -21,6 +27,7 @@ export function createTasteRouter(): Router {
   // GET /api/taste/profile
   router.get("/profile", async (_req, res) => {
     try {
+      await ensureInitialTasteBootstrap();
       const profile = await readTasteProfile();
       if (!profile) {
         return res.status(404).json({ error: "Profil bulunamadı" });
@@ -164,17 +171,61 @@ export function createTasteRouter(): Router {
     }
   });
 
-  // POST /api/taste/event — Yeni olay ekle
+  // POST /api/taste/event — Yeni olay ekle + indeksle + arka planda profili yeniden hesapla
   router.post("/event", async (req, res) => {
     try {
-      const event = req.body as TasteEvent;
-      if (!event.eventId || !event.contentId || !event.eventType) {
+      const body = req.body as
+        | TasteEvent
+        | {
+            event?: TasteEvent;
+            metadata?: TasteMetadataInput | Record<string, unknown>;
+          };
+
+      const event: TasteEvent | undefined =
+        body && "event" in body && body.event
+          ? body.event
+          : (body as TasteEvent);
+
+      if (!event || !event.eventId || !event.contentId || !event.eventType) {
         return res.status(400).json({ error: "Geçersiz olay" });
       }
+
+      // İlk açılışta mevcut geçmiş henüz yüklenmediyse önce onu hazırla
+      await ensureInitialTasteBootstrap();
+
+      if (body && "metadata" in body && body.metadata) {
+        const meta = coerceItemToTasteMetadata(body.metadata as Record<string, unknown>);
+        if (meta) {
+          await upsertTasteMetadataInputs([meta]);
+        }
+      }
+
       await appendTasteEvent(event);
-      res.json({ success: true, eventId: event.eventId });
+      const rebuildResult = await triggerTasteProfileRebuild();
+
+      res.json({
+        success: true,
+        eventId: event.eventId,
+        generationId: rebuildResult.generationId,
+      });
     } catch {
       res.status(500).json({ error: "Olay eklenemedi" });
+    }
+  });
+
+  // POST /api/taste/rebuild — Manuel/istemci tetiklemeli arka plan profil yeniden hesaplama
+  router.post("/rebuild", async (_req, res) => {
+    try {
+      await ensureInitialTasteBootstrap();
+      const rebuildResult = await triggerTasteProfileRebuild();
+      res.json({
+        success: true,
+        generationId: rebuildResult.generationId,
+        eventsCount: rebuildResult.eventsCount,
+        indexedItemsCount: rebuildResult.indexedItemsCount,
+      });
+    } catch {
+      res.status(500).json({ error: "Profil yeniden hesaplanamadı" });
     }
   });
 

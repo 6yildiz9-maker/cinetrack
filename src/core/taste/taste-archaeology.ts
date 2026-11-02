@@ -107,7 +107,7 @@ export async function runTasteArchaeology(
   }
 
   // 5. Eğitim setinden profil çıkar
-  const profiles = aggregateProfiles(trainEvents, asOf);
+  const profiles = aggregateProfiles(trainEvents, asOf, contentIndex);
   const unifiedProfile = profiles.unified;
 
   // 6. Test seti için uyum skoru hesapla

@@ -3450,6 +3450,318 @@
     color: #fde68a;
     font-size: 0.84rem;
   }
+
+  /* Sinema Kimliğim — Zevk Profil Levhası (Faz 6 & Sorun 2 Canlı Profil) */
+  .taste-dashboard {
+    margin-top: 16px;
+    padding: 20px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.16);
+  }
+
+  .taste-dashboard__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+
+  .taste-dashboard__header h1 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--text, #f8fafc);
+    margin: 0;
+  }
+
+  .taste-dashboard__subtitle {
+    margin: 4px 0 0;
+    font-size: 0.86rem;
+    color: var(--muted, #94a3b8);
+  }
+
+  .taste-dashboard__tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  .taste-tab {
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(30, 41, 59, 0.55);
+    color: var(--muted, #94a3b8);
+    font-size: 0.84rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+  }
+
+  .taste-tab:hover {
+    color: var(--text, #f8fafc);
+    border-color: rgba(148, 163, 184, 0.35);
+  }
+
+  .taste-tab--active {
+    background: rgba(56, 189, 248, 0.16);
+    border-color: rgba(56, 189, 248, 0.55);
+    color: #f8fafc;
+    font-weight: 600;
+  }
+
+  .category-detail__list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .category-metric-row {
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(30, 41, 59, 0.42);
+    overflow: hidden;
+  }
+
+  .category-metric-row--expanded {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: rgba(30, 41, 59, 0.65);
+  }
+
+  .category-metric-row__header {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    background: transparent;
+    border: 0;
+    color: var(--text, #f8fafc);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .category-metric-row__name {
+    font-size: 0.92rem;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .category-metric-row__override-badge {
+    color: #fbbf24;
+    font-size: 0.85rem;
+  }
+
+  .category-metric-row__affinity {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 0.95rem;
+    min-width: 44px;
+    text-align: right;
+  }
+
+  .category-metric-row__affinity--pos {
+    color: #34d399;
+  }
+
+  .category-metric-row__affinity--neg {
+    color: #f87171;
+  }
+
+  .category-metric-row__affinity--neu {
+    color: #94a3b8;
+  }
+
+  .category-metric-row__status {
+    font-size: 0.76rem;
+    color: var(--muted, #94a3b8);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    min-width: 82px;
+    text-align: right;
+  }
+
+  .category-metric-row__panel {
+    padding: 14px 16px 18px;
+    border-top: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(15, 23, 42, 0.55);
+  }
+
+  .metric-detail {
+    display: grid;
+    gap: 16px;
+  }
+
+  .metric-detail__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .metric-detail__title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .metric-detail__affinity {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric-detail__affinity-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+  }
+
+  .metric-detail__affinity-label,
+  .metric-detail__status {
+    font-size: 0.82rem;
+    color: var(--muted, #94a3b8);
+  }
+
+  .metric-detail__evidence h3,
+  .metric-detail__related h3,
+  .preference-editor__title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin: 0 0 8px;
+    color: #e2e8f0;
+  }
+
+  .evidence-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .evidence-list--empty {
+    font-size: 0.84rem;
+    color: var(--muted, #94a3b8);
+    margin: 0;
+  }
+
+  .evidence-list__heading {
+    font-size: 0.8rem;
+    color: var(--muted, #94a3b8);
+    margin: 0 0 6px;
+  }
+
+  .evidence-list__section ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .evidence-row {
+    display: grid;
+    grid-template-columns: 20px 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(30, 41, 59, 0.5);
+    font-size: 0.82rem;
+  }
+
+  .evidence-row--positive .evidence-row__icon {
+    color: #34d399;
+  }
+
+  .evidence-row--negative .evidence-row__icon {
+    color: #f87171;
+  }
+
+  .preference-editor {
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(30, 41, 59, 0.38);
+    display: grid;
+    gap: 10px;
+  }
+
+  .preference-editor__modes {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 6px;
+  }
+
+  .preference-editor__legend {
+    font-size: 0.8rem;
+    color: var(--muted, #94a3b8);
+    margin-bottom: 6px;
+  }
+
+  .preference-editor__mode-option {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.84rem;
+    cursor: pointer;
+  }
+
+  .preference-editor__mode-desc {
+    font-size: 0.78rem;
+    color: var(--muted, #94a3b8);
+  }
+
+  .preference-editor__value {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.84rem;
+  }
+
+  .preference-editor__value input[type="range"] {
+    flex: 1;
+  }
+
+  .preference-editor__value-output {
+    min-width: 36px;
+    text-align: right;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .preference-editor__actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .preference-editor__btn {
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(51, 65, 85, 0.7);
+    color: #f8fafc;
+  }
+
+  .preference-editor__btn--apply {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: rgba(56, 189, 248, 0.55);
+  }
 }
 
 @layer utilities {

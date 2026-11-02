@@ -7,10 +7,13 @@
 import React, { useEffect, useState } from "react";
 import type { TasteProfile } from "../../core/taste/types";
 import type { MetricExplanation } from "../../core/taste/profile-explainer";
-import { fetchMetricDetail } from "../../services/taste-api";
+import {
+  fetchMetricDetail,
+  subscribeTasteProfileUpdated,
+  type OverrideRequest,
+} from "../../services/taste-api";
 import { TasteEvidenceList } from "./TasteEvidenceList";
 import { TastePreferenceEditor } from "./TastePreferenceEditor";
-import type { OverrideRequest } from "../../services/taste-api";
 
 interface TasteMetricDetailProps {
   metricId: string;
@@ -29,17 +32,35 @@ export function TasteMetricDetail({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetchMetricDetail(metricId)
-      .then(({ metric: m, explanation: ex }) => {
-        setMetric(m);
-        setExplanation(ex);
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Metrik yüklenemedi");
-      })
-      .finally(() => setLoading(false));
+    let active = true;
+    const loadDetail = (silent: boolean) => {
+      if (!silent) {
+        setLoading(true);
+      }
+      setError(null);
+      fetchMetricDetail(metricId)
+        .then(({ metric: m, explanation: ex }) => {
+          if (!active) return;
+          setMetric(m);
+          setExplanation(ex);
+        })
+        .catch((err: unknown) => {
+          if (!active) return;
+          setError(err instanceof Error ? err.message : "Metrik yüklenemedi");
+        })
+        .finally(() => {
+          if (active && !silent) setLoading(false);
+        });
+    };
+
+    loadDetail(false);
+    const unsub = subscribeTasteProfileUpdated(() => {
+      loadDetail(true);
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
   }, [metricId]);
 
   if (loading) {

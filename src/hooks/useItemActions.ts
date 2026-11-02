@@ -6,6 +6,76 @@
 // ===========================================================================
 
 import { findSavedItem, normalizeSavedItem, type SavedItem } from '../core/cinetrack-core';
+import type { TasteEvent } from '../core/taste/types';
+import { extractTasteMetadataFromItem, postTasteEvent } from '../services/taste-api';
+
+function generateTasteEventId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `evt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function dispatchLiveTasteEvent(event: TasteEvent, rawItem?: Record<string, unknown>): void {
+  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+    return;
+  }
+  const metadata = rawItem ? extractTasteMetadataFromItem(rawItem) : undefined;
+  void postTasteEvent(event, metadata).catch(() => {
+    // Çevrimdışı veya ağ kesintisinde kullanıcı arayüzünü bloklama
+  });
+}
+
+/**
+ * İlgilenmiyorum (preferences.disliked -> content_disliked, TP-018 negatif sinyal) olayı üretir.
+ */
+export function emitDislikeTasteEvent(
+  contentId: string,
+  rawItem?: Record<string, unknown>
+): TasteEvent | null {
+  if (!/^(movie|tv):[A-Za-z0-9_-]+$/.test(contentId)) return null;
+  const nowIso = new Date().toISOString();
+  const event: TasteEvent = {
+    eventId: generateTasteEventId(),
+    contentId,
+    eventType: 'content_disliked',
+    payload: {
+      newValue: true,
+      reason: 'disliked',
+    },
+    recordedAt: nowIso,
+    experiencedAt: nowIso,
+    timeSource: 'actual',
+    timePrecision: 'exact',
+  };
+  dispatchLiveTasteEvent(event, rawItem);
+  return event;
+}
+
+/**
+ * Gizle (preferences.hidden -> content_hidden, TP-018 nötr dışlama) olayı üretir.
+ */
+export function emitHideTasteEvent(
+  contentId: string,
+  rawItem?: Record<string, unknown>
+): TasteEvent | null {
+  if (!/^(movie|tv):[A-Za-z0-9_-]+$/.test(contentId)) return null;
+  const nowIso = new Date().toISOString();
+  const event: TasteEvent = {
+    eventId: generateTasteEventId(),
+    contentId,
+    eventType: 'content_hidden',
+    payload: {
+      newValue: true,
+    },
+    recordedAt: nowIso,
+    experiencedAt: nowIso,
+    timeSource: 'actual',
+    timePrecision: 'exact',
+  };
+  dispatchLiveTasteEvent(event, rawItem);
+  return event;
+}
 
 export type ItemWatchStatus = 'watching' | 'watchlist' | 'completed';
 
@@ -116,6 +186,18 @@ export interface UseItemActionsResult {
     item: any,
     tracking?: Record<string, any>
   ) => SavedItem | null;
+  addToWatchlist: (
+    item: any,
+    tracking?: Record<string, any>
+  ) => SavedItem | null;
+  dislikeItem: (
+    contentId: string,
+    rawItem?: Record<string, unknown>
+  ) => TasteEvent | null;
+  hideItem: (
+    contentId: string,
+    rawItem?: Record<string, unknown>
+  ) => TasteEvent | null;
 }
 
 /**
@@ -165,6 +247,56 @@ export function useItemActions(handlers: UseItemActionsHandlers): UseItemActions
     if (!normalized) return null;
 
     onCommitSavedItem(normalized, item, timestamps.effectiveStatus);
+
+    // Olay güdümlü zevk profili güncellemesi (Sorun 2 — Adım 1)
+    const contentId = `${normalized.media_type}:${normalized.id}`;
+    const hasValidRating =
+      typeof personalRating === 'number' &&
+      Number.isFinite(personalRating) &&
+      personalRating >= 1 &&
+      personalRating <= 10;
+    const prevRating =
+      existing && existing.personal_rating !== '' && Number(existing.personal_rating) >= 1
+        ? Number(existing.personal_rating)
+        : null;
+
+    if (hasValidRating && prevRating !== personalRating) {
+      dispatchLiveTasteEvent(
+        {
+          eventId: generateTasteEventId(),
+          contentId,
+          eventType: 'rating_changed',
+          payload: {
+            previousValue: prevRating,
+            newValue: personalRating,
+            ratingSource: 'numeric',
+          },
+          recordedAt: nowIso,
+          experiencedAt: timestamps.ratedAt ?? nowIso,
+          timeSource: 'actual',
+          timePrecision: 'exact',
+        },
+        normalized as unknown as Record<string, unknown>
+      );
+    } else if (!existing || existing.status !== timestamps.effectiveStatus) {
+      dispatchLiveTasteEvent(
+        {
+          eventId: generateTasteEventId(),
+          contentId,
+          eventType: 'status_changed',
+          payload: {
+            previousValue: existing?.status ?? null,
+            newValue: timestamps.effectiveStatus,
+          },
+          recordedAt: nowIso,
+          experiencedAt: timestamps.completedAt ?? nowIso,
+          timeSource: 'actual',
+          timePrecision: 'exact',
+        },
+        normalized as unknown as Record<string, unknown>
+      );
+    }
+
     return normalized;
   };
 
@@ -225,6 +357,31 @@ export function useItemActions(handlers: UseItemActionsHandlers): UseItemActions
     if (!normalized) return null;
 
     onCommitSavedItem(normalized, item, timestamps.effectiveStatus);
+
+    if (hasValidRating) {
+      const prevRating =
+        existing && existing.personal_rating !== '' && Number(existing.personal_rating) >= 1
+          ? Number(existing.personal_rating)
+          : null;
+      dispatchLiveTasteEvent(
+        {
+          eventId: generateTasteEventId(),
+          contentId: `${normalized.media_type}:${normalized.id}`,
+          eventType: 'rating_changed',
+          payload: {
+            previousValue: prevRating,
+            newValue: rating,
+            ratingSource: 'numeric',
+          },
+          recordedAt: ratedNowIso,
+          experiencedAt: ratedNowIso,
+          timeSource: 'actual',
+          timePrecision: 'exact',
+        },
+        normalized as unknown as Record<string, unknown>
+      );
+    }
+
     return normalized;
   };
 
@@ -257,10 +414,20 @@ export function useItemActions(handlers: UseItemActionsHandlers): UseItemActions
     return setItemStatus(item, 'completed', tracking);
   };
 
+  const addToWatchlist = (
+    item: any,
+    tracking: Record<string, any> = {}
+  ): SavedItem | null => {
+    return setItemStatus(item, 'watchlist', tracking);
+  };
+
   return {
     saveItem,
     rateItem,
     setItemStatus,
     markCompleted,
+    addToWatchlist,
+    dislikeItem: emitDislikeTasteEvent,
+    hideItem: emitHideTasteEvent,
   };
 }

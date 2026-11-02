@@ -10,7 +10,19 @@ import { parentPort } from "worker_threads";
 import { extractContentTasteItem } from "../core/taste/feature-extractor";
 import { aggregateProfiles } from "../core/taste/profile-aggregator";
 import { runTasteArchaeology } from "../core/taste/taste-archaeology";
-import type { TasteEvent, ContentTasteItem, TasteMetadataInput } from "../core/taste/types";
+import type {
+  TasteEvent,
+  ContentTasteItem,
+  TasteMetadataInput,
+  TasteMetric,
+} from "../core/taste/types";
+
+export interface WorkerRebuildPayload {
+  events: TasteEvent[];
+  asOf: string;
+  contentIndex?: Record<string, ContentTasteItem>;
+  existingOverrides?: Record<string, NonNullable<TasteMetric["manualOverride"]>>;
+}
 
 interface WorkerMessage {
   type: "rebuild" | "extract" | "archaeology";
@@ -31,7 +43,7 @@ if (parentPort) {
 
     try {
       if (type === "rebuild") {
-        await handleRebuild(generationId, payload as { events: TasteEvent[]; asOf: string });
+        await handleRebuild(generationId, payload as WorkerRebuildPayload);
       } else if (type === "extract") {
         await handleExtract(
           generationId,
@@ -67,9 +79,9 @@ if (parentPort) {
 /** Profil yeniden oluştur */
 async function handleRebuild(
   generationId: string,
-  payload: { events: TasteEvent[]; asOf: string }
+  payload: WorkerRebuildPayload
 ) {
-  const { events, asOf } = payload;
+  const { events, asOf, contentIndex, existingOverrides } = payload;
 
   sendResponse({
     type: "progress",
@@ -77,7 +89,16 @@ async function handleRebuild(
     payload: { step: "aggregating" },
   });
 
-  const profiles = aggregateProfiles(events, asOf);
+  const profiles = aggregateProfiles(events, asOf, contentIndex);
+
+  // TP-028: Yeniden hesaplama sırasında kullanıcının manuel override tercihlerini koru
+  if (existingOverrides) {
+    for (const [metricId, override] of Object.entries(existingOverrides)) {
+      if (override && profiles.unified.metrics[metricId]) {
+        profiles.unified.metrics[metricId].manualOverride = override;
+      }
+    }
+  }
 
   sendResponse({
     type: "done",

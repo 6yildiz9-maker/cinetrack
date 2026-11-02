@@ -11,12 +11,13 @@
 // 4. Veri yoksa unknown: iki medyada da destek yoksa sahte nötr değil unknown
 // ===========================================================================
 
-import type { TasteEvent, TasteProfile, TasteMetric } from "./types";
+import type { TasteEvent, TasteProfile, TasteMetric, ContentTasteItem } from "./types";
 import { EvidenceLedger } from "./evidence-ledger";
 import { computePreference } from "./preference-calculator";
 import { computeConfidence } from "./confidence-calculator";
 import { TAXONOMY_V01, getMetricById } from "./taxonomy";
 import { SHRINKAGE_K, ALGORITHM_VERSION, TAXONOMY_VERSION } from "./constants";
+import { computeTemporalWeights } from "./temporal-analyzer";
 
 export type MediaType = "movie" | "series" | "unified";
 
@@ -68,76 +69,181 @@ export function separateEventsByMedia(events: TasteEvent[]): {
 /**
  * Tek medya için profil hesapla (film veya dizi)
  *
- * V1'de feature extractor entegrasyonu placeholder düzeyindedir.
- * EvidenceLedger katkı = 0 olduğundan tüm metrikler "unknown" döner.
- * Faz 5'te feature-extractor + evidence-ledger entegrasyonu yapılacak.
+ * - contentIndex verilmezse V1 geriye dönük uyumlu davranış korunur (tüm metrikler "unknown").
+ * - contentIndex verildiğinde içeriğin çıkarılmış özellikleri (strength/confidence),
+ *   TP-005 tek-aktif-kanıt kuralı (removeContributions), TP-013 semanticGroup sönümlemesi
+ *   ve V1.5 zamansal ağırlıklar (lifetime / longTerm / recent) ile gerçek afinite hesaplanır.
  */
 export function computeSingleMediaProfile(
   events: TasteEvent[],
   mediaType: "movie" | "series",
-  asOf: string
+  asOf: string,
+  contentIndex?: Record<string, ContentTasteItem>
 ): TasteProfile {
-  const ledger = new EvidenceLedger();
+  const lifetimeLedger = new EvidenceLedger();
+  const longTermLedger = new EvidenceLedger();
+  const recentLedger = new EvidenceLedger();
   const metrics: Record<string, TasteMetric> = {};
 
   // Medya tipinin TMDB string karşılığı
   const tmdbMediaType = mediaType === "movie" ? "movie" : "tv";
+  const activeMediaMetrics = TAXONOMY_V01.filter(
+    (m) => m.scoringEnabled && m.applicableMedia.includes(tmdbMediaType)
+  );
+  const activeMetricMap = new Map(activeMediaMetrics.map((m) => [m.id, m]));
 
-  // Her metrik için katkı hesapla
-  for (const metricDef of TAXONOMY_V01) {
-    // Bu medya için geçerli değilse atla
-    if (!metricDef.applicableMedia.includes(tmdbMediaType)) {
-      continue;
-    }
+  if (contentIndex) {
+    // Olayları kronolojik sırala (TP-005: aynı içerik yeniden puanlanırsa son kanıt geçerli olur)
+    const sortedEvents = events
+      .map((ev, idx) => ({ ev, idx }))
+      .sort((a, b) => {
+        const tA = Date.parse(a.ev.recordedAt);
+        const tB = Date.parse(b.ev.recordedAt);
+        if (Number.isFinite(tA) && Number.isFinite(tB) && tA !== tB) {
+          return tA - tB;
+        }
+        return a.idx - b.idx;
+      })
+      .map((entry) => entry.ev);
 
-    // Gölge metrik → atla
-    if (!metricDef.scoringEnabled) {
-      continue;
-    }
+    const hasExactDateFlag = sortedEvents.some((e) => e.timeSource === "actual");
 
-    // V1 placeholder: feature extractor olmadan feature strength bilinmiyor
-    // Her olay için contribution = 0 (featureStrength=0 × ... = 0)
-    // Gerçek implementasyonda feature-extractor'tan strength/confidence alınacak
-    for (const event of events) {
-      const featureStrength = 0;
-      const confidence = 0;
-      const timeWeight = 1;
-      const groupDamping = 1;
-      ledger.addEvent(
-        event,
-        metricDef.id,
-        featureStrength,
-        confidence,
-        timeWeight,
-        groupDamping
+    for (const event of sortedEvents) {
+      const contentItem = contentIndex[event.contentId];
+      if (!contentItem || !contentItem.features) {
+        continue;
+      }
+
+      // TP-005: Olay ≠ kanıt — aynı içeriğin yeni puan/beğenmeme olayı eski katkıyı geri çeker
+      if (
+        event.eventType === "rating_changed" ||
+        event.eventType === "content_disliked" ||
+        event.eventType === "content_hidden"
+      ) {
+        lifetimeLedger.removeContributions(event.contentId);
+        longTermLedger.removeContributions(event.contentId);
+        recentLedger.removeContributions(event.contentId);
+      }
+
+      const temporal = computeTemporalWeights(
+        event.recordedAt,
+        event.experiencedAt,
+        event.timeSource,
+        event.timePrecision,
+        asOf
       );
+
+      // TP-013: Semantic group eşdeğer etiket sönümlemesi (1 / sqrt(grup_boyutu))
+      const semanticGroupCounts = new Map<string, number>();
+      for (const [metricId, feature] of Object.entries(contentItem.features)) {
+        if (!feature || feature.strength <= 0) continue;
+        const def = activeMetricMap.get(metricId);
+        if (def?.semanticGroup) {
+          semanticGroupCounts.set(
+            def.semanticGroup,
+            (semanticGroupCounts.get(def.semanticGroup) ?? 0) + 1
+          );
+        }
+      }
+
+      for (const [metricId, feature] of Object.entries(contentItem.features)) {
+        if (!feature || feature.strength <= 0) continue;
+        const def = activeMetricMap.get(metricId);
+        if (!def) continue;
+
+        const groupCount = def.semanticGroup
+          ? semanticGroupCounts.get(def.semanticGroup) ?? 1
+          : 1;
+        const groupDamping = groupCount > 1 ? 1 / Math.sqrt(groupCount) : 1;
+
+        lifetimeLedger.addEvent(
+          event,
+          metricId,
+          feature.strength,
+          feature.confidence,
+          temporal.lifetime,
+          groupDamping
+        );
+
+        if (temporal.longTerm > 0) {
+          longTermLedger.addEvent(
+            event,
+            metricId,
+            feature.strength,
+            feature.confidence,
+            temporal.longTerm,
+            groupDamping
+          );
+        }
+
+        if (temporal.recent > 0) {
+          recentLedger.addEvent(
+            event,
+            metricId,
+            feature.strength,
+            feature.confidence,
+            temporal.recent,
+            groupDamping
+          );
+        }
+      }
     }
 
-    // Kütleleri hesapla
-    const masses = ledger.computeMasses(metricDef.id);
+    for (const metricDef of activeMediaMetrics) {
+      const masses = lifetimeLedger.computeMasses(metricDef.id);
+      const preference = computePreference(masses);
 
-    // Tercihi hesapla
-    const preference = computePreference(masses);
+      const ltMasses = longTermLedger.computeMasses(metricDef.id);
+      const ltPreference =
+        ltMasses.evidenceCount > 0 ? computePreference(ltMasses) : preference;
 
-    // Güveni hesapla (V1 placeholder)
-    const avgFeatureConfidence = 0.8;
-    const hasExactDate = true;
-    computeConfidence(masses, avgFeatureConfidence, hasExactDate);
+      const recMasses = recentLedger.computeMasses(metricDef.id);
+      const recPreference =
+        recMasses.evidenceCount > 0 ? computePreference(recMasses) : preference;
 
-    metrics[metricDef.id] = {
-      metricId: metricDef.id,
-      affinity: preference.affinity,
-      longTermAffinity: preference.longTermAffinity,
-      recentAffinity: preference.recentAffinity,
-      status: preference.status,
-      evidence: {
-        posMass: masses.posMass,
-        negMass: masses.negMass,
-        uncertainMass: masses.uncertainMass,
-        topPositiveContentIds: masses.topPositiveContentIds,
-        topNegativeContentIds: masses.topNegativeContentIds,
-      },
-    };
+      computeConfidence(masses, metricDef.defaultConfidence, hasExactDateFlag);
+
+      metrics[metricDef.id] = {
+        metricId: metricDef.id,
+        affinity: preference.affinity,
+        longTermAffinity: ltPreference.affinity,
+        recentAffinity: recPreference.affinity,
+        status: preference.status,
+        evidence: {
+          posMass: masses.posMass,
+          negMass: masses.negMass,
+          uncertainMass: masses.uncertainMass,
+          topPositiveContentIds: masses.topPositiveContentIds,
+          topNegativeContentIds: masses.topNegativeContentIds,
+        },
+      };
+    }
+  } else {
+    // V1 geriye dönük uyumlu mod (contentIndex sağlanmadığında)
+    for (const metricDef of activeMediaMetrics) {
+      for (const event of events) {
+        lifetimeLedger.addEvent(event, metricDef.id, 0, 0, 1, 1);
+      }
+
+      const masses = lifetimeLedger.computeMasses(metricDef.id);
+      const preference = computePreference(masses);
+      computeConfidence(masses, 0.8, true);
+
+      metrics[metricDef.id] = {
+        metricId: metricDef.id,
+        affinity: preference.affinity,
+        longTermAffinity: preference.longTermAffinity,
+        recentAffinity: preference.recentAffinity,
+        status: preference.status,
+        evidence: {
+          posMass: masses.posMass,
+          negMass: masses.negMass,
+          uncertainMass: masses.uncertainMass,
+          topPositiveContentIds: masses.topPositiveContentIds,
+          topNegativeContentIds: masses.topNegativeContentIds,
+        },
+      };
+    }
   }
 
   return {
@@ -291,11 +397,28 @@ export function computeUnifiedProfile(
       status = "neutral";
     }
 
+    const longTermAffinity =
+      movieMetric.longTermAffinity === movieMetric.affinity &&
+      seriesMetric.longTermAffinity === seriesMetric.affinity
+        ? affinity
+        : Math.round(
+            movieMetric.longTermAffinity * movieWeight +
+              seriesMetric.longTermAffinity * seriesWeight
+          );
+    const recentAffinity =
+      movieMetric.recentAffinity === movieMetric.affinity &&
+      seriesMetric.recentAffinity === seriesMetric.affinity
+        ? affinity
+        : Math.round(
+            movieMetric.recentAffinity * movieWeight +
+              seriesMetric.recentAffinity * seriesWeight
+          );
+
     metrics[metricId] = {
       metricId,
       affinity,
-      longTermAffinity: affinity, // V1'de aynı (Faz 5'te ayrılacak)
-      recentAffinity: affinity,   // V1'de aynı
+      longTermAffinity,
+      recentAffinity,
       status,
       evidence: {
         posMass: movieMetric.evidence.posMass + seriesMetric.evidence.posMass,
@@ -334,14 +457,25 @@ export function computeUnifiedProfile(
  */
 export function aggregateProfiles(
   events: TasteEvent[],
-  asOf: string
+  asOf: string,
+  contentIndex?: Record<string, ContentTasteItem>
 ): AggregatedProfiles {
   // Olayları medya tipine göre ayır (izolasyon)
   const { movieEvents, seriesEvents } = separateEventsByMedia(events);
 
   // Bağımsız profil hesabı — her biri kendi EvidenceLedger'ını kullanır
-  const movieProfile = computeSingleMediaProfile(movieEvents, "movie", asOf);
-  const seriesProfile = computeSingleMediaProfile(seriesEvents, "series", asOf);
+  const movieProfile = computeSingleMediaProfile(
+    movieEvents,
+    "movie",
+    asOf,
+    contentIndex
+  );
+  const seriesProfile = computeSingleMediaProfile(
+    seriesEvents,
+    "series",
+    asOf,
+    contentIndex
+  );
 
   // Unified: yalnızca önceden hesaplanmış profilleri birleştirir
   const unifiedProfile = computeUnifiedProfile(movieProfile, seriesProfile, asOf);

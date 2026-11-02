@@ -6,7 +6,11 @@
 import React, { useState } from "react";
 import type { TasteProfile, MetricDefinition } from "../../core/taste/types";
 import { TasteMetricDetail } from "./TasteMetricDetail";
-import type { OverrideRequest } from "../../services/taste-api";
+import {
+  postManualOverride,
+  deleteManualOverride,
+  type OverrideRequest,
+} from "../../services/taste-api";
 
 interface CategoryMetricEntry {
   definition: MetricDefinition;
@@ -22,20 +26,16 @@ interface TasteCategoryDetailProps {
 export function TasteCategoryDetail({
   categoryId,
   metrics,
-  profile,
+  profile: _profile,
 }: TasteCategoryDetailProps) {
+  void _profile;
   const [expandedMetricId, setExpandedMetricId] = useState<string | null>(null);
   const [overrideLoading, setOverrideLoading] = useState(false);
 
   const handleOverride = async (req: OverrideRequest) => {
     setOverrideLoading(true);
     try {
-      const res = await fetch("/api/taste/override", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(req),
-      });
-      if (!res.ok) throw new Error("Override başarısız");
+      await postManualOverride(req);
     } finally {
       setOverrideLoading(false);
     }
@@ -44,10 +44,7 @@ export function TasteCategoryDetail({
   const handleRemoveOverride = async (metricId: string) => {
     setOverrideLoading(true);
     try {
-      const res = await fetch(`/api/taste/override/${encodeURIComponent(metricId)}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("Override kaldırılamadı");
+      await deleteManualOverride(metricId);
     } finally {
       setOverrideLoading(false);
     }

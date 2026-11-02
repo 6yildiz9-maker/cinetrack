@@ -30,6 +30,7 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
 
 const TasteMapView = lazyWithRetry(() => import('./components/TasteMapView'));
 const RelationshipExplorer = lazyWithRetry(() => import('./components/RelationshipExplorer'));
+const TasteProfileDashboard = lazyWithRetry(() => import('./components/taste/TasteProfileDashboard'));
 
 import {
   SavedItem,
@@ -132,9 +133,13 @@ import {
   consumeStockItem,
   enrichStockItemsTopCast,
   executeStockReplenishment,
+  getStockMovies,
+  getStockSeries,
+  isCandidateEligibleForStock,
   markItemsAsSurfaced,
   seedCandidatePoolFromStock,
   subscribeStockState,
+  syncStockWithUserExclusions,
 } from './services/stock-engine';
 import {
   enforcePosterCacheQuota,
@@ -291,7 +296,7 @@ export function App() {
 
   // Discover & Grid State
   const [tab, setTab] = useState<'discover' | 'list' | 'taste-map' | 'relationships'>('discover');
-  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph'>('poster');
+  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph' | 'identity'>('poster');
   const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
   const [forYouSubTab, setForYouSubTab] = useState<'recommendations' | 'series'>('recommendations');
@@ -382,25 +387,51 @@ export function App() {
 
   const refreshStockStats = useCallback(() => {
     void loadStockIdb().then((stock) => {
+      const cleanMovies = (stock.movies || []).filter((m) =>
+        isCandidateEligibleForStock(
+          { ...m, media_type: 'movie' },
+          savedItemsRef.current,
+          preferencesRef.current
+        )
+      );
+      const cleanTv = (stock.tv || []).filter((t) =>
+        isCandidateEligibleForStock(
+          { ...t, media_type: 'tv' },
+          savedItemsRef.current,
+          preferencesRef.current
+        )
+      );
       setStockStats({
-        movieCount: (stock.movies || []).length,
-        tvCount: (stock.tv || []).length,
+        movieCount: cleanMovies.length,
+        tvCount: cleanTv.length,
       });
     });
   }, []);
 
   useEffect(() => {
     refreshStockStats();
-    const unsubscribeStock = subscribeStockState((state) => {
+    const unsubscribeStock = subscribeStockState(() => {
+      const cleanMovies = getStockMovies(savedItemsRef.current, preferencesRef.current);
+      const cleanTv = getStockSeries(savedItemsRef.current, preferencesRef.current);
       setStockStats({
-        movieCount: state.moviesCount,
-        tvCount: state.tvCount,
+        movieCount: cleanMovies.length,
+        tvCount: cleanTv.length,
       });
     });
     return () => {
       unsubscribeStock();
     };
   }, [refreshStockStats]);
+
+  // Sorun 1: Kullanıcı listeleri, disliked veya hidden güncellendiğinde ct:stock deposunu arındır ve gerçek .length değerlerini yansıt
+  useEffect(() => {
+    void syncStockWithUserExclusions(activeProfileId, savedItems, preferences).then((res) => {
+      setStockStats({
+        movieCount: res.moviesCount,
+        tvCount: res.tvCount,
+      });
+    });
+  }, [activeProfileId, savedItems, preferences.disliked, preferences.hidden]);
 
   // IMP-17 (IDB Schema Migration) + IMP-16 (Weekly Auto-Backup Check) + IMP-11 (Idle Stock Enrichment)
   useEffect(() => {
@@ -948,32 +979,50 @@ export function App() {
         const fetchDiscoverPageByCategory = async (pageNum: number): Promise<{ rawItems: any[]; totalPages: number }> => {
           if (cat === 'stock') {
             const stock = await loadStockIdb();
-            const rawMovies = (stock.movies || []).map((m: any) => ({ ...m, media_type: 'movie' }));
-            const rawTv = (stock.tv || []).map((t: any) => ({ ...t, media_type: 'tv' }));
-            console.info('[CineTrack Stock] loadStockIdb:', {
-              movies: rawMovies.length,
-              tv: rawTv.length,
+            const stockMovies = (stock.movies || [])
+              .map((m: any) => ({ ...m, media_type: 'movie' }))
+              .filter((m: any) =>
+                isCandidateEligibleForStock(m, savedItemsRef.current, preferencesRef.current)
+              );
+            const stockSeries = (stock.tv || [])
+              .map((t: any) => ({ ...t, media_type: 'tv' }))
+              .filter((t: any) =>
+                isCandidateEligibleForStock(t, savedItemsRef.current, preferencesRef.current)
+              );
+
+            setStockStats({
+              movieCount: stockMovies.length,
+              tvCount: stockSeries.length,
+            });
+
+            console.info('[CineTrack Stock] loadStockIdb (arındırılmış):', {
+              movies: stockMovies.length,
+              tv: stockSeries.length,
               updatedAt: stock.updatedAt || null,
             });
-            if (rawMovies.length === 0 && rawTv.length === 0) {
+            if (stockMovies.length === 0 && stockSeries.length === 0) {
               void executeStockReplenishment(activeProfileIdRef.current);
+            } else if (
+              stockMovies.length !== (stock.movies || []).length ||
+              stockSeries.length !== (stock.tv || []).length
+            ) {
+              void syncStockWithUserExclusions(
+                activeProfileIdRef.current,
+                savedItemsRef.current,
+                preferencesRef.current
+              );
             }
 
             let filtered: any[] = [];
             if (targetType === 'movie') {
-              filtered = rawMovies;
+              filtered = stockMovies;
             } else if (targetType === 'tv') {
-              filtered = rawTv;
+              filtered = stockSeries;
             } else {
-              filtered = mergeDiscoverResults(cat, rawMovies, rawTv);
+              filtered = mergeDiscoverResults(cat, stockMovies, stockSeries);
             }
 
-            const dislikedSet = new Set(preferencesRef.current.disliked || []);
-            const hiddenSet = new Set(preferencesRef.current.hidden || []);
-
             filtered = filtered.filter((it) => {
-              const key = makeMediaKey(it.media_type === 'tv' ? 'tv' : 'movie', it.id);
-              if (dislikedSet.has(key) || hiddenSet.has(key)) return false;
               const d = it.release_date || it.first_air_date || '';
               return d ? isWithinReleaseWindow(d) : true;
             });
@@ -2290,7 +2339,7 @@ export function App() {
     }
   };
 
-  const { saveItem, setItemStatus, markCompleted } = useItemActions({
+  const { saveItem, setItemStatus, markCompleted, dislikeItem } = useItemActions({
     getSavedItems: () => savedItemsRef.current,
     onCommitSavedItem: commitSavedItem,
   });
@@ -2490,6 +2539,18 @@ export function App() {
         tasteMapRef.current = nextMap;
         setTasteMap(nextMap);
       } catch {}
+
+      if (!isCurrentlyDisliked) {
+        const [mType, rawId] = key.split(':');
+        if (mType && rawId) {
+          void consumeStockItem({ id: rawId, media_type: mType }, activeProfileIdRef.current);
+        }
+        const targetMeta =
+          catalogItems.find((c) => `${c.media_type}:${c.id}` === key) ||
+          forYouItems.find((c) => `${c.media_type}:${c.id}` === key) ||
+          savedItems.find((s) => `${s.media_type}:${s.id}` === key);
+        dislikeItem(key, targetMeta as Record<string, unknown> | undefined);
+      }
 
       return { ...prev, disliked };
     });
@@ -2870,8 +2931,8 @@ export function App() {
       'popular-tv': { title: 'Popüler diziler', description: 'TMDB\'de en çok ilgi gören diziler' },
       'top-rated': { title: 'Yüksek puanlı filmler', description: 'TMDB puanına göre sıralanır' },
       stock: {
-        title: 'Yerel katalog stoku',
-        description: 'Çevrimdışı erişime hazır kişisel aday havuzu ve zevk vektörü sıralaması',
+        title: `Keşfet — ${stockStats.movieCount} Film · ${stockStats.tvCount} Dizi`,
+        description: 'Listenizde olmayan, çevrimdışı erişime hazır kişisel aday havuzu ve zevk vektörü sıralaması',
       },
     };
     return catMap[category] || catMap.trending;
@@ -3212,6 +3273,14 @@ export function App() {
               >
                 Zevk Ağı (Grafik)
               </button>
+              <button
+                className={`btn ${tasteMapDisplayMode === 'identity' ? 'btn-primary' : ''}`}
+                type="button"
+                onClick={() => setTasteMapDisplayMode('identity')}
+                aria-pressed={tasteMapDisplayMode === 'identity'}
+              >
+                Sinema Kimliğim (Zevk Levhası)
+              </button>
             </div>
 
             <ErrorBoundary sectionName="Zevk Haritası">
@@ -3238,6 +3307,8 @@ export function App() {
                     tmdbSource={tmdbSourceMeta.source}
                     tmdbStaleReason={tmdbSourceMeta.staleReason}
                   />
+                ) : tasteMapDisplayMode === 'identity' ? (
+                  <TasteProfileDashboard />
                 ) : (
                   <RelationshipExplorer
                     key={`${activeProfileId}-taste-map`}

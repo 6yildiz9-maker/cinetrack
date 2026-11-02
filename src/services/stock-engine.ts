@@ -106,6 +106,101 @@ function resolveItemMediaType(item: { media_type?: string; name?: string; title?
     : 'movie';
 }
 
+export interface StockCandidateExclusionSets {
+  listedKeys: ReadonlySet<string>;
+  dislikedKeys: ReadonlySet<string>;
+  hiddenKeys: ReadonlySet<string>;
+  existingStockKeys?: ReadonlySet<string>;
+}
+
+export function buildStockExclusionSets(
+  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null,
+  existingStockKeys?: ReadonlySet<string>
+): StockCandidateExclusionSets {
+  const listedKeys = new Set<string>();
+  for (const it of userItems) {
+    if (!it || it.id == null) continue;
+    listedKeys.add(`${resolveItemMediaType(it)}:${it.id}`);
+  }
+  return {
+    listedKeys,
+    dislikedKeys: new Set(preferences?.disliked || []),
+    hiddenKeys: new Set(preferences?.hidden || []),
+    existingStockKeys,
+  };
+}
+
+/**
+ * Bir aday içeriğin ct:stock havuzuna girip giremeyeceğini kontrol eder (Sorun 1 & TP-018):
+ * 1. Kullanıcının listelerinde (watching, watchlist, completed) varsa -> false
+ * 2. İlgilenmiyorum (preferences.disliked — negatif sinyal, TP-018) listesindeyse -> false
+ * 3. Gizlenenler (preferences.hidden — nötr dışlama, TP-018) listesindeyse -> false
+ * 4. Zaten stoktaysa (çift kayıt önleme) -> false
+ */
+export function isCandidateEligibleForStock(
+  candidate: { id?: number | string; media_type?: string; name?: string; title?: string } | null | undefined,
+  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null,
+  existingStockKeys?: ReadonlySet<string>,
+  precomputedSets?: StockCandidateExclusionSets
+): boolean {
+  if (!candidate || candidate.id == null) return false;
+  const mediaType = resolveItemMediaType(candidate);
+  const contentId = `${mediaType}:${candidate.id}`;
+
+  if (precomputedSets) {
+    if (precomputedSets.listedKeys.has(contentId)) return false;
+    if (precomputedSets.dislikedKeys.has(contentId)) return false;
+    if (precomputedSets.hiddenKeys.has(contentId)) return false;
+    if (precomputedSets.existingStockKeys?.has(contentId)) return false;
+    if (existingStockKeys?.has(contentId)) return false;
+    return true;
+  }
+
+  // 1. Kullanıcının listelerinde (watching, watchlist, completed) var mı?
+  const isListed = userItems.some(
+    (it) => it && it.id != null && `${resolveItemMediaType(it)}:${it.id}` === contentId
+  );
+  if (isListed) return false;
+
+  // 2. İlgilenmiyorum (disliked — negatif sinyal, TP-018) listesinde mi?
+  if (preferences?.disliked?.includes(contentId)) return false;
+
+  // 3. Gizlenenler (hidden — nötr dışlama, TP-018) listesinde mi?
+  if (preferences?.hidden?.includes(contentId)) return false;
+
+  // 4. Zaten stokta mı? (Çift kayıt önleme)
+  if (existingStockKeys?.has(contentId)) return false;
+
+  return true;
+}
+
+export function getStockMovies(
+  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null
+): TmdbItem[] {
+  const sets = buildStockExclusionSets(userItems, preferences);
+  return activeStock.movies.filter((m) =>
+    isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userItems, preferences, undefined, sets)
+  );
+}
+
+export function getStockSeries(
+  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null
+): TmdbItem[] {
+  const sets = buildStockExclusionSets(userItems, preferences);
+  return activeStock.tv.filter((t) =>
+    isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userItems, preferences, undefined, sets)
+  );
+}
+
+export const stockEngine = {
+  getMovies: getStockMovies,
+  getSeries: getStockSeries,
+};
+
 function buildStockStateSnapshot(): StockState {
   return {
     movies: activeStock.movies,
@@ -435,6 +530,61 @@ export async function consumeStockItem(
 }
 
 /**
+ * Mevcut ct:stock deposunu kullanıcının aktif listeleri (watching/watchlist/completed),
+ * preferences.disliked ve preferences.hidden kayıtlarına göre anında temizler (Sorun 1).
+ */
+export async function syncStockWithUserExclusions(
+  profileId: string,
+  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }>,
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null
+): Promise<{ purgedMovies: number; purgedTv: number; moviesCount: number; tvCount: number }> {
+  if (!isInitialized) {
+    const loaded = await loadStockIdb();
+    activeStock = {
+      movies: Array.isArray(loaded.movies) ? loaded.movies : [],
+      tv: Array.isArray(loaded.tv) ? loaded.tv : [],
+      updatedAt: loaded.updatedAt || '',
+      cursors: loaded.cursors || {},
+    };
+    isInitialized = true;
+  }
+
+  const sets = buildStockExclusionSets(userItems, preferences);
+  const prevMoviesLen = activeStock.movies.length;
+  const prevTvLen = activeStock.tv.length;
+
+  activeStock.movies = activeStock.movies.filter((m) =>
+    isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userItems, preferences, undefined, sets)
+  );
+  activeStock.tv = activeStock.tv.filter((t) =>
+    isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userItems, preferences, undefined, sets)
+  );
+
+  const purgedMovies = prevMoviesLen - activeStock.movies.length;
+  const purgedTv = prevTvLen - activeStock.tv.length;
+
+  if (purgedMovies > 0 || purgedTv > 0) {
+    activeStock.updatedAt = new Date().toISOString();
+    await saveStockIdb(activeStock);
+    notifyStockListeners();
+  }
+
+  if (
+    activeStock.movies.length < STOCK_REPLENISH_THRESHOLD ||
+    activeStock.tv.length < STOCK_REPLENISH_THRESHOLD
+  ) {
+    scheduleStockReplenishment(profileId, 300);
+  }
+
+  return {
+    purgedMovies,
+    purgedTv,
+    moviesCount: activeStock.movies.length,
+    tvCount: activeStock.tv.length,
+  };
+}
+
+/**
  * Marks items shown on the Discover tab (that are NOT in the user's list) into ct:surfaced FIFO store (Aşama 2: Adım 6)
  */
 export async function markItemsAsSurfaced(
@@ -514,24 +664,26 @@ export async function executeStockReplenishment(
     ]);
 
     // Exclusions that permanently remove items even from existing ct:stock (saved, disliked, hidden, skipped)
-    const stockPurgeExclusions = new Set<string>();
-    for (const it of userListItems) {
-      const mType = it.media_type === 'tv' ? 'tv' : 'movie';
-      stockPurgeExclusions.add(`${mType}:${it.id}`);
-    }
-    for (const dislikedKey of isolatedProfile?.preferences?.disliked || []) {
-      stockPurgeExclusions.add(dislikedKey);
-    }
-    for (const hiddenKey of isolatedProfile?.preferences?.hidden || []) {
-      stockPurgeExclusions.add(hiddenKey);
-    }
-    for (const skipKey of activeSkipKeys) {
-      stockPurgeExclusions.add(skipKey);
-    }
+    const userPrefs = isolatedProfile?.preferences;
+    const eligibilitySets = buildStockExclusionSets(userListItems, userPrefs);
+    const stockPurgeExclusions = new Set<string>([
+      ...eligibilitySets.listedKeys,
+      ...eligibilitySets.dislikedKeys,
+      ...eligibilitySets.hiddenKeys,
+      ...activeSkipKeys,
+    ]);
 
-    // Purge stock items ONLY if saved/disliked/hidden/skipped — NEVER purge existing stock just because it was surfaced (REG-01)
-    activeStock.movies = activeStock.movies.filter((m) => !stockPurgeExclusions.has(`movie:${m.id}`));
-    activeStock.tv = activeStock.tv.filter((t) => !stockPurgeExclusions.has(`tv:${t.id}`));
+    // Purge stock items if saved/disliked/hidden/skipped — NEVER purge existing stock just because it was surfaced (REG-01)
+    activeStock.movies = activeStock.movies.filter(
+      (m) =>
+        isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userListItems, userPrefs, undefined, eligibilitySets) &&
+        !activeSkipKeys.has(`movie:${m.id}`)
+    );
+    activeStock.tv = activeStock.tv.filter(
+      (t) =>
+        isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userListItems, userPrefs, undefined, eligibilitySets) &&
+        !activeSkipKeys.has(`tv:${t.id}`)
+    );
 
     // Hard exclusions for Pass 1 & Pass 2 incoming candidates (includes active 7d surfaced cooldown)
     const hardExclusions = new Set<string>([

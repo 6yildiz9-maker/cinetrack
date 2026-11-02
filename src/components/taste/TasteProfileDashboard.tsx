@@ -59,13 +59,27 @@ export function TasteProfileDashboard() {
       profileMetric: profile.metrics[m.id] ?? null,
     }));
 
+  const knownCount = Object.values(profile.metrics).filter(
+    (m) => m && m.status !== "unknown"
+  ).length;
+  const totalScored = Object.keys(profile.metrics).length;
+
   return (
     <div className="taste-dashboard">
       <header className="taste-dashboard__header">
-        <h1>Sinema Kimliğim</h1>
-        <p className="taste-dashboard__subtitle">
-          Algoritmik zevk profilin — her metrik kanıta dayanıyor
-        </p>
+        <div>
+          <h1>Sinema Kimliğim</h1>
+          <p className="taste-dashboard__subtitle">
+            Algoritmik zevk profilin — her metrik kanıta dayanıyor ({knownCount}/{totalScored} aktif metrik)
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn taste-dashboard__refresh-btn"
+          onClick={() => void reload()}
+        >
+          Yenile
+        </button>
       </header>
 
       {/* Kategori sekmeler */}
@@ -102,3 +116,5 @@ export function TasteProfileDashboard() {
     </div>
   );
 }
+
+export default TasteProfileDashboard;
