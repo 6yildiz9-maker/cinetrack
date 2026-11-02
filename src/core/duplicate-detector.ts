@@ -40,6 +40,103 @@ function buildBigrams(str: string): string[] {
   return out;
 }
 
+const ROMAN_VALUE: Record<string, number> = {
+  i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10,
+};
+
+const NUMBER_WORD_VALUE: Record<string, number> = {
+  bir: 1, iki: 2, uc: 3, üç: 3, dort: 4, dört: 4, bes: 5, beş: 5,
+  alti: 6, altı: 6, yedi: 7, sekiz: 8, dokuz: 9, on: 10,
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+};
+
+function normalizePartToken(raw: string): string {
+  return String(raw)
+    .toLocaleLowerCase('tr-TR')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/ı/g, 'i')
+    .trim();
+}
+
+function parsePartToken(token: string): number | null {
+  const t = normalizePartToken(token);
+  if (/^\d{1,2}$/.test(t)) return Number(t);
+  if (Object.prototype.hasOwnProperty.call(ROMAN_VALUE, t)) return ROMAN_VALUE[t];
+  if (Object.prototype.hasOwnProperty.call(NUMBER_WORD_VALUE, t)) return NUMBER_WORD_VALUE[t];
+  return null;
+}
+
+export interface SeriesPartInfo {
+  partNumber: number | null;
+  baseTitle: string;
+  is3d?: boolean;
+}
+
+// "Şafak Vakti Bölüm 1", "Godfather Part II", "Bölüm İki/Üç" gibi sonda parça ibaresi
+const PART_PHRASE_PATTERN =
+  /^(.*?)\s+(?:part|bölüm|bolum|kısım|kisim)\s*(?:[:\-]?\s*)([\p{L}\d]{1,12})\s*$/iu;
+// "Görevimiz Tehlike III" gibi sonda Romen rakamı
+const TRAILING_ROMAN_PATTERN = /^(.*?)\s+(i{1,3}|iv|v|vi|vii|viii|ix|x)$/i;
+// "Hızlı ve Öfkeli 9" gibi sonda Arap rakamı ("Testere 3D" de yakalanır, 3D işareti ayrı tutulur)
+const TRAILING_ARABIC_PATTERN = /^(.*?)\s+(\d{1,2}\s*d|\d{1,2})$/i;
+
+/**
+ * Bir başlıktan seri/film sıra numarasını ve numarasız taban başlığı çıkarır.
+ * Tek başına sayı olan başlıklar ("9") parça sayılmaz.
+ */
+export function extractSeriesPartInfo(title: string): SeriesPartInfo {
+  const t = String(title || '').trim();
+  if (!t) return { partNumber: null, baseTitle: t };
+  const phrase = PART_PHRASE_PATTERN.exec(t);
+  if (phrase) {
+    const phrasePart = parsePartToken(phrase[2]);
+    if (phrasePart !== null && phrase[1].trim().length >= 2) {
+      return { partNumber: phrasePart, baseTitle: phrase[1].trim() };
+    }
+  }
+  const roman = TRAILING_ROMAN_PATTERN.exec(t);
+  if (roman && roman[1].trim().length >= 2) {
+    return { partNumber: parsePartToken(roman[2]), baseTitle: roman[1].trim() };
+  }
+  const arabic = TRAILING_ARABIC_PATTERN.exec(t);
+  if (arabic && arabic[1].trim().length >= 2) {
+    const token = arabic[2].replace(/\s+/g, '');
+    const is3d = /d$/i.test(token);
+    return {
+      partNumber: parsePartToken(token.replace(/d$/i, '')),
+      baseTitle: arabic[1].trim(),
+      is3d,
+    };
+  }
+  return { partNumber: null, baseTitle: t };
+}
+
+/**
+ * İki başlık aynı serinin FARKLI filmleri mi?
+ * "X" ↔ "X 2", "X II" ↔ "X III", "X Bölüm 1" ↔ "X Bölüm 2" → true (çift kayıt DEĞİL).
+ * "X 2" ↔ "X II" → false (aynı film, farklı yazım).
+ */
+export function areDistinctSeriesParts(titleA: string, titleB: string): boolean {
+  const infoA = extractSeriesPartInfo(titleA);
+  const infoB = extractSeriesPartInfo(titleB);
+  const hasA = infoA.partNumber !== null;
+  const hasB = infoB.partNumber !== null;
+  const baseEqual =
+    normalizeWorkTitle(infoA.baseTitle) === normalizeWorkTitle(infoB.baseTitle);
+  if (hasA && hasB) {
+    // "X 3D" ile "X 3" farklı filmlerdir (3D sürüm ≠ serinin 3. filmi)
+    if (baseEqual && infoA.partNumber === infoB.partNumber && Boolean(infoA.is3d) !== Boolean(infoB.is3d)) {
+      return true;
+    }
+    return baseEqual && infoA.partNumber !== infoB.partNumber;
+  }
+  if (hasA !== hasB) {
+    return baseEqual;
+  }
+  return false;
+}
+
 export function computeNormalizedTitleSimilarity(titleA: string, titleB: string): number {
   const normA = normalizeWorkTitle(titleA);
   const normB = normalizeWorkTitle(titleB);
@@ -126,14 +223,23 @@ export function detectDuplicateSavedItems(items: SavedItem[]): DuplicatePairCand
       }
 
       let bestTitleSim = 0;
+      let bestTitlePair: [string, string] | null = null;
       for (const tA of titlesPerItem[i]) {
         for (const tB of titlesPerItem[j]) {
           const sim = computeNormalizedTitleSimilarity(tA, tB);
-          if (sim > bestTitleSim) bestTitleSim = sim;
+          if (sim > bestTitleSim) {
+            bestTitleSim = sim;
+            bestTitlePair = [tA, tB];
+          }
         }
       }
 
       if (bestTitleSim < 0.65) continue;
+
+      // Bir serinin farklı filmleri (2/3, II/III, Bölüm 1/2) aynı yapım değildir
+      if (bestTitlePair && areDistinctSeriesParts(bestTitlePair[0], bestTitlePair[1])) {
+        continue;
+      }
 
       const encSim = cosineSimilarity(encodings[i].denseVector, encodings[j].denseVector);
       const sameYear = yearA !== null && yearB !== null && yearA === yearB;

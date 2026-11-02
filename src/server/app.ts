@@ -31,6 +31,7 @@ import {
   getPosterCacheStatsAsync,
 } from './excel-profile-backup.ts';
 import { createTasteRouter } from './taste-routes.ts';
+import { runHybridMerge } from './hybrid-merge.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
   dataDir?: string;
@@ -875,6 +876,79 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         return;
       }
       res.status(500).json({ ok: false, status_message: 'İşlenmiş profil verisi kaydedilemedi.' });
+    }
+  });
+
+  // --- Hibrit Yedek Birleştirme: CSV + GitHub ile senkron mevcut veri ---
+  app.post('/api/backup/hybrid-merge', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const csvText = typeof req.body?.csvText === 'string' ? req.body.csvText : '';
+      if (!csvText) {
+        res.status(400).json({
+          ok: false,
+          status_message: 'Birleştirilecek CSV içeriği (csvText) gerekli.',
+          code: 'missing_csv_text',
+        });
+        return;
+      }
+      if (csvText.length > 4_000_000) {
+        res.status(413).json({
+          ok: false,
+          status_message: 'CSV içeriği 4 MB sınırını aşıyor.',
+          code: 'csv_too_large',
+        });
+        return;
+      }
+
+      const dryRun = Boolean(req.body?.dryRun);
+      const current = await storage.readDataAsync();
+      const { document: mergedDocument, report } = runHybridMerge(csvText, current);
+
+      if (dryRun) {
+        res.json({ ok: true, dryRun: true, report });
+        return;
+      }
+
+      const result = await storage.saveDataSerialized(mergedDocument, {
+        expectedRevision: current.revision ?? 0,
+        requirePrecondition: true,
+        forceOverwrite: false,
+      });
+
+      if (!result.ok) {
+        if (result.currentRevision !== undefined) {
+          res.setHeader('ETag', `"rev-${result.currentRevision}"`);
+        }
+        res.status(result.status).json({
+          ok: false,
+          status_message: result.message,
+          code: result.code,
+          currentRevision: result.currentRevision,
+        });
+        return;
+      }
+
+      const rev = result.document.revision ?? 1;
+      res.setHeader('ETag', `"rev-${rev}"`);
+      res.json({
+        ok: true,
+        dryRun: false,
+        report,
+        revision: rev,
+        updatedAt: result.document.updatedAt,
+        items: result.totalItems,
+        document: result.document,
+      });
+    } catch (error: any) {
+      console.error('Hibrit birleştirme hatası:', error?.message || error);
+      res.status(500).json({
+        ok: false,
+        status_message: redactSecrets(
+          error?.message || 'Hibrit birleştirme tamamlanamadı.',
+          [options.githubToken, options.tmdbApiKey]
+        ),
+      });
     }
   });
 

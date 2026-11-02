@@ -571,6 +571,55 @@ export async function fetchSyncStatus(): Promise<any> {
   }
 }
 
+export interface HybridMergeReportPayload {
+  csvRowsParsed: number;
+  csvRowsFailed: number;
+  csvRowsSkippedNoId: number;
+  csvDuplicateRowsRemoved: number;
+  mergedByIdCount: number;
+  matchedByTitleYearCount: number;
+  newItemsCreated: number;
+  yearEnrichedCount: number;
+  conflictResolutionCount: number;
+  conflictSamples: string[];
+  suspiciousDuplicatePairs: { a: string; b: string; reason: string }[];
+  finalItemCount: number;
+}
+
+export interface HybridMergeResult {
+  ok: boolean;
+  dryRun?: boolean;
+  report?: HybridMergeReportPayload;
+  revision?: number;
+  updatedAt?: string;
+  items?: number;
+  document?: DataDocument;
+  status_message?: string;
+}
+
+export async function hybridMergeCsv(
+  csvText: string,
+  dryRun: boolean
+): Promise<HybridMergeResult> {
+  try {
+    const res = await fetch('/api/backup/hybrid-merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csvText, dryRun }),
+    });
+    const body = (await res.json().catch(() => ({}))) as HybridMergeResult;
+    if (typeof body?.revision === 'number') {
+      setLastKnownServerRevision(body.revision);
+    }
+    return body;
+  } catch (e: any) {
+    return {
+      ok: false,
+      status_message: e?.message || 'Hibrit birleştirme isteği başarısız oldu.',
+    };
+  }
+}
+
 function buildClientNetworkErrorReport(
   operation: SyncOperationKind,
   message: string

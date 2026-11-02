@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import type { DataDocument, Profile, SavedItem } from '../core/cinetrack-core.ts';
 import {
   fetchSyncStatus,
+  hybridMergeCsv,
   inspectGitHubSync,
   pullGitHubSync,
   pushGitHubSync,
   reconcileGitHubSync,
   setPublicRepoPersonalSyncConsent,
   testGitHubConnection,
+  type HybridMergeResult,
 } from '../services/api.ts';
 import {
   deriveSyncUiBanner,
@@ -78,6 +80,47 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
   const [connectionProbeResult, setConnectionProbeResult] =
     useState<ConnectionProbeOutcome | null>(null);
   const [updatingPublicConsent, setUpdatingPublicConsent] = useState(false);
+
+  const [csvText, setCsvText] = useState<string>('');
+  const [csvFileName, setCsvFileName] = useState<string | null>(null);
+  const [csvMergeDryRun, setCsvMergeDryRun] = useState(true);
+  const [csvMergeBusy, setCsvMergeBusy] = useState(false);
+  const [csvMergeResult, setCsvMergeResult] = useState<HybridMergeResult | null>(null);
+
+  const handleCsvFilePicked = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setCsvFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCsvText(String(reader.result || ''));
+    };
+    reader.onerror = () => {
+      setCsvText('');
+      setCsvFileName(null);
+    };
+    reader.readAsText(file, 'utf-8');
+  };
+
+  const handleRunHybridMerge = async () => {
+    if (csvMergeBusy || !csvText) return;
+    setCsvMergeBusy(true);
+    try {
+      const result = await hybridMergeCsv(csvText, csvMergeDryRun);
+      setCsvMergeResult(result);
+      if (result.ok && !csvMergeDryRun) {
+        if (result.document) {
+          onApplyRestoredDocument?.(result.document);
+        }
+        const updatedInfo = (await fetchSyncStatus()) as RemoteSyncStatusPayload | null;
+        if (updatedInfo) {
+          onRemoteSyncInfoChange(updatedInfo);
+        }
+      }
+    } finally {
+      setCsvMergeBusy(false);
+    }
+  };
 
   const applyCompletedSyncReport = async (report: BidirectionalSyncReport) => {
     setLatestSyncReport(report);
@@ -396,6 +439,119 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
         >
           {activeSyncOp === 'reconcile' ? 'İki yönlü eşitleniyor…' : 'İki yönlü eşitle'}
         </button>
+      </div>
+
+      <div className="hybrid-merge-panel">
+        <div className="hybrid-merge-header">
+          <strong className="profile-tools-heading">Hibrit Yedek Birleştirme (CSV + GitHub)</strong>
+          <span className="text-xs opacity-70">
+            CSV dışa aktarımı, senkron durumdaki veriyle kayıpsız birleştirilir.
+          </span>
+        </div>
+        <p className="github-sync-banner-detail">
+          Aynı yapım kayıtları tekilleştirilir; puan/durum çakışmaları en yeni tarihe göre
+          çözülür; CSV&apos;deki yıl bilgisi kayıtlara işlenir (seri filmleri ayrıştırmak için).
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="btn btn-sm whitespace-nowrap cursor-pointer">
+            {csvFileName ? `CSV: ${csvFileName}` : 'CSV dosyası seç…'}
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={handleCsvFilePicked}
+            />
+          </label>
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+            <input
+              type="checkbox"
+              checked={csvMergeDryRun}
+              onChange={(e) => setCsvMergeDryRun(e.target.checked)}
+            />
+            Önce önizle (kaydetme)
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm whitespace-nowrap"
+            disabled={csvMergeBusy || !csvText}
+            onClick={() => void handleRunHybridMerge()}
+          >
+            {csvMergeBusy
+              ? csvMergeDryRun
+                ? 'Önizleniyor…'
+                : 'Birleştiriliyor…'
+              : csvMergeDryRun
+                ? 'Birleştirmeyi Önizle'
+                : 'Birleştir ve Kaydet'}
+          </button>
+        </div>
+
+        {csvMergeResult && (
+          <div
+            className={`my-2 rounded border p-2.5 text-xs tabular-nums ${
+              csvMergeResult.ok
+                ? 'border-emerald-500/30 bg-emerald-500/10'
+                : 'border-rose-500/30 bg-rose-500/10'
+            }`}
+            role="status"
+          >
+            {!csvMergeResult.ok ? (
+              <div>
+                <strong>Birleştirme hatası:</strong>{' '}
+                {csvMergeResult.status_message || 'Bilinmeyen hata'}
+              </div>
+            ) : (
+              <>
+                <div>
+                  <strong>
+                    {csvMergeResult.dryRun ? 'Önizleme (kaydedilmedi):' : 'Birleştirme tamamlandı:'}
+                  </strong>{' '}
+                  {csvMergeResult.report?.csvRowsParsed ?? 0} CSV kaydı ·{' '}
+                  {csvMergeResult.report?.mergedByIdCount ?? 0} kimlikle eşleşti ·{' '}
+                  {csvMergeResult.report?.matchedByTitleYearCount ?? 0} başlık+yıl ile eşleşti ·{' '}
+                  {csvMergeResult.report?.newItemsCreated ?? 0} yeni kayıt ·{' '}
+                  {csvMergeResult.report?.csvDuplicateRowsRemoved ?? 0} CSV içi çift satır temizlendi
+                </div>
+                {(csvMergeResult.report?.yearEnrichedCount ?? 0) > 0 && (
+                  <div>
+                    Yıl bilgisi {csvMergeResult.report?.yearEnrichedCount} kayda işlendi (seri film
+                    ayrımı için).
+                  </div>
+                )}
+                {(csvMergeResult.report?.conflictResolutionCount ?? 0) > 0 && (
+                  <div>
+                    Çakışma çözüldü: {csvMergeResult.report?.conflictResolutionCount}
+                    {(csvMergeResult.report?.conflictSamples ?? []).map((s) => (
+                      <div key={s} className="opacity-80">
+                        · {s}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(csvMergeResult.report?.suspiciousDuplicatePairs ?? []).length > 0 && (
+                  <div className="mt-1">
+                    <strong>
+                      Hâlâ şüpheli görünen çiftler (
+                      {csvMergeResult.report?.suspiciousDuplicatePairs.length}):
+                    </strong>
+                    {csvMergeResult.report?.suspiciousDuplicatePairs.map((pair) => (
+                      <div key={`${pair.a}__${pair.b}`} className="opacity-80">
+                        · {pair.a} ↔ {pair.b} ({pair.reason})
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!csvMergeResult.dryRun && (
+                  <div className="mt-1">
+                    Toplam kayıt: {csvMergeResult.items ?? csvMergeResult.report?.finalItemCount}.{' '}
+                    <strong>GitHub&apos;a yazmak için yukarıdaki &quot;İki yönlü eşitle&quot; butonunu kullanın.</strong>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div
