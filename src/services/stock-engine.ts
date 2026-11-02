@@ -121,12 +121,35 @@ export function buildStockExclusionSets(
   const listedKeys = new Set<string>();
   for (const it of userItems) {
     if (!it || it.id == null) continue;
-    listedKeys.add(`${resolveItemMediaType(it)}:${it.id}`);
+    const mType = resolveItemMediaType(it);
+    const rawId = String(it.id).replace(/^(movie|tv)[:-]/, '');
+    listedKeys.add(`${mType}:${rawId}`);
+    listedKeys.add(`${mType}-${rawId}`);
+    listedKeys.add(rawId);
+    listedKeys.add(String(it.id));
+  }
+  const dislikedKeys = new Set<string>();
+  for (const d of preferences?.disliked || []) {
+    if (!d) continue;
+    dislikedKeys.add(d);
+    const raw = String(d).replace(/^(movie|tv)[:-]/, '');
+    dislikedKeys.add(raw);
+    dislikedKeys.add(`movie:${raw}`);
+    dislikedKeys.add(`tv:${raw}`);
+  }
+  const hiddenKeys = new Set<string>();
+  for (const h of preferences?.hidden || []) {
+    if (!h) continue;
+    hiddenKeys.add(h);
+    const raw = String(h).replace(/^(movie|tv)[:-]/, '');
+    hiddenKeys.add(raw);
+    hiddenKeys.add(`movie:${raw}`);
+    hiddenKeys.add(`tv:${raw}`);
   }
   return {
     listedKeys,
-    dislikedKeys: new Set(preferences?.disliked || []),
-    hiddenKeys: new Set(preferences?.hidden || []),
+    dislikedKeys,
+    hiddenKeys,
     existingStockKeys,
   };
 }
@@ -147,31 +170,34 @@ export function isCandidateEligibleForStock(
 ): boolean {
   if (!candidate || candidate.id == null) return false;
   const mediaType = resolveItemMediaType(candidate);
-  const contentId = `${mediaType}:${candidate.id}`;
+  const rawId = String(candidate.id).replace(/^(movie|tv)[:-]/, '');
+  const contentId = `${mediaType}:${rawId}`;
 
   if (precomputedSets) {
-    if (precomputedSets.listedKeys.has(contentId)) return false;
-    if (precomputedSets.dislikedKeys.has(contentId)) return false;
-    if (precomputedSets.hiddenKeys.has(contentId)) return false;
-    if (precomputedSets.existingStockKeys?.has(contentId)) return false;
-    if (existingStockKeys?.has(contentId)) return false;
+    if (precomputedSets.listedKeys.has(contentId) || precomputedSets.listedKeys.has(rawId)) return false;
+    if (precomputedSets.dislikedKeys.has(contentId) || precomputedSets.dislikedKeys.has(rawId)) return false;
+    if (precomputedSets.hiddenKeys.has(contentId) || precomputedSets.hiddenKeys.has(rawId)) return false;
+    if (precomputedSets.existingStockKeys?.has(contentId) || precomputedSets.existingStockKeys?.has(rawId)) return false;
+    if (existingStockKeys?.has(contentId) || existingStockKeys?.has(rawId)) return false;
     return true;
   }
 
   // 1. Kullanıcının listelerinde (watching, watchlist, completed) var mı?
-  const isListed = userItems.some(
-    (it) => it && it.id != null && `${resolveItemMediaType(it)}:${it.id}` === contentId
-  );
+  const isListed = userItems.some((it) => {
+    if (!it || it.id == null) return false;
+    const itRaw = String(it.id).replace(/^(movie|tv)[:-]/, '');
+    return itRaw === rawId || `${resolveItemMediaType(it)}:${itRaw}` === contentId;
+  });
   if (isListed) return false;
 
   // 2. İlgilenmiyorum (disliked — negatif sinyal, TP-018) listesinde mi?
-  if (preferences?.disliked?.includes(contentId)) return false;
+  if (preferences?.disliked?.some((d) => d === contentId || String(d).replace(/^(movie|tv)[:-]/, '') === rawId)) return false;
 
   // 3. Gizlenenler (hidden — nötr dışlama, TP-018) listesinde mi?
-  if (preferences?.hidden?.includes(contentId)) return false;
+  if (preferences?.hidden?.some((h) => h === contentId || String(h).replace(/^(movie|tv)[:-]/, '') === rawId)) return false;
 
   // 4. Zaten stokta mı? (Çift kayıt önleme)
-  if (existingStockKeys?.has(contentId)) return false;
+  if (existingStockKeys?.has(contentId) || existingStockKeys?.has(rawId)) return false;
 
   return true;
 }
@@ -497,19 +523,25 @@ export async function consumeStockItem(
     isInitialized = true;
   }
 
-  const isTv = resolveItemMediaType(item) === 'tv';
-  const targetId = String(item.id);
+  const rawId = String(item.id).replace(/^(movie|tv)[:-]/, '');
+  const mType = resolveItemMediaType(item);
+  const targetKey = `${mType}:${rawId}`;
 
-  let removed = false;
-  if (isTv) {
-    const prevLen = activeStock.tv.length;
-    activeStock.tv = activeStock.tv.filter((it) => String(it.id) !== targetId);
-    if (activeStock.tv.length !== prevLen) removed = true;
-  } else {
-    const prevLen = activeStock.movies.length;
-    activeStock.movies = activeStock.movies.filter((it) => String(it.id) !== targetId);
-    if (activeStock.movies.length !== prevLen) removed = true;
-  }
+  const isMatch = (it: TmdbItem, expectedType: 'movie' | 'tv') => {
+    if (!it || it.id == null) return false;
+    const itRaw = String(it.id).replace(/^(movie|tv)[:-]/, '');
+    return itRaw === rawId && (mType === expectedType || !item.media_type || `${expectedType}:${itRaw}` === targetKey);
+  };
+
+  const prevMovieLen = activeStock.movies.length;
+  activeStock.movies = activeStock.movies.filter((it) => !isMatch(it, 'movie'));
+  const movieRemoved = activeStock.movies.length !== prevMovieLen;
+
+  const prevTvLen = activeStock.tv.length;
+  activeStock.tv = activeStock.tv.filter((it) => !isMatch(it, 'tv'));
+  const tvRemoved = activeStock.tv.length !== prevTvLen;
+
+  const removed = movieRemoved || tvRemoved;
 
   let triggeredReplenish = false;
   if (removed) {
@@ -618,14 +650,14 @@ export function scheduleStockReplenishment(profileId: string, delayMs = 600): vo
 export interface ReplenishmentOptions {
   recycleCooldownMs?: number;
   nowMs?: number;
+  userListItems?: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }>;
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null;
 }
 
 /**
  * Autonomous stock engine: fills movie and TV depot back to 500 items each whenever
  * either depot is below 250 (or during initial cold fill).
- * - Excludes user-lists, disliked/hidden, active ct:skip-log, active-cooldown ct:surfaced, and current stock IDs.
- * - Halka-dönüşü (Recycle, FEAT-02 Section 4.2): prefers never-surfaced fresh TMDB items first;
- *   if fresh sources run short, recycles the oldest ct:surfaced entries whose cooldown (7 days) has expired.
+ * Excludes user-lists, disliked/hidden, active ct:skip-log, active-cooldown ct:surfaced, and current stock IDs.
  */
 export async function executeStockReplenishment(
   profileId: string,
@@ -656,15 +688,19 @@ export async function executeStockReplenishment(
     const nowMs = options.nowMs ?? Date.now();
     const cooldownMs = options.recycleCooldownMs ?? SURFACED_RECYCLE_COOLDOWN_MS;
 
-    const [userListItems, surfacedPartition, isolatedProfile, activeSkipKeys] = await Promise.all([
-      loadUserListsIdb(profileId),
+    const [loadedUserListItems, surfacedPartition, loadedIsolatedProfile, activeSkipKeys] = await Promise.all([
+      options.userListItems && options.userListItems.length > 0
+        ? Promise.resolve(options.userListItems)
+        : loadUserListsIdb(profileId),
       getSurfacedPartitionForReplenishment(cooldownMs, nowMs),
-      loadIsolatedProfileIdb(profileId),
+      options.preferences
+        ? Promise.resolve({ preferences: options.preferences })
+        : loadIsolatedProfileIdb(profileId),
       getActiveSkippedKeys(profileId, undefined, nowMs),
     ]);
 
-    // Exclusions that permanently remove items even from existing ct:stock (saved, disliked, hidden, skipped)
-    const userPrefs = isolatedProfile?.preferences;
+    const userListItems = options.userListItems && options.userListItems.length > 0 ? options.userListItems : loadedUserListItems;
+    const userPrefs = options.preferences || loadedIsolatedProfile?.preferences;
     const eligibilitySets = buildStockExclusionSets(userListItems, userPrefs);
     const stockPurgeExclusions = new Set<string>([
       ...eligibilitySets.listedKeys,
@@ -673,7 +709,7 @@ export async function executeStockReplenishment(
       ...activeSkipKeys,
     ]);
 
-    // Purge stock items if saved/disliked/hidden/skipped — NEVER purge existing stock just because it was surfaced (REG-01)
+    // Purge stock items if saved/disliked/hidden/skipped
     activeStock.movies = activeStock.movies.filter(
       (m) =>
         isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userListItems, userPrefs, undefined, eligibilitySets) &&
@@ -792,6 +828,14 @@ export async function executeStockReplenishment(
     await refillMediaType('movie', activeStock.movies);
     await refillMediaType('tv', activeStock.tv);
 
+    // Kayıt aşamasında kesin arındırma: listelerdeki yapımlar asla stoğu işgal edemez
+    activeStock.movies = activeStock.movies.filter((m) =>
+      isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userListItems, userPrefs, undefined, eligibilitySets)
+    );
+    activeStock.tv = activeStock.tv.filter((t) =>
+      isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userListItems, userPrefs, undefined, eligibilitySets)
+    );
+
     if (recycledKeysUsed.length > 0) {
       await markSurfacedKeysRecycled(recycledKeysUsed);
     }
@@ -830,13 +874,8 @@ function normalizeStockCandidate(raw: TmdbItem, mediaType: 'movie' | 'tv'): Tmdb
 
 function isStockCandidateDateAcceptable(item: TmdbItem): boolean {
   const rawDate = item.release_date || item.first_air_date;
-  if (typeof rawDate === 'string' && rawDate.trim()) {
-    return isWithinReleaseWindow(rawDate);
-  }
-  if (item.status === 'Planned' || item.status === 'Rumored') {
-    return false;
-  }
-  return true;
+  if (typeof rawDate === 'string' && rawDate.trim()) return isWithinReleaseWindow(rawDate);
+  return item.status !== 'Planned' && item.status !== 'Rumored';
 }
 
 async function fetchCandidateBatch(
@@ -853,26 +892,11 @@ async function fetchCandidateBatch(
   const MAX_RECENT_VECTORS = 25;
   const CLUSTER_SIMILARITY_THRESHOLD = 0.88;
 
-  const endpoints: Array<{
-    cursorKey: string;
-    path: string;
-    params?: Record<string, string>;
-    maxPages: number;
-  }> = [
+  const endpoints: Array<{ cursorKey: string; path: string; params?: Record<string, string>; maxPages: number }> = [
     { cursorKey: `${mediaType}:popular`, path: `/${mediaType}/popular`, maxPages: 20 },
     { cursorKey: `${mediaType}:top_rated`, path: `/${mediaType}/top_rated`, maxPages: 20 },
-    {
-      cursorKey: `${mediaType}:discover_pop`,
-      path: `/discover/${mediaType}`,
-      params: { sort_by: 'popularity.desc', 'vote_count.gte': '80' },
-      maxPages: 25,
-    },
-    {
-      cursorKey: `${mediaType}:discover_vote`,
-      path: `/discover/${mediaType}`,
-      params: { sort_by: 'vote_average.desc', 'vote_count.gte': '250' },
-      maxPages: 20,
-    },
+    { cursorKey: `${mediaType}:discover_pop`, path: `/discover/${mediaType}`, params: { sort_by: 'popularity.desc', 'vote_count.gte': '80' }, maxPages: 25 },
+    { cursorKey: `${mediaType}:discover_vote`, path: `/discover/${mediaType}`, params: { sort_by: 'vote_average.desc', 'vote_count.gte': '250' }, maxPages: 20 },
     { cursorKey: `${mediaType}:trending`, path: `/trending/${mediaType}/week`, maxPages: 10 },
   ];
 
@@ -895,17 +919,23 @@ async function fetchCandidateBatch(
 
         let addedFromPage = 0;
         for (const it of items) {
-          if (!it || it.id == null) continue;
-          if (!isStockCandidateDateAcceptable(it)) continue;
-
+          if (!it || it.id == null || !isStockCandidateDateAcceptable(it)) continue;
           const key = `${mediaType}:${it.id}`;
+          const rawId = String(it.id).replace(/^(movie|tv)[:-]/, '');
           if (recyclableKeySet?.has(key) && seenRecyclableOut && !seenRecyclableOut.has(key)) {
             seenRecyclableOut.set(key, normalizeStockCandidate(it, mediaType));
           }
-          if (excludedKeys.has(key)) continue;
+          if (
+            excludedKeys.has(key) ||
+            excludedKeys.has(rawId) ||
+            excludedKeys.has(`${mediaType}:${rawId}`)
+          ) {
+            continue;
+          }
 
           const normalized = normalizeStockCandidate(it, mediaType);
           excludedKeys.add(key);
+          excludedKeys.add(rawId);
 
           // IMP-01: MMR diversity filtering
           const candEnc = getItemEncodingSync(normalized);

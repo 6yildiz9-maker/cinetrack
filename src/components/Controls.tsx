@@ -301,13 +301,12 @@ export const Controls: React.FC<ControlsProps> = ({
           </select>
         </div>
 
-        {/* Listemdekileri Gizle (Gündemdekiler, Yüksek Puanlılar, Gizli Cevherler, Stok) */}
+        {/* Listemdekileri Gizle (Gündemdekiler, Yüksek Puanlılar, Gizli Cevherler) */}
         {tab === 'discover' &&
           !isSearchActive &&
           (selectedCategory === 'trending' ||
             selectedCategory === 'top-rated' ||
-            selectedCategory === 'gems' ||
-            selectedCategory === 'stock') && (
+            selectedCategory === 'gems') && (
             <label
               className={`filter-checkbox-control ${hideListedItems ? 'is-active' : ''}`}
             >

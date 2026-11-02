@@ -431,7 +431,8 @@ export function App() {
         tvCount: res.tvCount,
       });
     });
-  }, [activeProfileId, savedItems, preferences.disliked, preferences.hidden]);
+    void saveUserListsIdb(activeProfileId, savedItems);
+  }, [activeProfileId, savedItems, preferences]);
 
   // IMP-17 (IDB Schema Migration) + IMP-16 (Weekly Auto-Backup Check) + IMP-11 (Idle Stock Enrichment)
   useEffect(() => {
@@ -1001,7 +1002,10 @@ export function App() {
               updatedAt: stock.updatedAt || null,
             });
             if (stockMovies.length === 0 && stockSeries.length === 0) {
-              void executeStockReplenishment(activeProfileIdRef.current);
+              void executeStockReplenishment(activeProfileIdRef.current, {
+                userListItems: savedItemsRef.current,
+                preferences: preferencesRef.current,
+              });
             } else if (
               stockMovies.length !== (stock.movies || []).length ||
               stockSeries.length !== (stock.tv || []).length
@@ -2176,7 +2180,10 @@ export function App() {
   const stockHasItems = stockStats.movieCount + stockStats.tvCount > 0;
 
   const handleManualStockReplenish = useCallback(() => {
-    void executeStockReplenishment(activeProfileId).then(() => {
+    void executeStockReplenishment(activeProfileId, {
+      userListItems: savedItemsRef.current,
+      preferences: preferencesRef.current,
+    }).then(() => {
       loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
     });
   }, [activeProfileId, loadCategoryResults, selectedProvider, selectedType, selectedGenre]);

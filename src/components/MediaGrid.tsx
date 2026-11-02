@@ -579,7 +579,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                   <>
                     <strong>Seçili filtrelerle eşleşen stok kaydı bulunamadı</strong>
                     <span>
-                      Yerel stok havuzunda toplam {totalStockCount} içerik ({stockStats?.movieCount ?? 0} film · {stockStats?.tvCount ?? 0} dizi) bulunuyor; ancak seçili tür veya &ldquo;Listemdekileri Gizle&rdquo; filtresi sonuçları daralttı.
+                      Yerel stok havuzunda toplam {totalStockCount} içerik ({stockStats?.movieCount ?? 0} film · {stockStats?.tvCount ?? 0} dizi) bulunuyor; ancak seçili tür veya arama kriterleri sonuçları daralttı.
                     </span>
                     <div className="message-actions">
                       <button

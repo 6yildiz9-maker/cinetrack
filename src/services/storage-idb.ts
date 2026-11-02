@@ -137,7 +137,23 @@ export interface IsolatedProfileRecord {
 }
 
 export async function loadIsolatedProfileIdb(profileId: string): Promise<IsolatedProfileRecord | null> {
-  return safeIdbGet<IsolatedProfileRecord>('ct_profile', `profile:${profileId}`);
+  const record = await safeIdbGet<IsolatedProfileRecord>('ct_profile', `profile:${profileId}`);
+  if (record && record.preferences) return record;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const stored = window.localStorage.getItem(`cinetrack.profile.${profileId}.preferences.v1`);
+      if (stored) {
+        const preferences = JSON.parse(stored);
+        return {
+          profileId,
+          name: profileId,
+          preferences,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+    } catch {}
+  }
+  return record || null;
 }
 
 export async function saveIsolatedProfileIdb(profile: IsolatedProfileRecord): Promise<IdbWriteResult> {
@@ -201,7 +217,21 @@ export function toCompactUserListItem(
 
 export async function loadUserListsIdb(profileId: string): Promise<UserListItemCompact[]> {
   const data = await safeIdbGet<UserListItemCompact[]>('ct_user_lists', `lists:${profileId}`);
-  return Array.isArray(data) ? data.map(toCompactUserListItem) : [];
+  if (Array.isArray(data) && data.length > 0) {
+    return data.map(toCompactUserListItem);
+  }
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const stored = window.localStorage.getItem(`cinetrack.profile.${profileId}.watchlist.v1`);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(toCompactUserListItem);
+        }
+      }
+    } catch {}
+  }
+  return [];
 }
 
 export async function saveUserListsWithStatusIdb(
