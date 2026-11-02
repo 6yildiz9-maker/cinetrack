@@ -1,21 +1,21 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { displayTitle, imageUrl, handleImageError } from '../utils/helpers';
+import { displayTitle, imageUrl, handleImageError } from '../utils/helpers.ts';
 import {
   type FavoriteActorInfo,
   type SavedItem,
   findSavedItem,
   loadPersistentPoolData,
   makeMediaKey,
-} from '../core/cinetrack-core';
-import { fetchTmdb } from '../services/api';
-import { loadStockIdb } from '../services/storage-idb';
-import { useDialogAccessibility } from '../utils/useDialogAccessibility';
+} from '../core/cinetrack-core.ts';
+import { fetchTmdb } from '../services/api.ts';
+import { loadStockIdb } from '../services/storage-idb.ts';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';
 import {
   computePersonTasteCompatibility,
   mergePersonFilmography,
   type MergedPersonWork,
-} from '../core/person-insights';
-import type { TmdbItem, TmdbPersonCombinedCredits, TmdbPersonDetails } from '../types/tmdb';
+} from '../core/person-insights.ts';
+import type { TmdbItem, TmdbPersonCombinedCredits, TmdbPersonDetails } from '../types/tmdb.ts';
 
 interface PersonDrawerProps {
   personId: number | null;

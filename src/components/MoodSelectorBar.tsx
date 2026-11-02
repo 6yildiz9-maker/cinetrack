@@ -1,6 +1,6 @@
 import React from 'react';
 import { Compass, X } from 'lucide-react';
-import { DISCOVER_MOOD_PILLS } from '../utils/helpers';
+import { DISCOVER_MOOD_PILLS } from '../utils/helpers.ts';
 
 export interface MoodSelectorBarProps {
   selectedMood: string;

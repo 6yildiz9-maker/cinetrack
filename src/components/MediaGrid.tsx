@@ -1,18 +1,18 @@
 import React, { useMemo, useState } from 'react';
-import { MediaCard } from './MediaCard';
-import { ActorRecommendationsSection } from './ActorRecommendationsSection';
-import { SeriesRecommendationsSection } from './SeriesRecommendationsSection';
-import { SeasonCalendarSection } from './SeasonCalendarSection';
-import { ErrorBoundary } from './ErrorBoundary';
+import { MediaCard } from './MediaCard.tsx';
+import { ActorRecommendationsSection } from './ActorRecommendationsSection.tsx';
+import { SeriesRecommendationsSection } from './SeriesRecommendationsSection.tsx';
+import { SeasonCalendarSection } from './SeasonCalendarSection.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import {
   SavedItem,
   FavoriteActorInfo,
   findSavedItem,
   makeMediaKey,
   normalizeFavoriteActors,
-} from '../core/cinetrack-core';
-import { imageUrl, handleImageError } from '../utils/helpers';
-import { TmdbItem } from '../types/tmdb';
+} from '../core/cinetrack-core.ts';
+import { imageUrl, handleImageError } from '../utils/helpers.ts';
+import { TmdbItem } from '../types/tmdb.ts';
 
 interface MediaGridProps {
   title: string;

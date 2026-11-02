@@ -5,9 +5,9 @@ import {
   subscribeStockState,
   STOCK_REPLENISH_THRESHOLD,
   type StockState,
-} from '../services/stock-engine';
-import { initSeriesService } from '../services/series-service';
-import { loadSurfacedKeys } from '../services/storage-idb';
+} from '../services/stock-engine.ts';
+import { initSeriesService } from '../services/series-service.ts';
+import { loadSurfacedKeys } from '../services/storage-idb.ts';
 
 export function useStockEngine(profileId: string): StockState {
   const [stockState, setStockState] = useState<StockState>({

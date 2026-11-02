@@ -1,8 +1,8 @@
 import React, { useMemo } from 'react';
-import { type SavedItem } from '../core/cinetrack-core';
-import { extractUpcomingReleaseEvents, generateIcsCalendar } from '../core/exporters';
-import { deriveTvProgressSummary } from '../core/tv-progress';
-import { t } from '../i18n';
+import { type SavedItem } from '../core/cinetrack-core.ts';
+import { extractUpcomingReleaseEvents, generateIcsCalendar } from '../core/exporters.ts';
+import { deriveTvProgressSummary } from '../core/tv-progress.ts';
+import { t } from '../i18n/index.ts';
 
 interface SeasonCalendarSectionProps {
   savedItems: SavedItem[];

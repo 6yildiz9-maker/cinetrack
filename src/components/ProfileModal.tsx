@@ -5,25 +5,25 @@ import type {
   Profile,
   Preferences,
   SavedItem,
-} from '../core/cinetrack-core';
+} from '../core/cinetrack-core.ts';
 import {
   fetchServerBackups,
   fetchSyncStatus,
   restoreServerBackup,
   triggerImmediateServerBackup,
   type ServerBackupMetadata,
-} from '../services/api';
-import { recordManualBackupSuccess } from '../services/auto-backup-service';
-import { resetDerivedCachesPreserveProfileAndStock } from '../services/idb-schema-version';
-import { PROVIDER_OPTIONS } from '../utils/helpers';
-import { useDialogAccessibility } from '../utils/useDialogAccessibility';
-import { ProfileStatsTab } from './ProfileStatsTab';
-import { ProfileBackupTab } from './ProfileBackupTab';
+} from '../services/api.ts';
+import { recordManualBackupSuccess } from '../services/auto-backup-service.ts';
+import { resetDerivedCachesPreserveProfileAndStock } from '../services/idb-schema-version.ts';
+import { PROVIDER_OPTIONS } from '../utils/helpers.ts';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';
+import { ProfileStatsTab } from './ProfileStatsTab.tsx';
+import { ProfileBackupTab } from './ProfileBackupTab.tsx';
 import {
   ProfileGitHubSyncSection,
   type RemoteSyncStatusPayload,
-} from './ProfileGitHubSyncSection';
-import { DuplicateMergePanel } from './DuplicateMergePanel';
+} from './ProfileGitHubSyncSection.tsx';
+import { DuplicateMergePanel } from './DuplicateMergePanel.tsx';
 
 export type ProfileModalTabKey = 'stats' | 'profile' | 'backup' | 'sync';
 

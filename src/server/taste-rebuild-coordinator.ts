@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
-import { readJsonFileWithRecoveryAsync } from "./atomic-json";
+import { readJsonFileWithRecoveryAsync } from "./atomic-json.ts";
 import {
   readTasteEvents,
   writeTasteEvents,
@@ -21,29 +21,29 @@ import {
   writeTasteProfile,
   readTasteManifest,
   readTasteObjections,
-} from "./taste-store";
+} from "./taste-store.ts";
 import {
   buildTasteIndex,
   createEmptyTasteIndex,
-} from "../core/taste/taste-index-builder";
-import { migrateExistingData } from "../core/taste/migration";
+} from "../core/taste/taste-index-builder.ts";
+import { migrateExistingData } from "../core/taste/migration.ts";
 import {
   aggregateProfiles,
   type AggregatedProfiles,
-} from "../core/taste/profile-aggregator";
+} from "../core/taste/profile-aggregator.ts";
 import {
   EXTRACTOR_VERSION,
   TAXONOMY_VERSION,
   TMDB_MAPPING_VERSION,
-} from "../core/taste/constants";
+} from "../core/taste/constants.ts";
 import type {
   ContentTasteItem,
   TasteEvent,
   TasteMetadataInput,
   TasteMetric,
   TasteProfile,
-} from "../core/taste/types";
-import type { DataDocument } from "../core/cinetrack-core";
+} from "../core/taste/types.ts";
+import type { DataDocument } from "../core/cinetrack-core.ts";
 
 export interface RebuildCoordinatorResult {
   generationId: string;

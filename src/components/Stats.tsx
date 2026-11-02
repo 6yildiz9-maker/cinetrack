@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { FavoriteActorInfo, Profile, SavedItem } from '../core/cinetrack-core';
-import { calculateItemWatchMinutes } from '../utils/helpers';
-import { buildTasteDnaProfile } from '../core/exporters';
+import type { FavoriteActorInfo, Profile, SavedItem } from '../core/cinetrack-core.ts';
+import { calculateItemWatchMinutes } from '../utils/helpers.ts';
+import { buildTasteDnaProfile } from '../core/exporters.ts';
 import {
   formatLastBackupLabel,
   getAutoBackupMeta,
   subscribeAutoBackupMeta,
   type AutoBackupMeta,
-} from '../services/auto-backup-service';
-import { WrappedCard } from './WrappedCard';
-import { DuplicateMergePanel } from './DuplicateMergePanel';
+} from '../services/auto-backup-service.ts';
+import { WrappedCard } from './WrappedCard.tsx';
+import { DuplicateMergePanel } from './DuplicateMergePanel.tsx';
 
 interface StatsProps {
   items: SavedItem[];

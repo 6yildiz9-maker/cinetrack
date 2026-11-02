@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useDialogAccessibility } from '../utils/useDialogAccessibility';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';
 
 interface AddCustomModalProps {
   isOpen: boolean;

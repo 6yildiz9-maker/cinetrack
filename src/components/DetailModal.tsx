@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { displayTitle, getPoster, imageUrl, releaseYear, RATING_DESCRIPTIONS, extractGenreNames, handleImageError } from '../utils/helpers';
+import { displayTitle, getPoster, imageUrl, releaseYear, RATING_DESCRIPTIONS, extractGenreNames, handleImageError } from '../utils/helpers.ts';
 import {
   SavedItem,
   buildSeasonCounts,
@@ -7,13 +7,13 @@ import {
   findSavedItem,
   makeMediaKey,
   getTasteRingLabel,
-} from '../core/cinetrack-core';
-import { fetchTmdb } from '../services/api';
-import { getItemSeriesInfo, indexMovieCollection } from '../services/series-service';
-import { subscribeSeriesIndex } from '../services/storage-idb';
-import { enrichStockItemsTopCast } from '../services/stock-engine';
-import { formatMatchBadge } from '../i18n';
-import { useDialogAccessibility } from '../utils/useDialogAccessibility';
+} from '../core/cinetrack-core.ts';
+import { fetchTmdb } from '../services/api.ts';
+import { getItemSeriesInfo, indexMovieCollection } from '../services/series-service.ts';
+import { subscribeSeriesIndex } from '../services/storage-idb.ts';
+import { enrichStockItemsTopCast } from '../services/stock-engine.ts';
+import { formatMatchBadge } from '../i18n/index.ts';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';
 
 interface DetailModalProps {
   item: any | null;

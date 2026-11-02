@@ -5,9 +5,9 @@
 // Eski kayıtlarda bu alanlar yoksa undefined korunur (Faz 0 / TP-029).
 // ===========================================================================
 
-import { findSavedItem, normalizeSavedItem, type SavedItem } from '../core/cinetrack-core';
-import type { TasteEvent } from '../core/taste/types';
-import { extractTasteMetadataFromItem, postTasteEvent } from '../services/taste-api';
+import { findSavedItem, normalizeSavedItem, type SavedItem } from '../core/cinetrack-core.ts';
+import type { TasteEvent } from '../core/taste/types.ts';
+import { extractTasteMetadataFromItem, postTasteEvent } from '../services/taste-api.ts';
 
 function generateTasteEventId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {

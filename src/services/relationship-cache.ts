@@ -1,10 +1,10 @@
-import type { PoolCandidateItem, SavedItem } from '../core/cinetrack-core';
+import type { PoolCandidateItem, SavedItem } from '../core/cinetrack-core.ts';
 import type {
   MediaFilter,
   RelationshipGraphData,
   RelationshipMode,
   RelationshipType,
-} from '../core/relationship-explorer';
+} from '../core/relationship-explorer.ts';
 
 const DB_NAME = 'cinetrack-relationship-cache';
 export const RELATIONSHIP_CACHE_DB_VERSION = 2;

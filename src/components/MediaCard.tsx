@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { displayTitle, formatMediaDates, getPoster, extractGenreNames, handleImageError } from '../utils/helpers';
+import { displayTitle, formatMediaDates, getPoster, extractGenreNames, handleImageError } from '../utils/helpers.ts';
 import {
   SavedItem,
   TasteRing,
@@ -7,13 +7,13 @@ import {
   resolveAirDate,
   makeMediaKey,
   getTasteRingLabel,
-} from '../core/cinetrack-core';
-import { TmdbItem } from '../types/tmdb';
-import { formatMatchBadge } from '../i18n';
-import { getItemSeriesInfo } from '../services/series-service';
-import { subscribeSeriesIndex } from '../services/storage-idb';
-import { recordPosterAccess } from '../services/poster-cache-manager';
-import { deriveTvProgressSummary } from '../core/tv-progress';
+} from '../core/cinetrack-core.ts';
+import { TmdbItem } from '../types/tmdb.ts';
+import { formatMatchBadge } from '../i18n/index.ts';
+import { getItemSeriesInfo } from '../services/series-service.ts';
+import { subscribeSeriesIndex } from '../services/storage-idb.ts';
+import { recordPosterAccess } from '../services/poster-cache-manager.ts';
+import { deriveTvProgressSummary } from '../core/tv-progress.ts';
 
 export interface MediaCardProps {
   item: TmdbItem | any;

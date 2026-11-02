@@ -3,7 +3,7 @@
 // Destek/nitelik/kapsam üçlüsü (TP-025)
 // ===========================================================================
 
-import type { MetricMasses } from "./evidence-ledger";
+import type { MetricMasses } from "./evidence-ledger.ts";
 
 export type ConfidenceLevel = "low" | "medium" | "high";
 

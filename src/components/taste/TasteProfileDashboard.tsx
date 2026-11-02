@@ -13,17 +13,17 @@ import {
   Sliders,
   Sparkles,
 } from "lucide-react";
-import { TAXONOMY_V01 } from "../../core/taste/taxonomy";
+import { TAXONOMY_V01 } from "../../core/taste/taxonomy.ts";
 import {
   estimateMetricEvidenceCount,
   getCategoryDisplayLabel,
   getMetricDisplayTitle,
   getStatusLabelTr,
   resolveEffectiveMetricView,
-} from "../../core/taste/metric-labels";
-import { useTasteProfile } from "../../hooks/useTasteProfile";
-import { GlassCard } from "../ui/GlassCard";
-import { TasteMetricDetail } from "./TasteMetricDetail";
+} from "../../core/taste/metric-labels.ts";
+import { useTasteProfile } from "../../hooks/useTasteProfile.ts";
+import { GlassCard } from "../ui/GlassCard.tsx";
+import { TasteMetricDetail } from "./TasteMetricDetail.tsx";
 
 const CATEGORIES = [
   { id: "all", label: "Tümü" },

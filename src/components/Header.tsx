@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { displayTitle, getPoster, releaseYear, handleImageError } from '../utils/helpers';
-import { SavedItem, makeMediaKey } from '../core/cinetrack-core';
-import { fetchTmdb } from '../services/api';
-import { TmdbItem } from '../types/tmdb';
-import { PWAInstallButton } from './PWAInstallButton';
+import { displayTitle, getPoster, releaseYear, handleImageError } from '../utils/helpers.ts';
+import { SavedItem, makeMediaKey } from '../core/cinetrack-core.ts';
+import { fetchTmdb } from '../services/api.ts';
+import { TmdbItem } from '../types/tmdb.ts';
+import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 interface HeaderProps {
   profileName: string;

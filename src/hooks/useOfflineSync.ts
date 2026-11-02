@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { type DataDocument } from '../core/cinetrack-core';
+import { type DataDocument } from '../core/cinetrack-core.ts';
 import {
   getLastKnownServerRevision,
   pushServerDataDetailed,
   type ServerConflictDetail,
-} from '../services/api';
+} from '../services/api.ts';
 import {
   clearOfflineSyncSnapshot,
   enqueueOfflineSyncSnapshot,
@@ -12,12 +12,12 @@ import {
   hasUnpersistedOfflineFallback,
   loadOfflineSyncSnapshot,
   loadOfflineSyncSnapshotAsync,
-} from '../services/offline-queue';
+} from '../services/offline-queue.ts';
 import {
   hasUnpersistedIdbFallback,
   subscribeIdbQuotaWarning,
-} from '../services/storage-idb';
-import { useOnlineStatus } from './useOnlineStatus';
+} from '../services/storage-idb.ts';
+import { useOnlineStatus } from './useOnlineStatus.ts';
 
 export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, localDoc: DataDocument) => void) {
   const isOnline = useOnlineStatus();

@@ -9,22 +9,22 @@ import {
   type ActorFetchStatus,
   normalizeFavoriteActors,
   describeActorFetchChipState,
-} from '../core/cinetrack-core';
+} from '../core/cinetrack-core.ts';
 import {
   buildMergedActorCreditsWithStock,
   loadOpenActorCreditsLazy,
   scoreSingleActorMemoized,
   type PerActorSignedMemoEntry,
-} from '../services/actor-recommendations-engine';
-import { subscribeStockState } from '../services/stock-engine';
-import type { TmdbItem, TmdbPersonCreditItem } from '../types/tmdb';
-import { MediaCard } from './MediaCard';
+} from '../services/actor-recommendations-engine.ts';
+import { subscribeStockState } from '../services/stock-engine.ts';
+import type { TmdbItem, TmdbPersonCreditItem } from '../types/tmdb.ts';
+import { MediaCard } from './MediaCard.tsx';
 import {
   PaginatedMediaModal,
   SCORE_DEBOUNCE_MS,
   SHELF_INITIAL_COUNT,
   sliceShelfItems,
-} from './PaginatedMediaModal';
+} from './PaginatedMediaModal.tsx';
 
 interface ActorRecommendationsSectionProps {
   favoriteActors: FavoriteActorInfo[];

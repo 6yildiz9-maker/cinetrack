@@ -1,6 +1,6 @@
 import React from 'react';
-import { type ServerConflictDetail } from '../services/api';
-import { t } from '../i18n';
+import { type ServerConflictDetail } from '../services/api.ts';
+import { t } from '../i18n/index.ts';
 
 interface ConflictBannerProps {
   conflict: ServerConflictDetail | null;

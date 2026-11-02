@@ -12,12 +12,12 @@ import {
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
-import type { ManualOverrideMode, TasteMetric } from "../../core/taste/types";
+import type { ManualOverrideMode, TasteMetric } from "../../core/taste/types.ts";
 import {
   deleteManualOverride,
   postManualOverride,
   type OverrideRequest,
-} from "../../services/taste-api";
+} from "../../services/taste-api.ts";
 
 type QuickMode = "auto" | "boost" | "suppress" | "exclude" | "replace";
 

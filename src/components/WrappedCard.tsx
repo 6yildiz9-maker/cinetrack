@@ -1,10 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import type { FavoriteActorInfo, Profile, SavedItem } from '../core/cinetrack-core';
+import type { FavoriteActorInfo, Profile, SavedItem } from '../core/cinetrack-core.ts';
 import {
   buildYearlyWrappedSummary,
   computeAvailableWrappedYears,
-} from '../core/wrapped-summary';
-import { imageUrl, handleImageError } from '../utils/helpers';
+} from '../core/wrapped-summary.ts';
+import { imageUrl, handleImageError } from '../utils/helpers.ts';
 
 interface WrappedCardProps {
   items: SavedItem[];

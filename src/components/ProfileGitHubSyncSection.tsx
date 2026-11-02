@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { DataDocument, Profile, SavedItem } from '../core/cinetrack-core';
+import type { DataDocument, Profile, SavedItem } from '../core/cinetrack-core.ts';
 import {
   fetchSyncStatus,
   inspectGitHubSync,
@@ -8,14 +8,14 @@ import {
   reconcileGitHubSync,
   setPublicRepoPersonalSyncConsent,
   testGitHubConnection,
-} from '../services/api';
+} from '../services/api.ts';
 import {
   deriveSyncUiBanner,
   type BidirectionalSyncReport,
   type SyncComparisonSummary,
   type SyncOperationKind,
   type SyncSideSummary,
-} from '../core/sync-display';
+} from '../core/sync-display.ts';
 
 export interface RemoteSyncStatusPayload {
   configured?: boolean;

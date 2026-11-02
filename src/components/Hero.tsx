@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { displayTitle, formatMediaDates, getPoster, imageUrl, handleImageError } from '../utils/helpers';
+import { displayTitle, formatMediaDates, getPoster, imageUrl, handleImageError } from '../utils/helpers.ts';
 
 interface HeroProps {
   heroItem: any | null;

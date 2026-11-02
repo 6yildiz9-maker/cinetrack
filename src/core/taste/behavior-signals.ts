@@ -3,7 +3,7 @@
 // Kullanıcı davranışlarını [-1, +1] aralığında sinyallere dönüştürür (TP-015/017/019)
 // ===========================================================================
 
-import { BEHAVIOR_SIGNALS } from "./constants";
+import { BEHAVIOR_SIGNALS } from "./constants.ts";
 
 export type BehaviorSignalInput =
   | { type: "rating"; value: number; source?: "numeric" | "quick" }

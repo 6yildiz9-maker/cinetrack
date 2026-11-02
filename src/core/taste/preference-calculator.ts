@@ -3,8 +3,8 @@
 // A_m formülü, shrinkage, nötr payda, durum etiketi (TP-015/021/024)
 // ===========================================================================
 
-import { SHRINKAGE_K, MIN_EVIDENCE_FOR_DIRECTIONAL } from "./constants";
-import type { MetricMasses } from "./evidence-ledger";
+import { SHRINKAGE_K, MIN_EVIDENCE_FOR_DIRECTIONAL } from "./constants.ts";
+import type { MetricMasses } from "./evidence-ledger.ts";
 
 export type MetricState = "unknown" | "directional" | "neutral" | "mixed" | "excluded";
 

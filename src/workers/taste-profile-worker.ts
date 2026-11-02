@@ -7,15 +7,15 @@
 // ===========================================================================
 
 import { parentPort } from "worker_threads";
-import { extractContentTasteItem } from "../core/taste/feature-extractor";
-import { aggregateProfiles } from "../core/taste/profile-aggregator";
-import { runTasteArchaeology } from "../core/taste/taste-archaeology";
+import { extractContentTasteItem } from "../core/taste/feature-extractor.ts";
+import { aggregateProfiles } from "../core/taste/profile-aggregator.ts";
+import { runTasteArchaeology } from "../core/taste/taste-archaeology.ts";
 import type {
   TasteEvent,
   ContentTasteItem,
   TasteMetadataInput,
   TasteMetric,
-} from "../core/taste/types";
+} from "../core/taste/types.ts";
 
 export interface WorkerRebuildPayload {
   events: TasteEvent[];

@@ -3,7 +3,7 @@
 // lifetime/longTerm(730g)/recent(180g); timeSource (TP-029) + V1.5 experiencedAt
 // ===========================================================================
 
-import { HALF_LIFE_RECENT_DAYS, HALF_LIFE_LONG_TERM_DAYS } from "./constants";
+import { HALF_LIFE_RECENT_DAYS, HALF_LIFE_LONG_TERM_DAYS } from "./constants.ts";
 
 export type TimeSource = "actual" | "imported";
 export type TimePrecision = "exact" | "approximate" | "unknown";

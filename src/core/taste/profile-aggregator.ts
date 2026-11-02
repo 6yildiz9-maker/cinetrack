@@ -11,13 +11,13 @@
 // 4. Veri yoksa unknown: iki medyada da destek yoksa sahte nötr değil unknown
 // ===========================================================================
 
-import type { TasteEvent, TasteProfile, TasteMetric, ContentTasteItem } from "./types";
-import { EvidenceLedger } from "./evidence-ledger";
-import { computePreference } from "./preference-calculator";
-import { computeConfidence } from "./confidence-calculator";
-import { TAXONOMY_V01, getMetricById } from "./taxonomy";
-import { SHRINKAGE_K, ALGORITHM_VERSION, TAXONOMY_VERSION } from "./constants";
-import { computeTemporalWeights } from "./temporal-analyzer";
+import type { TasteEvent, TasteProfile, TasteMetric, ContentTasteItem } from "./types.ts";
+import { EvidenceLedger } from "./evidence-ledger.ts";
+import { computePreference } from "./preference-calculator.ts";
+import { computeConfidence } from "./confidence-calculator.ts";
+import { TAXONOMY_V01, getMetricById } from "./taxonomy.ts";
+import { SHRINKAGE_K, ALGORITHM_VERSION, TAXONOMY_VERSION } from "./constants.ts";
+import { computeTemporalWeights } from "./temporal-analyzer.ts";
 
 export type MediaType = "movie" | "series" | "unified";
 

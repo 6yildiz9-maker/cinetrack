@@ -3,8 +3,8 @@
 // posMass/negMass/uncertainMass ayrımı; idempotency; katkı geri çekme (TP-015)
 // ===========================================================================
 
-import type { TasteEvent } from "./types";
-import { computeBehaviorSignal } from "./behavior-signals";
+import type { TasteEvent } from "./types.ts";
+import { computeBehaviorSignal } from "./behavior-signals.ts";
 
 export interface MetricEvidence {
   contentId: string;

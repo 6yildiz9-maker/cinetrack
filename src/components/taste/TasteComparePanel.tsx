@@ -1,12 +1,12 @@
 import React, { useMemo } from "react";
 import { ArrowLeftRight, ChevronRight, Film, Tv } from "lucide-react";
-import type { TasteProfile } from "../../core/taste/types";
-import { TAXONOMY_V01 } from "../../core/taste/taxonomy";
+import type { TasteProfile } from "../../core/taste/types.ts";
+import { TAXONOMY_V01 } from "../../core/taste/taxonomy.ts";
 import {
   getCategoryDisplayLabel,
   getMetricDisplayTitle,
-} from "../../core/taste/metric-labels";
-import { GlassCard } from "../ui/GlassCard";
+} from "../../core/taste/metric-labels.ts";
+import { GlassCard } from "../ui/GlassCard.tsx";
 
 export interface TasteComparePanelProps {
   movieProfile: TasteProfile | null;

@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import type { SavedItem } from '../core/cinetrack-core';
+import type { SavedItem } from '../core/cinetrack-core.ts';
 import {
   detectDuplicateSavedItems,
   type DuplicatePairCandidate,
-} from '../core/duplicate-detector';
+} from '../core/duplicate-detector.ts';
 
 interface DuplicateMergePanelProps {
   items: SavedItem[];

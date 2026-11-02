@@ -5,25 +5,25 @@ import {
   makeMediaKey,
   matchesSelectedGenre,
   type SavedItem,
-} from '../core/cinetrack-core';
+} from '../core/cinetrack-core.ts';
 import {
   backfillSavedSeriesLazy,
   computeUserSeriesUniverses,
   ensureSeriesCollectionLoaded,
   scoreSeriesUniverseGroup,
   type UserSeriesUniverse,
-} from '../services/series-service';
-import { subscribeSeriesIndex } from '../services/storage-idb';
-import type { TmdbItem } from '../types/tmdb';
-import { displayTitle } from '../utils/helpers';
-import { compareMediaDatesAscending } from '../utils/release-window';
-import { MediaCard } from './MediaCard';
+} from '../services/series-service.ts';
+import { subscribeSeriesIndex } from '../services/storage-idb.ts';
+import type { TmdbItem } from '../types/tmdb.ts';
+import { displayTitle } from '../utils/helpers.ts';
+import { compareMediaDatesAscending } from '../utils/release-window.ts';
+import { MediaCard } from './MediaCard.tsx';
 import {
   PaginatedMediaModal,
   SCORE_DEBOUNCE_MS,
   SHELF_INITIAL_COUNT,
   sliceShelfItems,
-} from './PaginatedMediaModal';
+} from './PaginatedMediaModal.tsx';
 
 export interface SeriesRecommendationsSectionProps {
   savedItems: SavedItem[];

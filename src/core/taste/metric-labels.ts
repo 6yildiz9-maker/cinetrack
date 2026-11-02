@@ -2,8 +2,8 @@
 // CineTrack Taste Engine — Türkçe Metrik Başlıkları & Efektif Override Çözümleyici
 // ===========================================================================
 
-import type { MetricState, TasteMetric } from "./types";
-import { getMetricById } from "./taxonomy";
+import type { MetricState, TasteMetric } from "./types.ts";
+import { getMetricById } from "./taxonomy.ts";
 
 export const CATEGORY_LABELS_TR: Record<string, string> = {
   all: "Tümü",

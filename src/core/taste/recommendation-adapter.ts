@@ -9,9 +9,9 @@
 // 4. Gölge modda sıralama değişmez, sadece loglanır (TP-037)
 // ===========================================================================
 
-import type { TasteProfile, ContentTasteItem } from "./types";
-import { RECOMMENDATION_WEIGHTS } from "./constants";
-import { resolveEffectiveMetricView } from "./metric-labels";
+import type { TasteProfile, ContentTasteItem } from "./types.ts";
+import { RECOMMENDATION_WEIGHTS } from "./constants.ts";
+import { resolveEffectiveMetricView } from "./metric-labels.ts";
 
 export interface RecommendationCandidate {
   contentId: string;

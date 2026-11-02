@@ -11,25 +11,25 @@ import type {
   PoolCandidateItem,
   Preferences,
   SavedItem,
-} from '../core/cinetrack-core';
+} from '../core/cinetrack-core.ts';
 import {
   isCandidateEligibleInPool,
   makeMediaKey,
-} from '../core/cinetrack-core';
-import type { TmdbItem } from '../types/tmdb';
-import { TAXONOMY_V01 } from '../core/taste/taxonomy';
+} from '../core/cinetrack-core.ts';
+import type { TmdbItem } from '../types/tmdb.ts';
+import { TAXONOMY_V01 } from '../core/taste/taxonomy.ts';
 import {
   getCategoryDisplayLabel,
   getMetricDisplayTitle,
   resolveEffectiveMetricView,
-} from '../core/taste/metric-labels';
-import { useTasteProfile } from '../hooks/useTasteProfile';
-import { loadStockIdb } from '../services/storage-idb';
-import { SeriesRecommendationsSection } from './SeriesRecommendationsSection';
-import { ActorRecommendationsSection } from './ActorRecommendationsSection';
-import { RelationshipExplorer } from './RelationshipExplorer';
-import { MediaCard } from './MediaCard';
-import { GlassCard } from './ui/GlassCard';
+} from '../core/taste/metric-labels.ts';
+import { useTasteProfile } from '../hooks/useTasteProfile.ts';
+import { loadStockIdb } from '../services/storage-idb.ts';
+import { SeriesRecommendationsSection } from './SeriesRecommendationsSection.tsx';
+import { ActorRecommendationsSection } from './ActorRecommendationsSection.tsx';
+import { RelationshipExplorer } from './RelationshipExplorer.tsx';
+import { MediaCard } from './MediaCard.tsx';
+import { GlassCard } from './ui/GlassCard.tsx';
 
 export type UniverseSubTab = 'franchises' | 'people' | 'network' | 'blind-spots';
 

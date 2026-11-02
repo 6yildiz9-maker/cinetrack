@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
-import { Header } from './components/Header';
-import { Hero } from './components/Hero';
-import { Stats } from './components/Stats';
-import { Controls } from './components/Controls';
-import { MediaGrid } from './components/MediaGrid';
-import { DetailModal } from './components/DetailModal';
-import { QuickSaveModal } from './components/QuickSaveModal';
-import { PersonDrawer } from './components/PersonDrawer';
-import { AddCustomModal } from './components/AddCustomModal';
-import { ProfileModal } from './components/ProfileModal';
-import { ImportChoiceModal } from './components/ImportChoiceModal';
-import { Toast } from './components/Toast';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { OfflineIndicator } from './components/OfflineIndicator';
-import { ConflictBanner } from './components/ConflictBanner';
+import { Header } from './components/Header.tsx';
+import { Hero } from './components/Hero.tsx';
+import { Stats } from './components/Stats.tsx';
+import { Controls } from './components/Controls.tsx';
+import { MediaGrid } from './components/MediaGrid.tsx';
+import { DetailModal } from './components/DetailModal.tsx';
+import { QuickSaveModal } from './components/QuickSaveModal.tsx';
+import { PersonDrawer } from './components/PersonDrawer.tsx';
+import { AddCustomModal } from './components/AddCustomModal.tsx';
+import { ProfileModal } from './components/ProfileModal.tsx';
+import { ImportChoiceModal } from './components/ImportChoiceModal.tsx';
+import { Toast } from './components/Toast.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+import { OfflineIndicator } from './components/OfflineIndicator.tsx';
+import { ConflictBanner } from './components/ConflictBanner.tsx';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
   importer: () => Promise<{ default: T }>
@@ -28,9 +28,9 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
   });
 }
 
-const TasteMapView = lazyWithRetry(() => import('./components/TasteMapView'));
-const RelationshipExplorer = lazyWithRetry(() => import('./components/RelationshipExplorer'));
-const TasteProfileDashboard = lazyWithRetry(() => import('./components/taste/TasteProfileDashboard'));
+const TasteMapView = lazyWithRetry(() => import('./components/TasteMapView.tsx'));
+const RelationshipExplorer = lazyWithRetry(() => import('./components/RelationshipExplorer.tsx'));
+const TasteProfileDashboard = lazyWithRetry(() => import('./components/taste/TasteProfileDashboard.tsx'));
 
 import {
   SavedItem,
@@ -86,7 +86,7 @@ import {
   normalizeDeletedKeys,
   hydrateDiscoveryHistoryIdb,
   hydrateCandidatePoolsIdb,
-} from './core/cinetrack-core';
+} from './core/cinetrack-core.ts';
 import {
   fetchTmdb,
   fetchTmdbCached,
@@ -99,20 +99,20 @@ import {
   pushDerivedProfileData,
   TmdbSourceMeta,
   ServerConflictDetail,
-} from './services/api';
-import { computeSourceCatalogSignature } from './core/derived-profile-cache';
+} from './services/api.ts';
+import { computeSourceCatalogSignature } from './core/derived-profile-cache.ts';
 import {
   buildDerivedProfilePayloadFromTasteMap,
   enforceStrictMediaTypePool,
   enrichCatalogItemsWithTaste,
   hydrateTasteMapWithDerivedCache,
   mapRecommendationBatchToDisplayItems,
-} from './core/recommendation-orchestrator';
-import { useOfflineSync } from './hooks/useOfflineSync';
-import { useStockEngine } from './hooks/useStockEngine';
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
-import { useItemActions } from './hooks/useItemActions';
-import { hasPendingOfflineSync } from './services/offline-queue';
+} from './core/recommendation-orchestrator.ts';
+import { useOfflineSync } from './hooks/useOfflineSync.ts';
+import { useStockEngine } from './hooks/useStockEngine.ts';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.ts';
+import { useItemActions } from './hooks/useItemActions.ts';
+import { hasPendingOfflineSync } from './services/offline-queue.ts';
 import {
   saveIsolatedProfileIdb,
   saveUserListsIdb,
@@ -123,12 +123,12 @@ import {
   recordSkippedKeysIdb,
   removeSkippedKeyIdb,
   loadStockIdb,
-} from './services/storage-idb';
+} from './services/storage-idb.ts';
 import {
   indexItemForSeries,
   registerLocalSavedSeriesHints,
   computeUserSeriesUniverses,
-} from './services/series-service';
+} from './services/series-service.ts';
 import {
   consumeStockItem,
   enrichStockItemsTopCast,
@@ -140,27 +140,27 @@ import {
   seedCandidatePoolFromStock,
   subscribeStockState,
   syncStockWithUserExclusions,
-} from './services/stock-engine';
+} from './services/stock-engine.ts';
 import {
   enforcePosterCacheQuota,
   requestServiceWorkerPosterPurge,
-} from './services/poster-cache-manager';
-import { getItemEncodingSync, maintainEncodingsDepot } from './services/encoding-service';
-import { runIdbSchemaMigrationsOnce } from './services/idb-schema-version';
-import { computeProfileCentroid, cosineSimilarity } from './core/encoding';
-import { advanceTvEpisodeProgress } from './core/tv-progress';
-import { mergeDuplicateSavedPair } from './core/duplicate-detector';
+} from './services/poster-cache-manager.ts';
+import { getItemEncodingSync, maintainEncodingsDepot } from './services/encoding-service.ts';
+import { runIdbSchemaMigrationsOnce } from './services/idb-schema-version.ts';
+import { computeProfileCentroid, cosineSimilarity } from './core/encoding.ts';
+import { advanceTvEpisodeProgress } from './core/tv-progress.ts';
+import { mergeDuplicateSavedPair } from './core/duplicate-detector.ts';
 import {
   checkWeeklyAutoBackup,
   recordProfileChangeAndMaybeBackup,
-} from './services/auto-backup-service';
-import { startIdleStockEnrichment } from './services/idle-enrichment-service';
-import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers';
+} from './services/auto-backup-service.ts';
+import { startIdleStockEnrichment } from './services/idle-enrichment-service.ts';
+import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
 import {
   compareMediaDatesAscending,
   compareMediaDatesDescending,
   isWithinReleaseWindow,
-} from './utils/release-window';
+} from './utils/release-window.ts';
 
 const PROFILES_STORAGE = 'cinetrack.profiles.v1';
 const ACTIVE_PROFILE_STORAGE = 'cinetrack.activeProfile.v1';

@@ -1,15 +1,15 @@
 import React, { useState, useRef } from 'react';
-import type { Preferences, Profile, SavedItem } from '../core/cinetrack-core';
-import { exportItemsToCsv, importItemsFromCsv } from '../core/exporters';
-import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits';
+import type { Preferences, Profile, SavedItem } from '../core/cinetrack-core.ts';
+import { exportItemsToCsv, importItemsFromCsv } from '../core/exporters.ts';
+import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
 import {
   createProfileBackupExport,
   downloadVerifiedBackupBinary,
   type ProfileBackupExportReportClient,
   type ServerBackupMetadata,
-} from '../services/api';
-import { recordManualBackupSuccess } from '../services/auto-backup-service';
-import type { RemoteSyncStatusPayload } from './ProfileGitHubSyncSection';
+} from '../services/api.ts';
+import { recordManualBackupSuccess } from '../services/auto-backup-service.ts';
+import type { RemoteSyncStatusPayload } from './ProfileGitHubSyncSection.tsx';
 
 interface ProfileBackupTabProps {
   activeProfileId: string;

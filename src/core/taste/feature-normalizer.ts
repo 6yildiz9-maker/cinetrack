@@ -11,7 +11,7 @@
 // - Shadow metrikler (scoringEnabled=false) aktif hale getirilmez
 // ===========================================================================
 
-import type { ContentFeature, MetricDefinition } from "./types";
+import type { ContentFeature, MetricDefinition } from "./types.ts";
 
 // === Yardımcılar ===
 

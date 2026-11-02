@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   computeStockHealthMetrics,
   type StockHealthMetrics,
-} from '../services/stock-health-service';
+} from '../services/stock-health-service.ts';
 
 interface StockHealthPanelProps {
   isOpen: boolean;

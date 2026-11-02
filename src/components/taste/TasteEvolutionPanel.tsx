@@ -3,9 +3,9 @@ import { Calendar, TrendingDown, TrendingUp } from "lucide-react";
 import type {
   MonthlyTasteSnapshotClient,
   TasteDriftAlertClient,
-} from "../../services/taste-api";
-import { getMetricDisplayTitle } from "../../core/taste/metric-labels";
-import { GlassCard } from "../ui/GlassCard";
+} from "../../services/taste-api.ts";
+import { getMetricDisplayTitle } from "../../core/taste/metric-labels.ts";
+import { GlassCard } from "../ui/GlassCard.tsx";
 
 export interface TasteEvolutionPanelProps {
   snapshots: MonthlyTasteSnapshotClient[];

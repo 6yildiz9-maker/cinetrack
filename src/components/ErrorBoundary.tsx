@@ -1,5 +1,5 @@
 import React from 'react';
-import { resetDerivedCachesPreserveProfileAndStock } from '../services/idb-schema-version';
+import { resetDerivedCachesPreserveProfileAndStock } from '../services/idb-schema-version.ts';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;

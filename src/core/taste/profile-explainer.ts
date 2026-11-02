@@ -4,8 +4,8 @@
 // KRİTİK: UI hesaplama yapmaz, yalnızca gösterir
 // ===========================================================================
 
-import type { TasteProfile, TasteMetric, MetricDefinition, ContentTasteItem } from "./types";
-import { TAXONOMY_V01, getMetricById } from "./taxonomy";
+import type { TasteProfile, TasteMetric, MetricDefinition, ContentTasteItem } from "./types.ts";
+import { TAXONOMY_V01, getMetricById } from "./taxonomy.ts";
 
 export interface MetricExplanation {
   metricId: string;

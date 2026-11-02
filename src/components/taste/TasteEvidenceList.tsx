@@ -4,7 +4,7 @@
 // ===========================================================================
 
 import React from "react";
-import type { EvidenceItem } from "../../core/taste/profile-explainer";
+import type { EvidenceItem } from "../../core/taste/profile-explainer.ts";
 
 interface TasteEvidenceListProps {
   positiveEvidence: EvidenceItem[];

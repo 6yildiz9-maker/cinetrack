@@ -9,8 +9,8 @@ import {
   normalizeTasteRing,
   makeMediaKey,
   matchesSelectedGenre,
-} from '../core/cinetrack-core';
-import { MediaCard } from './MediaCard';
+} from '../core/cinetrack-core.ts';
+import { MediaCard } from './MediaCard.tsx';
 
 interface TasteMapViewProps {
   tasteMap: PersistentTasteMapData;

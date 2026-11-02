@@ -3,7 +3,7 @@
 // Olay → geçerli öğrenme durumu (TP-005)
 // ===========================================================================
 
-import type { TasteEvent } from "./types";
+import type { TasteEvent } from "./types.ts";
 
 export interface LearningState {
   contentId: string;

@@ -5,7 +5,7 @@
 
 import path from "node:path";
 import { Router } from "express";
-import { readJsonFileWithRecoveryAsync } from "./atomic-json";
+import { readJsonFileWithRecoveryAsync } from "./atomic-json.ts";
 import {
   readTasteProfile,
   writeTasteProfile,
@@ -16,23 +16,23 @@ import {
   writeTasteIndex,
   readTasteObjections,
   writeTasteObjections,
-} from "./taste-store";
-import { explainMetric, type EvidenceItem } from "../core/taste/profile-explainer";
-import { aggregateProfiles } from "../core/taste/profile-aggregator";
+} from "./taste-store.ts";
+import { explainMetric, type EvidenceItem } from "../core/taste/profile-explainer.ts";
+import { aggregateProfiles } from "../core/taste/profile-aggregator.ts";
 import type {
   ContentTasteItem,
   ManualOverrideMode,
   TasteEvent,
   TasteMetadataInput,
   TasteProfile,
-} from "../core/taste/types";
-import type { DataDocument } from "../core/cinetrack-core";
+} from "../core/taste/types.ts";
+import type { DataDocument } from "../core/cinetrack-core.ts";
 import {
   coerceItemToTasteMetadata,
   ensureInitialTasteBootstrap,
   triggerTasteProfileRebuild,
   upsertTasteMetadataInputs,
-} from "./taste-rebuild-coordinator";
+} from "./taste-rebuild-coordinator.ts";
 
 export interface MonthlyTasteSnapshot {
   month: string;

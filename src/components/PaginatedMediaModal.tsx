@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { findSavedItem, makeMediaKey, type SavedItem } from '../core/cinetrack-core';
-import type { TmdbItem } from '../types/tmdb';
-import { useDialogAccessibility } from '../utils/useDialogAccessibility';
-import { MediaCard } from './MediaCard';
+import { findSavedItem, makeMediaKey, type SavedItem } from '../core/cinetrack-core.ts';
+import type { TmdbItem } from '../types/tmdb.ts';
+import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';
+import { MediaCard } from './MediaCard.tsx';
 
 export const SHELF_INITIAL_COUNT = 24;
 export const MODAL_PAGE_SIZE = 40;

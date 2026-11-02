@@ -5,19 +5,19 @@
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { writeJsonFileAtomicAsync, readJsonFileWithRecoveryAsync } from "./atomic-json";
+import { writeJsonFileAtomicAsync, readJsonFileWithRecoveryAsync } from "./atomic-json.ts";
 import type {
   TasteEvent,
   TasteProfile,
   ContentTasteIndex,
   TasteManifest,
   TasteFeatureObjection,
-} from "../core/taste/types";
+} from "../core/taste/types.ts";
 import {
   ALGORITHM_VERSION,
   TAXONOMY_VERSION,
   CONFIG_VERSION,
-} from "../core/taste/constants";
+} from "../core/taste/constants.ts";
 
 export const TASTE_DATA_DIR = "data/taste";
 export const TASTE_ARCHIVE_DIR = "data/taste/archive/taste-events";

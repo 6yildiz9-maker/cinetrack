@@ -16,16 +16,16 @@ import type {
   ContentTasteIndex,
   ContentTasteItem,
   TasteIndexBuildStats,
-} from "./types";
-import { TAXONOMY_V01 } from "./taxonomy";
-import { extractContentTasteItem, buildMetadataHash, shouldReextract } from "./feature-extractor";
-import { normalizeContentFeatures } from "./feature-normalizer";
+} from "./types.ts";
+import { TAXONOMY_V01 } from "./taxonomy.ts";
+import { extractContentTasteItem, buildMetadataHash, shouldReextract } from "./feature-extractor.ts";
+import { normalizeContentFeatures } from "./feature-normalizer.ts";
 import {
   TASTE_SCHEMA_VERSION,
   EXTRACTOR_VERSION,
   TAXONOMY_VERSION,
   TMDB_MAPPING_VERSION,
-} from "./constants";
+} from "./constants.ts";
 
 /** Boş ContentTasteIndex oluşturur */
 export function createEmptyTasteIndex(options?: {

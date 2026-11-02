@@ -11,22 +11,22 @@
 // - contentId formatı keys.ts → makeMediaKey ile uyumlu: "movie:123" / "tv:456"
 // ===========================================================================
 
-import type { ContentTasteItem, ContentFeature, TasteMetadataInput } from "./types";
-import { TAXONOMY_V01 } from "./taxonomy";
+import type { ContentTasteItem, ContentFeature, TasteMetadataInput } from "./types.ts";
+import { TAXONOMY_V01 } from "./taxonomy.ts";
 import {
   MOVIE_GENRE_IDS,
   TV_GENRE_IDS,
   KEYWORD_TO_METRIC,
   ORIGIN_RULES,
   FORMAT_RULES,
-} from "./tmdb-mappings";
+} from "./tmdb-mappings.ts";
 import {
   EXTRACTOR_VERSION,
   TMDB_MAPPING_VERSION,
   FEATURE_STRENGTH,
   FEATURE_CONFIDENCE,
   TAXONOMY_VERSION,
-} from "./constants";
+} from "./constants.ts";
 
 // === Deterministik hash (Node.js crypto veya SubtleCrypto olmadan senkron) ===
 // Faz 2 için: JSON serileştirmesi + djb2 varyantı (hızlı, çakışma riski düşük)

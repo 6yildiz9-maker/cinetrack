@@ -1,12 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import type { Profile, SavedItem } from '../core/cinetrack-core';
+import type { Profile, SavedItem } from '../core/cinetrack-core.ts';
 import {
   buildMediaJourneyTimeline,
   buildTasteDnaProfile,
   computeProfileWatchlistIntersection,
-} from '../core/exporters';
-import { calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
-import { TasteProfileDashboard } from './taste/TasteProfileDashboard';
+} from '../core/exporters.ts';
+import { calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers.ts';
+import { TasteProfileDashboard } from './taste/TasteProfileDashboard.tsx';
 
 interface ProfileStatsTabProps {
   effectiveActiveProfile: Profile;

@@ -15,25 +15,25 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
-import type { TasteProfile } from "../../core/taste/types";
+import type { TasteProfile } from "../../core/taste/types.ts";
 import type {
   EvidenceItem,
   MetricExplanation,
-} from "../../core/taste/profile-explainer";
+} from "../../core/taste/profile-explainer.ts";
 import {
   getCategoryDisplayLabel,
   getMetricDisplayTitle,
   getStatusLabelTr,
   resolveEffectiveMetricView,
-} from "../../core/taste/metric-labels";
+} from "../../core/taste/metric-labels.ts";
 import {
   fetchMetricDetail,
   postFeatureObjection,
   subscribeTasteProfileUpdated,
   type OverrideRequest,
-} from "../../services/taste-api";
-import { imageUrl } from "../../utils/helpers";
-import { TastePreferenceEditor } from "./TastePreferenceEditor";
+} from "../../services/taste-api.ts";
+import { imageUrl } from "../../utils/helpers.ts";
+import { TastePreferenceEditor } from "./TastePreferenceEditor.tsx";
 
 export interface TasteMetricDetailProps {
   metricId: string;

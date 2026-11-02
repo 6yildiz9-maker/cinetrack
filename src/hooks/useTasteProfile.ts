@@ -4,14 +4,14 @@
 // ===========================================================================
 
 import { useState, useEffect, useCallback } from "react";
-import type { TasteProfile } from "../core/taste/types";
+import type { TasteProfile } from "../core/taste/types.ts";
 import {
   fetchTasteProfile,
   postManualOverride,
   deleteManualOverride,
   subscribeTasteProfileUpdated,
-} from "../services/taste-api";
-import type { OverrideRequest } from "../services/taste-api";
+} from "../services/taste-api.ts";
+import type { OverrideRequest } from "../services/taste-api.ts";
 
 export type TasteProfileStatus = "idle" | "loading" | "success" | "error";
 

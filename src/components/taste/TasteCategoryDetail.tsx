@@ -4,13 +4,13 @@
 // ===========================================================================
 
 import React, { useState } from "react";
-import type { TasteProfile, MetricDefinition } from "../../core/taste/types";
-import { TasteMetricDetail } from "./TasteMetricDetail";
+import type { TasteProfile, MetricDefinition } from "../../core/taste/types.ts";
+import { TasteMetricDetail } from "./TasteMetricDetail.tsx";
 import {
   postManualOverride,
   deleteManualOverride,
   type OverrideRequest,
-} from "../../services/taste-api";
+} from "../../services/taste-api.ts";
 
 interface CategoryMetricEntry {
   definition: MetricDefinition;

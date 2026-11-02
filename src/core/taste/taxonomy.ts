@@ -3,7 +3,7 @@
 // 37 skorlayan + 5 gölge metrik (TP-011)
 // ===========================================================================
 
-import type { MetricDefinition } from "./types";
+import type { MetricDefinition } from "./types.ts";
 
 export const TAXONOMY_V01: MetricDefinition[] = [
 

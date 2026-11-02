@@ -15,7 +15,7 @@ import {
   type RelationshipGraphNode,
   type RelationshipMode,
   type RelationshipType,
-} from '../core/relationship-explorer';
+} from '../core/relationship-explorer.ts';
 import {
   isCandidateEligibleInPool,
   loadPersistentPoolData,
@@ -24,19 +24,19 @@ import {
   type PoolCandidateItem,
   type Preferences,
   type SavedItem,
-} from '../core/cinetrack-core';
+} from '../core/cinetrack-core.ts';
 import {
   latestGraphCacheKey,
   readRelationshipCache,
   writeRelationshipCache,
   type RelationshipGraphSnapshot,
-} from '../services/relationship-cache';
-import { loadStockIdb } from '../services/storage-idb';
-import { computeProfileCentroid, cosineSimilarity } from '../core/encoding';
-import { getItemEncodingSync } from '../services/encoding-service';
-import { RelationshipDetailsPanel } from './RelationshipDetailsPanel';
-import { renderRelationshipCanvasNode } from './RelationshipCanvas';
-import { RelationshipListView } from './RelationshipListView';
+} from '../services/relationship-cache.ts';
+import { loadStockIdb } from '../services/storage-idb.ts';
+import { computeProfileCentroid, cosineSimilarity } from '../core/encoding.ts';
+import { getItemEncodingSync } from '../services/encoding-service.ts';
+import { RelationshipDetailsPanel } from './RelationshipDetailsPanel.tsx';
+import { renderRelationshipCanvasNode } from './RelationshipCanvas.ts';
+import { RelationshipListView } from './RelationshipListView.tsx';
 
 interface RelationshipExplorerProps {
   mode: RelationshipMode;

@@ -9,8 +9,8 @@ import type {
   TasteManifest,
   TasteEvent,
   TasteMetadataInput,
-} from "../core/taste/types";
-import type { MetricExplanation } from "../core/taste/profile-explainer";
+} from "../core/taste/types.ts";
+import type { MetricExplanation } from "../core/taste/profile-explainer.ts";
 
 const BASE = "/api/taste";
 const TASTE_CHANNEL_NAME = "cinetrack-taste-profile-sync";

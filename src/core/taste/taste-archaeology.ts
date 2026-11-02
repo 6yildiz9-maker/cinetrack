@@ -6,8 +6,8 @@
 // Bu durumda sonuç "insufficient_data" olur, başarısız değil.
 // ===========================================================================
 
-import type { TasteEvent, TasteProfile, ContentTasteItem } from "./types";
-import { aggregateProfiles } from "./profile-aggregator";
+import type { TasteEvent, TasteProfile, ContentTasteItem } from "./types.ts";
+import { aggregateProfiles } from "./profile-aggregator.ts";
 
 export interface ArchaeologyResult {
   spearmanRho: number | null;          // null = yetersiz veri

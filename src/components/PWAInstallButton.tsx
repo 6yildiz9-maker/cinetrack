@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { usePWAInstall } from '../hooks/usePWAInstall';
-import { t } from '../i18n';
+import { usePWAInstall } from '../hooks/usePWAInstall.ts';
+import { t } from '../i18n/index.ts';
 
 export const PWAInstallButton: React.FC = () => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();

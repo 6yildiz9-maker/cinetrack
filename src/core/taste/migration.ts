@@ -4,9 +4,9 @@
 // KRİTİK: cinetrack-data.json ASLA değiştirilmez, sadece okunur
 // ===========================================================================
 
-import type { TasteEvent, MigrationResult, TimeSource, TimePrecision } from "./types";
-import type { DataDocument, SavedItem } from "../cinetrack-core";
-import { resolveExperiencedAt } from "./temporal-analyzer";
+import type { TasteEvent, MigrationResult, TimeSource, TimePrecision } from "./types.ts";
+import type { DataDocument, SavedItem } from "../cinetrack-core.ts";
+import { resolveExperiencedAt } from "./temporal-analyzer.ts";
 
 export interface MigrationInput {
   dataDocument: DataDocument;

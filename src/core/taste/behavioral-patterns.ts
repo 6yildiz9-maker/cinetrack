@@ -4,7 +4,7 @@
 // V1'de sadece alan hazırlığı; güvenilir veri yoksa hesaplanmaz
 // ===========================================================================
 
-import type { TasteEvent } from "./types";
+import type { TasteEvent } from "./types.ts";
 
 export interface BehavioralPatterns {
   completionist: number | null; // 0-1 arası veya null (veri yetersiz)

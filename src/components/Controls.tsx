@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { DISCOVER_PROVIDER_CHIPS } from '../utils/helpers';
-import { StockHealthPanel } from './StockHealthPanel';
+import { DISCOVER_PROVIDER_CHIPS } from '../utils/helpers.ts';
+import { StockHealthPanel } from './StockHealthPanel.tsx';
 
 interface ControlsProps {
   tab: 'discover' | 'list' | 'taste-map' | 'relationships';
