@@ -11,6 +11,7 @@
 
 import type { TasteProfile, ContentTasteItem } from "./types";
 import { RECOMMENDATION_WEIGHTS } from "./constants";
+import { resolveEffectiveMetricView } from "./metric-labels";
 
 export interface RecommendationCandidate {
   contentId: string;
@@ -82,7 +83,10 @@ export function createRecommendationAdapter(): RecommendationAdapter {
 
         for (const [metricId, feature] of Object.entries(contentItem.features)) {
           const profileMetric = profile.metrics[metricId];
-          if (!profileMetric || profileMetric.status === "unknown") continue;
+          const view = resolveEffectiveMetricView(profileMetric);
+          if (!profileMetric || view.isExcluded || view.effectiveStatus === "unknown") {
+            continue;
+          }
 
           // Kategori belirle
           const categoryId = metricId.split(".")[0];
@@ -93,11 +97,11 @@ export function createRecommendationAdapter(): RecommendationAdapter {
             categoryWeights[categoryId] = 0;
           }
 
-          // Uyum: özellik gücü × güven × profil afinite (0-1 normalize)
+          // Uyum: özellik gücü × güven × efektif profil afinite (0-1 normalize)
           const fit =
             (feature.strength / 100) *
             feature.confidence *
-            ((profileMetric.affinity + 100) / 200);
+            ((view.effectiveAffinity + 100) / 200);
           categoryScores[categoryId] += fit;
           categoryWeights[categoryId] += weight;
         }
@@ -176,11 +180,14 @@ function determineConfidence(
   profile: TasteProfile,
   contentItem: ContentTasteItem
 ): "low" | "medium" | "high" {
-  const metrics = Object.keys(contentItem.features);
+  const metrics = Object.keys(contentItem.features).filter((m) => {
+    const view = resolveEffectiveMetricView(profile.metrics[m]);
+    return !view.isExcluded;
+  });
   if (metrics.length === 0) return "low";
   const knownMetrics = metrics.filter((m) => {
-    const profileMetric = profile.metrics[m];
-    return profileMetric && profileMetric.status !== "unknown";
+    const view = resolveEffectiveMetricView(profile.metrics[m]);
+    return view.effectiveStatus !== "unknown";
   });
   const coverage = knownMetrics.length / metrics.length;
   if (coverage >= 0.7) return "high";
@@ -196,11 +203,13 @@ function checkVeto(
   for (const [metricId, feature] of Object.entries(contentItem.features)) {
     const profileMetric = profile.metrics[metricId];
     if (!profileMetric) continue;
+    const view = resolveEffectiveMetricView(profileMetric);
+    if (view.isExcluded) continue;
 
     // Yüksek güvenli + güçlü olumsuz
     if (
-      profileMetric.status === "directional" &&
-      profileMetric.affinity < -70 &&
+      view.effectiveStatus === "directional" &&
+      view.effectiveAffinity < -70 &&
       profileMetric.evidence.negMass > 5 &&
       feature.strength > 80 &&
       feature.confidence > 0.8
@@ -221,12 +230,13 @@ function findTopMetrics(
 
   for (const [metricId, feature] of Object.entries(contentItem.features)) {
     const profileMetric = profile.metrics[metricId];
-    if (!profileMetric || profileMetric.status === "unknown") continue;
+    const view = resolveEffectiveMetricView(profileMetric);
+    if (!profileMetric || view.isExcluded || view.effectiveStatus === "unknown") continue;
 
     const score =
       (feature.strength / 100) *
       feature.confidence *
-      Math.abs(profileMetric.affinity / 100);
+      Math.abs(view.effectiveAffinity / 100);
     scores.push({ metricId, score });
   }
 

@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@layer tokens, theme, base, components, utilities;
+
+@import "tailwindcss";
+
+@theme {
+  --color-cinema-bg: #050507;
+  --color-cinema-surface: #121216;
+  --color-cinema-surfaceHover: #1A1A20;
+  --color-cinema-gold: #FFB300;
+  --color-cinema-goldDim: rgba(255, 179, 0, 0.15);
+  --color-cinema-cyan: #00E5FF;
+  --color-cinema-cyanDim: rgba(0, 229, 255, 0.15);
+  --color-cinema-danger: #FF453A;
+  --color-cinema-dangerDim: rgba(255, 69, 58, 0.15);
+  --color-cinema-text: #F5F5F7;
+  --color-cinema-textMuted: #86868B;
+
+  --font-display: "Playfair Display", Georgia, serif;
+  --font-body: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --shadow-glowGold: 0 0 20px rgba(255, 179, 0, 0.3);
+  --shadow-glowCyan: 0 0 20px rgba(0, 229, 255, 0.3);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+
+  --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-shimmer: cinema-shimmer 2s linear infinite;
+
+  @keyframes cinema-shimmer {
+    0% {
+      background-position: -1000px 0;
+    }
+    100% {
+      background-position: 1000px 0;
+    }
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-cinema-bg text-cinema-text font-body antialiased;
+    background-image:
+      radial-gradient(circle at 15% 50%, rgba(0, 229, 255, 0.03) 0%, transparent 25%),
+      radial-gradient(circle at 85% 30%, rgba(255, 179, 0, 0.03) 0%, transparent 25%);
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-cinema-surface/75 backdrop-blur-xl border border-white/8 rounded-2xl shadow-glass;
+  }
+
+  .glass-card {
+    @apply bg-cinema-surface/55 backdrop-blur-md border border-white/6 rounded-xl transition-all duration-200 hover:bg-cinema-surfaceHover hover:border-white/12;
+  }
+
+  .metric-value {
+    @apply font-mono text-2xl font-semibold tracking-tight tabular-nums;
+  }
+
+  .btn-cinematic {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center justify-center gap-2 whitespace-nowrap;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200 flex items-center justify-center gap-2 whitespace-nowrap bg-cinema-gold text-black hover:bg-amber-400 hover:shadow-glowGold;
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center justify-center gap-2 whitespace-nowrap text-cinema-textMuted hover:text-cinema-text hover:bg-white/5;
+  }
+}
+
+/* Özel Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}

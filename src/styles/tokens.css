@@ -2,44 +2,45 @@
   :root {
     color-scheme: dark;
 
-    /* Fonts */
-    --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    /* Fonts — Derin Sinema (Playfair Display + Plus Jakarta Sans + JetBrains Mono) */
+    --font-display: 'Playfair Display', Georgia, 'Times New Roman', serif;
+    --font-sans: 'Plus Jakarta Sans', 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-    /* Zeminler — derinlik hiyerarşisi */
-    --bg-app: #0b1220; /* sayfa zemini */
-    --bg-canvas: #071321; /* grafik / derin tuval zemini */
-    --bg-surface: #111a2b; /* buton, çip, kart rafı, toolbar */
-    --bg-elevated: #182540; /* kart ana gövdesi, modal, drawer, overlay */
-    --bg-header: rgba(11, 18, 32, 0.94);
-    --bg-scrim: rgba(2, 6, 23, 0.74);
-    --bg-overlay: rgba(11, 18, 32, 0.74);
-    --bg-hover: rgba(255, 255, 255, 0.05);
+    /* Zeminler — Derin Sinema hiyerarşisi (#050507 -> #121216 -> #1A1A20) */
+    --bg-app: #050507; /* Derin boşluk siyahı */
+    --bg-canvas: #08080c; /* Grafik / derin tuval zemini */
+    --bg-surface: #121216; /* Cam efektli yüzeyler, buton, çip, toolbar */
+    --bg-elevated: #1a1a20; /* Kart ana gövdesi, modal, drawer, hover yüzeyi */
+    --bg-header: rgba(5, 5, 7, 0.86);
+    --bg-scrim: rgba(5, 5, 7, 0.80);
+    --bg-overlay: rgba(5, 5, 7, 0.82);
+    --bg-hover: rgba(255, 255, 255, 0.06);
 
     /* Kenar & metin */
-    --border-subtle: rgba(148, 163, 184, 0.14);
-    --border-strong: rgba(148, 163, 184, 0.28);
-    --text-1: #e6edf7; /* başlıklar, sayılar */
-    --text-2: #9fb0c7; /* gövde, meta */
-    --text-3: #7b8ca3; /* pasif, ipucu — bg-app üzerinde WCAG AA */
-    --text-on-accent: #ffffff;
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text-1: #f5f5f7; /* başlıklar, sayılar */
+    --text-2: #a1a1aa; /* gövde, meta */
+    --text-3: #86868b; /* pasif, ipucu — bg-app üzerinde WCAG AA */
+    --text-on-accent: #050507; /* parlak altın/camgöbeği üzerinde yüksek kontrast koyu mürekkep */
 
-    /* Vurgu & anlam */
-    --accent: #38bdf8; /* birincil eylem, aktif sekme, odak */
-    --accent-strong: #0ea5e9;
-    --accent-soft: rgba(56, 189, 248, 0.14);
-    --accent-border: rgba(56, 189, 248, 0.36);
-    --gold: #fbbf24; /* TMDB puanı, ödüller */
-    --gold-soft: rgba(251, 191, 36, 0.16);
+    /* Vurgu & anlam — Derin Sinema Altın & Camgöbeği */
+    --accent: #00e5ff; /* keşif, veri görselleştirme, aktif odak */
+    --accent-strong: #00b8d4;
+    --accent-soft: rgba(0, 229, 255, 0.15);
+    --accent-border: rgba(0, 229, 255, 0.34);
+    --gold: #ffb300; /* yüksek puan, başarı, birincil sinematik vurgu */
+    --gold-soft: rgba(255, 179, 0, 0.15);
     --success: #34d399;
     --success-soft: rgba(52, 211, 153, 0.15);
     --success-border: rgba(52, 211, 153, 0.36);
-    --warning: #fbbf24;
-    --warning-soft: rgba(245, 158, 11, 0.16);
-    --warning-border: rgba(245, 158, 11, 0.36);
-    --danger: #fb7185;
-    --danger-soft: rgba(251, 113, 133, 0.15);
-    --danger-border: rgba(251, 113, 133, 0.38);
+    --warning: #ffb300;
+    --warning-soft: rgba(255, 179, 0, 0.15);
+    --warning-border: rgba(255, 179, 0, 0.36);
+    --danger: #ff453a;
+    --danger-soft: rgba(255, 69, 58, 0.15);
+    --danger-border: rgba(255, 69, 58, 0.38);
 
     /* İlişki grafiği ek anlam renkleri */
     --link-person: #a78bfa;

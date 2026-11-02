@@ -9,6 +9,7 @@
 // ===========================================================================
 
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { readJsonFileWithRecoveryAsync } from "./atomic-json";
 import {
@@ -19,6 +20,7 @@ import {
   readTasteProfile,
   writeTasteProfile,
   readTasteManifest,
+  readTasteObjections,
 } from "./taste-store";
 import {
   buildTasteIndex,
@@ -50,8 +52,8 @@ export interface RebuildCoordinatorResult {
   indexedItemsCount: number;
 }
 
-let activeRebuildChain: Promise<RebuildCoordinatorResult> | null = null;
-let bootstrapPromise: Promise<void> | null = null;
+const activeRebuildChains = new Map<string, Promise<RebuildCoordinatorResult>>();
+const bootstrapPromises = new Map<string, Promise<void>>();
 
 /**
  * Herhangi bir SavedItem / TMDB kaydını güvenli şekilde TasteMetadataInput'a dönüştürür.
@@ -161,9 +163,16 @@ export function coerceItemToTasteMetadata(raw: Record<string, unknown> | null | 
 /**
  * İçerik metadata girdilerini cinetrack-taste-index.json deposuna ekler/günceller.
  */
-export async function upsertTasteMetadataInputs(inputs: TasteMetadataInput[]): Promise<void> {
+export async function upsertTasteMetadataInputs(
+  inputs: TasteMetadataInput[],
+  dataDir: string = "data"
+): Promise<void> {
   if (!inputs.length) return;
-  const existingIndex = (await readTasteIndex()) ?? createEmptyTasteIndex();
+  const [existingIndexRaw, objections] = await Promise.all([
+    readTasteIndex(dataDir),
+    readTasteObjections(dataDir),
+  ]);
+  const existingIndex = existingIndexRaw ?? createEmptyTasteIndex();
   const asOf = new Date().toISOString();
   const { index, stats } = buildTasteIndex(inputs, existingIndex, {
     asOf,
@@ -172,8 +181,17 @@ export async function upsertTasteMetadataInputs(inputs: TasteMetadataInput[]): P
     mappingVersion: TMDB_MAPPING_VERSION,
   });
 
-  if (stats.created > 0 || stats.updated > 0) {
-    await writeTasteIndex(index);
+  let prunedObjections = false;
+  for (const obj of objections) {
+    const item = index.items[obj.contentId];
+    if (item?.features && obj.metricId in item.features) {
+      delete item.features[obj.metricId];
+      prunedObjections = true;
+    }
+  }
+
+  if (stats.created > 0 || stats.updated > 0 || prunedObjections) {
+    await writeTasteIndex(index, dataDir);
   }
 }
 
@@ -241,11 +259,12 @@ async function executeAggregationOffMainThread(
   }
 }
 
-async function performRebuildOnce(): Promise<RebuildCoordinatorResult> {
-  const [events, index, existingProfile] = await Promise.all([
-    readTasteEvents(),
-    readTasteIndex(),
-    readTasteProfile(),
+async function performRebuildOnce(dataDir: string = "data"): Promise<RebuildCoordinatorResult> {
+  const [events, index, existingProfile, objections] = await Promise.all([
+    readTasteEvents(dataDir),
+    readTasteIndex(dataDir),
+    readTasteProfile(dataDir),
+    readTasteObjections(dataDir),
   ]);
 
   const existingOverrides: Record<string, NonNullable<TasteMetric["manualOverride"]>> = {};
@@ -259,7 +278,26 @@ async function performRebuildOnce(): Promise<RebuildCoordinatorResult> {
 
   const generationId = randomUUID();
   const asOf = new Date().toISOString();
-  const contentItems = index?.items ?? {};
+  const rawItems = index?.items ?? {};
+  const contentItems: Record<string, ContentTasteItem> = {};
+  const objectionSet = new Set(objections.map((o) => `${o.contentId}::${o.metricId}`));
+
+  for (const [contentId, item] of Object.entries(rawItems)) {
+    if (!item?.features || objectionSet.size === 0) {
+      contentItems[contentId] = item;
+      continue;
+    }
+    const filteredFeatures: ContentTasteItem["features"] = {};
+    for (const [mId, feat] of Object.entries(item.features)) {
+      if (!objectionSet.has(`${contentId}::${mId}`)) {
+        filteredFeatures[mId] = feat;
+      }
+    }
+    contentItems[contentId] = {
+      ...item,
+      features: filteredFeatures,
+    };
+  }
 
   const profiles = await executeAggregationOffMainThread(
     generationId,
@@ -269,8 +307,8 @@ async function performRebuildOnce(): Promise<RebuildCoordinatorResult> {
     existingOverrides
   );
 
-  await writeTasteProfile(profiles.unified);
-  const manifest = await readTasteManifest();
+  await writeTasteProfile(profiles.unified, dataDir);
+  const manifest = await readTasteManifest(dataDir);
 
   return {
     generationId: manifest?.generationId ?? generationId,
@@ -283,34 +321,38 @@ async function performRebuildOnce(): Promise<RebuildCoordinatorResult> {
 /**
  * Kuyruklanmış arka plan profil yeniden hesaplamasını tetikler.
  */
-export function triggerTasteProfileRebuild(): Promise<RebuildCoordinatorResult> {
-  const nextRun = (activeRebuildChain ?? Promise.resolve(null)).then(
-    () => performRebuildOnce(),
-    () => performRebuildOnce()
+export function triggerTasteProfileRebuild(
+  dataDir: string = "data"
+): Promise<RebuildCoordinatorResult> {
+  const prevChain = activeRebuildChains.get(dataDir) ?? Promise.resolve(null);
+  const nextRun = prevChain.then(
+    () => performRebuildOnce(dataDir),
+    () => performRebuildOnce(dataDir)
   );
-  activeRebuildChain = nextRun;
+  activeRebuildChains.set(dataDir, nextRun);
   void nextRun.finally(() => {
-    if (activeRebuildChain === nextRun) {
-      activeRebuildChain = null;
+    if (activeRebuildChains.get(dataDir) === nextRun) {
+      activeRebuildChains.delete(dataDir);
     }
   });
   return nextRun;
 }
 
 /**
- * İlk açılışta taste olayları veya profil henüz boşsa data/cinetrack-data.json'dan
+ * İlk açılışta taste olayları veya profil henüz boşsa cinetrack-data.json'dan
  * SALT-OKUNUR (read-only) olarak başlangıç indeksini ve profilini üretir.
  */
-export async function ensureInitialTasteBootstrap(): Promise<void> {
-  if (bootstrapPromise) {
-    return bootstrapPromise;
+export async function ensureInitialTasteBootstrap(dataDir: string = "data"): Promise<void> {
+  const running = bootstrapPromises.get(dataDir);
+  if (running) {
+    return running;
   }
 
-  bootstrapPromise = (async () => {
+  const task = (async () => {
     try {
       const [existingEvents, existingProfile] = await Promise.all([
-        readTasteEvents(),
-        readTasteProfile(),
+        readTasteEvents(dataDir),
+        readTasteProfile(dataDir),
       ]);
 
       const hasPopulatedProfile = Boolean(
@@ -325,7 +367,9 @@ export async function ensureInitialTasteBootstrap(): Promise<void> {
       }
 
       // cinetrack-data.json SADECE OKUNUR (ASLA yazılmaz — Mutlak Kural)
-      const dataDocRes = await readJsonFileWithRecoveryAsync<DataDocument>("data/cinetrack-data.json");
+      const userDataPath =
+        dataDir === "data" ? "data/cinetrack-data.json" : path.join(dataDir, "cinetrack-data.json");
+      const dataDocRes = await readJsonFileWithRecoveryAsync<DataDocument>(userDataPath);
       if (dataDocRes.status !== "ok" && dataDocRes.status !== "recovered") {
         return;
       }
@@ -343,9 +387,13 @@ export async function ensureInitialTasteBootstrap(): Promise<void> {
       const metadataMap = new Map<string, TasteMetadataInput>();
 
       // Önce yerel katalog dosyalarındaki zengin TMDB metadata kayıtlarını yükle (salt-okunur)
+      const moviesCatPath =
+        dataDir === "data" ? "data/catalog/movies.json" : path.join(dataDir, "catalog", "movies.json");
+      const tvCatPath =
+        dataDir === "data" ? "data/catalog/tv.json" : path.join(dataDir, "catalog", "tv.json");
       const [moviesCatalog, tvCatalog] = await Promise.all([
-        readJsonFileWithRecoveryAsync<Record<string, Record<string, unknown>>>("data/catalog/movies.json"),
-        readJsonFileWithRecoveryAsync<Record<string, Record<string, unknown>>>("data/catalog/tv.json"),
+        readJsonFileWithRecoveryAsync<Record<string, Record<string, unknown>>>(moviesCatPath),
+        readJsonFileWithRecoveryAsync<Record<string, Record<string, unknown>>>(tvCatPath),
       ]);
       const rawCatalogByKey = new Map<string, Record<string, unknown>>();
       for (const catalogRes of [moviesCatalog, tvCatalog]) {
@@ -395,24 +443,25 @@ export async function ensureInitialTasteBootstrap(): Promise<void> {
       }
 
       if (metadataMap.size > 0) {
-        await upsertTasteMetadataInputs(Array.from(metadataMap.values()));
+        await upsertTasteMetadataInputs(Array.from(metadataMap.values()), dataDir);
       }
 
       if (existingEvents.length === 0) {
         const asOf = new Date().toISOString();
         const migrated = migrateExistingData({ dataDocument: doc, asOf });
         if (migrated.events.length > 0) {
-          await writeTasteEvents(migrated.events);
+          await writeTasteEvents(migrated.events, dataDir);
         }
       }
 
-      await triggerTasteProfileRebuild();
+      await triggerTasteProfileRebuild(dataDir);
     } catch {
       // Soğuk başlatma hatası ana uygulamayı bloklamaz
     } finally {
-      bootstrapPromise = null;
+      bootstrapPromises.delete(dataDir);
     }
   })();
 
-  return bootstrapPromise;
+  bootstrapPromises.set(dataDir, task);
+  return task;
 }

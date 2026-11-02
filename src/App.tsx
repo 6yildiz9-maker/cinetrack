@@ -296,7 +296,7 @@ export function App() {
 
   // Discover & Grid State
   const [tab, setTab] = useState<'discover' | 'list' | 'taste-map' | 'relationships'>('discover');
-  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph' | 'identity'>('poster');
+  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph' | 'identity'>('identity');
   const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
   const [forYouSubTab, setForYouSubTab] = useState<'recommendations' | 'series'>('recommendations');
@@ -2339,7 +2339,7 @@ export function App() {
     }
   };
 
-  const { saveItem, setItemStatus, markCompleted, dislikeItem } = useItemActions({
+  const { saveItem, setItemStatus, markCompleted, dislikeItem, hideItem } = useItemActions({
     getSavedItems: () => savedItemsRef.current,
     onCommitSavedItem: commitSavedItem,
   });
@@ -2553,6 +2553,37 @@ export function App() {
       }
 
       return { ...prev, disliked };
+    });
+    void recordProfileChangeAndMaybeBackup();
+  };
+
+  const handleToggleHide = (key: string) => {
+    setPreferences((prev) => {
+      const currentHidden = Array.isArray(prev.hidden) ? prev.hidden : [];
+      const isCurrentlyHidden = currentHidden.includes(key);
+      const hidden = isCurrentlyHidden
+        ? currentHidden.filter((k) => k !== key)
+        : [...currentHidden, key].slice(-500);
+
+      showToast(
+        isCurrentlyHidden
+          ? 'Gizlenenler listesinden kaldırıldı.'
+          : 'İçerik zevk profilinizi etkilemeden keşfet akışından gizlendi.'
+      );
+
+      if (!isCurrentlyHidden) {
+        const [mType, rawId] = key.split(':');
+        if (mType && rawId) {
+          void consumeStockItem({ id: rawId, media_type: mType }, activeProfileIdRef.current);
+        }
+        const targetMeta =
+          catalogItems.find((c) => `${c.media_type}:${c.id}` === key) ||
+          forYouItems.find((c) => `${c.media_type}:${c.id}` === key) ||
+          savedItems.find((s) => `${s.media_type}:${s.id}` === key);
+        hideItem(key, targetMeta as Record<string, unknown> | undefined);
+      }
+
+      return { ...prev, hidden };
     });
     void recordProfileChangeAndMaybeBackup();
   };
@@ -3258,6 +3289,14 @@ export function App() {
           <div className="taste-map-page">
             <div className="taste-map-view-toggle" role="group" aria-label="Zevk haritası görünüm modu">
               <button
+                className={`btn ${tasteMapDisplayMode === 'identity' ? 'btn-primary' : ''}`}
+                type="button"
+                onClick={() => setTasteMapDisplayMode('identity')}
+                aria-pressed={tasteMapDisplayMode === 'identity'}
+              >
+                Sinema Kimliğim
+              </button>
+              <button
                 className={`btn ${tasteMapDisplayMode === 'poster' ? 'btn-primary' : ''}`}
                 type="button"
                 onClick={() => setTasteMapDisplayMode('poster')}
@@ -3272,14 +3311,6 @@ export function App() {
                 aria-pressed={tasteMapDisplayMode === 'graph'}
               >
                 Zevk Ağı (Grafik)
-              </button>
-              <button
-                className={`btn ${tasteMapDisplayMode === 'identity' ? 'btn-primary' : ''}`}
-                type="button"
-                onClick={() => setTasteMapDisplayMode('identity')}
-                aria-pressed={tasteMapDisplayMode === 'identity'}
-              >
-                Sinema Kimliğim (Zevk Levhası)
               </button>
             </div>
 
@@ -3492,11 +3523,21 @@ export function App() {
               )
             : false
         }
+        isHidden={
+          detailItem
+            ? Boolean(
+                preferences.hidden?.includes(
+                  `${detailItem.media_type || (detailItem.title ? 'movie' : 'tv')}:${detailItem.id}`
+                )
+              )
+            : false
+        }
         favoriteActors={favoriteActors}
         onClose={() => setDetailItem(null)}
         onSave={handleSaveItem}
         onRemove={handleRemoveItem}
         onToggleDislike={handleToggleDislike}
+        onToggleHide={handleToggleHide}
         onToggleFavoriteActor={handleToggleFavoriteActor}
         onSelectMedia={(next) => setDetailItem(next)}
         onOpenPerson={(id, name) => {

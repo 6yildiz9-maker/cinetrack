@@ -26,6 +26,11 @@ export interface EvidenceItem {
   confidence: number;
   timeWeight: number;
   direction: "positive" | "negative" | "neutral";
+  title?: string;
+  year?: number | string;
+  mediaType?: "movie" | "tv";
+  posterPath?: string;
+  personalRating?: number;
 }
 
 export interface RelatedMetric {

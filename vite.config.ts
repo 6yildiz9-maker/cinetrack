@@ -1,9 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   plugins: [
+    tailwindcss(),
     react(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -13,8 +15,8 @@ export default defineConfig({
         name: 'CineTrack — Kişisel Film & Dizi Kataloğu',
         short_name: 'CineTrack',
         description: 'TMDB destekli kişisel film ve dizi izleme kataloğu, deterministik zevk haritası ve ilişki keşif motoru.',
-        theme_color: '#090d16',
-        background_color: '#090d16',
+        theme_color: '#050507',
+        background_color: '#050507',
         display: 'standalone',
         start_url: '/',
         scope: '/',

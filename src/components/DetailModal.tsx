@@ -22,6 +22,7 @@ interface DetailModalProps {
   isOpen: boolean;
   genresMap: Record<number, string>;
   isDisliked: boolean;
+  isHidden?: boolean;
   favoriteActors?: any[];
   onClose: () => void;
   onSave: (
@@ -32,6 +33,7 @@ interface DetailModalProps {
   ) => void;
   onRemove: (item: any) => void;
   onToggleDislike: (key: string) => void;
+  onToggleHide?: (key: string) => void;
   onOpenPerson: (personId: number, personName: string) => void;
   onToggleFavoriteActor?: (actor: any) => void;
   onSelectMedia?: (item: any) => void;
@@ -44,11 +46,13 @@ export const DetailModal: React.FC<DetailModalProps> = ({
   isOpen,
   genresMap,
   isDisliked,
+  isHidden = false,
   favoriteActors = [],
   onClose,
   onSave,
   onRemove,
   onToggleDislike,
+  onToggleHide,
   onOpenPerson,
   onToggleFavoriteActor,
   onSelectMedia,
@@ -312,7 +316,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         )}
 
         <div className="detail-content">
-          <h2 id="detailTitle" className="detail-title">
+          <h2 id="detailTitle" className="detail-title font-display">
             {title}
           </h2>
 
@@ -400,13 +404,28 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               type="button"
               className={`segmented-status-btn status-btn-dislike ${isDisliked ? 'is-active' : ''}`}
               onClick={() => onToggleDislike(itemKey)}
-              title={isDisliked ? 'İlgilenmiyorum tercihini kaldır' : 'İlgilenmiyorum olarak işaretle'}
+              title={isDisliked ? 'İlgilenmiyorum tercihini kaldır' : 'İlgilenmiyorum olarak işaretle (Zevk profiline negatif sinyal gönderir)'}
             >
               <svg className="icon" aria-hidden="true">
                 <use href="#icon-thumbs-down"></use>
               </svg>
               <span>{isDisliked ? 'İlgilenmiyorum ✕' : 'İlgilenmiyorum'}</span>
             </button>
+
+            {onToggleHide && (
+              <button
+                type="button"
+                className={`segmented-status-btn ${isHidden ? 'is-active' : ''}`}
+                onClick={() => onToggleHide(itemKey)}
+                title={
+                  isHidden
+                    ? 'Gizlemeyi kaldır'
+                    : 'Zevk profilimi etkilemeden keşfet akışından nötr olarak gizle'
+                }
+              >
+                <span>{isHidden ? 'Gizlendi ✓' : 'Gizle'}</span>
+              </button>
+            )}
           </div>
 
           {/* Kişisel Puan Yıldızları */}
@@ -549,9 +568,21 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                     {topSignals.map((sig) => (
                       <div key={sig.key} className="explain-rec-row">
                         <span className="explain-rec-label">{sig.label}</span>
-                        <span className="explain-rec-bar" aria-hidden="true">
-                          <span className="explain-rec-fill" style={{ width: `${sig.percent}%` }} />
-                        </span>
+                        <svg
+                          className="explain-rec-bar"
+                          viewBox="0 0 100 6"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <rect
+                            className="fill-cinema-gold"
+                            x="0"
+                            y="0"
+                            width={sig.percent}
+                            height="6"
+                            rx="3"
+                          />
+                        </svg>
                         <span className="explain-rec-val tabular-nums">{sig.percent}/100</span>
                       </div>
                     ))}
@@ -591,9 +622,23 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                   return (
                     <div key={season} className={`season-row ${!count ? 'no-count' : ''}`} data-season={season}>
                       <span>Sezon {season}</span>
-                      <div className="season-bar" hidden={!count}>
-                        <div className="season-bar-fill" style={{ width: `${ratio}%` }}></div>
-                      </div>
+                      {count > 0 && (
+                        <svg
+                          className="season-bar"
+                          viewBox="0 0 100 8"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <rect
+                            className="fill-cinema-gold"
+                            x="0"
+                            y="0"
+                            width={ratio}
+                            height="8"
+                            rx="4"
+                          />
+                        </svg>
+                      )}
                       <input
                         type="number"
                         min="0"
@@ -628,7 +673,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                 Türkiye'de Nerede İzlenir?
               </strong>
               {loadingProviders ? (
-                <div className="skeleton-line" style={{ width: '60%' }} />
+                <div className="skeleton-line w-3/5" />
               ) : providers ? (
                 <div className="provider-groups">
                   {[

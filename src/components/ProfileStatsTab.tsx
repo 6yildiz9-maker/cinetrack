@@ -6,6 +6,7 @@ import {
   computeProfileWatchlistIntersection,
 } from '../core/exporters';
 import { calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers';
+import { TasteProfileDashboard } from './taste/TasteProfileDashboard';
 
 interface ProfileStatsTabProps {
   effectiveActiveProfile: Profile;
@@ -358,6 +359,11 @@ export const ProfileStatsTab: React.FC<ProfileStatsTabProps> = ({
             })}
           </div>
         )}
+      </div>
+
+      {/* Sinema Kimliğim — Algoritmik Zevk Takımyıldızı (Derin Sinema) */}
+      <div className="profile-tools-section">
+        <TasteProfileDashboard compact />
       </div>
 
       {/* Zevk DNA Özeti */}

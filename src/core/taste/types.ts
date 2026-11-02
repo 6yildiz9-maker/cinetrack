@@ -133,6 +133,14 @@ export type MetricState =
   | "excluded";
 // "contextual" V2'de eklenecek (§6.3)
 
+export type ManualOverrideMode = "replace" | "boost" | "suppress" | "exclude";
+
+export interface TasteFeatureObjection {
+  contentId: string;
+  metricId: string;
+  createdAt: string;
+}
+
 export interface TasteMetric {
   metricId: string;
   affinity: number;          // -100...+100
@@ -148,7 +156,7 @@ export interface TasteMetric {
   };
   manualOverride?: {
     value: number;
-    mode: "replace" | "boost" | "suppress";
+    mode: ManualOverrideMode;
   };
 }
 

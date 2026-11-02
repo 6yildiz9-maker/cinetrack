@@ -4,6 +4,7 @@
 // ===========================================================================
 
 import type {
+  ManualOverrideMode,
   TasteProfile,
   TasteManifest,
   TasteEvent,
@@ -206,7 +207,7 @@ export async function fetchTasteManifest(): Promise<TasteManifest> {
 export interface OverrideRequest {
   metricId: string;
   value: number;           // -100...+100
-  mode: "replace" | "boost" | "suppress";
+  mode: ManualOverrideMode;
 }
 
 export interface OverrideResponse {
@@ -236,6 +237,31 @@ export async function deleteManualOverride(
     { method: "DELETE" }
   );
   notifyTasteProfileUpdated({ reason: "override_removed" });
+  return res;
+}
+
+// === V1.5 İçerik Etiket İtirazı ("Bu film aslında X değil") ===
+
+export interface FeatureObjectionResponse {
+  success: boolean;
+  contentId: string;
+  metricId: string;
+  generationId?: string;
+}
+
+export async function postFeatureObjection(
+  contentId: string,
+  metricId: string
+): Promise<FeatureObjectionResponse> {
+  const res = await apiFetch<FeatureObjectionResponse>(`${BASE}/objection`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contentId, metricId }),
+  });
+  notifyTasteProfileUpdated({
+    generationId: res.generationId,
+    reason: "feature_objection",
+  });
   return res;
 }
 

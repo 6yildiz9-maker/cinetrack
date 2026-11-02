@@ -1,4 +1,4 @@
-@layer tokens, base, components, utilities;
+@layer tokens, theme, base, components, utilities;
 
 @import './src/styles/tokens.css';
 @import './src/styles/components.css';
@@ -12,9 +12,10 @@
   body {
     margin: 0;
     min-height: 100vh;
-    background:
-      radial-gradient(ellipse at 8% 0%, var(--accent-soft), transparent 28rem),
-      var(--bg-app);
+    background-color: var(--bg-app);
+    background-image:
+      radial-gradient(circle at 15% 50%, rgba(0, 229, 255, 0.03) 0%, transparent 25%),
+      radial-gradient(circle at 85% 30%, rgba(255, 179, 0, 0.03) 0%, transparent 25%);
     color: var(--text-1);
     font-family: var(--font-sans);
   }
@@ -102,10 +103,14 @@
     align-items: center;
     gap: 11px;
     flex: 0 0 auto;
-    font-size: 19px;
-    font-weight: 800;
-    letter-spacing: -0.04em;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
     color: var(--text-1);
+  }
+
+  .brand-title {
+    font-family: var(--font-display);
   }
 
   .brand-icon {
@@ -115,8 +120,8 @@
     place-items: center;
     border-radius: 12px;
     color: var(--text-on-accent);
-    background: linear-gradient(135deg, var(--accent-strong), var(--accent));
-    box-shadow: var(--shadow-card);
+    background: linear-gradient(135deg, #ffb300, #f59e0b);
+    box-shadow: 0 0 18px rgba(255, 179, 0, 0.22);
   }
 
   .profile-btn {
@@ -368,15 +373,17 @@
   }
 
   .btn-primary {
-    background-color: var(--accent-strong);
-    border-color: var(--accent-strong);
+    background-color: var(--gold);
+    border-color: var(--gold);
     color: var(--text-on-accent);
     font-weight: 700;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   }
 
   .btn-primary:hover {
-    background-color: var(--accent);
-    border-color: var(--accent);
+    background-color: #fbbf24;
+    border-color: #fbbf24;
+    box-shadow: 0 0 20px rgba(255, 179, 0, 0.3);
   }
 
   .btn-danger {
@@ -461,8 +468,10 @@
 
   .hero h1 {
     margin: 12px 0 7px;
-    font-size: clamp(25px, 4vw, 38px);
-    letter-spacing: -0.04em;
+    font-family: var(--font-display);
+    font-size: clamp(26px, 4vw, 40px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
     text-wrap: balance;
   }
 
@@ -522,8 +531,10 @@
 
   .section-head h2 {
     margin: 0;
-    font-size: 21px;
-    letter-spacing: -0.03em;
+    font-family: var(--font-display);
+    font-size: 23px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
   }
 
   .section-head p {
