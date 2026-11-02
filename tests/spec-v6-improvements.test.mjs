@@ -32,6 +32,7 @@ import {
 import {
   detectDuplicateSavedItems,
   mergeDuplicateSavedPair,
+  areDistinctSeriesParts,
 } from '../src/core/duplicate-detector.ts';
 import {
   runIdleEnrichmentBatch,
@@ -718,6 +719,56 @@ test('Spec v6 (Set I & Set J): Yeni Nesil İyileştirmeler & Doğrulamalar', asy
     assert.equal(mergeResult.mergedItem.personal_rating, 9);
     assert.equal(mergeResult.mergedItem.addedAt, '2026-01-10T10:00:00.000Z');
     assert.match(mergeResult.mergedItem.note || '', /IMAX versiyonu izlenecek \| Harika kurgu/);
+  });
+
+  await t.test('IMP-15b · Seri Parçası Koruması: numaralı/alt başlıklı seri filmleri aynı yapım saymaz', () => {
+    // Aynı serinin farklı filmleri çift kayıt DEĞİLDİR
+    assert.equal(areDistinctSeriesParts('Amerikan Pastası: Düğün', 'Amerikan Pastası 2'), true);
+    assert.equal(areDistinctSeriesParts('Amerikan Pastası: Düğün', 'Amerikan Pastası: Buluşma'), true);
+    assert.equal(areDistinctSeriesParts('Yüzüklerin Efendisi: İki Kule', 'Yüzüklerin Efendisi 2'), true);
+    assert.equal(areDistinctSeriesParts('Görevimiz Tehlike II', 'Görevimiz Tehlike III'), true);
+    assert.equal(areDistinctSeriesParts('Dune: Çöl Gezegeni Bölüm İki', 'Dune: Çöl Gezegeni Bölüm Üç'), true);
+    assert.equal(areDistinctSeriesParts('Testere 3', 'Testere 3D'), true);
+    // Aynı yapımın farklı yazımları çift kayıttır (koruma devreye GİRMEMELİ)
+    assert.equal(areDistinctSeriesParts('Görevimiz Tehlike 2', 'Görevimiz Tehlike II'), false);
+    assert.equal(areDistinctSeriesParts('Amerikan Pastası: Düğün', 'Amerikan Pastası: Düğün'), false);
+    assert.equal(areDistinctSeriesParts('Batman: Başlıyor', 'Batman Başlıyor'), false);
+
+    // Metadata'sız (CSV kaynaklı) seri filmleri benzerlik skoruyla yanlış eşleştirmemeli
+    const csvLike = [
+      {
+        id: 8273,
+        media_type: 'movie',
+        title: 'Amerikan Pastası: Düğün',
+        release_date: '2003-01-01',
+        genre_ids: [],
+        status: 'completed',
+      },
+      {
+        id: 2770,
+        media_type: 'movie',
+        title: 'Amerikan Pastası 2',
+        release_date: '2001-01-01',
+        genre_ids: [],
+        status: 'completed',
+      },
+      {
+        id: 2105,
+        media_type: 'movie',
+        title: 'Amerikan Pastası',
+        release_date: '1999-01-01',
+        genre_ids: [],
+        status: 'completed',
+      },
+    ];
+    assert.equal(detectDuplicateSavedItems(csvLike).length, 0);
+
+    // Birebir aynı başlık metadata'sız kayıtlarda bile çift kayıt sayılır
+    const identicalPoor = [
+      { id: 1, media_type: 'movie', title: 'Inception', release_date: '2010-01-01', genre_ids: [], status: 'completed' },
+      { id: 2, media_type: 'movie', title: 'Inception', release_date: '2010-01-01', genre_ids: [], status: 'completed' },
+    ];
+    assert.equal(detectDuplicateSavedItems(identicalPoor).length, 1);
   });
 
   await t.test('2.5 · BUG-11 Modülerleştirme: tüm yeni ve bölünen v6 modülleri 1.000 satır tavanının altındadır', () => {

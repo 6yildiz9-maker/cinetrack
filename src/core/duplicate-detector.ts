@@ -1,5 +1,5 @@
 import { makeMediaKey, type SavedItem } from './cinetrack-core.ts';
-import { cosineSimilarity, encodeItemContent } from './encoding.ts';
+import { cosineSimilarity, encodeItemContent, type ItemFeatureEncoding } from './encoding.ts';
 
 export interface DuplicatePairCandidate {
   pairId: string;
@@ -70,6 +70,7 @@ function parsePartToken(token: string): number | null {
 export interface SeriesPartInfo {
   partNumber: number | null;
   baseTitle: string;
+  subtitle: string | null;
   is3d?: boolean;
 }
 
@@ -80,24 +81,34 @@ const PART_PHRASE_PATTERN =
 const TRAILING_ROMAN_PATTERN = /^(.*?)\s+(i{1,3}|iv|v|vi|vii|viii|ix|x)$/i;
 // "Hızlı ve Öfkeli 9" gibi sonda Arap rakamı ("Testere 3D" de yakalanır, 3D işareti ayrı tutulur)
 const TRAILING_ARABIC_PATTERN = /^(.*?)\s+(\d{1,2}\s*d|\d{1,2})$/i;
+// "Amerikan Pastası: Düğün" gibi iki noktalı alt başlık
+const COLON_SUBTITLE_PATTERN = /^(.{2,}?)\s*:\s*(.{1,})\s*$/u;
+// "X: Part 2", "X: Bölüm İki", "X: Episode IV" gibi alt başlık içinde parça ibaresi
+const SUBTITLE_PART_PREFIX_PATTERN =
+  /^(?:part|bölüm|bolum|kısım|kisim|episode|epizod)\s*(?:[:\-]?\s*)([\p{L}\d]{1,12})\s*$/iu;
 
 /**
- * Bir başlıktan seri/film sıra numarasını ve numarasız taban başlığı çıkarır.
- * Tek başına sayı olan başlıklar ("9") parça sayılmaz.
+ * Bir başlıktan seri/film sıra numarasını, numarasız taban başlığı ve varsa
+ * iki noktadan sonraki alt başlığı çıkarır. Tek başına sayı olan başlıklar ("9")
+ * parça sayılmaz.
  */
 export function extractSeriesPartInfo(title: string): SeriesPartInfo {
   const t = String(title || '').trim();
-  if (!t) return { partNumber: null, baseTitle: t };
+  if (!t) return { partNumber: null, baseTitle: t, subtitle: null };
   const phrase = PART_PHRASE_PATTERN.exec(t);
   if (phrase) {
     const phrasePart = parsePartToken(phrase[2]);
     if (phrasePart !== null && phrase[1].trim().length >= 2) {
-      return { partNumber: phrasePart, baseTitle: phrase[1].trim() };
+      return { partNumber: phrasePart, baseTitle: phrase[1].trim(), subtitle: null };
     }
   }
   const roman = TRAILING_ROMAN_PATTERN.exec(t);
   if (roman && roman[1].trim().length >= 2) {
-    return { partNumber: parsePartToken(roman[2]), baseTitle: roman[1].trim() };
+    return {
+      partNumber: parsePartToken(roman[2]),
+      baseTitle: roman[1].trim(),
+      subtitle: null,
+    };
   }
   const arabic = TRAILING_ARABIC_PATTERN.exec(t);
   if (arabic && arabic[1].trim().length >= 2) {
@@ -106,15 +117,28 @@ export function extractSeriesPartInfo(title: string): SeriesPartInfo {
     return {
       partNumber: parsePartToken(token.replace(/d$/i, '')),
       baseTitle: arabic[1].trim(),
+      subtitle: null,
       is3d,
     };
   }
-  return { partNumber: null, baseTitle: t };
+  const colon = COLON_SUBTITLE_PATTERN.exec(t);
+  if (colon && colon[1].trim().length >= 2) {
+    const base = colon[1].trim();
+    const rawSub = colon[2].trim();
+    const prefixMatch = SUBTITLE_PART_PREFIX_PATTERN.exec(rawSub);
+    const parsed = parsePartToken(prefixMatch ? prefixMatch[1] : rawSub);
+    if (parsed !== null) {
+      return { partNumber: parsed, baseTitle: base, subtitle: null };
+    }
+    return { partNumber: null, baseTitle: base, subtitle: normalizePartToken(rawSub) };
+  }
+  return { partNumber: null, baseTitle: t, subtitle: null };
 }
 
 /**
  * İki başlık aynı serinin FARKLI filmleri mi?
- * "X" ↔ "X 2", "X II" ↔ "X III", "X Bölüm 1" ↔ "X Bölüm 2" → true (çift kayıt DEĞİL).
+ * "X" ↔ "X 2", "X II" ↔ "X III", "X Bölüm 1" ↔ "X Bölüm 2",
+ * "X 2" ↔ "X: Düğün", "X: Düğün" ↔ "X: Buluşma" → true (çift kayıt DEĞİL).
  * "X 2" ↔ "X II" → false (aynı film, farklı yazım).
  */
 export function areDistinctSeriesParts(titleA: string, titleB: string): boolean {
@@ -124,15 +148,23 @@ export function areDistinctSeriesParts(titleA: string, titleB: string): boolean 
   const hasB = infoB.partNumber !== null;
   const baseEqual =
     normalizeWorkTitle(infoA.baseTitle) === normalizeWorkTitle(infoB.baseTitle);
+  if (!baseEqual) return false;
   if (hasA && hasB) {
-    // "X 3D" ile "X 3" farklı filmlerdir (3D sürüm ≠ serinin 3. filmi)
-    if (baseEqual && infoA.partNumber === infoB.partNumber && Boolean(infoA.is3d) !== Boolean(infoB.is3d)) {
-      return true;
+    if (infoA.partNumber === infoB.partNumber) {
+      // "X 3D" ile "X 3" farklı yapımlardır; aynı numara + aynı 3D işareti → aynı yapım
+      return Boolean(infoA.is3d) !== Boolean(infoB.is3d);
     }
-    return baseEqual && infoA.partNumber !== infoB.partNumber;
+    return true;
   }
   if (hasA !== hasB) {
-    return baseEqual;
+    return true;
+  }
+  // İkisinde de parça numarası yok: aynı taban üzerindeki farklı alt başlıklar
+  // aynı serinin farklı filmleridir ("X: Düğün" ≠ "X: Buluşma" ≠ "X")
+  const subA = infoA.subtitle;
+  const subB = infoB.subtitle;
+  if (subA !== null || subB !== null) {
+    return subA !== subB;
   }
   return false;
 }
@@ -197,6 +229,20 @@ function itemCompletenessScore(item: SavedItem): number {
 }
 
 /**
+ * Özellik vektörü yalnızca içerik sinyali varsa anlamlıdır. CSV'den ithal edilen
+ * kayıtlarda genre/cast/overview gibi veriler boş olduğundan iki farklı filmin
+ * vektörleri birbirine neredeyse eşit (cos ≈ 1.0) çıkar ve yanlış eşleşmelere yol açar.
+ */
+function hasInformativeEncoding(enc: ItemFeatureEncoding, item: SavedItem): boolean {
+  if (enc.genreVector.some((v) => v > 0)) return true;
+  if (enc.toneVector.some((v) => v > 0)) return true;
+  if (enc.keywordIds.length > 0 || enc.castIds.length > 0 || enc.crewIds.length > 0) return true;
+  if (typeof item.overview === 'string' && item.overview.trim().length > 20) return true;
+  if (Number(item.vote_count) > 0) return true;
+  return false;
+}
+
+/**
  * Detects duplicate variants of the same movie or TV show (e.g. custom entry + TMDB entry,
  * localized vs original title duplicate IDs) using normalized title similarity + encoding cosine similarity (IMP-15).
  */
@@ -206,6 +252,7 @@ export function detectDuplicateSavedItems(items: SavedItem[]): DuplicatePairCand
   const encodings = items.map((it) => encodeItemContent(it));
   const titlesPerItem = items.map((it) => collectCandidateTitles(it));
   const yearsPerItem = items.map((it) => extractReleaseYear(it));
+  const richEncodingPerItem = items.map((it, idx) => hasInformativeEncoding(encodings[idx], it));
 
   const pairs: DuplicatePairCandidate[] = [];
 
@@ -241,7 +288,10 @@ export function detectDuplicateSavedItems(items: SavedItem[]): DuplicatePairCand
         continue;
       }
 
-      const encSim = cosineSimilarity(encodings[i].denseVector, encodings[j].denseVector);
+      const bothRich = richEncodingPerItem[i] && richEncodingPerItem[j];
+      const encSim = bothRich
+        ? cosineSimilarity(encodings[i].denseVector, encodings[j].denseVector)
+        : 0;
       const sameYear = yearA !== null && yearB !== null && yearA === yearB;
 
       const isDuplicate =
@@ -258,8 +308,12 @@ export function detectDuplicateSavedItems(items: SavedItem[]): DuplicatePairCand
 
       const reasonParts: string[] = [
         `Başlık benzerliği %${Math.round(bestTitleSim * 100)}`,
-        `özellik vektörü %${Math.round(encSim * 100)}`,
       ];
+      if (bothRich) {
+        reasonParts.push(`özellik vektörü %${Math.round(encSim * 100)}`);
+      } else {
+        reasonParts.push('özellik vektörü yetersiz (metadata eksik)');
+      }
       if (sameYear && yearA) {
         reasonParts.push(`aynı yıl (${yearA})`);
       }
