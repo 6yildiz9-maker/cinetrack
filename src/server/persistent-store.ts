@@ -768,11 +768,15 @@ export class PersistentDataStore {
     if (!existsSync(this.dataDir)) mkdirSync(this.dataDir, { recursive: true });
     if (!existsSync(this.catalogDir)) mkdirSync(this.catalogDir, { recursive: true });
     if (!existsSync(this.profilesDir)) mkdirSync(this.profilesDir, { recursive: true });
+    // Faz 6: Taste Engine dizini
+    const tasteDir = path.join(this.dataDir, 'taste');
+    if (!existsSync(tasteDir)) mkdirSync(tasteDir, { recursive: true });
 
     // Yarım kalmış geçici dosyaları başlangıçta kontrollü biçimde temizle
     cleanupStaleTempFiles(this.dataDir);
     cleanupStaleTempFiles(this.catalogDir);
     cleanupStaleTempFiles(this.profilesDir);
+    cleanupStaleTempFiles(tasteDir);
   }
 
   private loadPersistedSyncState() {

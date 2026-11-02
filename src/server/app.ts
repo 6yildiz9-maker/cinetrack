@@ -30,6 +30,7 @@ import {
   EXPORT_FILE_NAME_PATTERN,
   getPosterCacheStatsAsync,
 } from './excel-profile-backup.ts';
+import { createTasteRouter } from './taste-routes.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
   dataDir?: string;
@@ -1101,6 +1102,9 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       'X-Content-Type-Options': 'nosniff',
     });
   });
+
+  // Faz 6: Taste Engine HTTP uçları
+  app.use('/api/taste', createTasteRouter());
 
   if (typeof options.registerCustomRoutes === 'function') {
     options.registerCustomRoutes(app);

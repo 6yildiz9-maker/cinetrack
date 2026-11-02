@@ -99,6 +99,20 @@ export const SYNC_STATIC_INVENTORY: ReadonlyArray<{
     personal: true,
     description: 'Kullanıcı profilleri, izleme listeleri, puanlar, tercihler ve favori oyuncular',
   },
+  // Faz 6: Taste Engine — varsayılan olarak yalnızca manifest + profile senkrona girer (TP-006)
+  // index ve events boyut nedeniyle dışarıda kalır
+  {
+    repoPath: 'data/taste/cinetrack-taste-manifest.json',
+    category: 'taste_manifest',
+    personal: true,
+    description: 'Taste Engine veri özeti ve versiyon bilgisi',
+  },
+  {
+    repoPath: 'data/taste/cinetrack-taste-profile.json',
+    category: 'taste_profile',
+    personal: true,
+    description: 'Kullanıcı Taste Engine profili ve metrikler',
+  },
 ]);
 
 function isPlainObject(val: unknown): val is Record<string, any> {

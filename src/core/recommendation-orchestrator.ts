@@ -185,6 +185,10 @@ export function enrichCatalogItemsWithTaste(params: {
   preferences: Preferences;
   genresMap: Record<number, string>;
   tasteMap?: PersistentTasteMapData | null;
+  /** Faz 6: Gölge modda taste adapter (TP-037). Sıralama değişmez, sadece loglanır. */
+  tasteAdapter?: {
+    logFit?: (contentId: string, fit: number, confidence: string) => void;
+  };
 }): any[] {
   const { items, savedItems, preferences, genresMap, tasteMap } = params;
   if (!Array.isArray(items) || items.length === 0) return items;

@@ -7,7 +7,9 @@ export type SyncFileCategory =
   | 'catalog_tv'
   | 'catalog_manifest'
   | 'user_data'
-  | 'derived_profile';
+  | 'derived_profile'
+  | 'taste_profile'    // Faz 6: Taste Engine profili (manifest + profile senkrona girer)
+  | 'taste_manifest';  // Faz 6: Taste Engine manifest (TP-006)
 
 export type SyncErrorCategory =
   | 'config_error'

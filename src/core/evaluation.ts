@@ -248,3 +248,45 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
     batches: batchReports,
   };
 }
+
+// ===========================================================================
+// Faz 6 — Taste Archaeology değerlendirme metrikleri
+// ===========================================================================
+
+/**
+ * Taste Archaeology Spearman ρ (TP-036)
+ * Test setindeki tasteFit skoru ile gerçek puan arasındaki sıra korelasyonu.
+ * null = yetersiz veri (Faz 0 bulgusu: tüm geçmiş imported)
+ */
+export type TasteArchaeologySpearman = number | null;
+
+/**
+ * Taste metrik kapsam oranı
+ * (Profilde "unknown" olmayan metrik sayısı / toplam aktif metrik sayısı)
+ * Kapsam > 0.5 → güvenilir profil
+ */
+export function tasteCoverage(
+  profileMetrics: Record<string, { status: string }>,
+  totalActiveMetrics: number
+): number {
+  if (totalActiveMetrics <= 0) return 0;
+  const known = Object.values(profileMetrics).filter(
+    (m) => m.status !== "unknown"
+  ).length;
+  return Math.round((known / totalActiveMetrics) * 1000) / 1000;
+}
+
+/**
+ * Taste metrik "unknown" oranı
+ * Yüksek unknown oranı → feature extractor veya event coverage eksik
+ */
+export function tasteUnknownRate(
+  profileMetrics: Record<string, { status: string }>,
+  totalActiveMetrics: number
+): number {
+  if (totalActiveMetrics <= 0) return 1;
+  const unknown = Object.values(profileMetrics).filter(
+    (m) => m.status === "unknown"
+  ).length;
+  return Math.round((unknown / totalActiveMetrics) * 1000) / 1000;
+}
