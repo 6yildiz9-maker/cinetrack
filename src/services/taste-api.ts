@@ -155,11 +155,43 @@ async function apiFetch<T>(
   return res.json() as Promise<T>;
 }
 
-// === Profil ===
+// === Profil & Kimliğim Genel Bakış ===
+
+export interface MonthlyTasteSnapshotClient {
+  month: string;
+  eventCount: number;
+  contentCount: number;
+  topMetrics: Array<{ metricId: string; affinity: number }>;
+}
+
+export interface TasteDriftAlertClient {
+  metricId: string;
+  longTermAffinity: number;
+  recentAffinity: number;
+  delta: number;
+}
+
+export interface TasteOverviewClientResponse {
+  unified: TasteProfile;
+  movie: TasteProfile;
+  series: TasteProfile;
+  analyzedContentCount: number;
+  movieAnalyzedCount: number;
+  seriesAnalyzedCount: number;
+  eventsCount: number;
+  confidenceLevel: "high" | "medium" | "low";
+  monthlySnapshots: MonthlyTasteSnapshotClient[];
+  drifts: TasteDriftAlertClient[];
+}
 
 /** Taste profilini sunucudan çek */
 export async function fetchTasteProfile(): Promise<TasteProfile> {
   return apiFetch<TasteProfile>(`${BASE}/profile`);
+}
+
+/** Kimliğim genel bakış, Film vs Dizi karşılaştırması ve aylık evrim verilerini çek */
+export async function fetchTasteOverview(): Promise<TasteOverviewClientResponse> {
+  return apiFetch<TasteOverviewClientResponse>(`${BASE}/overview`);
 }
 
 // === Metrik Detayı ===

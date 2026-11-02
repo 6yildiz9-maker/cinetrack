@@ -18,10 +18,13 @@ import {
   writeTasteObjections,
 } from "./taste-store";
 import { explainMetric, type EvidenceItem } from "../core/taste/profile-explainer";
+import { aggregateProfiles } from "../core/taste/profile-aggregator";
 import type {
+  ContentTasteItem,
   ManualOverrideMode,
   TasteEvent,
   TasteMetadataInput,
+  TasteProfile,
 } from "../core/taste/types";
 import type { DataDocument } from "../core/cinetrack-core";
 import {
@@ -30,6 +33,96 @@ import {
   triggerTasteProfileRebuild,
   upsertTasteMetadataInputs,
 } from "./taste-rebuild-coordinator";
+
+export interface MonthlyTasteSnapshot {
+  month: string;
+  eventCount: number;
+  contentCount: number;
+  topMetrics: Array<{ metricId: string; affinity: number }>;
+}
+
+export interface TasteDriftAlert {
+  metricId: string;
+  longTermAffinity: number;
+  recentAffinity: number;
+  delta: number;
+}
+
+export interface TasteOverviewResponse {
+  unified: TasteProfile;
+  movie: TasteProfile;
+  series: TasteProfile;
+  analyzedContentCount: number;
+  movieAnalyzedCount: number;
+  seriesAnalyzedCount: number;
+  eventsCount: number;
+  confidenceLevel: "high" | "medium" | "low";
+  monthlySnapshots: MonthlyTasteSnapshot[];
+  drifts: TasteDriftAlert[];
+}
+
+function buildFilteredContentItems(
+  rawItems: Record<string, ContentTasteItem>,
+  objectionSet: Set<string>
+): Record<string, ContentTasteItem> {
+  if (objectionSet.size === 0) return rawItems;
+  const result: Record<string, ContentTasteItem> = {};
+  for (const [contentId, item] of Object.entries(rawItems)) {
+    if (!item?.features) {
+      result[contentId] = item;
+      continue;
+    }
+    const filteredFeatures: ContentTasteItem["features"] = {};
+    for (const [mId, feat] of Object.entries(item.features)) {
+      if (!objectionSet.has(`${contentId}::${mId}`)) {
+        filteredFeatures[mId] = feat;
+      }
+    }
+    result[contentId] = { ...item, features: filteredFeatures };
+  }
+  return result;
+}
+
+function buildMonthlySnapshots(
+  events: TasteEvent[],
+  contentItems: Record<string, ContentTasteItem>,
+  asOf: string
+): MonthlyTasteSnapshot[] {
+  const byMonth = new Map<string, TasteEvent[]>();
+  for (const ev of events) {
+    const rawDate = ev.experiencedAt || ev.recordedAt || "";
+    const month = /^\d{4}-\d{2}/.test(rawDate) ? rawDate.slice(0, 7) : "";
+    if (!month) continue;
+    const list = byMonth.get(month) ?? [];
+    list.push(ev);
+    byMonth.set(month, list);
+  }
+
+  const sortedMonths = Array.from(byMonth.keys()).sort();
+  const cumulativeEvents: TasteEvent[] = [];
+  const snapshots: MonthlyTasteSnapshot[] = [];
+
+  for (const month of sortedMonths) {
+    const monthEvents = byMonth.get(month) ?? [];
+    cumulativeEvents.push(...monthEvents);
+    const monthContentSet = new Set(monthEvents.map((e) => e.contentId));
+    const snapshotAgg = aggregateProfiles(cumulativeEvents, asOf, contentItems);
+    const topMetrics = Object.values(snapshotAgg.unified.metrics)
+      .filter((m) => m.status !== "unknown" && m.affinity > 0)
+      .sort((a, b) => b.affinity - a.affinity)
+      .slice(0, 3)
+      .map((m) => ({ metricId: m.metricId, affinity: m.affinity }));
+
+    snapshots.push({
+      month,
+      eventCount: monthEvents.length,
+      contentCount: monthContentSet.size,
+      topMetrics,
+    });
+  }
+
+  return snapshots.slice(-12);
+}
 
 interface ResolvedContentSummary {
   title: string;
@@ -178,6 +271,81 @@ export function createTasteRouter(dataDir: string = "data"): Router {
       res.json(profile);
     } catch {
       res.status(500).json({ error: "Profil okunamadı" });
+    }
+  });
+
+  // GET /api/taste/overview — Kimliğim Genel Bakış + Film vs Dizi + Zevk Evrimi
+  router.get("/overview", async (_req, res) => {
+    try {
+      await ensureInitialTasteBootstrap(dataDir);
+      const [storedUnified, events, index, objections] = await Promise.all([
+        readTasteProfile(dataDir),
+        readTasteEvents(dataDir),
+        readTasteIndex(dataDir),
+        readTasteObjections(dataDir),
+      ]);
+
+      if (!storedUnified) {
+        return res.status(404).json({ error: "Profil bulunamadı" });
+      }
+
+      const objectionSet = new Set(objections.map((o) => `${o.contentId}::${o.metricId}`));
+      const contentItems = buildFilteredContentItems(index?.items ?? {}, objectionSet);
+      const asOf = storedUnified.asOf || new Date().toISOString();
+      const aggregated = aggregateProfiles(events, asOf, contentItems);
+
+      for (const [mId, m] of Object.entries(storedUnified.metrics || {})) {
+        if (m?.manualOverride && aggregated.unified.metrics[mId]) {
+          aggregated.unified.metrics[mId].manualOverride = m.manualOverride;
+        }
+      }
+
+      const uniqueAll = new Set<string>();
+      const uniqueMovie = new Set<string>();
+      const uniqueSeries = new Set<string>();
+      for (const ev of events) {
+        if (!ev?.contentId) continue;
+        uniqueAll.add(ev.contentId);
+        if (ev.contentId.startsWith("movie:")) uniqueMovie.add(ev.contentId);
+        if (ev.contentId.startsWith("tv:")) uniqueSeries.add(ev.contentId);
+      }
+
+      const analyzedContentCount = uniqueAll.size;
+      const confidenceLevel: "high" | "medium" | "low" =
+        analyzedContentCount >= 15
+          ? "high"
+          : analyzedContentCount >= 5
+            ? "medium"
+            : "low";
+
+      const monthlySnapshots = buildMonthlySnapshots(events, contentItems, asOf);
+      const drifts: TasteDriftAlert[] = Object.values(aggregated.unified.metrics)
+        .filter((m) => m.status !== "unknown")
+        .map((m) => ({
+          metricId: m.metricId,
+          longTermAffinity: m.longTermAffinity,
+          recentAffinity: m.recentAffinity,
+          delta: m.recentAffinity - m.longTermAffinity,
+        }))
+        .filter((d) => Math.abs(d.delta) >= 8)
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+        .slice(0, 6);
+
+      const payload: TasteOverviewResponse = {
+        unified: aggregated.unified,
+        movie: aggregated.movie,
+        series: aggregated.series,
+        analyzedContentCount,
+        movieAnalyzedCount: uniqueMovie.size,
+        seriesAnalyzedCount: uniqueSeries.size,
+        eventsCount: events.length,
+        confidenceLevel,
+        monthlySnapshots,
+        drifts,
+      };
+      res.json(payload);
+    } catch {
+      res.status(500).json({ error: "Genel bakış verisi okunamadı" });
     }
   });
 

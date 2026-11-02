@@ -30,26 +30,43 @@ export const DISCOVER_PROVIDER_CHIPS: readonly StreamingProviderConfig[] = STREA
   (p) => p.featuredInDiscover
 );
 
+export interface DiscoverMoodPillConfig {
+  id: string;
+  label: string;
+  subtitle: string;
+}
+
+export const DISCOVER_MOOD_PILLS: readonly DiscoverMoodPillConfig[] = Object.freeze([
+  { id: 'thoughtful', label: 'Düşündür', subtitle: 'Felsefi, bilim kurgu ve derin anlatı' },
+  { id: 'dark', label: 'Karanlık Bir Şeyler', subtitle: 'Psikolojik gerilim, suç ve gizem' },
+  { id: 'feel-good', label: 'Rahatlat', subtitle: 'Sıcak, akıcı ve yormayan seçki' },
+  { id: 'mind-bending', label: 'Şaşırt', subtitle: 'Sürpriz kurgu ve ters köşe hikâyeler' },
+  { id: 'cheerful', label: 'Moral Yükselt', subtitle: 'Neşeli komedi, macera ve enerji' },
+  { id: 'deep', label: 'Ağır / Derin', subtitle: 'Karakter odaklı dram ve tarihsel sinema' },
+]);
+
 export const MOOD_GENRES: Record<string, number[]> = {
-  cheerful: [35, 10751, 16],
+  cheerful: [35, 10751, 16, 12, 10402],
   thrilling: [53, 9648, 80],
-  thoughtful: [18, 99, 36],
-  energetic: [28, 12, 878],
-  'feel-good': [35, 10751, 16],
-  dark: [53, 9648, 80],
-  adrenaline: [28, 12, 878],
-  'mind-bending': [878, 9648, 53],
+  thoughtful: [18, 99, 36, 878, 10765],
+  energetic: [28, 12, 878, 10759],
+  'feel-good': [35, 10751, 16, 10749],
+  dark: [53, 9648, 80, 27],
+  adrenaline: [28, 12, 878, 10759],
+  'mind-bending': [878, 9648, 53, 10765, 14],
+  deep: [18, 36, 10752, 99, 10768],
 };
 
 export const MOOD_LABELS: Record<string, string> = {
-  cheerful: 'Neşeli',
+  cheerful: 'Moral Yükselt',
   thrilling: 'Gerilimli',
-  thoughtful: 'Düşündürücü',
+  thoughtful: 'Düşündür',
   energetic: 'Enerjik',
-  'feel-good': 'İyi Hissettiren',
-  dark: 'Karanlık & Gerilimli',
+  'feel-good': 'Rahatlat',
+  dark: 'Karanlık Bir Şeyler',
   adrenaline: 'Adrenalin',
-  'mind-bending': 'Kafa Yoran',
+  'mind-bending': 'Şaşırt',
+  deep: 'Ağır / Derin',
 };
 
 export const RATING_DESCRIPTIONS: Record<number, string> = {

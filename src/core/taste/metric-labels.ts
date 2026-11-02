@@ -222,3 +222,102 @@ export function estimateMetricEvidenceCount(
   const estimatedFromMass = Math.round(massTotal * 1.4);
   return Math.max(uniqueIds.size, estimatedFromMass, massTotal > 0 ? 1 : 0);
 }
+
+const TMDB_GENRE_TO_METRIC_ID: Record<number, string> = {
+  878: "genre.scifi",
+  10765: "genre.scifi",
+  14: "genre.fantasy",
+  53: "genre.thriller",
+  9648: "genre.thriller",
+  27: "genre.horror",
+  18: "genre.drama",
+  35: "genre.comedy",
+  80: "genre.crime",
+  16: "genre.animation",
+  99: "genre.documentary",
+  10749: "genre.romance",
+};
+
+const ASIAN_LANGS = new Set(["ja", "ko", "zh", "cn", "th", "hi", "ta", "id", "vi", "tl"]);
+const EUROPEAN_LANGS = new Set([
+  "fr",
+  "de",
+  "es",
+  "it",
+  "sv",
+  "da",
+  "no",
+  "fi",
+  "pl",
+  "nl",
+  "ru",
+  "cs",
+  "el",
+  "pt",
+]);
+
+/**
+ * Keşfet kartındaki "Neden buradaydı?" etiketine tıklandığında ilgili yapımın
+ * en baskın zevk metriğini (Kanıt Modalı için) çözümler.
+ */
+export function resolvePrimaryMetricIdForItem(
+  item: Record<string, unknown> | null | undefined,
+  metrics?: Record<string, TasteMetric> | null
+): string {
+  const candidates: string[] = [];
+
+  if (item && typeof item === "object") {
+    const rawGenres: number[] = Array.isArray(item.genre_ids)
+      ? item.genre_ids.map(Number).filter(Number.isFinite)
+      : Array.isArray(item.genres)
+        ? (item.genres as Array<{ id?: unknown }>)
+            .map((g) => Number(g?.id))
+            .filter(Number.isFinite)
+        : [];
+
+    for (const gid of rawGenres) {
+      const mapped = TMDB_GENRE_TO_METRIC_ID[gid];
+      if (mapped && !candidates.includes(mapped)) {
+        candidates.push(mapped);
+      }
+    }
+
+    const lang = typeof item.original_language === "string" ? item.original_language.toLowerCase() : "";
+    if (lang === "tr") {
+      candidates.push("origin.turkish");
+    } else if (ASIAN_LANGS.has(lang)) {
+      candidates.push("origin.asian_cinema");
+    } else if (EUROPEAN_LANGS.has(lang)) {
+      candidates.push("origin.european");
+    }
+  }
+
+  if (metrics && candidates.length > 0) {
+    let bestId = candidates[0];
+    let bestScore = -1;
+    for (const cid of candidates) {
+      const m = metrics[cid];
+      const view = resolveEffectiveMetricView(m);
+      const weight = (view.effectiveStatus !== "unknown" ? 100 : 0) + Math.abs(view.effectiveAffinity);
+      if (weight > bestScore) {
+        bestScore = weight;
+        bestId = cid;
+      }
+    }
+    return bestId;
+  }
+
+  if (candidates.length > 0) {
+    return candidates[0];
+  }
+
+  if (metrics) {
+    const sorted = Object.values(metrics)
+      .filter((m) => m.status !== "unknown")
+      .sort((a, b) => Math.abs(b.affinity) - Math.abs(a.affinity));
+    if (sorted[0]) return sorted[0].metricId;
+  }
+
+  return "genre.drama";
+}
+
