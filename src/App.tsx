@@ -110,6 +110,7 @@ import {
 import { useOfflineSync } from './hooks/useOfflineSync';
 import { useStockEngine } from './hooks/useStockEngine';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useItemActions } from './hooks/useItemActions';
 import { hasPendingOfflineSync } from './services/offline-queue';
 import {
   saveIsolatedProfileIdb,
@@ -2186,38 +2187,15 @@ export function App() {
     }
   };
 
-  // Saved items CRUD
-  const handleSaveItem = (
-    item: any,
-    status: 'watching' | 'watchlist' | 'completed',
-    personalRating: number | '',
-    tracking: any = {}
+  // Saved items CRUD (V1.5: ratedAt & completedAt zaman damgası altyapısı)
+  const commitSavedItem = (
+    normalized: SavedItem,
+    rawItem: any,
+    effectiveStatus: 'watching' | 'watchlist' | 'completed'
   ) => {
-    const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
-    const targetId = String(item.id);
-    const targetTitle = (item.title || item.name || '').trim().toLowerCase();
-    const existing = findSavedItem(savedItemsRef.current, {
-      id: targetId,
-      media_type: mediaType,
-      title: item.title,
-      name: item.name,
-    });
-    const effectiveStatus =
-      typeof personalRating === 'number' && personalRating > 0 && (status === 'watchlist' || !status)
-        ? 'completed'
-        : status;
-    const normalized = normalizeSavedItem({
-      ...item,
-      media_type: mediaType,
-      ...tracking,
-      status: effectiveStatus,
-      personal_rating: personalRating || '',
-      personal_rating_cleared: Boolean(existing && !personalRating && existing.personal_rating !== ''),
-      addedAt: existing ? existing.addedAt : new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      isDemo: false, // Kullanıcının bizzat kaydettiği veya güncellediği içerik her zaman canlıdır
-    });
-    if (!normalized) return;
+    const mediaType = normalized.media_type;
+    const targetId = String(normalized.id);
+    const targetTitle = (rawItem.title || rawItem.name || normalized.title || '').trim().toLowerCase();
 
     if (activeProfile?.isDemo) {
       setProfiles((prev) =>
@@ -2277,7 +2255,7 @@ export function App() {
     void indexItemForSeries(normalized);
     void recordProfileChangeAndMaybeBackup();
 
-    const title = displayTitle(item);
+    const title = displayTitle(rawItem);
     if (effectiveStatus === 'completed') {
       showToast(`✓ "${title}" izlendi listesine kaydedildi! 🎉`);
     } else if (effectiveStatus === 'watching') {
@@ -2312,18 +2290,32 @@ export function App() {
     }
   };
 
+  const { saveItem, setItemStatus, markCompleted } = useItemActions({
+    getSavedItems: () => savedItemsRef.current,
+    onCommitSavedItem: commitSavedItem,
+  });
+
+  const handleSaveItem = (
+    item: any,
+    status: 'watching' | 'watchlist' | 'completed',
+    personalRating: number | '',
+    tracking: any = {}
+  ) => {
+    saveItem(item, status, personalRating, tracking);
+  };
+
   const handleQuickAdd = (item: any) => {
-    handleSaveItem(item, 'watchlist', '');
+    saveItem(item, 'watchlist', '');
     showToast(`✓ "${displayTitle(item)}" izlenecekler listesine eklendi! ✨`);
   };
 
   const handleMarkCompleted = (item: any) => {
-    handleSaveItem(item, 'completed', '');
+    markCompleted(item);
     showToast(`✓ "${displayTitle(item)}" izlendi listesine eklendi! 🎉`);
   };
 
   const handleSetStatus = (item: any, status: 'watching' | 'watchlist' | 'completed') => {
-    handleSaveItem(item, status, '');
+    setItemStatus(item, status);
     const title = displayTitle(item);
     if (status === 'completed') {
       showToast(`✓ "${title}" izlendi listesine eklendi! 🎉`);
@@ -2360,9 +2352,13 @@ export function App() {
   };
 
   const handleIncrementTvEpisode = (targetItem: SavedItem) => {
-    const updatedItem = advanceTvEpisodeProgress(targetItem);
+    const nowIso = new Date().toISOString();
+    const progressedItem = advanceTvEpisodeProgress(targetItem, nowIso);
     const transitionedToCompleted =
-      targetItem.status !== 'completed' && updatedItem.status === 'completed';
+      targetItem.status !== 'completed' && progressedItem.status === 'completed';
+    const updatedItem: SavedItem = transitionedToCompleted
+      ? { ...progressedItem, completedAt: nowIso }
+      : progressedItem;
     setSavedItems((prev) => {
       const next = prev.map((entry) =>
         makeMediaKey(entry) === makeMediaKey(targetItem) ? updatedItem : entry

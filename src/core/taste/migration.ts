@@ -1,15 +1,23 @@
 // ===========================================================================
-// CineTrack Taste Engine — Migration Service (v1.1)
-// Eski cinetrack-data.json → yeni taste-events.json dönüşümü (TP-029)
+// CineTrack Taste Engine — Migration Service (v1.5)
+// Eski cinetrack-data.json → yeni taste-events.json dönüşümü (TP-029 & V1.5)
 // KRİTİK: cinetrack-data.json ASLA değiştirilmez, sadece okunur
 // ===========================================================================
 
-import type { TasteEvent, MigrationResult } from "./types";
+import type { TasteEvent, MigrationResult, TimeSource, TimePrecision } from "./types";
 import type { DataDocument, SavedItem } from "../cinetrack-core";
+import { resolveExperiencedAt } from "./temporal-analyzer";
 
 export interface MigrationInput {
   dataDocument: DataDocument;
   asOf: string;
+}
+
+function validOptionalTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return Number.isFinite(Date.parse(trimmed)) ? trimmed : undefined;
 }
 
 /**
@@ -17,11 +25,12 @@ export interface MigrationInput {
  *
  * KRİTİK KURALLAR:
  * 1. cinetrack-data.json ASLA değiştirilmez
- * 2. Tüm geçmiş timeSource: "imported" (Faz 0: ratedAt/watchedAt yok)
- * 3. contentId formatı makeMediaKey'ten alınır
- * 4. preferences.disliked → content_disliked (TP-018)
- * 5. preferences.hidden → content_hidden (TP-018)
- * 6. Aynı contentId için çift yazım yok
+ * 2. Eski kayıtlarda ratedAt/completedAt yoksa timeSource: "imported" ve timePrecision: "unknown" (Faz 0)
+ * 3. V1.5 yeni kayıtlarda ratedAt/completedAt mevcutsa timeSource: "actual" ve timePrecision: "exact"
+ * 4. contentId formatı makeMediaKey'ten alınır
+ * 5. preferences.disliked → content_disliked (TP-018)
+ * 6. preferences.hidden → content_hidden (TP-018)
+ * 7. Aynı contentId için çift yazım yok
  */
 export function migrateExistingData(input: MigrationInput): {
   events: TasteEvent[];
@@ -34,9 +43,22 @@ export function migrateExistingData(input: MigrationInput): {
   let eventsCreated = 0;
   let eventsSkipped = 0;
 
+  if (!dataDocument || !Array.isArray(dataDocument.profiles)) {
+    warnings.push("Geçersiz veri belgesi veya profiller eksik");
+    return {
+      events: [],
+      result: {
+        eventsCreated: 0,
+        eventsSkipped: 0,
+        warnings,
+        completedAt: asOf,
+      },
+    };
+  }
+
   // Aktif profili bul
   const activeProfile = dataDocument.profiles.find(
-    (p) => p.id === dataDocument.activeProfileId
+    (p) => p && p.id === dataDocument.activeProfileId
   );
 
   if (!activeProfile) {
@@ -53,7 +75,13 @@ export function migrateExistingData(input: MigrationInput): {
   }
 
   // 1. Puanlı kayıtlar → rating_changed olayları
-  for (const item of activeProfile.items) {
+  const items = Array.isArray(activeProfile.items) ? activeProfile.items : [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") {
+      eventsSkipped++;
+      continue;
+    }
+
     const contentId = makeContentId(item);
     if (!contentId) {
       eventsSkipped++;
@@ -83,6 +111,23 @@ export function migrateExistingData(input: MigrationInput): {
 
     {
       const rating = Number(rawRating);
+      const validRatedAt = validOptionalTimestamp(item.ratedAt);
+      const validCompletedAt = validOptionalTimestamp(item.completedAt);
+      const hasV15Timestamp = Boolean(validRatedAt || validCompletedAt);
+
+      // Eski kayıtlarda ratedAt/completedAt eksikse hata vermeden "imported" / "unknown" olarak işlenir (Faz 0)
+      const timeSource: TimeSource = hasV15Timestamp ? "actual" : "imported";
+      const timePrecision: TimePrecision = hasV15Timestamp ? "exact" : "unknown";
+      const experiencedAt = resolveExperiencedAt(
+        {
+          ratedAt: validRatedAt,
+          completedAt: validCompletedAt,
+          updatedAt: validOptionalTimestamp(item.updatedAt),
+          addedAt: validOptionalTimestamp(item.addedAt),
+        },
+        timeSource
+      );
+
       const event: TasteEvent = {
         eventId: newUUID(),
         contentId,
@@ -92,13 +137,15 @@ export function migrateExistingData(input: MigrationInput): {
           ratingSource: "numeric",
         },
         recordedAt:
+          validRatedAt ||
+          validCompletedAt ||
           item.updatedAt ||
           item.firstAddedAt ||
           item.addedAt ||
           asOf,
-        experiencedAt: undefined, // ratedAt yok (Faz 0 bulgusu)
-        timeSource: "imported",   // KRİTİK: tüm geçmiş imported
-        timePrecision: "unknown", // KRİTİK: tarih kesinliği bilinmiyor
+        experiencedAt,
+        timeSource,
+        timePrecision,
       };
       events.push(event);
       processedContentIds.add(contentId);
@@ -107,7 +154,7 @@ export function migrateExistingData(input: MigrationInput): {
   }
 
   // 2. preferences.disliked → content_disliked olayları (TP-018)
-  if (activeProfile.preferences.disliked) {
+  if (Array.isArray(activeProfile.preferences?.disliked)) {
     for (const contentId of activeProfile.preferences.disliked) {
       if (!contentId || typeof contentId !== "string") {
         eventsSkipped++;
@@ -145,7 +192,7 @@ export function migrateExistingData(input: MigrationInput): {
   }
 
   // 3. preferences.hidden → content_hidden olayları (TP-018)
-  if (activeProfile.preferences.hidden) {
+  if (Array.isArray(activeProfile.preferences?.hidden)) {
     for (const contentId of activeProfile.preferences.hidden) {
       if (!contentId || typeof contentId !== "string") {
         eventsSkipped++;

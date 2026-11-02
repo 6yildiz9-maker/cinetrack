@@ -87,6 +87,8 @@ export interface SavedItem {
   status: 'watching' | 'watchlist' | 'completed';
   personal_rating: number | '';
   personal_rating_cleared?: boolean;
+  ratedAt?: string;
+  completedAt?: string;
   addedAt?: string;
   firstAddedAt?: string;
   totalWatchTimeMinutes?: number;
@@ -340,6 +342,21 @@ export function normalizeSavedItem(item: any): SavedItem | null {
   }
   const totalWatched = Object.values(seasonProgress).reduce((sum, count) => sum + count, 0);
   const seasonCounts = sanitizeSeasonCounts(item.season_episode_counts);
+  const normalizedStatus: SavedItem['status'] = ['watching', 'watchlist', 'completed'].includes(
+    item.status
+  )
+    ? item.status
+    : 'watchlist';
+  const normalizedRatedAt =
+    validRating > 0 && typeof item.ratedAt === 'string' && item.ratedAt.trim()
+      ? item.ratedAt.trim()
+      : undefined;
+  const normalizedCompletedAt =
+    normalizedStatus === 'completed' &&
+    typeof item.completedAt === 'string' &&
+    item.completedAt.trim()
+      ? item.completedAt.trim()
+      : undefined;
   return {
     id: typeof item.id === 'string' && /^\d+$/.test(item.id) ? Number(item.id) : item.id,
     media_type: item.media_type,
@@ -386,9 +403,11 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     current_season: numeric(item.current_season, 0, 300) || defaultCurrentSeason(seasonProgress, seasonCounts),
     episodes_watched: totalWatched,
     next_episode: numeric(item.next_episode, 0, 10000),
-    status: ['watching', 'watchlist', 'completed'].includes(item.status) ? item.status : 'watchlist',
+    status: normalizedStatus,
     personal_rating: validRating || '',
     personal_rating_cleared: validRating ? false : item.personal_rating_cleared === true,
+    ...(normalizedRatedAt ? { ratedAt: normalizedRatedAt } : {}),
+    ...(normalizedCompletedAt ? { completedAt: normalizedCompletedAt } : {}),
     addedAt: typeof item.addedAt === 'string' ? item.addedAt : '',
     firstAddedAt:
       typeof item.firstAddedAt === 'string'
@@ -508,12 +527,17 @@ export function dedupeItems(items: SavedItem[]): SavedItem[] {
     }
     if (rating) ratingCleared = false;
     const isDemo = newest.isDemo === true && older.isDemo === true;
+    const mergedRatedAt = ratingCleared ? undefined : newest.ratedAt || older.ratedAt;
+    const mergedCompletedAt =
+      newest.status === 'completed' ? newest.completedAt || older.completedAt : undefined;
     const normalized = normalizeSavedItem({
       ...newest,
       isDemo,
       status: newest.status,
       personal_rating: rating || '',
       personal_rating_cleared: ratingCleared,
+      ...(mergedRatedAt ? { ratedAt: mergedRatedAt } : {}),
+      ...(mergedCompletedAt ? { completedAt: mergedCompletedAt } : {}),
       season_progress: { ...older.season_progress, ...newest.season_progress },
       season_episode_counts: { ...older.season_episode_counts, ...newest.season_episode_counts },
       next_episode_to_air:

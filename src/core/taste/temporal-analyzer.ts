@@ -1,6 +1,6 @@
 // ===========================================================================
-// CineTrack Taste Engine — Temporal Analyzer (v1.0)
-// lifetime/longTerm(730g)/recent(180g); timeSource (TP-029)
+// CineTrack Taste Engine — Temporal Analyzer (v1.5)
+// lifetime/longTerm(730g)/recent(180g); timeSource (TP-029) + V1.5 experiencedAt
 // ===========================================================================
 
 import { HALF_LIFE_RECENT_DAYS, HALF_LIFE_LONG_TERM_DAYS } from "./constants";
@@ -15,26 +15,70 @@ export interface TemporalWeights {
   effectiveTimeSource: TimeSource;
 }
 
+export interface TemporalTimestampSources {
+  ratedAt?: string;
+  completedAt?: string;
+  updatedAt?: string;
+  addedAt?: string;
+}
+
+function sanitizeTimestamp(value?: string): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 /**
- * Zaman ağırlıklarını hesapla (TP-029)
+ * Deneyim zamanını (experiencedAt) belirle (V1.5).
+ * Eğer timeSource === "actual" ise öncelik sırasıyla:
+ *   ratedAt -> completedAt -> updatedAt -> addedAt
+ * kullanılır. timeSource === "imported" ise undefined döner (TP-029).
+ */
+export function resolveExperiencedAt(
+  sources: TemporalTimestampSources | undefined,
+  timeSource: TimeSource
+): string | undefined {
+  if (timeSource !== "actual" || !sources) {
+    return undefined;
+  }
+
+  return (
+    sanitizeTimestamp(sources.ratedAt) ??
+    sanitizeTimestamp(sources.completedAt) ??
+    sanitizeTimestamp(sources.updatedAt) ??
+    sanitizeTimestamp(sources.addedAt)
+  );
+}
+
+/**
+ * Zaman ağırlıklarını hesapla (TP-029 & V1.5)
  *
  * T_i = 2^(-yaş_gün / yarılanma)
  *
- * KRİTİK: timeSource: imported → recent/longTerm'e girmez
- * (Faz 0 bulgusu: ratedAt yok, tüm migration olayları imported)
+ * KRİTİK:
+ * - timeSource: "imported" → recent/longTerm'e girmez (Faz 0 kuralı)
+ * - timeSource: "actual" → experiencedAt için öncelik sırası:
+ *   ratedAt -> completedAt -> updatedAt -> addedAt
  */
 export function computeTemporalWeights(
   recordedAt: string,
   experiencedAt: string | undefined,
   timeSource: TimeSource,
   timePrecision: TimePrecision,
-  asOf: string
+  asOf: string,
+  timestampSources?: TemporalTimestampSources
 ): TemporalWeights {
   // timePrecision şimdilik metadata olarak saklanıyor, V1 hesaplamasını etkilemiyor
   void timePrecision;
 
+  const resolvedExperiencedAt =
+    timeSource === "actual"
+      ? resolveExperiencedAt(timestampSources, timeSource) ??
+        sanitizeTimestamp(experiencedAt)
+      : sanitizeTimestamp(experiencedAt);
+
   // Kullanılacak zaman: experiencedAt (biliniyorsa) veya recordedAt
-  const effectiveDate = experiencedAt ?? recordedAt;
+  const effectiveDate = resolvedExperiencedAt ?? recordedAt;
   const asOfDate = new Date(asOf);
   const effectiveDateObj = new Date(effectiveDate);
 
@@ -55,7 +99,7 @@ export function computeTemporalWeights(
   const lifetime = 1;
 
   // timeSource: imported → recent/longTerm'e girmez (TP-029)
-  // Faz 0 bulgusu: ratedAt yok; tüm import olayları "imported" etiketli
+  // Faz 0 kuralı: eski kayıtlarda ratedAt/completedAt yoksa "imported" kalır
   if (timeSource === "imported") {
     return {
       lifetime,
