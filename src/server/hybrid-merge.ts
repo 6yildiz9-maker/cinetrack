@@ -7,6 +7,21 @@ import {
   normalizeWorkTitle,
 } from '../core/duplicate-detector.ts';
 import { parseCsvRows } from '../core/exporters.ts';
+import {
+  buildCinemaKunyeContentId,
+  enrichSavedItemsFromCinemaKunye,
+  extractCinemaKunyeFromItems,
+  mergeCinemaKunyeDocumentsLossless,
+  normalizeCinemaKunyeActorList,
+  normalizeCinemaKunyeDocument,
+  normalizeCinemaKunyeEntry,
+  parseCinemaKunyeActorsCsv,
+  parseCinemaKunyeGenresCsv,
+  type CinemaKunyeActor,
+  type CinemaKunyeDocument,
+  type CinemaKunyeEntry,
+  type CinemaKunyeGenre,
+} from '../core/cinema-kunye.ts';
 
 export interface CsvBackupRow {
   title: string;
@@ -16,6 +31,10 @@ export interface CsvBackupRow {
   status: SavedItem['status'];
   mediaType: 'movie' | 'tv';
   tmdbId: string;
+  contentId?: string;
+  genreIds?: number[];
+  genres?: CinemaKunyeGenre[];
+  actors?: CinemaKunyeActor[];
   addedDate?: string | null;
   firstAddedDate?: string | null;
   updatedDate?: string | null;
@@ -52,17 +71,19 @@ function csvFloatCell(value: string | undefined): number | undefined {
 
 export function parseCsvBackupRows(csvText: string): {
   rows: CsvBackupRow[];
+  trailerKunyeEntries: CinemaKunyeEntry[];
   failures: string[];
   skippedNoId: number;
 } {
   const raw = String(csvText || '').replace(/^\uFEFF/, '');
   const parsedRows = parseCsvRows(raw);
   const rows: CsvBackupRow[] = [];
+  const trailerKunyeEntries: CinemaKunyeEntry[] = [];
   const failures: string[] = [];
   let skippedNoId = 0;
 
   if (parsedRows.length < 2) {
-    return { rows, failures, skippedNoId };
+    return { rows, trailerKunyeEntries, failures, skippedNoId };
   }
 
   const header = parsedRows[0].map((col) => col.toLowerCase().trim());
@@ -85,6 +106,20 @@ export function parseCsvBackupRows(csvText: string): {
   const idxNextEpisode = findCol('nextepisode');
   const idxWatchMinutes = findCol('totalwatchtimeminutes');
   const idxCustom = findCol('custom');
+  const idxContentId = findCol('contentid', 'content_id', 'icerik_id');
+  const idxGenres = findCol('genres', 'türler', 'turler');
+  const idxActors = findCol('actors', 'cast', 'oyuncular');
+
+  for (const line of parsedRows.slice(1)) {
+    if (line.length >= 2 && String(line[0] || '').trim() === '#SinemaKunyesi') {
+      try {
+        const entry = normalizeCinemaKunyeEntry(JSON.parse(line[1]));
+        if (entry) trailerKunyeEntries.push(entry);
+      } catch {
+        // Bozuk #SinemaKunyesi satırı atlanır
+      }
+    }
+  }
 
   if (idxTitle === -1) {
     for (const line of parsedRows.slice(1)) {
@@ -92,31 +127,45 @@ export function parseCsvBackupRows(csvText: string): {
         failures.push(line.join(',').slice(0, 80));
       }
     }
-    return { rows, failures, skippedNoId };
+    return { rows, trailerKunyeEntries, failures, skippedNoId };
   }
 
   const cell = (row: string[], idx: number): string => (idx >= 0 ? (row[idx] || '').trim() : '');
 
   for (const line of parsedRows.slice(1)) {
     if (line.length === 0) continue;
-    if (String(line[0] || '').startsWith('#')) continue; // profil verisi fragmanı atlanır
+    if (String(line[0] || '').startsWith('#')) continue;
 
     const rawTitle = cell(line, idxTitle);
-    const tmdbId = cell(line, idxTmdb);
+    const rawTmdb = cell(line, idxTmdb);
     if (!rawTitle) {
       skippedNoId++;
-      continue;
-    }
-    if (!/^\d+$/.test(tmdbId)) {
-      failures.push(line.join(',').slice(0, 80));
       continue;
     }
 
     const rawType = cell(line, idxType).toLowerCase();
     const mediaType: 'movie' | 'tv' =
-      rawType.includes('tv') || rawType.includes('series') || rawType.includes('mini')
+      rawType.includes('tv') || rawType.includes('series') || rawType.includes('mini') || rawType === 'dizi'
         ? 'tv'
         : 'movie';
+
+    const yearStr = cell(line, idxYear).slice(0, 4);
+    const yearNum = Number(yearStr);
+    const year = /^\d{4}$/.test(yearStr) && yearNum >= 1880 && yearNum <= 2040 ? yearNum : null;
+    const explicitContentId = cell(line, idxContentId);
+    const computedContentId = explicitContentId || buildCinemaKunyeContentId(rawTitle, year);
+    const isCustomRow = cell(line, idxCustom) === '1';
+
+    let tmdbId = rawTmdb;
+    if (!/^\d+$/.test(tmdbId)) {
+      if (isCustomRow || explicitContentId) {
+        const slugPart = computedContentId.replace(/-(?:\d{4}|belirsiz)$/, '').slice(0, 48) || 'item';
+        tmdbId = `custom-csv-${mediaType}-${slugPart}${year ? `-${year}` : ''}`;
+      } else {
+        failures.push(line.join(',').slice(0, 80));
+        continue;
+      }
+    }
 
     const rawStatus = cell(line, idxStatus).toLowerCase();
     let status: SavedItem['status'] = 'completed';
@@ -139,19 +188,18 @@ export function parseCsvBackupRows(csvText: string): {
     }
 
     const watchedDate = cell(line, idxDate);
-    const yearStr = cell(line, idxYear).slice(0, 4);
-    const yearNum = Number(yearStr);
-    const year = /^\d{4}$/.test(yearStr) && yearNum >= 1880 && yearNum <= 2040 ? yearNum : null;
     const addedDate = cell(line, idxAdded) || null;
     const firstAddedDate = cell(line, idxFirstAdded) || null;
     const updatedDate = cell(line, idxUpdated) || null;
     const completedDate = cell(line, idxCompleted) || null;
     const ratedDate = cell(line, idxRated) || null;
-    const customFlag = cell(line, idxCustom) === '1' ? true : undefined;
+    const customFlag = isCustomRow || !/^\d+$/.test(tmdbId) ? true : undefined;
     const episodesWatched = csvIntCell(cell(line, idxEpisodes));
     const currentSeason = csvIntCell(cell(line, idxSeason));
     const nextEpisode = csvIntCell(cell(line, idxNextEpisode));
     const totalWatchTimeMinutes = csvFloatCell(cell(line, idxWatchMinutes));
+    const parsedGenres = idxGenres >= 0 ? parseCinemaKunyeGenresCsv(cell(line, idxGenres)) : { genreIds: [], genres: [] };
+    const parsedActors = idxActors >= 0 ? parseCinemaKunyeActorsCsv(cell(line, idxActors)) : [];
 
     rows.push({
       title: rawTitle,
@@ -161,6 +209,9 @@ export function parseCsvBackupRows(csvText: string): {
       status,
       mediaType,
       tmdbId,
+      contentId: computedContentId,
+      ...(parsedGenres.genreIds.length > 0 ? { genreIds: parsedGenres.genreIds, genres: parsedGenres.genres } : {}),
+      ...(parsedActors.length > 0 ? { actors: parsedActors } : {}),
       ...(addedDate ? { addedDate } : {}),
       ...(firstAddedDate ? { firstAddedDate } : {}),
       ...(updatedDate ? { updatedDate } : {}),
@@ -174,7 +225,7 @@ export function parseCsvBackupRows(csvText: string): {
     });
   }
 
-  return { rows, failures, skippedNoId };
+  return { rows, trailerKunyeEntries, failures, skippedNoId };
 }
 
 export interface HybridMergeReport {
@@ -218,7 +269,7 @@ function buildItemFromRow(row: CsvBackupRow): SavedItem {
   const ratedIso =
     csvDateToIso(row.ratedDate) || (watchedIso && row.rating !== '' ? watchedIso : null);
   return {
-    id: row.tmdbId,
+    id: /^\d+$/.test(row.tmdbId) ? Number(row.tmdbId) : row.tmdbId,
     media_type: row.mediaType,
     title: row.title,
     status: row.status,
@@ -226,7 +277,9 @@ function buildItemFromRow(row: CsvBackupRow): SavedItem {
     vote_average: 0,
     vote_count: 0,
     popularity: 0,
-    genre_ids: [],
+    genre_ids: row.genreIds || [],
+    ...(row.genres && row.genres.length > 0 ? { genres: row.genres.map((g) => g.name) } : {}),
+    ...(row.actors && row.actors.length > 0 ? { cast: row.actors } : {}),
     ...(row.year !== null
       ? row.mediaType === 'movie'
         ? { release_date: `${row.year}-01-01` }
@@ -347,6 +400,22 @@ function mergeRowIntoItem(
     next.totalWatchTimeMinutes = row.totalWatchTimeMinutes;
     changed = true;
   }
+  if (row.genreIds && row.genreIds.length > 0) {
+    const mergedGenres = Array.from(new Set<number>([...(next.genre_ids || []), ...row.genreIds])).sort(
+      (a, b) => a - b
+    );
+    if (mergedGenres.length > (next.genre_ids || []).length) {
+      next.genre_ids = mergedGenres;
+      changed = true;
+    }
+  }
+  if (row.actors && row.actors.length > 0) {
+    const mergedCast = normalizeCinemaKunyeActorList([...(next.cast || []), ...row.actors], 12);
+    if (mergedCast.length > (next.cast || []).length) {
+      next.cast = mergedCast;
+      changed = true;
+    }
+  }
   if (row.custom !== undefined && next.custom === undefined) {
     next.custom = row.custom;
     changed = true;
@@ -362,22 +431,41 @@ function csvRowScore(row: CsvBackupRow): number {
   let score = STATUS_PRIORITY[row.status];
   if (typeof row.rating === 'number' && row.rating > 0) score += 10;
   if (row.watchedDate) score += 1;
+  if (row.actors && row.actors.length > 0) score += 2;
+  if (row.genreIds && row.genreIds.length > 0) score += 1;
   return score;
 }
 
 export function runHybridMerge(
   csvText: string,
   document: DataDocument
-): { document: DataDocument; report: HybridMergeReport } {
-  const { rows, failures, skippedNoId } = parseCsvBackupRows(csvText);
+): { document: DataDocument; cinemaKunye: CinemaKunyeDocument; report: HybridMergeReport } {
+  const { rows, trailerKunyeEntries, failures, skippedNoId } = parseCsvBackupRows(csvText);
 
-  // 1. CSV içi yinelenen satırlar (aynı tmdbID + medya türü) → en dolu kayıt kalır
+  // 1. CSV içi yinelenen satırlar → en dolu kayıt kalır, tür/oyuncu bilgileri kayıpsız birleşir
   const bestRowByKey = new Map<string, CsvBackupRow>();
   for (const row of rows) {
     const key = `${row.mediaType}:${row.tmdbId}`;
     const existing = bestRowByKey.get(key);
-    if (!existing || csvRowScore(row) > csvRowScore(existing)) {
+    if (!existing) {
       bestRowByKey.set(key, row);
+    } else {
+      const winner = csvRowScore(row) > csvRowScore(existing) ? row : existing;
+      const other = winner === row ? existing : row;
+      const unionGenreIds = Array.from(
+        new Set<number>([...(winner.genreIds || []), ...(other.genreIds || [])])
+      );
+      const unionActors = normalizeCinemaKunyeActorList(
+        [...(winner.actors || []), ...(other.actors || [])],
+        12
+      );
+      bestRowByKey.set(key, {
+        ...other,
+        ...winner,
+        year: winner.year ?? other.year,
+        ...(unionGenreIds.length > 0 ? { genreIds: unionGenreIds } : {}),
+        ...(unionActors.length > 0 ? { actors: unionActors } : {}),
+      });
     }
   }
   const csvDuplicateRowsRemoved = rows.length - bestRowByKey.size;
@@ -468,18 +556,52 @@ export function runHybridMerge(
     newItemsCreated++;
   }
 
+  const rowKunyeEntries: CinemaKunyeEntry[] = [];
+  for (const row of bestRowByKey.values()) {
+    const isWatched =
+      row.status === 'completed' ||
+      row.status === 'watching' ||
+      (typeof row.rating === 'number' && row.rating >= 1) ||
+      (row.episodesWatched !== undefined && row.episodesWatched > 0);
+    if (isWatched || (row.genreIds && row.genreIds.length > 0) || (row.actors && row.actors.length > 0)) {
+      const numericTmdb = /^\d+$/.test(row.tmdbId) ? Number(row.tmdbId) : undefined;
+      const entry = normalizeCinemaKunyeEntry({
+        contentId: row.contentId || buildCinemaKunyeContentId(row.title, row.year),
+        title: row.title,
+        year: row.year,
+        mediaType: row.mediaType,
+        ...(numericTmdb ? { tmdbId: numericTmdb } : {}),
+        genreIds: row.genreIds || [],
+        genres: row.genres || [],
+        actors: row.actors || [],
+        updatedAt: csvDateToIso(row.updatedDate) || csvRowDateIso(row) || '',
+      });
+      if (entry) rowKunyeEntries.push(entry);
+    }
+  }
+
+  const csvCinemaKunye = mergeCinemaKunyeDocumentsLossless(
+    normalizeCinemaKunyeDocument({ entries: rowKunyeEntries }),
+    normalizeCinemaKunyeDocument({ entries: trailerKunyeEntries })
+  );
+  const finalCinemaKunye = mergeCinemaKunyeDocumentsLossless(
+    extractCinemaKunyeFromItems(mergedItems),
+    csvCinemaKunye
+  );
+  const enrichedMergedItems = enrichSavedItemsFromCinemaKunye(mergedItems, finalCinemaKunye);
+
   // 3. Birleşme sonrası hâlâ şüpheli görünen çiftler (onay UI panelinde çözülür)
-  const suspicious = detectDuplicateSavedItems(mergedItems).slice(0, 40).map((pair) => ({
+  const suspicious = detectDuplicateSavedItems(enrichedMergedItems).slice(0, 40).map((pair) => ({
     a: `${pair.primaryItem.title || pair.primaryItem.name} (${itemReleaseYear(pair.primaryItem) || '—'})`,
     b: `${pair.secondaryItem.title || pair.secondaryItem.name} (${itemReleaseYear(pair.secondaryItem) || '—'})`,
     reason: pair.reason,
   }));
 
   const profiles: Profile[] = document.profiles.map((p, i) =>
-    i === profileIndex ? { ...p, items: mergedItems } : p
+    i === profileIndex ? { ...p, items: enrichedMergedItems } : p
   );
   if (profileIndex < 0) {
-    profiles.push({ ...targetProfile, items: mergedItems });
+    profiles.push({ ...targetProfile, items: enrichedMergedItems });
   }
 
   const nextDocument: DataDocument = {
@@ -490,6 +612,7 @@ export function runHybridMerge(
 
   return {
     document: nextDocument,
+    cinemaKunye: finalCinemaKunye,
     report: {
       csvRowsParsed: rows.length,
       csvRowsFailed: failures.length,
@@ -502,7 +625,7 @@ export function runHybridMerge(
       conflictResolutionCount: conflicts.length,
       conflictSamples: conflicts.slice(0, 10),
       suspiciousDuplicatePairs: suspicious,
-      finalItemCount: mergedItems.length,
+      finalItemCount: enrichedMergedItems.length,
     },
   };
 }

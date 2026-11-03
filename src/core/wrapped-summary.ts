@@ -1,4 +1,8 @@
 import type { Profile, SavedItem } from './cinetrack-core.ts';
+import {
+  enrichSavedItemsFromCinemaKunye,
+  type CinemaKunyeDocument,
+} from './cinema-kunye.ts';
 import { buildTasteDnaProfile } from './exporters.ts';
 import { computeProfileCentroid, cosineSimilarity, encodeItemContent } from './encoding.ts';
 
@@ -114,7 +118,13 @@ export interface YearlyWrappedSummary {
 }
 
 export function resolveItemTrackedDate(item: SavedItem): Date | null {
-  const candidates = [item.updatedAt, item.addedAt, item.firstAddedAt];
+  const candidates = [
+    item.completedAt,
+    item.ratedAt,
+    item.updatedAt,
+    item.addedAt,
+    item.firstAddedAt,
+  ];
   for (const raw of candidates) {
     if (!raw || typeof raw !== 'string') continue;
     const trimmed = raw.trim();
@@ -154,9 +164,11 @@ export function computeAvailableWrappedYears(
 export function buildYearlyWrappedSummary(
   profile: Profile,
   targetYear: number,
-  genreMap: Record<number, string> = {}
+  genreMap: Record<number, string> = {},
+  cinemaKunye?: CinemaKunyeDocument | null
 ): YearlyWrappedSummary {
-  const allItems = Array.isArray(profile.items) ? profile.items : [];
+  const rawItems = Array.isArray(profile.items) ? profile.items : [];
+  const allItems = enrichSavedItemsFromCinemaKunye(rawItems, cinemaKunye);
   const itemsWithYear: Array<{ item: SavedItem; date: Date | null }> = [];
 
   for (const item of allItems) {
@@ -366,7 +378,7 @@ export function buildYearlyWrappedSummary(
     ...profile,
     items: scopedItems,
   };
-  const dna = buildTasteDnaProfile(scopedProfile, genreMap);
+  const dna = buildTasteDnaProfile(scopedProfile, genreMap, cinemaKunye);
   const formatTrait = dna.signatureTraits[0]?.value || 'Sinema Tutkunu';
   const topGenreName = topGenres[0]?.name || 'Çok Türlü';
   const dnaHeadline = `${formatTrait} · ${topGenreName} Ekseni`;

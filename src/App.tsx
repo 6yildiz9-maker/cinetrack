@@ -103,8 +103,14 @@ import {
 } from './services/api.ts';
 import {
   areUserDataDocumentsSemanticallyEqual,
+  mergeSavedItemListsLossless,
   reconcileUserDataDocumentsLossless,
 } from './core/user-data-merge.ts';
+import {
+  enrichSavedItemsFromCinemaKunye,
+  extractCinemaKunyeFromItems,
+  mergeCinemaKunyeDocumentsLossless,
+} from './core/cinema-kunye.ts';
 import { computeSourceCatalogSignature } from './core/derived-profile-cache.ts';
 import {
   buildDerivedProfilePayloadFromTasteMap,
@@ -115,6 +121,7 @@ import {
 } from './core/recommendation-orchestrator.ts';
 import { useOfflineSync } from './hooks/useOfflineSync.ts';
 import { useStockEngine } from './hooks/useStockEngine.ts';
+import { useCinemaKunye } from './hooks/useCinemaKunye.ts';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.ts';
 import { useItemActions } from './hooks/useItemActions.ts';
 import { hasPendingOfflineSync } from './services/offline-queue.ts';
@@ -873,6 +880,20 @@ export function App() {
   // Autonomous 500-movie + 500-TV IndexedDB stock engine & <250 background replenisher (Aşama 2 & 4)
   const stockEngineState = useStockEngine(activeProfileId);
 
+  // Separate persistent Sinema Künyesi store (genre / year / cast keyed by contentId = title + year)
+  const {
+    cinemaKunye,
+    mergeIncomingCinemaKunye,
+    replaceCinemaKunye,
+    flushCinemaKunyeToServer,
+    refreshCinemaKunyeFromServer,
+  } = useCinemaKunye({
+    savedItems,
+    genresMap,
+    isDemo: Boolean(activeProfile?.isDemo),
+    tmdbSource: tmdbSourceMeta.source,
+  });
+
   // Hydrate discovery-history & candidate-pool from IndexedDB on startup/profile switch (BUG-02)
   useEffect(() => {
     let active = true;
@@ -1083,8 +1104,9 @@ export function App() {
         preferActiveFrom: 'local',
         keepDirtyIfLocalAhead: true,
       });
+      void refreshCinemaKunyeFromServer('merge');
     }
-  }, [mergeRemoteDocumentIntoState]);
+  }, [mergeRemoteDocumentIntoState, refreshCinemaKunyeFromServer]);
 
   useEffect(() => {
     if (!serverSyncReady) return;
@@ -3546,13 +3568,19 @@ export function App() {
 
   // Export / Import
   const handleExportBackup = () => {
+    const exportedKunye = mergeCinemaKunyeDocumentsLossless(
+      cinemaKunye,
+      extractCinemaKunyeFromItems(savedItems, genresMap)
+    );
+    const enrichedExportItems = enrichSavedItemsFromCinemaKunye(savedItems, exportedKunye);
     const backup = {
       version: 3,
       schemaVersion: CURRENT_SCHEMA_VERSION,
       engineVersion: ENGINE_VERSION,
       profileId: activeProfileId,
       profileName,
-      items: savedItems,
+      items: enrichedExportItems,
+      cinemaKunye: exportedKunye,
       preferences,
       favoriteActors: favoriteActorsRef.current,
       isDemo: Boolean(activeProfile?.isDemo),
@@ -3582,8 +3610,18 @@ export function App() {
     if (mode === 'overwrite') {
       confirmNextBulkSyncRef.current = true;
     }
-    const importedItems =
-      mode === 'merge' ? dedupeItems([...savedItems, ...pendingBackup.items]) : pendingBackup.items;
+
+    const effectiveKunye =
+      mode === 'merge'
+        ? mergeIncomingCinemaKunye(pendingBackup.cinemaKunye)
+        : replaceCinemaKunye(pendingBackup.cinemaKunye);
+
+    const rawImportedItems =
+      mode === 'merge'
+        ? mergeSavedItemListsLossless(savedItems, pendingBackup.items, activeProfileId)
+        : dedupeItems(pendingBackup.items);
+    const importedItems = enrichSavedItemsFromCinemaKunye(rawImportedItems, effectiveKunye);
+
     savedItemsRef.current = importedItems;
     setSavedItems(importedItems);
     lastForYouQueryKeyRef.current = '';
@@ -3595,6 +3633,18 @@ export function App() {
       setPreferences((prev) => ({
         ...prev,
         ...pendingBackup.preferences,
+        disliked:
+          mode === 'merge'
+            ? Array.from(new Set([...(prev.disliked || []), ...(pendingBackup.preferences.disliked || [])]))
+            : pendingBackup.preferences.disliked || [],
+        hidden:
+          mode === 'merge'
+            ? Array.from(new Set([...(prev.hidden || []), ...(pendingBackup.preferences.hidden || [])]))
+            : pendingBackup.preferences.hidden || [],
+        providers:
+          mode === 'merge'
+            ? Array.from(new Set([...(prev.providers || []), ...(pendingBackup.preferences.providers || [])]))
+            : pendingBackup.preferences.providers || [],
         reminders: false,
         notified: [],
       }));
@@ -3689,6 +3739,7 @@ export function App() {
             profileName={profileName}
             favoriteActors={favoriteActors}
             genresMap={genresMap}
+            cinemaKunye={cinemaKunye}
             onSelectItem={(id, mediaType) => {
               const found = findSavedItem(savedItems, { id, media_type: mediaType });
               setDetailItem(found || { id, media_type: mediaType });
@@ -4066,6 +4117,7 @@ export function App() {
         favoriteActors={favoriteActors}
         dislikedItems={dislikedItems}
         genresMap={genresMap}
+        cinemaKunye={cinemaKunye}
         tasteEntries={tasteMap.entries}
         syncStatus={syncStatus}
         onClose={() => setProfileOpen(false)}
@@ -4076,18 +4128,34 @@ export function App() {
         onToggleReminders={handleToggleReminders}
         onExportBackup={handleExportBackup}
         onImportBackupFile={handleImportBackupFile}
-        onImportCsvItems={(items) => {
-          const merged = dedupeItems([...savedItems, ...items]);
+        onImportCsvItems={(items, importedKunye) => {
+          const effectiveKunye = importedKunye
+            ? mergeIncomingCinemaKunye(importedKunye)
+            : cinemaKunye;
+          const merged = enrichSavedItemsFromCinemaKunye(
+            mergeSavedItemListsLossless(savedItems, items, activeProfileId),
+            effectiveKunye
+          );
+          savedItemsRef.current = merged;
           setSavedItems(merged);
           void recordProfileChangeAndMaybeBackup();
-          showToast(`${items.length} yapım CSV'den listenize eklendi.`);
+          showToast(`${items.length} yapım CSV'den listenize kayıpsız birleştirildi.`);
         }}
         onApplyRestoredDocument={(doc) => {
           applyDataDocumentToState(doc);
+          void refreshCinemaKunyeFromServer('merge');
           showToast('Sunucu yedeği başarıyla geri yüklendi.');
         }}
-        onBeforeSyncFlush={pushToServer}
-        onMergeSyncedDocument={handleMergeSyncedDocument}
+        onBeforeSyncFlush={async () => {
+          await Promise.all([pushToServer(), flushCinemaKunyeToServer()]);
+        }}
+        onMergeSyncedDocument={(doc) => {
+          handleMergeSyncedDocument(doc);
+          void refreshCinemaKunyeFromServer('merge');
+        }}
+        onCinemaKunyeSynced={(syncMode) => {
+          void refreshCinemaKunyeFromServer(syncMode);
+        }}
         onMergeDuplicates={handleMergeDuplicates}
         isDemo={Boolean(activeProfile?.isDemo)}
         onToggleDemoMode={handleToggleDemoMode}

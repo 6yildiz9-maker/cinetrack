@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { FavoriteActorInfo, Profile, SavedItem } from '../core/cinetrack-core.ts';
+import {
+  enrichSavedItemsFromCinemaKunye,
+  type CinemaKunyeDocument,
+} from '../core/cinema-kunye.ts';
 import { calculateItemWatchMinutes } from '../utils/helpers.ts';
 import { buildTasteDnaProfile } from '../core/exporters.ts';
 import {
@@ -16,6 +20,7 @@ interface StatsProps {
   profileName?: string;
   favoriteActors?: FavoriteActorInfo[];
   genresMap?: Record<number, string>;
+  cinemaKunye?: CinemaKunyeDocument | null;
   onSelectItem?: (id: number | string, mediaType: 'movie' | 'tv') => void;
   onMergeDuplicates?: (
     keepId: SavedItem['id'],
@@ -52,6 +57,7 @@ export const Stats: React.FC<StatsProps> = ({
   profileName,
   favoriteActors = [],
   genresMap,
+  cinemaKunye,
   onSelectItem,
   onMergeDuplicates,
 }) => {
@@ -64,7 +70,8 @@ export const Stats: React.FC<StatsProps> = ({
   }, []);
 
   const statsData = useMemo(() => {
-    const total = items.length;
+    const enrichedItems = enrichSavedItemsFromCinemaKunye(items, cinemaKunye);
+    const total = enrichedItems.length;
     let totalMinutes = 0;
     const genreCounts: Record<string, number> = {};
     const effectiveGenres: Record<number, string> = {
@@ -72,7 +79,7 @@ export const Stats: React.FC<StatsProps> = ({
       ...(genresMap || {}),
     };
 
-    for (const item of items) {
+    for (const item of enrichedItems) {
       totalMinutes += calculateItemWatchMinutes(item);
 
       for (const gid of item.genre_ids || []) {
@@ -93,7 +100,7 @@ export const Stats: React.FC<StatsProps> = ({
     const watchTimeString = days > 0 ? `${days}g ${hours}sa` : `${hours} sa`;
 
     const currentYear = new Date().getFullYear().toString();
-    const currentYearCount = items.filter((item) =>
+    const currentYearCount = enrichedItems.filter((item) =>
       (item.addedAt || item.updatedAt || '').startsWith(currentYear)
     ).length;
 
@@ -101,12 +108,12 @@ export const Stats: React.FC<StatsProps> = ({
       id: 'active',
       name: profileName || 'Profilim',
       createdAt: '',
-      items,
+      items: enrichedItems,
       favoriteActors,
       preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
     };
 
-    const tasteDna = buildTasteDnaProfile(syntheticProfile, effectiveGenres);
+    const tasteDna = buildTasteDnaProfile(syntheticProfile, effectiveGenres, cinemaKunye);
 
     return {
       total,
@@ -117,7 +124,7 @@ export const Stats: React.FC<StatsProps> = ({
       currentYear,
       tasteDna,
     };
-  }, [items, profileName, favoriteActors, genresMap]);
+  }, [items, profileName, favoriteActors, genresMap, cinemaKunye]);
 
   if (items.length === 0) {
     return null;
@@ -225,6 +232,7 @@ export const Stats: React.FC<StatsProps> = ({
         profileName={profileName}
         favoriteActors={favoriteActors}
         genresMap={genresMap}
+        cinemaKunye={cinemaKunye}
         onSelectItem={onSelectItem}
       />
     </section>

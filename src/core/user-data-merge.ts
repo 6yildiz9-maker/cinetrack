@@ -13,6 +13,12 @@ import {
   type Profile,
   type SavedItem,
 } from './cinetrack-core.ts';
+import {
+  buildCinemaKunyeContentId,
+  extractItemReleaseYear,
+  normalizeCinemaKunyeActorList,
+  slugifyCinemaKunyeTitle,
+} from './cinema-kunye.ts';
 import type { UserDataConflictItem } from './sync-display.ts';
 
 function sortKeysDeepPure(value: unknown): unknown {
@@ -213,12 +219,55 @@ export function mergeTwoSavedItemsLossless(
   const baseWinner = remoteTime > localTime ? remoteItem : localItem;
   const fallbackOther = baseWinner === remoteItem ? localItem : remoteItem;
 
+  const pickBetterReleaseDate = (a?: string, b?: string): string | undefined => {
+    const sa = typeof a === 'string' ? a.trim() : '';
+    const sb = typeof b === 'string' ? b.trim() : '';
+    if (!sa) return sb || undefined;
+    if (!sb) return sa;
+    if (sa.endsWith('-01-01') && !sb.endsWith('-01-01') && sb.slice(0, 4) === sa.slice(0, 4)) {
+      return sb;
+    }
+    return sa;
+  };
+
+  const mergedCast = normalizeCinemaKunyeActorList(
+    [...(baseWinner.cast || []), ...(fallbackOther.cast || [])],
+    12
+  );
+  const rawCrew = [...(baseWinner.crew || []), ...(fallbackOther.crew || [])];
+  const crewMap = new Map<string, NonNullable<SavedItem['crew']>[number]>();
+  for (const member of rawCrew) {
+    if (!member || typeof member.name !== 'string' || !member.name.trim()) continue;
+    const cKey = `${member.id || member.name.toLowerCase()}:${member.job || ''}`;
+    if (!crewMap.has(cKey)) {
+      crewMap.set(cKey, {
+        id: Number(member.id) || 0,
+        name: member.name.trim(),
+        job: String(member.job || 'Crew').trim(),
+        ...(member.department ? { department: member.department } : {}),
+      });
+    }
+    if (crewMap.size >= 10) break;
+  }
+  const mergedCrew = Array.from(crewMap.values());
+
+  const resolvedReleaseDate = pickBetterReleaseDate(
+    baseWinner.release_date,
+    fallbackOther.release_date
+  );
+  const resolvedFirstAirDate = pickBetterReleaseDate(
+    baseWinner.first_air_date,
+    fallbackOther.first_air_date
+  );
+
   const merged: SavedItem = {
     ...fallbackOther,
     ...baseWinner,
     id: localItem.id,
     media_type: localItem.media_type,
     title: baseWinner.title || fallbackOther.title,
+    ...(resolvedReleaseDate !== undefined ? { release_date: resolvedReleaseDate } : {}),
+    ...(resolvedFirstAirDate !== undefined ? { first_air_date: resolvedFirstAirDate } : {}),
     overview: richerOverview,
     poster_path: baseWinner.poster_path || fallbackOther.poster_path,
     poster_url: baseWinner.poster_url || fallbackOther.poster_url,
@@ -235,6 +284,8 @@ export function mergeTwoSavedItemsLossless(
       : {}),
     ...(earliestFirstAdded ? { firstAddedAt: earliestFirstAdded } : {}),
     ...(mergedWatchMinutes !== undefined ? { totalWatchTimeMinutes: mergedWatchMinutes } : {}),
+    ...(mergedCast.length > 0 ? { cast: mergedCast } : {}),
+    ...(mergedCrew.length > 0 ? { crew: mergedCrew } : {}),
     ratedAt: resolvedRatedAt,
     completedAt: resolvedCompletedAt,
     addedAt: earliestAdded || localItem.addedAt || remoteItem.addedAt,
@@ -242,6 +293,12 @@ export function mergeTwoSavedItemsLossless(
     isDemo: Boolean(localItem.isDemo && remoteItem.isDemo),
   };
 
+  if (mergedCast.length === 0) {
+    delete merged.cast;
+  }
+  if (mergedCrew.length === 0) {
+    delete merged.crew;
+  }
   if (!resolvedRatedAt) {
     delete merged.ratedAt;
   }
@@ -281,6 +338,74 @@ export function mergeTwoSavedItemsLossless(
       : undefined;
 
   return { merged, conflict, changedLocal, changedRemote };
+}
+
+/**
+ * Yedek geri yükleme (JSON / CSV) sırasında mevcut liste ile içe aktarılan listeyi
+ * hem mediaKey (movie:27205) hem de içerik ID'si (film/dizi adı + yıl, custom-* kayıtlar dahil)
+ * üzerinden kayıpsız birleştirir.
+ */
+export function mergeSavedItemListsLossless(
+  existingItems: SavedItem[],
+  incomingItems: SavedItem[],
+  profileId = 'active'
+): SavedItem[] {
+  const result = [...(Array.isArray(existingItems) ? existingItems : [])];
+
+  const findMatchIndex = (candidate: SavedItem): number => {
+    const candidateType = candidate.media_type === 'tv' ? 'tv' : 'movie';
+    const candidateIdStr = String(candidate.id);
+    const candidateByKey = result.findIndex(
+      (it) =>
+        (it.media_type === 'tv' ? 'tv' : 'movie') === candidateType &&
+        String(it.id) === candidateIdStr
+    );
+    if (candidateByKey >= 0) return candidateByKey;
+
+    const candTitle = (candidate.title || candidate.name || '').trim();
+    if (!candTitle) return -1;
+    const candYear = extractItemReleaseYear(candidate);
+    const candContentId = buildCinemaKunyeContentId(candTitle, candYear);
+    const candIsCustom = Boolean(candidate.custom || candidateIdStr.startsWith('custom-'));
+
+    return result.findIndex((it) => {
+      const itType = it.media_type === 'tv' ? 'tv' : 'movie';
+      if (itType !== candidateType) return false;
+      const itIsCustom = Boolean(it.custom || String(it.id).startsWith('custom-'));
+      if (!candIsCustom && !itIsCustom) return false;
+      const itTitle = (it.title || it.name || '').trim();
+      if (!itTitle) return false;
+      const itYear = extractItemReleaseYear(it);
+      if (candYear !== null && itYear !== null) {
+        return buildCinemaKunyeContentId(itTitle, itYear) === candContentId;
+      }
+      return slugifyCinemaKunyeTitle(itTitle) === slugifyCinemaKunyeTitle(candTitle);
+    });
+  };
+
+  for (const incoming of Array.isArray(incomingItems) ? incomingItems : []) {
+    if (!incoming) continue;
+    const matchIdx = findMatchIndex(incoming);
+    if (matchIdx === -1) {
+      result.push(incoming);
+      continue;
+    }
+
+    const existing = result[matchIdx];
+    const existingIsNumeric = typeof existing.id === 'number' && !existing.custom;
+    const incomingIsNumeric = typeof incoming.id === 'number' && !incoming.custom;
+
+    const anchorItem = !existingIsNumeric && incomingIsNumeric ? incoming : existing;
+    const otherItem = anchorItem === existing ? incoming : existing;
+
+    const { merged } = mergeTwoSavedItemsLossless(profileId, anchorItem, otherItem);
+    if (typeof anchorItem.id === 'number' && !anchorItem.custom) {
+      merged.custom = false;
+    }
+    result[matchIdx] = merged;
+  }
+
+  return result;
 }
 
 export interface ReconcileUserDataOptions {

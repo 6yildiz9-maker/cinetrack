@@ -22,6 +22,12 @@ import {
   reconcileUserDataDocumentsLossless,
 } from '../core/user-data-merge.ts';
 export { mergeTwoSavedItemsLossless, reconcileUserDataDocumentsLossless };
+import {
+  buildCinemaKunyeCanonicalPayload,
+  mergeCinemaKunyeDocumentsLossless,
+  normalizeCinemaKunyeDocument,
+  type CinemaKunyeDocument,
+} from '../core/cinema-kunye.ts';
 import { canonicalizeMediaKey, canonicalizeMediaKeyList } from '../core/keys.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb, measureUtf8Bytes } from '../core/limits.ts';
 import {
@@ -117,6 +123,12 @@ export const SYNC_STATIC_INVENTORY: ReadonlyArray<{
     category: 'stock',
     personal: true,
     description: 'Stok içerik deposu (film + dizi, sınırsız ve media:key tekilleştirmeli)',
+  },
+  {
+    repoPath: 'data/sinema-kunyesi.json',
+    category: 'cinema_kunye',
+    personal: true,
+    description: 'Sinema Künyesi izlenen içerik tür/yıl/oyuncu metaverileri (içerik ID anahtarlı)',
   },
 ]);
 
@@ -1228,6 +1240,129 @@ function inspectStockRawContent(
   };
 }
 
+function inspectCinemaKunyeRawContent(
+  rawText: string,
+  maxBytes: number,
+  sha?: string
+): {
+  inspection: SyncFileInspection;
+  doc?: CinemaKunyeDocument;
+} {
+  const repoPath = 'data/sinema-kunyesi.json';
+  const sizeBytes = measureUtf8Bytes(rawText);
+  if (sizeBytes > maxBytes) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'cinema_kunye',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: `Sinema künyesi dosyası sınırı (${formatMaxDataLimitMb(maxBytes)}) aşıyor.`,
+        errorCategory: 'payload_too_large',
+      },
+    };
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err: any) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'cinema_kunye',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: `data/sinema-kunyesi.json geçersiz JSON: ${err?.message || 'ayrıştırılamadı'}`,
+        errorCategory: 'corrupt_remote_json',
+      },
+    };
+  }
+
+  if (
+    !isPlainObject(parsed) ||
+    (!isPlainObject(parsed.entries) && !Array.isArray(parsed.entries))
+  ) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'cinema_kunye',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: 'data/sinema-kunyesi.json şeması geçersiz (entries alanı eksik).',
+        errorCategory: 'schema_mismatch',
+      },
+    };
+  }
+
+  const rawCount = Array.isArray(parsed.entries)
+    ? parsed.entries.length
+    : Object.keys(parsed.entries).length;
+  const doc = normalizeCinemaKunyeDocument(parsed);
+  const uniqueCount = Object.keys(doc.entries).length;
+
+  if (rawCount > 0 && uniqueCount === 0) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'cinema_kunye',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: rawCount,
+        uniqueKeyCount: 0,
+        sha,
+        error: 'data/sinema-kunyesi.json içindeki tüm künye kayıtları geçersiz.',
+        errorCategory: 'schema_mismatch',
+      },
+    };
+  }
+
+  const canonicalPayload = buildCinemaKunyeCanonicalPayload(doc);
+  const semanticHash = hashContent(stringifyDeterministic(canonicalPayload));
+
+  return {
+    doc,
+    inspection: {
+      repoPath,
+      category: 'cinema_kunye',
+      personal: true,
+      exists: true,
+      valid: true,
+      sizeBytes,
+      rawFileHash: computeRawUtf8Hash(rawText),
+      semanticHash,
+      recordCount: rawCount,
+      uniqueKeyCount: uniqueCount,
+      sha,
+    },
+  };
+}
+
 function inspectDerivedProfileRawContent(
   repoPath: string,
   rawText: string,
@@ -1398,6 +1533,7 @@ interface ParsedSideBundle {
   tv: Record<string, CatalogRecord>;
   manifest: CatalogManifest | null;
   userData: DataDocument | null;
+  cinemaKunye: CinemaKunyeDocument | null;
   derivedProfiles: Record<string, DerivedProfileDocument>;
   errors: SyncErrorRecord[];
 }
@@ -1699,6 +1835,7 @@ export class GitHubBidirectionalSyncManager {
     let tv: Record<string, CatalogRecord> = {};
     let manifest: CatalogManifest | null = null;
     let userData: DataDocument | null = null;
+    let cinemaKunye: CinemaKunyeDocument | null = null;
     const derivedProfiles: Record<string, DerivedProfileDocument> = {};
 
     if (existsSync(moviesPath)) {
@@ -1888,6 +2025,37 @@ export class GitHubBidirectionalSyncManager {
       };
     }
 
+    const kunyePath = path.join(this.deps.dataDir, 'sinema-kunyesi.json');
+    if (existsSync(kunyePath)) {
+      const raw = readFileSync(kunyePath, 'utf8');
+      const res = inspectCinemaKunyeRawContent(raw, this.maxBytes);
+      if (!res.inspection.valid && res.inspection.errorCategory === 'corrupt_remote_json') {
+        res.inspection.errorCategory = 'corrupt_local_file';
+      }
+      files['data/sinema-kunyesi.json'] = res.inspection;
+      if (res.doc) cinemaKunye = res.doc;
+      if (!res.inspection.valid && res.inspection.error) {
+        errors.push({
+          repoPath: 'data/sinema-kunyesi.json',
+          category: res.inspection.errorCategory || 'corrupt_local_file',
+          message: res.inspection.error,
+        });
+      }
+    } else {
+      files['data/sinema-kunyesi.json'] = {
+        repoPath: 'data/sinema-kunyesi.json',
+        category: 'cinema_kunye',
+        personal: true,
+        exists: false,
+        valid: true,
+        sizeBytes: 0,
+        rawFileHash: null,
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+      };
+    }
+
     let derivedRecordsTotal = 0;
     if (existsSync(profilesDir)) {
       const dirFiles = readdirSync(profilesDir)
@@ -1952,7 +2120,7 @@ export class GitHubBidirectionalSyncManager {
       files,
     };
 
-    return { summary, movies, tv, manifest, userData, derivedProfiles, errors };
+    return { summary, movies, tv, manifest, userData, cinemaKunye, derivedProfiles, errors };
   }
 
   private async fetchGitBlobBySha(
@@ -2380,6 +2548,7 @@ export class GitHubBidirectionalSyncManager {
     let tv: Record<string, CatalogRecord> = {};
     let manifest: CatalogManifest | null = null;
     let userData: DataDocument | null = null;
+    let cinemaKunye: CinemaKunyeDocument | null = null;
     const derivedProfiles: Record<string, DerivedProfileDocument> = {};
 
     let manifestValid = true;
@@ -2660,6 +2829,58 @@ export class GitHubBidirectionalSyncManager {
         }
       }
 
+      const kunyeRes = await this.fetchRemoteFileRaw('data/sinema-kunyesi.json', cfg);
+      if (!kunyeRes.ok) {
+        transportFailed = true;
+        errors.push(kunyeRes.error);
+        files['data/sinema-kunyesi.json'] = {
+          repoPath: 'data/sinema-kunyesi.json',
+          category: 'cinema_kunye',
+          personal: true,
+          exists: false,
+          valid: false,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+          error: kunyeRes.error.message,
+          errorCategory: kunyeRes.error.category,
+        };
+      } else if (!kunyeRes.exists) {
+        files['data/sinema-kunyesi.json'] = {
+          repoPath: 'data/sinema-kunyesi.json',
+          category: 'cinema_kunye',
+          personal: true,
+          exists: false,
+          valid: true,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+        };
+      } else {
+        rawRemoteContents['data/sinema-kunyesi.json'] = {
+          content: kunyeRes.content,
+          sha: kunyeRes.sha,
+        };
+        const inspected = inspectCinemaKunyeRawContent(
+          kunyeRes.content,
+          this.maxBytes,
+          kunyeRes.sha
+        );
+        files['data/sinema-kunyesi.json'] = inspected.inspection;
+        if (inspected.doc) cinemaKunye = inspected.doc;
+        if (!inspected.inspection.valid && inspected.inspection.error) {
+          errors.push({
+            repoPath: 'data/sinema-kunyesi.json',
+            category: inspected.inspection.errorCategory || 'corrupt_remote_json',
+            message: `data/sinema-kunyesi.json: ${inspected.inspection.error}`,
+          });
+        }
+      }
+
       const dirListRes = await this.listRemoteProfilePaths(cfg, options.localProfilePaths);
       if (!dirListRes.ok) {
         transportFailed = true;
@@ -2739,7 +2960,7 @@ export class GitHubBidirectionalSyncManager {
     };
 
     return {
-      bundle: { summary, movies, tv, manifest, userData, derivedProfiles, errors },
+      bundle: { summary, movies, tv, manifest, userData, cinemaKunye, derivedProfiles, errors },
       rawRemoteContents,
       transportFailed,
     };
@@ -3427,6 +3648,45 @@ export class GitHubBidirectionalSyncManager {
           }
         }
 
+        // data/sinema-kunyesi.json indirme ve çakışan künye kayıtlarını kayıpsız birleştirme
+        const rKunyeInfo = remoteInspect.bundle.summary.files['data/sinema-kunyesi.json'];
+        const lKunyeInfo = localBefore.summary.files['data/sinema-kunyesi.json'];
+        if (rKunyeInfo?.exists) {
+          if (!rKunyeInfo.valid || !remoteInspect.bundle.cinemaKunye) {
+            filesFailed.push('data/sinema-kunyesi.json');
+            errors.push({
+              repoPath: 'data/sinema-kunyesi.json',
+              category: rKunyeInfo.errorCategory || 'corrupt_remote_json',
+              message: `data/sinema-kunyesi.json bozuk olduğu için yerel künye verisi korundu (${rKunyeInfo.error}).`,
+            });
+          } else if (
+            lKunyeInfo?.exists &&
+            lKunyeInfo.valid &&
+            lKunyeInfo.semanticHash === rKunyeInfo.semanticHash
+          ) {
+            filesUnchanged.push('data/sinema-kunyesi.json');
+          } else {
+            const kunyeTargetPath = path.join(this.deps.dataDir, 'sinema-kunyesi.json');
+            const localKunye = localBefore.cinemaKunye;
+            const remoteKunye = remoteInspect.bundle.cinemaKunye;
+            const nextKunye =
+              conflictStrategy === 'overwrite_with_remote' || !localKunye
+                ? remoteKunye
+                : mergeCinemaKunyeDocumentsLossless(localKunye, remoteKunye);
+            const prevCount = localKunye ? Object.keys(localKunye.entries).length : 0;
+            const nextCount = Object.keys(nextKunye.entries).length;
+            recordsAdded += Math.max(0, nextCount - prevCount);
+            writeJsonFileAtomic(kunyeTargetPath, stringifyDeterministic(nextKunye), {
+              backupPath: `${kunyeTargetPath}.bak`,
+              validateParsed: isPlainObject,
+            });
+            if (localKunye && conflictStrategy !== 'overwrite_with_remote') {
+              filesMerged.push('data/sinema-kunyesi.json');
+            }
+            filesDownloaded.push('data/sinema-kunyesi.json');
+          }
+        }
+
         // data/profiles/*.json indirme ve doğrulama
         for (const [repoPath, rFileInfo] of Object.entries(remoteInspect.bundle.summary.files)) {
           if (rFileInfo.category !== 'derived_profile' || !rFileInfo.exists) continue;
@@ -3715,6 +3975,47 @@ export class GitHubBidirectionalSyncManager {
             localReady = await this.inspectLocalSide();
             localProfilePaths = Object.keys(localReady.derivedProfiles);
           }
+        }
+      }
+
+      if (
+        includePersonal &&
+        !remoteBeforeInspect.transportFailed &&
+        remoteBeforeInspect.bundle.cinemaKunye &&
+        remoteBeforeInspect.bundle.summary.files['data/sinema-kunyesi.json']?.valid &&
+        localReady.summary.files['data/sinema-kunyesi.json']?.valid !== false
+      ) {
+        const kunyeTargetPath = path.join(this.deps.dataDir, 'sinema-kunyesi.json');
+        const rKunyeHash =
+          remoteBeforeInspect.bundle.summary.files['data/sinema-kunyesi.json']?.semanticHash;
+        const lKunyeHash = localReady.summary.files['data/sinema-kunyesi.json']?.semanticHash;
+        if (localReady.cinemaKunye) {
+          if (lKunyeHash !== rKunyeHash) {
+            const mergedKunye = mergeCinemaKunyeDocumentsLossless(
+              localReady.cinemaKunye,
+              remoteBeforeInspect.bundle.cinemaKunye
+            );
+            const prevCount = Object.keys(localReady.cinemaKunye.entries).length;
+            const nextCount = Object.keys(mergedKunye.entries).length;
+            writeJsonFileAtomic(kunyeTargetPath, stringifyDeterministic(mergedKunye), {
+              backupPath: `${kunyeTargetPath}.bak`,
+              validateParsed: isPlainObject,
+            });
+            pushAddedToLocal += Math.max(0, nextCount - prevCount);
+            pushFilesMerged.push('data/sinema-kunyesi.json');
+            localReady = await this.inspectLocalSide();
+          }
+        } else {
+          writeJsonFileAtomic(
+            kunyeTargetPath,
+            stringifyDeterministic(remoteBeforeInspect.bundle.cinemaKunye),
+            {
+              backupPath: `${kunyeTargetPath}.bak`,
+              validateParsed: isPlainObject,
+            }
+          );
+          pushAddedToLocal += Object.keys(remoteBeforeInspect.bundle.cinemaKunye.entries).length;
+          localReady = await this.inspectLocalSide();
         }
       }
 
@@ -4448,6 +4749,55 @@ export class GitHubBidirectionalSyncManager {
             `data/stock.json: GitHub sürümü bozuk/tekrarlı kayıt içerdiği için yerel stok korunup yüklenecek (${rStock.error}).`
           );
         }
+
+        // --- C3. SİNEMA KÜNYESİ (`data/sinema-kunyesi.json`) İKİ YÖNLÜ KAYIPSIZ BİRLEŞTİRME ---
+        const kunyeRepoPath = 'data/sinema-kunyesi.json';
+        const lKunye = localBefore.summary.files[kunyeRepoPath];
+        const rKunye = remoteBeforeInspect.bundle.summary.files[kunyeRepoPath];
+        if (lKunye?.exists && !lKunye.valid) {
+          filesFailed.push(kunyeRepoPath);
+          pathsBlockedFromPush.add(kunyeRepoPath);
+          errors.push({
+            repoPath: kunyeRepoPath,
+            category: 'corrupt_local_file',
+            message: `Yerel ${kunyeRepoPath} bozuk olduğu için birleştirilmedi (${lKunye.error}).`,
+          });
+        } else if (rKunye?.exists && !rKunye.valid) {
+          filesFailed.push(kunyeRepoPath);
+          pathsBlockedFromPush.add(kunyeRepoPath);
+          errors.push({
+            repoPath: kunyeRepoPath,
+            category: rKunye.errorCategory || 'corrupt_remote_json',
+            message: `GitHub ${kunyeRepoPath} bozuk olduğu için yerel sağlam dosya korundu (${rKunye.error}).`,
+          });
+        } else if (localBefore.cinemaKunye && remoteBeforeInspect.bundle.cinemaKunye) {
+          if (lKunye?.semanticHash !== rKunye?.semanticHash) {
+            const mergedKunye = mergeCinemaKunyeDocumentsLossless(
+              localBefore.cinemaKunye,
+              remoteBeforeInspect.bundle.cinemaKunye
+            );
+            const localCount = Object.keys(localBefore.cinemaKunye.entries).length;
+            const remoteCount = Object.keys(remoteBeforeInspect.bundle.cinemaKunye.entries).length;
+            const mergedCount = Object.keys(mergedKunye.entries).length;
+            recordsAdded +=
+              Math.max(0, mergedCount - localCount) + Math.max(0, mergedCount - remoteCount);
+            const kunyeTargetPath = path.join(this.deps.dataDir, 'sinema-kunyesi.json');
+            writeJsonFileAtomic(kunyeTargetPath, stringifyDeterministic(mergedKunye), {
+              backupPath: `${kunyeTargetPath}.bak`,
+              validateParsed: isPlainObject,
+            });
+            filesMerged.push(kunyeRepoPath);
+          }
+        } else if (!localBefore.cinemaKunye && remoteBeforeInspect.bundle.cinemaKunye) {
+          const remoteKunye = remoteBeforeInspect.bundle.cinemaKunye;
+          recordsAdded += Object.keys(remoteKunye.entries).length;
+          const kunyeTargetPath = path.join(this.deps.dataDir, 'sinema-kunyesi.json');
+          writeJsonFileAtomic(kunyeTargetPath, stringifyDeterministic(remoteKunye), {
+            backupPath: `${kunyeTargetPath}.bak`,
+            validateParsed: isPlainObject,
+          });
+          filesDownloaded.push(kunyeRepoPath);
+        }
       }
 
       // --- D. BİRLEŞTİRİLMİŞ GÜNCEL YEREL DOSYALARI GITHUB'A YÜKLE ---
@@ -4485,6 +4835,13 @@ export class GitHubBidirectionalSyncManager {
             repoPath: 'data/stock.json',
             localPath: path.join(this.deps.dataDir, 'stock.json'),
             commitMsg: 'chore(sync): reconcile stock.json [skip ci]',
+          });
+        }
+        if (existsSync(path.join(this.deps.dataDir, 'sinema-kunyesi.json'))) {
+          uploadCandidates.push({
+            repoPath: 'data/sinema-kunyesi.json',
+            localPath: path.join(this.deps.dataDir, 'sinema-kunyesi.json'),
+            commitMsg: 'chore(sync): reconcile sinema-kunyesi.json [skip ci]',
           });
         }
         for (const repoPath of Object.keys(localPrepared.derivedProfiles).sort()) {

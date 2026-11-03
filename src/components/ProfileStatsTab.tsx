@@ -1,6 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import type { Profile, SavedItem } from '../core/cinetrack-core.ts';
 import {
+  enrichSavedItemsFromCinemaKunye,
+  type CinemaKunyeDocument,
+} from '../core/cinema-kunye.ts';
+import {
   buildMediaJourneyTimeline,
   buildTasteDnaProfile,
   computeProfileWatchlistIntersection,
@@ -14,6 +18,7 @@ interface ProfileStatsTabProps {
   savedItems: SavedItem[];
   genresMap: Record<number, string>;
   tasteEntries: Record<string, unknown>;
+  cinemaKunye?: CinemaKunyeDocument | null;
 }
 
 function formatMinutes(totalMinutes: number): {
@@ -53,15 +58,21 @@ export const ProfileStatsTab: React.FC<ProfileStatsTabProps> = ({
   savedItems,
   genresMap,
   tasteEntries,
+  cinemaKunye,
 }) => {
   const [genreMediaTypeFilter, setGenreMediaTypeFilter] = useState<'all' | 'movie' | 'tv'>('all');
   const [compareProfileId, setCompareProfileId] = useState<string>(
     () => otherProfiles[0]?.id || ''
   );
 
+  const enrichedSavedItems = useMemo(
+    () => enrichSavedItemsFromCinemaKunye(savedItems, cinemaKunye),
+    [savedItems, cinemaKunye]
+  );
+
   const tasteDna = useMemo(
-    () => buildTasteDnaProfile(effectiveActiveProfile, genresMap),
-    [effectiveActiveProfile, genresMap]
+    () => buildTasteDnaProfile(effectiveActiveProfile, genresMap, cinemaKunye),
+    [effectiveActiveProfile, genresMap, cinemaKunye]
   );
 
   const journeyTimeline = useMemo(
@@ -116,7 +127,7 @@ export const ProfileStatsTab: React.FC<ProfileStatsTabProps> = ({
     overallMinutes > 0 ? Math.round((movieMinutes / overallMinutes) * 100) : 50;
   const tvTimePercent = overallMinutes > 0 ? 100 - movieTimePercent : 50;
 
-  const watchedForGenres = savedItems.filter((item) => {
+  const watchedForGenres = enrichedSavedItems.filter((item) => {
     if (genreMediaTypeFilter !== 'all' && item.media_type !== genreMediaTypeFilter) return false;
     return (
       item.status === 'completed' ||

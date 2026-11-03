@@ -6,6 +6,7 @@ import type {
   Preferences,
   SavedItem,
 } from '../core/cinetrack-core.ts';
+import type { CinemaKunyeDocument } from '../core/cinema-kunye.ts';
 import {
   fetchServerBackups,
   fetchSyncStatus,
@@ -38,6 +39,7 @@ interface ProfileModalProps {
   favoriteActors?: FavoriteActorInfo[];
   dislikedItems?: Array<Record<string, unknown>>;
   genresMap: Record<number, string>;
+  cinemaKunye?: CinemaKunyeDocument | null;
   tasteEntries?: Record<string, unknown>;
   syncStatus: string;
   onClose: () => void;
@@ -48,10 +50,11 @@ interface ProfileModalProps {
   onToggleReminders: () => void;
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
-  onImportCsvItems?: (items: SavedItem[]) => void;
+  onImportCsvItems?: (items: SavedItem[], cinemaKunye?: CinemaKunyeDocument) => void;
   onBeforeSyncFlush?: () => Promise<void>;
   onMergeSyncedDocument?: (doc: DataDocument) => void;
   onApplyRestoredDocument?: (doc: DataDocument) => void;
+  onCinemaKunyeSynced?: (mode: 'merge' | 'overwrite') => void;
   onMergeDuplicates?: (
     keepId: SavedItem['id'],
     dropId: SavedItem['id'],
@@ -72,6 +75,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   favoriteActors,
   dislikedItems,
   genresMap,
+  cinemaKunye,
   tasteEntries = {},
   syncStatus,
   onClose,
@@ -86,6 +90,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onBeforeSyncFlush,
   onMergeSyncedDocument,
   onApplyRestoredDocument,
+  onCinemaKunyeSynced,
   onMergeDuplicates,
   isDemo = false,
   onToggleDemoMode,
@@ -306,6 +311,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               savedItems={savedItems}
               genresMap={genresMap}
               tasteEntries={tasteEntries}
+              cinemaKunye={cinemaKunye}
             />
           )}
 
@@ -507,6 +513,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 preferences={preferences}
                 dislikedItems={dislikedItems}
                 genresMap={genresMap}
+                cinemaKunye={cinemaKunye}
                 remoteSyncInfo={remoteSyncInfo}
                 serverBackups={serverBackups}
                 loadingBackups={loadingBackups}
@@ -532,6 +539,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 onBeforeSyncFlush={onBeforeSyncFlush}
                 onMergeSyncedDocument={onMergeSyncedDocument}
                 onApplyRestoredDocument={onApplyRestoredDocument}
+                onCinemaKunyeSynced={onCinemaKunyeSynced}
               />
 
               {/* IMP-15: Çift Kayıt Temizliği */}

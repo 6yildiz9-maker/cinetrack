@@ -6,6 +6,14 @@ import {
   formatMaxDataLimitMb,
   measureUtf8Bytes,
 } from './limits.ts';
+import {
+  enrichSavedItemsFromCinemaKunye,
+  extractCinemaKunyeFromItems,
+  mergeCinemaKunyeDocumentsLossless,
+  normalizeCinemaKunyeActorList,
+  normalizeCinemaKunyeDocument,
+  type CinemaKunyeDocument,
+} from './cinema-kunye.ts';
 
 let discoveryHistoryIdbStore: UseStore | undefined;
 let candidatePoolIdbStore: UseStore | undefined;
@@ -357,6 +365,23 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     item.completedAt.trim()
       ? item.completedAt.trim()
       : undefined;
+  const normalizedCast = Array.isArray(item.cast)
+    ? normalizeCinemaKunyeActorList(item.cast, 12)
+    : [];
+  const normalizedCrew: NonNullable<SavedItem['crew']> = Array.isArray(item.crew)
+    ? item.crew
+        .filter((c: any) => c && typeof c.name === 'string' && c.name.trim())
+        .slice(0, 10)
+        .map((c: any) => ({
+          id: Number.isSafeInteger(Number(c.id)) && Number(c.id) > 0 ? Number(c.id) : 0,
+          name: String(c.name).trim().slice(0, 120),
+          job: typeof c.job === 'string' && c.job.trim() ? c.job.trim().slice(0, 80) : 'Crew',
+          ...(typeof c.department === 'string' && c.department.trim()
+            ? { department: c.department.trim().slice(0, 80) }
+            : {}),
+        }))
+    : [];
+
   return {
     id: typeof item.id === 'string' && /^\d+$/.test(item.id) ? Number(item.id) : item.id,
     media_type: item.media_type,
@@ -421,6 +446,8 @@ export function normalizeSavedItem(item: any): SavedItem | null {
         : undefined,
     updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : '',
     custom: Boolean(item.custom || String(item.id).startsWith('custom-')),
+    ...(normalizedCast.length > 0 ? { cast: normalizedCast } : {}),
+    ...(normalizedCrew.length > 0 ? { crew: normalizedCrew } : {}),
     isDemo: item.isDemo === true,
   };
 }
@@ -530,8 +557,17 @@ export function dedupeItems(items: SavedItem[]): SavedItem[] {
     const mergedRatedAt = ratingCleared ? undefined : newest.ratedAt || older.ratedAt;
     const mergedCompletedAt =
       newest.status === 'completed' ? newest.completedAt || older.completedAt : undefined;
+    const mergedGenreIds = Array.from(
+      new Set<number>([...(older.genre_ids || []), ...(newest.genre_ids || [])])
+    );
+    const mergedCast = [...(newest.cast || []), ...(older.cast || [])];
+    const mergedCrew = [...(newest.crew || []), ...(older.crew || [])];
     const normalized = normalizeSavedItem({
+      ...older,
       ...newest,
+      genre_ids: mergedGenreIds,
+      ...(mergedCast.length > 0 ? { cast: mergedCast } : {}),
+      ...(mergedCrew.length > 0 ? { crew: mergedCrew } : {}),
       isDemo,
       status: newest.status,
       personal_rating: rating || '',
@@ -560,6 +596,7 @@ export function parseBackupText(
   profileName: string;
   preferences: any;
   favoriteActors: FavoriteActorInfo[];
+  cinemaKunye: CinemaKunyeDocument;
   isDemo?: boolean;
   schemaVersion: number;
 } {
@@ -581,6 +618,7 @@ export function parseBackupText(
   let rawProfileName = '';
   let rawPreferences: any = null;
   let rawFavoriteActors: any[] = [];
+  let rawProfileKunye: any = null;
   let isDemo = false;
 
   if (Array.isArray(backup.profiles) && backup.profiles.length > 0) {
@@ -591,6 +629,7 @@ export function parseBackupText(
       rawProfileName = typeof active.name === 'string' ? active.name : '';
       rawPreferences = active.preferences || null;
       rawFavoriteActors = Array.isArray(active.favoriteActors) ? active.favoriteActors : [];
+      rawProfileKunye = active.cinemaKunye || active.sinemaKunyesi || null;
       isDemo = active.isDemo === true;
     }
   } else if (Array.isArray(backup.items)) {
@@ -618,14 +657,26 @@ export function parseBackupText(
   const rawSchemaVer = Number(backup.schemaVersion || backup.version);
   const schemaVersion =
     Number.isSafeInteger(rawSchemaVer) && rawSchemaVer > 0 ? rawSchemaVer : CURRENT_SCHEMA_VERSION;
+  const dedupedItems = dedupeItems(rawItems.map(normalizeSavedItem).filter(Boolean) as SavedItem[]);
+
+  const rawBackupKunye = backup.cinemaKunye || backup.sinemaKunyesi || null;
+  const combinedExplicitKunye = mergeCinemaKunyeDocumentsLossless(
+    normalizeCinemaKunyeDocument(rawBackupKunye),
+    normalizeCinemaKunyeDocument(rawProfileKunye)
+  );
+  const derivedKunye = extractCinemaKunyeFromItems(dedupedItems);
+  const cinemaKunye = mergeCinemaKunyeDocumentsLossless(combinedExplicitKunye, derivedKunye);
+  const enrichedItems = enrichSavedItemsFromCinemaKunye(dedupedItems, cinemaKunye);
+
   return {
-    items: dedupeItems(rawItems.map(normalizeSavedItem).filter(Boolean) as SavedItem[]),
+    items: enrichedItems,
     profileName: rawProfileName.trim().slice(0, 40),
     preferences:
       rawPreferences && typeof rawPreferences === 'object' && !Array.isArray(rawPreferences)
         ? rawPreferences
         : null,
     favoriteActors: normalizeFavoriteActors(rawFavoriteActors),
+    cinemaKunye,
     isDemo,
     schemaVersion,
   };

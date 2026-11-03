@@ -1,4 +1,8 @@
 import { type DataDocument } from '../core/cinetrack-core.ts';
+import {
+  normalizeCinemaKunyeDocument,
+  type CinemaKunyeDocument,
+} from '../core/cinema-kunye.ts';
 import type { BidirectionalSyncReport, SyncOperationKind } from '../core/sync-display.ts';
 
 export type TmdbDataSource = 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
@@ -641,6 +645,7 @@ export interface HybridMergeResult {
   updatedAt?: string;
   items?: number;
   document?: DataDocument;
+  cinemaKunye?: CinemaKunyeDocument;
   status_message?: string;
 }
 
@@ -1301,5 +1306,38 @@ export async function downloadVerifiedBackupBinary(params: {
     usedStreamFallback,
   };
 }
+
+export async function fetchServerCinemaKunye(): Promise<CinemaKunyeDocument | null> {
+  try {
+    const res = await fetch('/api/cinema-kunye', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const rawDoc = json?.cinemaKunye ?? json;
+    if (!rawDoc || typeof rawDoc !== 'object') return null;
+    return normalizeCinemaKunyeDocument(rawDoc);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveServerCinemaKunye(
+  doc: CinemaKunyeDocument,
+  mode: 'merge' | 'overwrite' = 'merge'
+): Promise<CinemaKunyeDocument | null> {
+  try {
+    const res = await fetch('/api/cinema-kunye', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cinemaKunye: doc, mode }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json?.cinemaKunye || typeof json.cinemaKunye !== 'object') return null;
+    return normalizeCinemaKunyeDocument(json.cinemaKunye);
+  } catch {
+    return null;
+  }
+}
+
 
 

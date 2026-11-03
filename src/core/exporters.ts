@@ -3,6 +3,23 @@ import {
   type Profile,
   type SavedItem,
 } from './cinetrack-core.ts';
+import {
+  buildCinemaKunyeContentId,
+  createEmptyCinemaKunyeDocument,
+  enrichSavedItemsFromCinemaKunye,
+  extractCinemaKunyeFromItems,
+  extractItemReleaseYear,
+  findCinemaKunyeEntryForItem,
+  formatCinemaKunyeActorsCsv,
+  formatCinemaKunyeGenresCsv,
+  mergeCinemaKunyeDocumentsLossless,
+  normalizeCinemaKunyeDocument,
+  normalizeCinemaKunyeEntry,
+  parseCinemaKunyeActorsCsv,
+  parseCinemaKunyeGenresCsv,
+  type CinemaKunyeDocument,
+  type CinemaKunyeEntry,
+} from './cinema-kunye.ts';
 
 export interface TasteDnaTrait {
   label: string;
@@ -49,9 +66,11 @@ const DEFAULT_GENRE_NAMES: Record<number, string> = {
 
 export function buildTasteDnaProfile(
   profile: Profile,
-  genreMap: Record<number, string> = {}
+  genreMap: Record<number, string> = {},
+  cinemaKunye?: CinemaKunyeDocument | null
 ): TasteDnaProfile {
-  const items = Array.isArray(profile.items) ? profile.items : [];
+  const rawItems = Array.isArray(profile.items) ? profile.items : [];
+  const items = enrichSavedItemsFromCinemaKunye(rawItems, cinemaKunye);
   const totalTracked = items.length;
   const completedItems = items.filter((item) => item.status === 'completed');
   const ratedItems = items.filter(
@@ -242,6 +261,8 @@ export function parseCsvRows(csvText: string): string[][] {
 export interface CsvExportProfileInfo {
   profile: Profile | null;
   activeProfileId?: string;
+  cinemaKunye?: CinemaKunyeDocument | null;
+  genreMap?: Record<number, string>;
 }
 
 const CSV_CORE_HEADERS = [
@@ -266,6 +287,9 @@ const CSV_USER_DATA_HEADERS = [
   'SeasonProgress',
   'TotalWatchTimeMinutes',
   'Custom',
+  'ContentId',
+  'Genres',
+  'Actors',
 ];
 
 function toCsvDate(value: string | undefined): string {
@@ -279,7 +303,8 @@ function toCsvNumber(value: number | undefined): string {
 /**
  * Exports profile items into Letterboxd / CineTrack compatible CSV format.
  * İlk 7 sütun Letterboxd/CineTrack uyumluluğu için sabittir; ardından kullanıcıya ait
- * tüm izleme verileri (tarihler, ilerleme, süre) ve dosya sonunda profil tercihleri gelir.
+ * tüm izleme verileri (tarihler, ilerleme, süre, içerik ID'si, türler, oyuncular) ve
+ * dosya sonunda profil + Sinema Künyesi verileri gelir.
  */
 export function exportItemsToCsv(
   items: SavedItem[],
@@ -287,11 +312,27 @@ export function exportItemsToCsv(
 ): string {
   const headers = [...CSV_CORE_HEADERS, ...CSV_USER_DATA_HEADERS];
   const lines = [headers.join(',')];
+  const genreMap = profileInfo?.genreMap || {};
+  const mergedKunye = mergeCinemaKunyeDocumentsLossless(
+    profileInfo?.cinemaKunye,
+    extractCinemaKunyeFromItems(items, genreMap),
+    genreMap
+  );
+  const enrichedItems = enrichSavedItemsFromCinemaKunye(items, mergedKunye);
 
-  for (const item of items) {
+  for (const item of enrichedItems) {
     const title = item.title || item.name || 'İsimsiz';
-    const rawDate = item.release_date || item.first_air_date || '';
-    const year = rawDate.slice(0, 4);
+    const kunyeEntry = findCinemaKunyeEntryForItem(item, mergedKunye);
+    const extractedYear = extractItemReleaseYear(item) ?? kunyeEntry?.year ?? null;
+    const year = extractedYear ? String(extractedYear) : '';
+    const contentId = kunyeEntry?.contentId || buildCinemaKunyeContentId(title, extractedYear);
+    const genresCell = kunyeEntry
+      ? formatCinemaKunyeGenresCsv(kunyeEntry, genreMap)
+      : formatCinemaKunyeGenresCsv(item, genreMap);
+    const actorsCell = kunyeEntry?.actors?.length
+      ? formatCinemaKunyeActorsCsv(kunyeEntry.actors)
+      : formatCinemaKunyeActorsCsv(item.cast);
+
     const rating10 = typeof item.personal_rating === 'number' && item.personal_rating > 0 ? item.personal_rating : '';
     const watchedDate = (item.updatedAt || item.addedAt || '').slice(0, 10);
     const tmdbId = typeof item.id === 'number' || /^\d+$/.test(String(item.id)) ? String(item.id) : '';
@@ -319,35 +360,44 @@ export function exportItemsToCsv(
         escapeCsvCell(seasonProgress),
         escapeCsvCell(toCsvNumber(item.totalWatchTimeMinutes)),
         escapeCsvCell(item.custom ? '1' : ''),
+        escapeCsvCell(contentId),
+        escapeCsvCell(genresCell),
+        escapeCsvCell(actorsCell),
       ].join(',')
     );
   }
 
   const profile = profileInfo?.profile || null;
-  if (profile) {
-    const pref = profile.preferences || {};
+  const kunyeEntries = Object.values(mergedKunye.entries);
+  if (profile || (profileInfo?.cinemaKunye && kunyeEntries.length > 0)) {
+    const pref = profile?.preferences || ({} as Partial<Profile['preferences']>);
     lines.push('');
     lines.push('#CINETRACK-PROFILE');
-    lines.push(`#ProfileId,${escapeCsvCell(profile.id || '')}`);
-    lines.push(`#ProfileName,${escapeCsvCell(profile.name || '')}`);
-    lines.push(`#ProfileCreatedAt,${escapeCsvCell(toCsvDate(profile.createdAt))}`);
-    lines.push(`#ActiveProfileId,${escapeCsvCell(profileInfo?.activeProfileId || profile.id || '')}`);
-    lines.push(`#ExportDate,${escapeCsvCell(new Date().toISOString())}`);
-    lines.push(`#Mood,${escapeCsvCell(pref.mood || '')}`);
-    lines.push(`#Providers,${escapeCsvCell((Array.isArray(pref.providers) ? pref.providers : []).join('|'))}`);
-    lines.push(`#Disliked,${escapeCsvCell((Array.isArray(pref.disliked) ? pref.disliked : []).join('|'))}`);
-    lines.push(`#Hidden,${escapeCsvCell((Array.isArray(pref.hidden) ? pref.hidden : []).join('|'))}`);
-    lines.push(`#Reminders,${escapeCsvCell(pref.reminders === false ? '0' : '1')}`);
-    lines.push(`#Notified,${escapeCsvCell((Array.isArray(pref.notified) ? pref.notified : []).join('|'))}`);
-    for (const actor of Array.isArray(profile.favoriteActors) ? profile.favoriteActors : []) {
-      if (!actor || typeof actor !== 'object') continue;
-      const actorFields = [
-        String(actor.id ?? ''),
-        String(actor.name ?? ''),
-        String(actor.character ?? ''),
-        String(actor.profile_path ?? ''),
-      ];
-      lines.push(`#FavoriteActor,${escapeCsvCell(actorFields.join('|'))}`);
+    if (profile) {
+      lines.push(`#ProfileId,${escapeCsvCell(profile.id || '')}`);
+      lines.push(`#ProfileName,${escapeCsvCell(profile.name || '')}`);
+      lines.push(`#ProfileCreatedAt,${escapeCsvCell(toCsvDate(profile.createdAt))}`);
+      lines.push(`#ActiveProfileId,${escapeCsvCell(profileInfo?.activeProfileId || profile.id || '')}`);
+      lines.push(`#ExportDate,${escapeCsvCell(new Date().toISOString())}`);
+      lines.push(`#Mood,${escapeCsvCell(pref.mood || '')}`);
+      lines.push(`#Providers,${escapeCsvCell((Array.isArray(pref.providers) ? pref.providers : []).join('|'))}`);
+      lines.push(`#Disliked,${escapeCsvCell((Array.isArray(pref.disliked) ? pref.disliked : []).join('|'))}`);
+      lines.push(`#Hidden,${escapeCsvCell((Array.isArray(pref.hidden) ? pref.hidden : []).join('|'))}`);
+      lines.push(`#Reminders,${escapeCsvCell(pref.reminders === false ? '0' : '1')}`);
+      lines.push(`#Notified,${escapeCsvCell((Array.isArray(pref.notified) ? pref.notified : []).join('|'))}`);
+      for (const actor of Array.isArray(profile.favoriteActors) ? profile.favoriteActors : []) {
+        if (!actor || typeof actor !== 'object') continue;
+        const actorFields = [
+          String(actor.id ?? ''),
+          String(actor.name ?? ''),
+          String(actor.character ?? ''),
+          String(actor.profile_path ?? ''),
+        ];
+        lines.push(`#FavoriteActor,${escapeCsvCell(actorFields.join('|'))}`);
+      }
+    }
+    for (const entry of kunyeEntries) {
+      lines.push(`#SinemaKunyesi,${escapeCsvCell(JSON.stringify(entry))}`);
     }
     lines.push('#END');
   }
@@ -357,29 +407,29 @@ export function exportItemsToCsv(
 
 export interface CsvImportResult {
   importedItems: SavedItem[];
+  cinemaKunye: CinemaKunyeDocument;
   skippedCount: number;
   detectedFormat: 'letterboxd' | 'imdb' | 'cinetrack' | 'generic';
 }
 
 function stableCustomIdFromTitle(title: string, year: string, mediaType: 'movie' | 'tv'): string {
-  const slug = title
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[^\w\s-]/g, '')
-    .trim()
-    .replace(/[\s_-]+/g, '-')
-    .slice(0, 48);
+  const slug = buildCinemaKunyeContentId(title, year || null).replace(/-(?:\d{4}|belirsiz)$/, '').slice(0, 48);
   const safeSlug = slug || 'item';
   return `custom-csv-${mediaType}-${safeSlug}${year ? `-${year}` : ''}`;
 }
 
 /**
- * Parses Letterboxd, IMDb, or CineTrack CSV exports into valid SavedItem records.
+ * Parses Letterboxd, IMDb, or CineTrack CSV exports into valid SavedItem records + Sinema Künyesi metadata.
  */
 export function importItemsFromCsv(csvText: string): CsvImportResult {
   const rows = parseCsvRows(csvText);
   if (rows.length < 2) {
-    return { importedItems: [], skippedCount: 0, detectedFormat: 'generic' };
+    return {
+      importedItems: [],
+      cinemaKunye: createEmptyCinemaKunyeDocument(''),
+      skippedCount: 0,
+      detectedFormat: 'generic',
+    };
   }
 
   const header = rows[0].map((col) => col.toLowerCase().trim());
@@ -405,6 +455,9 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
   const idxSeasonProgress = findCol('seasonprogress');
   const idxWatchMinutes = findCol('totalwatchtimeminutes');
   const idxCustom = findCol('custom');
+  const idxContentId = findCol('contentid', 'content_id', 'icerik_id');
+  const idxGenres = findCol('genres', 'türler', 'turler');
+  const idxActors = findCol('actors', 'cast', 'oyuncular');
 
   let detectedFormat: CsvImportResult['detectedFormat'] = 'generic';
   if (header.includes('tmdbid') && header.includes('rating10')) {
@@ -415,18 +468,40 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
     detectedFormat = 'letterboxd';
   }
 
+  const trailerKunyeEntries: CinemaKunyeEntry[] = [];
+  for (let r = 1; r < rows.length; r += 1) {
+    const row = rows[r];
+    if (row.length >= 2 && String(row[0] || '').trim() === '#SinemaKunyesi') {
+      try {
+        const parsedJson = JSON.parse(row[1]);
+        const normalizedEntry = normalizeCinemaKunyeEntry(parsedJson);
+        if (normalizedEntry) {
+          trailerKunyeEntries.push(normalizedEntry);
+        }
+      } catch {
+        // Bozuk #SinemaKunyesi satırı güvenli şekilde atlanır
+      }
+    }
+  }
+
   if (idxTitle === -1) {
-    return { importedItems: [], skippedCount: rows.length - 1, detectedFormat };
+    return {
+      importedItems: [],
+      cinemaKunye: normalizeCinemaKunyeDocument({ entries: trailerKunyeEntries }),
+      skippedCount: rows.length - 1,
+      detectedFormat,
+    };
   }
 
   const importedItems: SavedItem[] = [];
+  const rowKunyeEntries: CinemaKunyeEntry[] = [];
   const seenKeys = new Set<string>();
   let skippedCount = 0;
 
   for (let r = 1; r < rows.length; r += 1) {
     const row = rows[r];
     if (row.length > 0 && String(row[0] || '').startsWith('#')) {
-      continue; // Profil verisi bölümü (#CINETRACK-PROFILE … #END) içe aktarımda atlanır
+      continue; // Profil verisi bölümü (#CINETRACK-PROFILE … #END) üstte ayrıca ayrıştırıldı
     }
     const rawTitle = (row[idxTitle] || '').trim();
     if (!rawTitle) {
@@ -452,7 +527,6 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
     } else if (idxRating5 >= 0 && row[idxRating5]) {
       const parsed5 = Number(row[idxRating5]);
       if (Number.isFinite(parsed5) && parsed5 > 0) {
-        // Letterboxd ratings are 0.5 - 5.0 stars -> scale to 1-10
         const scaled = parsed5 <= 5 ? Math.round(parsed5 * 2) : Math.round(parsed5);
         personalRating = Math.min(10, Math.max(1, scaled));
       }
@@ -533,6 +607,10 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
       }
     }
 
+    const parsedGenres = idxGenres >= 0 ? parseCinemaKunyeGenresCsv(row[idxGenres]) : { genreIds: [], genres: [] };
+    const parsedActors = idxActors >= 0 ? parseCinemaKunyeActorsCsv(row[idxActors]) : [];
+    const explicitContentId = idxContentId >= 0 ? (row[idxContentId] || '').trim() : '';
+
     const extVote = idxImdbVote >= 0 && Number.isFinite(Number(row[idxImdbVote])) ? Number(row[idxImdbVote]) : 0;
 
     const item: SavedItem = {
@@ -545,7 +623,9 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
       vote_average: extVote > 0 && extVote <= 10 ? extVote : 0,
       vote_count: 0,
       popularity: 10,
-      genre_ids: [],
+      genre_ids: parsedGenres.genreIds,
+      ...(parsedGenres.genres.length > 0 ? { genres: parsedGenres.genres.map((g) => g.name) } : {}),
+      ...(parsedActors.length > 0 ? { cast: parsedActors } : {}),
       status,
       personal_rating: personalRating,
       addedAt: addedIso || isoDate,
@@ -562,9 +642,43 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
     };
 
     importedItems.push(item);
+
+    const isWatchedRow =
+      status === 'completed' ||
+      status === 'watching' ||
+      (typeof personalRating === 'number' && personalRating >= 1) ||
+      (episodesWatched !== undefined && episodesWatched > 0);
+
+    if (isWatchedRow || parsedGenres.genreIds.length > 0 || parsedActors.length > 0) {
+      const kunyeEntry = normalizeCinemaKunyeEntry({
+        contentId: explicitContentId || buildCinemaKunyeContentId(rawTitle, validYear || null),
+        title: rawTitle,
+        year: validYear ? Number(validYear) : null,
+        mediaType,
+        ...(numericTmdbId ? { tmdbId: numericTmdbId } : {}),
+        genreIds: parsedGenres.genreIds,
+        genres: parsedGenres.genres,
+        actors: parsedActors,
+        updatedAt: updatedIso || isoDate,
+      });
+      if (kunyeEntry) {
+        rowKunyeEntries.push(kunyeEntry);
+      }
+    }
   }
 
-  return { importedItems, skippedCount, detectedFormat };
+  const mergedCinemaKunye = mergeCinemaKunyeDocumentsLossless(
+    normalizeCinemaKunyeDocument({ entries: rowKunyeEntries }),
+    normalizeCinemaKunyeDocument({ entries: trailerKunyeEntries })
+  );
+  const enrichedImportedItems = enrichSavedItemsFromCinemaKunye(importedItems, mergedCinemaKunye);
+
+  return {
+    importedItems: enrichedImportedItems,
+    cinemaKunye: mergedCinemaKunye,
+    skippedCount,
+    detectedFormat,
+  };
 }
 
 export interface CalendarReleaseEvent {

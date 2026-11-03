@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import type { Preferences, Profile, SavedItem } from '../core/cinetrack-core.ts';
+import type { CinemaKunyeDocument } from '../core/cinema-kunye.ts';
 import { exportItemsToCsv, importItemsFromCsv } from '../core/exporters.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
 import {
@@ -18,13 +19,14 @@ interface ProfileBackupTabProps {
   preferences: Preferences;
   dislikedItems?: Array<Record<string, unknown>>;
   genresMap: Record<number, string>;
+  cinemaKunye?: CinemaKunyeDocument | null;
   remoteSyncInfo: RemoteSyncStatusPayload | null;
   serverBackups: ServerBackupMetadata[];
   loadingBackups: boolean;
   backupMessage: string;
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
-  onImportCsvItems?: (items: SavedItem[]) => void;
+  onImportCsvItems?: (items: SavedItem[], cinemaKunye?: CinemaKunyeDocument) => void;
   onCreateInstantBackup: () => Promise<void>;
   onLoadServerBackups: () => Promise<void>;
   onRestoreSnapshot: (id: string) => Promise<void>;
@@ -37,6 +39,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
   preferences,
   dislikedItems,
   genresMap,
+  cinemaKunye,
   remoteSyncInfo,
   serverBackups,
   loadingBackups,
@@ -84,6 +87,8 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
     const csvContent = exportItemsToCsv(savedItems, {
       profile: effectiveActiveProfile,
       activeProfileId,
+      cinemaKunye,
+      genreMap: genresMap,
     });
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -92,7 +97,9 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
     link.download = `cinetrack-${activeProfileId}-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setCsvStatus(`${savedItems.length} içerik ve tüm profil verileri CSV olarak dışa aktarıldı.`);
+    setCsvStatus(
+      `${savedItems.length} içerik, sinema künyesi ve tüm profil verileri CSV olarak dışa aktarıldı.`
+    );
   };
 
   const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -103,10 +110,13 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
       const text = String(event.target?.result || '');
       try {
         const result = importItemsFromCsv(text);
-        if (result.importedItems.length > 0 && onImportCsvItems) {
-          onImportCsvItems(result.importedItems);
+        const kunyeCount = Object.keys(result.cinemaKunye.entries).length;
+        if ((result.importedItems.length > 0 || kunyeCount > 0) && onImportCsvItems) {
+          onImportCsvItems(result.importedItems, result.cinemaKunye);
           setCsvStatus(
-            `${result.importedItems.length} yapım içe aktarıldı (${result.detectedFormat.toUpperCase()} biçimi${
+            `${result.importedItems.length} yapım${
+              kunyeCount > 0 ? ` ve ${kunyeCount} sinema künyesi kaydı` : ''
+            } kayıpsız birleştirildi (${result.detectedFormat.toUpperCase()} biçimi${
               result.skippedCount > 0 ? `, ${result.skippedCount} satır atlandı` : ''
             }).`
           );

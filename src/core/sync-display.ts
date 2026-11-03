@@ -10,7 +10,8 @@ export type SyncFileCategory =
   | 'derived_profile'
   | 'taste_profile'    // Faz 6: Taste Engine profili (manifest + profile senkrona girer)
   | 'taste_manifest'   // Faz 6: Taste Engine manifest (TP-006)
-  | 'stock';           // Stok içerik deposu yedeği (data/stock.json, limitsiz + tekilleştirilmiş)
+  | 'stock'            // Stok içerik deposu yedeği (data/stock.json, limitsiz + tekilleştirilmiş)
+  | 'cinema_kunye';    // Sinema Künyesi izlenen içerik tür/yıl/oyuncu deposu (data/sinema-kunyesi.json)
 
 export type SyncErrorCategory =
   | 'config_error'

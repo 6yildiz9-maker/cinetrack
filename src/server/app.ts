@@ -583,6 +583,69 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
+  app.get('/api/cinema-kunye', tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const doc = await persistentStore.readCinemaKunyeAsync();
+      if (!doc) {
+        res.json({
+          ok: true,
+          exists: false,
+          schemaVersion: 1,
+          updatedAt: '',
+          entries: {},
+          entriesCount: 0,
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        exists: true,
+        schemaVersion: doc.schemaVersion,
+        updatedAt: doc.updatedAt,
+        entries: doc.entries,
+        entriesCount: Object.keys(doc.entries).length,
+      });
+    } catch (err: any) {
+      res.status(500).json({
+        ok: false,
+        status_message: err?.message || 'Sinema künyesi okunamadı.',
+      });
+    }
+  });
+
+  app.post('/api/cinema-kunye', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({
+        ok: false,
+        status_message: 'Geçerli bir Sinema Künyesi nesnesi gönderilmelidir.',
+        code: 'invalid_cinema_kunye_payload',
+      });
+      return;
+    }
+    const mode: 'merge' | 'overwrite' = req.body?.mode === 'overwrite' ? 'overwrite' : 'merge';
+    const rawDoc =
+      req.body?.document && typeof req.body.document === 'object' ? req.body.document : req.body;
+    try {
+      const saved = await persistentStore.saveCinemaKunyeSerialized(rawDoc, { mode });
+      res.json({
+        ok: true,
+        mode,
+        merged: saved.merged,
+        entriesCount: saved.entriesCount,
+        document: saved.document,
+      });
+      notifyLocalMutation('cinema-kunye-save');
+    } catch (err: any) {
+      res.status(500).json({
+        ok: false,
+        status_message: err?.message || 'Sinema künyesi kaydedilemedi.',
+      });
+    }
+  });
+
   app.get('/api/sync/status', syncStatusGuard, (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(persistentStore.getSyncStatus());
@@ -1009,7 +1072,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
       const dryRun = Boolean(req.body?.dryRun);
       const current = await storage.readDataAsync();
-      const { document: mergedDocument, report } = runHybridMerge(csvText, current);
+      const { document: mergedDocument, cinemaKunye, report } = runHybridMerge(csvText, current);
 
       if (dryRun) {
         res.json({ ok: true, dryRun: true, report });
@@ -1035,6 +1098,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         return;
       }
 
+      let savedKunye = cinemaKunye;
+      if (Object.keys(cinemaKunye.entries).length > 0) {
+        const kunyeSaveRes = await persistentStore.saveCinemaKunyeSerialized(cinemaKunye, {
+          mode: 'merge',
+        });
+        savedKunye = kunyeSaveRes.document;
+      }
+
       const rev = result.document.revision ?? 1;
       res.setHeader('ETag', `"rev-${rev}"`);
       res.json({
@@ -1045,6 +1116,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         updatedAt: result.document.updatedAt,
         items: result.totalItems,
         document: result.document,
+        cinemaKunye: savedKunye,
       });
       notifyLocalMutation('hybrid-merge');
     } catch (error: any) {

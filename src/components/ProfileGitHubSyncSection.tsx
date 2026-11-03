@@ -64,6 +64,7 @@ interface ProfileGitHubSyncSectionProps {
   onBeforeSyncFlush?: () => Promise<void>;
   onMergeSyncedDocument?: (doc: DataDocument) => void;
   onApplyRestoredDocument?: (doc: DataDocument) => void;
+  onCinemaKunyeSynced?: (mode: 'merge' | 'overwrite') => void;
 }
 
 function formatSyncTimestamp(iso: string): string {
@@ -80,6 +81,7 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
   onBeforeSyncFlush,
   onMergeSyncedDocument,
   onApplyRestoredDocument,
+  onCinemaKunyeSynced,
 }) => {
   const [activeSyncOp, setActiveSyncOp] = useState<SyncOperationKind | null>(null);
   const [latestSyncReport, setLatestSyncReport] = useState<BidirectionalSyncReport | null>(null);
@@ -129,6 +131,7 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
         if (result.document) {
           (onMergeSyncedDocument || onApplyRestoredDocument)?.(result.document);
         }
+        onCinemaKunyeSynced?.('merge');
         const updatedInfo = (await fetchSyncStatus()) as RemoteSyncStatusPayload | null;
         if (updatedInfo) {
           onRemoteSyncInfoChange(updatedInfo);
@@ -151,6 +154,7 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
         (onMergeSyncedDocument || onApplyRestoredDocument)?.(report.updatedDataDocument);
       }
     }
+    onCinemaKunyeSynced?.(applyMode === 'overwrite_with_remote' ? 'overwrite' : 'merge');
     const updatedInfo = (await fetchSyncStatus()) as RemoteSyncStatusPayload | null;
     if (updatedInfo) {
       onRemoteSyncInfoChange(updatedInfo);
@@ -658,6 +662,24 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
               ? isPersonalSyncBlocked
                 ? 'Açık depo koruması'
                 : `${remoteSide.derivedProfileFilesCount} dosya / ${remoteSide.derivedProfileTotalRecordsCount} kayıt`
+              : 'Denetlenmedi'}
+          </strong>
+        </div>
+
+        <div className="github-sync-metrics-row">
+          <span>Sinema künyesi (izlenen tür / yıl / oyuncu)</span>
+          <strong>
+            {localSide?.files?.['data/sinema-kunyesi.json']?.exists
+              ? `${localSide.files['data/sinema-kunyesi.json'].uniqueKeyCount} künye kaydı`
+              : '0 künye kaydı'}
+          </strong>
+          <strong>
+            {remoteSide
+              ? isPersonalSyncBlocked
+                ? 'Açık depo koruması'
+                : remoteSide.files?.['data/sinema-kunyesi.json']?.exists
+                  ? `${remoteSide.files['data/sinema-kunyesi.json'].uniqueKeyCount} künye kaydı`
+                  : '0 künye kaydı'
               : 'Denetlenmedi'}
           </strong>
         </div>

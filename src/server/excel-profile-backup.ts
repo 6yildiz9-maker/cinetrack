@@ -26,6 +26,11 @@ import {
   type SavedItem,
 } from '../core/cinetrack-core.ts';
 import { canonicalizeMediaKeyList } from '../core/keys.ts';
+import {
+  enrichSavedItemsFromCinemaKunye,
+  extractCinemaKunyeFromItems,
+  mergeCinemaKunyeDocumentsLossless,
+} from '../core/cinema-kunye.ts';
 import type { CatalogRecord, PersistentDataStore } from './persistent-store.ts';
 import { redactSecrets } from './persistent-store.ts';
 import { populateTasteDnaWorksheet } from './excel-taste-dna-sheet.ts';
@@ -3224,13 +3229,27 @@ async function writeBufferAtomicAsync(targetPath: string, data: Buffer): Promise
   if (includeJson) {
     try {
       const { fileName, fullPath } = resolveUniqueExportFileName(exportsDir, baseName, 'json');
+      const storedKunye = options.persistentStore ? options.persistentStore.readCinemaKunye() : null;
+      const derivedKunye = extractCinemaKunyeFromItems(
+        foundProfile.items || [],
+        options.genresMap || {}
+      );
+      const mergedKunye = mergeCinemaKunyeDocumentsLossless(
+        storedKunye,
+        derivedKunye,
+        options.genresMap || {}
+      );
+      const enrichedProfileItems = enrichSavedItemsFromCinemaKunye(
+        foundProfile.items || [],
+        mergedKunye
+      );
       const jsonPayload = {
         version: 3,
         schemaVersion: options.document?.schemaVersion || CURRENT_SCHEMA_VERSION,
         engineVersion: options.document?.engineVersion || ENGINE_VERSION,
         profileId: foundProfile.id,
         profileName: foundProfile.name,
-        items: foundProfile.items || [],
+        items: enrichedProfileItems,
         preferences: foundProfile.preferences || {
           disliked: [],
           providers: [],
@@ -3239,6 +3258,7 @@ async function writeBufferAtomicAsync(targetPath: string, data: Buffer): Promise
           notified: [],
         },
         favoriteActors: foundProfile.favoriteActors || [],
+        cinemaKunye: mergedKunye,
         ...(foundProfile.deleted_keys ? { deleted_keys: foundProfile.deleted_keys } : {}),
         isDemo: Boolean(foundProfile.isDemo),
         exportedAt,

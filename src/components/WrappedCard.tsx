@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import type { FavoriteActorInfo, Profile, SavedItem } from '../core/cinetrack-core.ts';
+import type { CinemaKunyeDocument } from '../core/cinema-kunye.ts';
 import {
   buildYearlyWrappedSummary,
   computeAvailableWrappedYears,
@@ -11,6 +12,7 @@ interface WrappedCardProps {
   profileName?: string;
   favoriteActors?: FavoriteActorInfo[];
   genresMap?: Record<number, string>;
+  cinemaKunye?: CinemaKunyeDocument | null;
   onSelectItem?: (id: number | string, mediaType: 'movie' | 'tv') => void;
 }
 
@@ -19,6 +21,7 @@ export const WrappedCard: React.FC<WrappedCardProps> = ({
   profileName = 'Profilim',
   favoriteActors = [],
   genresMap = {},
+  cinemaKunye,
   onSelectItem,
 }) => {
   const availableYears = useMemo(() => computeAvailableWrappedYears(items), [items]);
@@ -48,8 +51,8 @@ export const WrappedCard: React.FC<WrappedCardProps> = ({
       items,
       favoriteActors,
     };
-    return buildYearlyWrappedSummary(profileSlice, selectedYear, genresMap);
-  }, [items, profileName, favoriteActors, selectedYear, genresMap]);
+    return buildYearlyWrappedSummary(profileSlice, selectedYear, genresMap, cinemaKunye);
+  }, [items, profileName, favoriteActors, selectedYear, genresMap, cinemaKunye]);
 
   if (items.length === 0 || summary.totalItems === 0) {
     return null;

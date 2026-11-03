@@ -20,6 +20,12 @@ import {
   type DerivedPillarsRecord,
   type DerivedProfileValidationResult,
 } from '../core/derived-profile-cache.ts';
+import {
+  createEmptyCinemaKunyeDocument,
+  mergeCinemaKunyeDocumentsLossless,
+  normalizeCinemaKunyeDocument,
+  type CinemaKunyeDocument,
+} from '../core/cinema-kunye.ts';
 import type {
   BidirectionalSyncReport,
   SyncComparisonSummary,
@@ -1602,6 +1608,89 @@ export class PersistentDataStore {
     };
   }
 
+  // --- SİNEMA KÜNYESİ OPERATIONS (data/sinema-kunyesi.json) ---
+
+  public getCinemaKunyeFilePath(): string {
+    return path.join(this.dataDir, 'sinema-kunyesi.json');
+  }
+
+  public readCinemaKunye(): CinemaKunyeDocument | null {
+    const filePath = this.getCinemaKunyeFilePath();
+    if (!existsSync(filePath)) return null;
+    const recovery = readJsonFileWithRecovery<CinemaKunyeDocument>(filePath, {
+      backupPaths: [`${filePath}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) &&
+        (isPlainRecordObject((raw as any).entries) || Array.isArray((raw as any).entries))
+          ? normalizeCinemaKunyeDocument(raw)
+          : null,
+      label: path.basename(filePath),
+      restoreRecoveredToTarget: true,
+    });
+    if (recovery.status !== 'ok' && recovery.status !== 'recovered') return null;
+    return recovery.data;
+  }
+
+  public async readCinemaKunyeAsync(): Promise<CinemaKunyeDocument | null> {
+    const filePath = this.getCinemaKunyeFilePath();
+    if (!existsSync(filePath)) return null;
+    const recovery = await readJsonFileWithRecoveryAsync<CinemaKunyeDocument>(filePath, {
+      backupPaths: [`${filePath}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) &&
+        (isPlainRecordObject((raw as any).entries) || Array.isArray((raw as any).entries))
+          ? normalizeCinemaKunyeDocument(raw)
+          : null,
+      label: path.basename(filePath),
+      restoreRecoveredToTarget: true,
+    });
+    if (recovery.status !== 'ok' && recovery.status !== 'recovered') return null;
+    return recovery.data;
+  }
+
+  public saveCinemaKunyeSerialized(
+    incoming: unknown,
+    options: { mode?: 'merge' | 'overwrite' } = {}
+  ): Promise<{
+    ok: boolean;
+    document: CinemaKunyeDocument;
+    entriesCount: number;
+    merged: boolean;
+  }> {
+    const filePath = this.getCinemaKunyeFilePath();
+    return this.writeSerializer.run(filePath, async () => {
+      const mode = options.mode === 'overwrite' ? 'overwrite' : 'merge';
+      const normalizedIncoming = normalizeCinemaKunyeDocument(incoming);
+      const existing = await this.readCinemaKunyeAsync();
+
+      const nextDoc: CinemaKunyeDocument =
+        mode === 'merge' && existing
+          ? mergeCinemaKunyeDocumentsLossless(existing, normalizedIncoming)
+          : normalizedIncoming.updatedAt
+          ? normalizedIncoming
+          : {
+              ...normalizedIncoming,
+              updatedAt: new Date().toISOString(),
+            };
+
+      const finalDoc: CinemaKunyeDocument = nextDoc.updatedAt
+        ? nextDoc
+        : createEmptyCinemaKunyeDocument(new Date().toISOString());
+
+      await writeJsonFileAtomicAsync(filePath, stringifyDeterministic(finalDoc), {
+        backupPath: `${filePath}.bak`,
+        validateParsed: isPlainRecordObject,
+      });
+
+      return {
+        ok: true,
+        document: finalDoc,
+        entriesCount: Object.keys(finalDoc.entries).length,
+        merged: Boolean(mode === 'merge' && existing),
+      };
+    });
+  }
+
   /**
    * Stok anlık görüntüsünü sınırsız ve tekilleştirilmiş biçimde kaydeder.
    * - Aynı media:key (movie:<id> / tv:<id>) ikinci kez gelen kayıtlar atılır (ilk kayıt kazanır).
@@ -2972,6 +3061,15 @@ export class PersistentDataStore {
         repoPath: 'data/stock.json',
         localPath: stockFile,
         commitMessage: 'chore(data): sync stock.json [skip ci]',
+      });
+    }
+
+    const kunyeFile = path.join(this.dataDir, 'sinema-kunyesi.json');
+    if (existsSync(kunyeFile)) {
+      items.push({
+        repoPath: 'data/sinema-kunyesi.json',
+        localPath: kunyeFile,
+        commitMessage: 'chore(data): sync sinema-kunyesi.json [skip ci]',
       });
     }
 
