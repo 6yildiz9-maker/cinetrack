@@ -369,12 +369,20 @@ describe("Migration — Canlı Veri (sadece dosya mevcutsa)", () => {
     assert.ok(typeof parsed === "object", "JSON parse edilemedi");
   });
 
-  it("Canlı veriden migration tamamlanmalı ve timeSource: imported olmalı (dosya varsa)", () => {
+  it("Canlı veriden migration tamamlanmalı ve timeSource kurallarına uymalı (dosya varsa)", () => {
     if (!existsSync(dataPath)) {
       return;
     }
     const raw = readFileSync(dataPath, "utf8");
     const doc = JSON.parse(raw);
+    const ratedByContentId = new Map();
+    for (const p of doc.profiles || []) {
+      for (const it of p.items || []) {
+        if (it && it.media_type && it.id != null) {
+          ratedByContentId.set(`${it.media_type}:${it.id}`, Boolean(it.ratedAt));
+        }
+      }
+    }
     const { events, result } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
 
     // Temel sayı kontrolü
@@ -382,18 +390,21 @@ describe("Migration — Canlı Veri (sadece dosya mevcutsa)", () => {
     assert.ok(result.eventsSkipped >= 0);
     assert.strictEqual(typeof result.completedAt, "string");
 
-    // Tüm olaylar timeSource: imported
+    // V1.5: ratedAt olmayan eski kayıtlar 'imported', ratedAt taşıyan yeni kayıtlar 'actual' olmalı
     for (const event of events) {
+      const hasExplicitRatedAt =
+        event.eventType === "rating_changed" && ratedByContentId.get(event.contentId) === true;
+      const expectedSource = hasExplicitRatedAt ? "actual" : "imported";
       assert.strictEqual(
         event.timeSource,
-        "imported",
-        `timeSource 'imported' değil: ${event.contentId}`
+        expectedSource,
+        `timeSource '${expectedSource}' değil: ${event.contentId} (${event.timeSource})`
       );
     }
 
-    // Faz 0 bulgusu: 47 puanlı kayıt + 22 disliked olması bekleniyor
-    // (çift yazım olmayan durumda ~69 olay, disliked bazıları zaten puanlıysa az)
-    assert.ok(events.length > 0, "Canlı veriden hiç olay üretilmedi");
+    if (ratedByContentId.size > 0) {
+      assert.ok(events.length > 0, "Canlı veriden hiç olay üretilmedi");
+    }
   });
 
   it("data/cinetrack-data.json migration sonrası değiştirilmemiş olmalı (byte kontrolü, dosya varsa)", () => {

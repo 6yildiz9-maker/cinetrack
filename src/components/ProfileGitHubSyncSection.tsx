@@ -61,6 +61,8 @@ interface ProfileGitHubSyncSectionProps {
   onRemoteSyncInfoChange: (next: RemoteSyncStatusPayload | null) => void;
   profiles: Profile[];
   savedItems: SavedItem[];
+  onBeforeSyncFlush?: () => Promise<void>;
+  onMergeSyncedDocument?: (doc: DataDocument) => void;
   onApplyRestoredDocument?: (doc: DataDocument) => void;
 }
 
@@ -75,6 +77,8 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
   onRemoteSyncInfoChange,
   profiles,
   savedItems,
+  onBeforeSyncFlush,
+  onMergeSyncedDocument,
   onApplyRestoredDocument,
 }) => {
   const [activeSyncOp, setActiveSyncOp] = useState<SyncOperationKind | null>(null);
@@ -105,15 +109,25 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     reader.readAsText(file, 'utf-8');
   };
 
+  const flushLocalStateSafely = async (): Promise<void> => {
+    if (!onBeforeSyncFlush) return;
+    try {
+      await onBeforeSyncFlush();
+    } catch (err) {
+      console.warn('[sync] Eşitleme öncesi yerel bellek aktarımı uyarısı:', err);
+    }
+  };
+
   const handleRunHybridMerge = async () => {
     if (csvMergeBusy || !csvText) return;
     setCsvMergeBusy(true);
     try {
+      await flushLocalStateSafely();
       const result = await hybridMergeCsv(csvText, csvMergeDryRun);
       setCsvMergeResult(result);
       if (result.ok && !csvMergeDryRun) {
         if (result.document) {
-          onApplyRestoredDocument?.(result.document);
+          (onMergeSyncedDocument || onApplyRestoredDocument)?.(result.document);
         }
         const updatedInfo = (await fetchSyncStatus()) as RemoteSyncStatusPayload | null;
         if (updatedInfo) {
@@ -125,10 +139,17 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     }
   };
 
-  const applyCompletedSyncReport = async (report: BidirectionalSyncReport) => {
+  const applyCompletedSyncReport = async (
+    report: BidirectionalSyncReport,
+    applyMode: 'merge' | 'overwrite_with_remote' = 'merge'
+  ) => {
     setLatestSyncReport(report);
     if (report.updatedDataDocument) {
-      onApplyRestoredDocument?.(report.updatedDataDocument);
+      if (applyMode === 'overwrite_with_remote') {
+        onApplyRestoredDocument?.(report.updatedDataDocument);
+      } else {
+        (onMergeSyncedDocument || onApplyRestoredDocument)?.(report.updatedDataDocument);
+      }
     }
     const updatedInfo = (await fetchSyncStatus()) as RemoteSyncStatusPayload | null;
     if (updatedInfo) {
@@ -140,8 +161,9 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     if (activeSyncOp !== null) return;
     setActiveSyncOp('inspect');
     try {
+      await flushLocalStateSafely();
       const report = await inspectGitHubSync();
-      await applyCompletedSyncReport(report);
+      await applyCompletedSyncReport(report, 'merge');
     } finally {
       setActiveSyncOp(null);
     }
@@ -153,8 +175,14 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     if (activeSyncOp !== null) return;
     setActiveSyncOp('pull');
     try {
+      if (strategy !== 'overwrite_with_remote') {
+        await flushLocalStateSafely();
+      }
       const report = await pullGitHubSync(strategy);
-      await applyCompletedSyncReport(report);
+      await applyCompletedSyncReport(
+        report,
+        strategy === 'overwrite_with_remote' ? 'overwrite_with_remote' : 'merge'
+      );
     } finally {
       setActiveSyncOp(null);
     }
@@ -183,9 +211,10 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     if (activeSyncOp !== null) return;
     setActiveSyncOp('push');
     try {
+      await flushLocalStateSafely();
       await uploadLocalStockSnapshot();
       const report = await pushGitHubSync();
-      await applyCompletedSyncReport(report);
+      await applyCompletedSyncReport(report, 'merge');
     } finally {
       setActiveSyncOp(null);
     }
@@ -195,9 +224,10 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     if (activeSyncOp !== null) return;
     setActiveSyncOp('reconcile');
     try {
+      await flushLocalStateSafely();
       await uploadLocalStockSnapshot();
       const report = await reconcileGitHubSync();
-      await applyCompletedSyncReport(report);
+      await applyCompletedSyncReport(report, 'merge');
     } finally {
       setActiveSyncOp(null);
     }

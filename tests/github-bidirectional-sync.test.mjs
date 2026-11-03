@@ -11,6 +11,7 @@ import {
 } from '../src/server/persistent-store.ts';
 import { createDataStorage } from '../src/server/storage.ts';
 import { createCineTrackApp } from '../src/server/app.ts';
+import { resolveConfig } from '../src/server/config.ts';
 import { deriveSyncUiBanner } from '../src/core/sync-display.ts';
 import {
   ALGORITHM_VERSION,
@@ -1873,5 +1874,675 @@ test('Aşama 5.16: 1 MB üzeri dosyalarda Git Blob API geri okuma hash doğrulam
   }
 });
 
+test('Kayıpsız Birleştirme Temeli 1: Kısmi/unhydrated istemci yalnızca yeni eklenen 1 filmi gönderdiğinde mevcut 50 film silinmez, 51 film olarak birleşir ve sahte profile-default gerçek profile katlanır', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-lossless-merge-1-'));
+  try {
+    const { app, storage } = createCineTrackApp({
+      dataDir: tmpDir,
+      githubToken: '',
+    });
 
+    const existingItems = Array.from({ length: 50 }, (_, idx) => {
+      const id = idx + 1;
+      return {
+        id,
+        media_type: 'movie',
+        title: `Mevcut Arşiv Filmi ${id}`,
+        status: id === 1 ? 'completed' : 'watchlist',
+        personal_rating: id === 1 ? 9 : '',
+        addedAt: '2026-01-10T10:00:00.000Z',
+        updatedAt: '2026-01-15T10:00:00.000Z',
+        ...(id === 1
+          ? {
+              ratedAt: '2026-01-14T20:00:00.000Z',
+              completedAt: '2026-01-14T19:30:00.000Z',
+            }
+          : {}),
+      };
+    });
 
+    await storage.saveDataSerialized(
+      makeUserDataDoc(
+        [
+          {
+            id: 'profile-main',
+            name: 'Sinema Arşivim',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            preferences: {
+              disliked: ['movie:8001'],
+              providers: ['8'],
+              mood: 'thriller',
+              reminders: false,
+              notified: [],
+            },
+            items: existingItems,
+            favoriteActors: [{ id: 500, name: 'Toshiro Mifune', profile_path: null }],
+          },
+        ],
+        'profile-main',
+        5
+      )
+    );
+
+    const server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    try {
+      // Ham (merge başlığı olmayan) istek hâlâ 428 önkoşul korumasına tabidir (geriye dönük uyumluluk)
+      const rawPutRes = await fetch(`${baseUrl}/api/data`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          makeUserDataDoc(
+            [
+              {
+                id: 'profile-default',
+                name: 'Profilim',
+                createdAt: '2026-03-01T00:00:00.000Z',
+                preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+                items: [
+                  {
+                    id: 999,
+                    media_type: 'movie',
+                    title: 'Yeni Eklenen Film 999',
+                    status: 'watchlist',
+                    personal_rating: '',
+                    addedAt: '2026-03-01T10:00:00.000Z',
+                    updatedAt: '2026-03-01T10:00:00.000Z',
+                  },
+                ],
+                favoriteActors: [],
+              },
+            ],
+            'profile-default'
+          )
+        ),
+      });
+      assert.equal(rawPutRes.status, 428, 'Merge başlığı olmayan ham PUT önkoşul istemeye devam etmeli');
+
+      // X-CineTrack-Merge: 1 + X-CineTrack-Unhydrated-Default: 1 ile kısmi hafızalı istemci isteği
+      const mergePutRes = await fetch(`${baseUrl}/api/data`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CineTrack-Merge': '1',
+          'X-CineTrack-Unhydrated-Default': '1',
+        },
+        body: JSON.stringify(
+          makeUserDataDoc(
+            [
+              {
+                id: 'profile-default',
+                name: 'Profilim',
+                createdAt: '2026-03-01T00:00:00.000Z',
+                preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+                items: [
+                  {
+                    id: 999,
+                    media_type: 'movie',
+                    title: 'Yeni Eklenen Film 999',
+                    status: 'watchlist',
+                    personal_rating: '',
+                    addedAt: '2026-03-01T10:00:00.000Z',
+                    updatedAt: '2026-03-01T10:00:00.000Z',
+                  },
+                ],
+                favoriteActors: [],
+              },
+            ],
+            'profile-default'
+          )
+        ),
+      });
+
+      assert.equal(mergePutRes.status, 200, 'Kayıpsız birleştirme modunda 409/428 yerine 200 dönmeli');
+      const mergeJson = await mergePutRes.json();
+      assert.equal(mergeJson.ok, true);
+      assert.equal(mergeJson.merged, true);
+      assert.ok(mergeJson.document, 'Sunucu birleştirilmiş tam belgeyi istemciye döndürmeli');
+      assert.equal(
+        mergeJson.document.activeProfileId,
+        'profile-main',
+        'Sahte profile-default gerçek profile-main içine katlanmalı'
+      );
+      assert.equal(mergeJson.document.profiles.length, 1);
+      const mergedProfile = mergeJson.document.profiles[0];
+      assert.equal(
+        mergedProfile.items.length,
+        51,
+        'Mevcut 50 film korunmalı ve yeni eklenen 999 numaralı filmle 51 olmalı'
+      );
+      assert.ok(mergedProfile.items.some((it) => it.id === 999));
+      const movie1 = mergedProfile.items.find((it) => it.id === 1);
+      assert.equal(movie1.ratedAt, '2026-01-14T20:00:00.000Z', 'V1.5 ratedAt zaman damgası korunmalı');
+      assert.equal(movie1.completedAt, '2026-01-14T19:30:00.000Z', 'V1.5 completedAt zaman damgası korunmalı');
+      assert.deepEqual(mergedProfile.preferences.disliked, ['movie:8001']);
+      assert.equal(mergedProfile.favoriteActors.length, 1);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Kayıpsız Birleştirme Temeli 2: Arka planda GitHub otomatik senkronizasyonu revizyonu ilerletirken istemci eski revizyonla ekleme/silme yaptığında veriler çakışmadan birleşir', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-lossless-merge-2-'));
+  const gh = createMockGitHubHarness();
+  const baseMs = Date.now() - 5 * 24 * 60 * 60 * 1000;
+  const t0 = new Date(baseMs).toISOString();
+  const t1 = new Date(baseMs + 60_000).toISOString();
+  const t2 = new Date(baseMs + 120_000).toISOString();
+  const t3Tombstone = new Date(baseMs + 180_000).toISOString();
+  const t4ReAdd = new Date(baseMs + 240_000).toISOString();
+  try {
+    const { app, storage, persistentStore } = createCineTrackApp({
+      dataDir: tmpDir,
+      githubToken: TEST_SECRET_TOKEN,
+      githubOwner: TEST_OWNER,
+      githubRepo: TEST_REPO,
+      githubBranch: TEST_BRANCH,
+      isPublicRepo: false,
+    });
+
+    await storage.saveDataSerialized(
+      makeUserDataDoc(
+        [
+          {
+            id: 'profile-main',
+            name: 'Ana Profil',
+            createdAt: t0,
+            preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+            items: [
+              {
+                id: 10,
+                media_type: 'movie',
+                title: 'Film 10',
+                status: 'watchlist',
+                personal_rating: '',
+                addedAt: t0,
+                updatedAt: t0,
+              },
+              {
+                id: 20,
+                media_type: 'movie',
+                title: 'Film 20',
+                status: 'watchlist',
+                personal_rating: '',
+                addedAt: t0,
+                updatedAt: t0,
+              },
+            ],
+            favoriteActors: [],
+          },
+        ],
+        'profile-main',
+        1
+      )
+    );
+
+    const server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    try {
+      // 1. İstemci başlangıçta rev-1 okur
+      const initialGet = await fetch(`${baseUrl}/api/data`);
+      const initialEtag = initialGet.headers.get('etag');
+      assert.equal(initialEtag, '"rev-1"');
+
+      // 2. Bu sırada GitHub'da (başka cihazdan) Film 30 eklenir ve arka plan otomatik senkronizasyonu çalışır
+      gh.seedFile(
+        'data/cinetrack-data.json',
+        makeUserDataDoc(
+          [
+            {
+              id: 'profile-main',
+              name: 'Ana Profil',
+              createdAt: t0,
+              preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+              items: [
+                {
+                  id: 10,
+                  media_type: 'movie',
+                  title: 'Film 10',
+                  status: 'watchlist',
+                  personal_rating: '',
+                  addedAt: t0,
+                  updatedAt: t0,
+                },
+                {
+                  id: 20,
+                  media_type: 'movie',
+                  title: 'Film 20',
+                  status: 'watchlist',
+                  personal_rating: '',
+                  addedAt: t0,
+                  updatedAt: t0,
+                },
+                {
+                  id: 30,
+                  media_type: 'movie',
+                  title: 'GitHubdan Gelen Film 30',
+                  status: 'completed',
+                  personal_rating: 8,
+                  addedAt: t1,
+                  updatedAt: t1,
+                },
+              ],
+              favoriteActors: [],
+            },
+          ],
+          'profile-main',
+          2
+        )
+      );
+
+      await gh.installAndRun(async () => {
+        const bgSync = await persistentStore.reconcileWithGitHub();
+        assert.equal(bgSync.ok, true);
+      });
+
+      const serverAfterBg = storage.readData();
+      assert.ok(serverAfterBg.revision > 1, 'Arka plan GitHub senkronu sunucu revizyonunu ilerletmiş olmalı');
+      assert.equal(serverAfterBg.profiles[0].items.length, 3);
+
+      // 3. İstemci hâlâ eski If-Match: "rev-1" tutarken Film 40 ekler ve Film 20'yi bilinçli olarak siler (deleted_keys)
+      const staleClientPut = await fetch(`${baseUrl}/api/data`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'If-Match': initialEtag,
+          'X-CineTrack-Merge': '1',
+        },
+        body: JSON.stringify(
+          makeUserDataDoc(
+            [
+              {
+                id: 'profile-main',
+                name: 'Ana Profil',
+                createdAt: t0,
+                preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+                items: [
+                  {
+                    id: 10,
+                    media_type: 'movie',
+                    title: 'Film 10',
+                    status: 'watchlist',
+                    personal_rating: '',
+                    addedAt: t0,
+                    updatedAt: t0,
+                  },
+                  {
+                    id: 40,
+                    media_type: 'movie',
+                    title: 'İstemcide Yeni Eklenen Film 40',
+                    status: 'watching',
+                    personal_rating: '',
+                    addedAt: t2,
+                    updatedAt: t2,
+                  },
+                ],
+                deleted_keys: {
+                  'movie:20': t3Tombstone,
+                },
+                favoriteActors: [],
+              },
+            ],
+            'profile-main',
+            1
+          )
+        ),
+      });
+
+      assert.equal(staleClientPut.status, 200, 'Eski If-Match ile gelen kayıpsız birleştirme 409 vermemeli');
+      const putJson = await staleClientPut.json();
+      assert.equal(putJson.ok, true);
+      assert.equal(putJson.merged, true);
+      const mergedIds = putJson.document.profiles[0].items.map((it) => it.id).sort((a, b) => a - b);
+      assert.deepEqual(
+        mergedIds,
+        [10, 30, 40],
+        'Film 10 korunmalı, GitHubdan gelen Film 30 korunmalı, Film 40 eklenmeli, mezar taşlı Film 20 silinmeli'
+      );
+
+      // 4. Kullanıcı daha sonra Film 20'yi yeniden listeye eklerse (daha yeni updatedAt), mezar taşı kalkar ve geri döner
+      const reAddPut = await fetch(`${baseUrl}/api/data`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'If-Match': `"rev-${putJson.revision}"`,
+          'X-CineTrack-Merge': '1',
+        },
+        body: JSON.stringify(
+          makeUserDataDoc(
+            [
+              {
+                ...putJson.document.profiles[0],
+                items: [
+                  ...putJson.document.profiles[0].items,
+                  {
+                    id: 20,
+                    media_type: 'movie',
+                    title: 'Film 20 (Yeniden Eklendi)',
+                    status: 'completed',
+                    personal_rating: 10,
+                    addedAt: t4ReAdd,
+                    updatedAt: t4ReAdd,
+                  },
+                ],
+              },
+            ],
+            'profile-main',
+            putJson.revision
+          )
+        ),
+      });
+      assert.equal(reAddPut.status, 200);
+      const afterReAdd = storage.readData();
+      const finalIds = afterReAdd.profiles[0].items.map((it) => it.id).sort((a, b) => a - b);
+      assert.deepEqual(finalIds, [10, 20, 30, 40]);
+      assert.equal(afterReAdd.profiles[0].deleted_keys?.['movie:20'], undefined);
+
+      // 5. Sonraki GitHub senkronizasyonu birleşmiş 4 filmi eksiksiz GitHub'a taşır
+      await gh.installAndRun(async () => {
+        const finalSync = await persistentStore.reconcileWithGitHub();
+        assert.equal(finalSync.ok, true);
+        assert.equal(finalSync.verifiedEqual, true);
+        const remoteData = gh.readRemoteJson('data/cinetrack-data.json');
+        assert.deepEqual(
+          remoteData.profiles[0].items.map((it) => it.id).sort((a, b) => a - b),
+          [10, 20, 30, 40]
+        );
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Kayıpsız Birleştirme Temeli 3: pushToGitHub (/api/sync/push) uzaktaki mevcut listeyi ezmez; önce kayıpsız birleştirip hem yerele hem GitHuba yazar', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-lossless-merge-3-'));
+  const gh = createMockGitHubHarness();
+  try {
+    const { app, storage } = createCineTrackApp({
+      dataDir: tmpDir,
+      githubToken: TEST_SECRET_TOKEN,
+      githubOwner: TEST_OWNER,
+      githubRepo: TEST_REPO,
+      githubBranch: TEST_BRANCH,
+      isPublicRepo: false,
+    });
+
+    // Yerelde yalnızca yeni eklenen 1 film var
+    await storage.saveDataSerialized(
+      makeUserDataDoc(
+        [
+          {
+            id: 'profile-main',
+            name: 'Ana Profil',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+            items: [
+              {
+                id: 101,
+                media_type: 'movie',
+                title: 'Yerelde Yeni Eklenen 101',
+                status: 'watchlist',
+                personal_rating: '',
+                addedAt: '2026-03-02T00:00:00.000Z',
+                updatedAt: '2026-03-02T00:00:00.000Z',
+              },
+            ],
+            favoriteActors: [],
+          },
+        ],
+        'profile-main',
+        1
+      )
+    );
+
+    // Uzak GitHub deposunda önceden kayıtlı 3 içerik bulunuyor (dizi ilerlemesi dahil)
+    gh.seedFile(
+      'data/cinetrack-data.json',
+      makeUserDataDoc(
+        [
+          {
+            id: 'profile-main',
+            name: 'Ana Profil',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            preferences: { disliked: ['movie:555'], providers: [], mood: '', reminders: false, notified: [] },
+            items: [
+              {
+                id: 201,
+                media_type: 'movie',
+                title: 'Uzak Arşiv Filmi 201',
+                status: 'completed',
+                personal_rating: 9,
+                addedAt: '2026-01-10T00:00:00.000Z',
+                updatedAt: '2026-01-10T00:00:00.000Z',
+              },
+              {
+                id: 202,
+                media_type: 'movie',
+                title: 'Uzak Arşiv Filmi 202',
+                status: 'watchlist',
+                personal_rating: '',
+                addedAt: '2026-01-12T00:00:00.000Z',
+                updatedAt: '2026-01-12T00:00:00.000Z',
+              },
+              {
+                id: 301,
+                media_type: 'tv',
+                title: 'Uzak Dizi 301',
+                status: 'watching',
+                personal_rating: 8,
+                current_season: 1,
+                episodes_watched: 8,
+                season_progress: { 1: 8 },
+                addedAt: '2026-01-15T00:00:00.000Z',
+                updatedAt: '2026-01-20T00:00:00.000Z',
+              },
+            ],
+            favoriteActors: [],
+          },
+        ],
+        'profile-main',
+        4
+      )
+    );
+
+    const server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    try {
+      await gh.installAndRun(async () => {
+        const pushRes = await fetch(`${baseUrl}/api/sync/push`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        assert.equal(pushRes.status, 200);
+        const pushReport = await pushRes.json();
+        assert.equal(pushReport.ok, true);
+        assert.equal(pushReport.verifiedEqual, true);
+        assert.ok(pushReport.updatedDataDocument, 'Push raporu birleştirilmiş güncel belgeyi döndürmeli');
+
+        const mergedKeys = pushReport.updatedDataDocument.profiles[0].items
+          .map((it) => `${it.media_type}:${it.id}`)
+          .sort();
+        assert.deepEqual(mergedKeys, ['movie:101', 'movie:201', 'movie:202', 'tv:301']);
+
+        const remoteDoc = gh.readRemoteJson('data/cinetrack-data.json');
+        const remoteKeys = remoteDoc.profiles[0].items
+          .map((it) => `${it.media_type}:${it.id}`)
+          .sort();
+        assert.deepEqual(
+          remoteKeys,
+          ['movie:101', 'movie:201', 'movie:202', 'tv:301'],
+          'GitHubdaki mevcut içerikler ezilmeden yeni içerikle birleşmeli'
+        );
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Kayıpsız Birleştirme Temeli 4: process.env icindeki suresi dolmus PAT 401 dondurdugunde sistem otomatik olarak gecerli .env tokenina gecer ve senkronu tamamlar', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-token-failover-4-'));
+  const gh = createMockGitHubHarness();
+  const STALE_ENV_PAT = 'github_pat_11STALEEXPIREDTOKEN000000000000000000000000';
+  const VALID_DOTENV_TOKEN = 'gho_VALIDDOTENVTOKEN9999999999999999999999';
+
+  try {
+    const resolved = resolveConfig({
+      processEnv: {
+        CINETRACK_GITHUB_PAT: STALE_ENV_PAT,
+        CINETRACK_DATA_OWNER: TEST_OWNER,
+        CINETRACK_DATA_REPO: TEST_REPO,
+        CINETRACK_DATA_BRANCH: TEST_BRANCH,
+      },
+      dotEnvContent: `CINETRACK_GITHUB_PAT=${VALID_DOTENV_TOKEN}\n`,
+    });
+
+    assert.equal(resolved.githubToken, STALE_ENV_PAT);
+    assert.equal(resolved.githubTokenSource, 'env:CINETRACK_GITHUB_PAT');
+    assert.equal(resolved.githubTokenCandidates.length, 2);
+    assert.equal(resolved.githubTokenCandidates[1].token, VALID_DOTENV_TOKEN);
+    assert.equal(resolved.githubTokenCandidates[1].source, 'file:.env:CINETRACK_GITHUB_PAT');
+
+    const mutatedReasons = [];
+    const { app } = createCineTrackApp({
+      dataDir: tmpDir,
+      githubToken: resolved.githubToken,
+      githubTokenSource: resolved.githubTokenSource,
+      githubTokenCandidates: resolved.githubTokenCandidates,
+      githubOwner: resolved.githubOwner,
+      githubRepo: resolved.githubRepo,
+      githubBranch: resolved.githubBranch,
+      isPublicRepo: false,
+      onLocalDataMutated: (reason) => {
+        mutatedReasons.push(reason);
+      },
+    });
+
+    // Mock GitHub API: stale token -> 401 Bad credentials, valid .env token -> normal 200 akışı
+    gh.setInterceptor(({ init, jsonResponse }) => {
+      const authHeader = String(init?.headers?.Authorization || init?.headers?.authorization || '');
+      if (authHeader !== `Bearer ${VALID_DOTENV_TOKEN}`) {
+        return jsonResponse(401, { message: 'Bad credentials' });
+      }
+      return null;
+    });
+
+    gh.seedFile(
+      'data/cinetrack-data.json',
+      makeUserDataDoc(
+        [
+          {
+            id: 'profile-main',
+            name: 'Ana Profil',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+            items: [
+              {
+                id: 707,
+                media_type: 'movie',
+                title: 'Uzak Film 707',
+                status: 'watchlist',
+                personal_rating: '',
+                addedAt: '2026-02-01T00:00:00.000Z',
+                updatedAt: '2026-02-01T00:00:00.000Z',
+              },
+            ],
+            favoriteActors: [],
+          },
+        ],
+        'profile-main',
+        1
+      )
+    );
+
+    const server = await new Promise((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    try {
+      // Kullanıcı yeni bir film kaydettiğinde mutasyon kancası tetiklenmeli
+      const putRes = await fetch(`${baseUrl}/api/data`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CineTrack-Merge': 'lossless',
+          'If-Match': '"rev-0"',
+        },
+        body: JSON.stringify(
+          makeUserDataDoc(
+            [
+              {
+                id: 'profile-main',
+                name: 'Ana Profil',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
+                items: [
+                  {
+                    id: 808,
+                    media_type: 'movie',
+                    title: 'Yerel Film 808',
+                    status: 'completed',
+                    personal_rating: 9,
+                    addedAt: '2026-02-02T00:00:00.000Z',
+                    updatedAt: '2026-02-02T00:00:00.000Z',
+                  },
+                ],
+                favoriteActors: [],
+              },
+            ],
+            'profile-main',
+            0
+          )
+        ),
+      });
+      assert.equal(putRes.status, 200);
+      assert.deepEqual(mutatedReasons, ['user-data-save']);
+
+      await gh.installAndRun(async () => {
+        const recRes = await fetch(`${baseUrl}/api/sync/reconcile`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        assert.equal(recRes.status, 200);
+        const recReport = await recRes.json();
+        assert.equal(recReport.ok, true, `401 sonrasi .env token ile senkron basarili olmali: ${JSON.stringify(recReport.errors)}`);
+        assert.equal(recReport.verifiedEqual, true);
+
+        const statusRes = await fetch(`${baseUrl}/api/sync/status`);
+        const statusJson = await statusRes.json();
+        assert.equal(statusJson.lastError, null);
+        assert.equal(statusJson.tokenDiagnostics?.source, 'file:.env:CINETRACK_GITHUB_PAT');
+
+        const remoteDoc = gh.readRemoteJson('data/cinetrack-data.json');
+        const remoteKeys = remoteDoc.profiles[0].items
+          .map((it) => `${it.media_type}:${it.id}`)
+          .sort();
+        assert.deepEqual(remoteKeys, ['movie:707', 'movie:808']);
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

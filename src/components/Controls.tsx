@@ -30,6 +30,8 @@ interface ControlsProps {
   hideListedItems?: boolean;
   onHideListedItemsChange?: (checked: boolean) => void;
   stockStats?: { movieCount: number; tvCount: number };
+  onReplenishStock?: () => void;
+  isStockReplenishing?: boolean;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -58,6 +60,8 @@ export const Controls: React.FC<ControlsProps> = ({
   hideListedItems = false,
   onHideListedItemsChange,
   stockStats,
+  onReplenishStock,
+  isStockReplenishing = false,
 }) => {
   const [showStockHealth, setShowStockHealth] = useState(false);
 
@@ -327,6 +331,8 @@ export const Controls: React.FC<ControlsProps> = ({
           isOpen={showStockHealth}
           onClose={() => setShowStockHealth(false)}
           stockSignature={stockStats ? `${stockStats.movieCount}:${stockStats.tvCount}` : ''}
+          onReplenishStock={onReplenishStock}
+          isStockReplenishing={isStockReplenishing}
         />
       )}
     </div>

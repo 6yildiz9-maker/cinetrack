@@ -5,24 +5,23 @@ import {
   buildTasteProfileV3,
   computeTasteProfileSignature,
   CURRENT_SCHEMA_VERSION,
-  dedupeItems,
   ENGINE_VERSION,
   inferLifecycleRing,
   isItemSaved,
   makeMediaKey,
   normalizeDataDocument,
   normalizeDeletedKeys,
-  normalizeFavoriteActors,
-  normalizePreferences,
   RECOMMENDATION_WEIGHTS_V3,
   scoreCandidatesV3,
   validItemId,
   type DataDocument,
-  type FavoriteActorInfo,
-  type Preferences,
   type Profile,
-  type SavedItem,
 } from '../core/cinetrack-core.ts';
+import {
+  mergeTwoSavedItemsLossless,
+  reconcileUserDataDocumentsLossless,
+} from '../core/user-data-merge.ts';
+export { mergeTwoSavedItemsLossless, reconcileUserDataDocumentsLossless };
 import { canonicalizeMediaKey, canonicalizeMediaKeyList } from '../core/keys.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb, measureUtf8Bytes } from '../core/limits.ts';
 import {
@@ -502,401 +501,6 @@ function stripUserDataVolatileFields(doc: DataDocument): Record<string, any> {
 
 export function computeUserDataSemanticHash(doc: DataDocument): string {
   return hashContent(stringifyDeterministic(stripUserDataVolatileFields(doc)));
-}
-
-function statusProgressionRank(status?: string): number {
-  if (status === 'completed') return 3;
-  if (status === 'watching') return 2;
-  return 1;
-}
-
-function mergeTwoSavedItemsLossless(
-  profileId: string,
-  localItem: SavedItem,
-  remoteItem: SavedItem
-): {
-  merged: SavedItem;
-  conflict?: UserDataConflictItem;
-  changedLocal: boolean;
-  changedRemote: boolean;
-} {
-  const key = makeMediaKey(localItem);
-  const localTime = localItem.updatedAt || localItem.addedAt || '';
-  const remoteTime = remoteItem.updatedAt || remoteItem.addedAt || '';
-
-  const statusDiffers = localItem.status !== remoteItem.status;
-  const localRatingStr =
-    localItem.personal_rating !== '' && localItem.personal_rating != null
-      ? String(localItem.personal_rating)
-      : '';
-  const remoteRatingStr =
-    remoteItem.personal_rating !== '' && remoteItem.personal_rating != null
-      ? String(remoteItem.personal_rating)
-      : '';
-  const bothHaveDifferentRatings =
-    Boolean(localRatingStr) && Boolean(remoteRatingStr) && localRatingStr !== remoteRatingStr;
-
-  let chosenStatus: SavedItem['status'] = localItem.status;
-  let resolutionNote = '';
-
-  if (statusDiffers) {
-    if (remoteTime && localTime && remoteTime !== localTime) {
-      if (remoteTime > localTime) {
-        chosenStatus = remoteItem.status;
-        resolutionNote = `Daha güncel zaman damgalı GitHub durumu (${remoteItem.status}) seçildi`;
-      } else {
-        chosenStatus = localItem.status;
-        resolutionNote = `Daha güncel zaman damgalı yerel durum (${localItem.status}) korundu`;
-      }
-    } else {
-      chosenStatus =
-        statusProgressionRank(remoteItem.status) > statusProgressionRank(localItem.status)
-          ? remoteItem.status
-          : localItem.status;
-      resolutionNote = `İzleme ilerlemesi daha ileri olan durum (${chosenStatus}) seçildi`;
-    }
-  }
-
-  let chosenRating: number | '' = localItem.personal_rating;
-  let chosenRatingCleared = Boolean(localItem.personal_rating_cleared);
-
-  if (localRatingStr !== remoteRatingStr) {
-    if (localRatingStr && !remoteRatingStr) {
-      if (remoteItem.personal_rating_cleared && remoteTime > localTime) {
-        chosenRating = '';
-        chosenRatingCleared = true;
-      } else {
-        chosenRating = localItem.personal_rating;
-        chosenRatingCleared = false;
-      }
-    } else if (remoteRatingStr && !localRatingStr) {
-      if (localItem.personal_rating_cleared && localTime > remoteTime) {
-        chosenRating = '';
-        chosenRatingCleared = true;
-      } else {
-        chosenRating = remoteItem.personal_rating;
-        chosenRatingCleared = false;
-      }
-    } else if (bothHaveDifferentRatings) {
-      if (remoteTime > localTime) {
-        chosenRating = remoteItem.personal_rating;
-      } else {
-        chosenRating = localItem.personal_rating;
-      }
-      chosenRatingCleared = false;
-      resolutionNote = resolutionNote
-        ? `${resolutionNote}; puan olarak güncel kayıt (${chosenRating}) seçildi`
-        : `Farklı kişisel puanlar arasından güncel olan (${chosenRating}) seçildi`;
-    }
-  }
-
-  // Sezon ilerlemelerini kayıpsız birleştir (her sezon için daha yüksek izlenen bölüm sayısını koru)
-  const mergedSeasonProgress: Record<number, number> = { ...(localItem.season_progress || {}) };
-  for (const [seasonKey, epCount] of Object.entries(remoteItem.season_progress || {})) {
-    const sNum = Number(seasonKey);
-    const prev = mergedSeasonProgress[sNum] || 0;
-    mergedSeasonProgress[sNum] = Math.max(prev, Number(epCount) || 0);
-  }
-  const mergedSeasonTotals: Record<number, number> = {
-    ...(localItem.season_episode_counts || {}),
-    ...(remoteItem.season_episode_counts || {}),
-  };
-
-  const genreSet = new Set<number>([
-    ...(localItem.genre_ids || []),
-    ...(remoteItem.genre_ids || []),
-  ]);
-  const richerOverview =
-    (remoteItem.overview || '').trim().length > (localItem.overview || '').trim().length
-      ? remoteItem.overview
-      : localItem.overview || remoteItem.overview;
-
-  const earliestAdded = [localItem.addedAt, remoteItem.addedAt].filter(Boolean).sort()[0];
-  const latestUpdated = [localTime, remoteTime].filter(Boolean).sort().slice(-1)[0];
-
-  const baseWinner = remoteTime > localTime ? remoteItem : localItem;
-  const fallbackOther = baseWinner === remoteItem ? localItem : remoteItem;
-
-  const merged: SavedItem = {
-    ...fallbackOther,
-    ...baseWinner,
-    id: localItem.id,
-    media_type: localItem.media_type,
-    title: baseWinner.title || fallbackOther.title,
-    overview: richerOverview,
-    poster_path: baseWinner.poster_path || fallbackOther.poster_path,
-    poster_url: baseWinner.poster_url || fallbackOther.poster_url,
-    backdrop_path: baseWinner.backdrop_path || fallbackOther.backdrop_path,
-    genre_ids: Array.from(genreSet).sort((a, b) => a - b),
-    status: chosenStatus,
-    personal_rating: chosenRating,
-    personal_rating_cleared: chosenRatingCleared,
-    ...(Object.keys(mergedSeasonProgress).length > 0
-      ? { season_progress: mergedSeasonProgress }
-      : {}),
-    ...(Object.keys(mergedSeasonTotals).length > 0
-      ? { season_episode_counts: mergedSeasonTotals }
-      : {}),
-    addedAt: earliestAdded || localItem.addedAt || remoteItem.addedAt,
-    updatedAt: latestUpdated || localItem.updatedAt || remoteItem.updatedAt,
-    isDemo: Boolean(localItem.isDemo && remoteItem.isDemo),
-  };
-
-  const itemSem = (it: SavedItem) =>
-    stringifyDeterministic({
-      status: it.status,
-      rating: it.personal_rating === '' ? '' : Number(it.personal_rating),
-      cleared: Boolean(it.personal_rating_cleared),
-      progress: it.season_progress || {},
-      overview: it.overview || '',
-      poster: it.poster_path || '',
-      genres: [...(it.genre_ids || [])].sort((a, b) => a - b),
-    });
-
-  const mergedSem = itemSem(merged);
-  const changedLocal = itemSem(localItem) !== mergedSem;
-  const changedRemote = itemSem(remoteItem) !== mergedSem;
-
-  const conflict: UserDataConflictItem | undefined =
-    statusDiffers || bothHaveDifferentRatings
-      ? {
-          profileId,
-          mediaKey: key,
-          title: merged.title,
-          localStatus: localItem.status,
-          remoteStatus: remoteItem.status,
-          localRating: localItem.personal_rating,
-          remoteRating: remoteItem.personal_rating,
-          resolution: resolutionNote || 'Alan düzeyinde kayıpsız birleştirildi',
-        }
-      : undefined;
-
-  return { merged, conflict, changedLocal, changedRemote };
-}
-
-/**
- * Kullanıcı verisini (`cinetrack-data.json`) varsayılan silmesiz (no-deletion) politikayla
- * iki yönlü ve kayıpsız biçimde birleştirir.
- */
-export function reconcileUserDataDocumentsLossless(
-  localDoc: DataDocument,
-  remoteDoc: DataDocument
-): {
-  mergedDoc: DataDocument;
-  addedToLocal: number;
-  addedToRemote: number;
-  updatedItems: number;
-  conflicts: UserDataConflictItem[];
-} {
-  const localById = new Map<string, Profile>();
-  for (const p of localDoc.profiles || []) localById.set(p.id, p);
-
-  const remoteById = new Map<string, Profile>();
-  for (const p of remoteDoc.profiles || []) remoteById.set(p.id, p);
-
-  const allProfileIds = Array.from(
-    new Set<string>([...localById.keys(), ...remoteById.keys()])
-  );
-
-  const mergedProfiles: Profile[] = [];
-  const conflicts: UserDataConflictItem[] = [];
-  let addedToLocal = 0;
-  let addedToRemote = 0;
-  let updatedItems = 0;
-
-  for (const profileId of allProfileIds) {
-    const lp = localById.get(profileId);
-    const rp = remoteById.get(profileId);
-
-    // Eğer bir taraf yalnızca başlangıç demo profili ve diğer taraf gerçek kullanıcı kaydı içeriyorsa demo bayrağını kaldır
-    if (lp && !rp) {
-      mergedProfiles.push(lp);
-      addedToRemote += (lp.items || []).length;
-      continue;
-    }
-    if (rp && !lp) {
-      mergedProfiles.push(rp);
-      addedToLocal += (rp.items || []).length;
-      continue;
-    }
-    if (!lp || !rp) continue;
-
-    const lpLiveItems = lp.isDemo && !rp.isDemo ? [] : lp.items || [];
-    const rpLiveItems = rp.isDemo && !lp.isDemo ? [] : rp.items || [];
-
-    const localItemsMap = new Map<string, SavedItem>();
-    for (const it of dedupeItems(lpLiveItems)) {
-      localItemsMap.set(makeMediaKey(it), it);
-    }
-    const remoteItemsMap = new Map<string, SavedItem>();
-    for (const it of dedupeItems(rpLiveItems)) {
-      remoteItemsMap.set(makeMediaKey(it), it);
-    }
-
-    const lpDeleted = normalizeDeletedKeys(lp.deleted_keys);
-    const rpDeleted = normalizeDeletedKeys(rp.deleted_keys);
-    const mergedDeletedKeys: Record<string, string> = { ...lpDeleted };
-    for (const [delKey, delIso] of Object.entries(rpDeleted)) {
-      const existingIso = mergedDeletedKeys[delKey];
-      if (!existingIso || Date.parse(delIso) > Date.parse(existingIso)) {
-        mergedDeletedKeys[delKey] = delIso;
-      }
-    }
-
-    const getSavedItemTimestampMs = (item: SavedItem): number => {
-      const candidate = item.updatedAt || item.addedAt || item.firstAddedAt || '';
-      if (!candidate) return NaN;
-      return Date.parse(candidate);
-    };
-
-    const allItemKeys = Array.from(
-      new Set<string>([...localItemsMap.keys(), ...remoteItemsMap.keys()])
-    );
-
-    const combinedItems: SavedItem[] = [];
-    for (const key of allItemKeys) {
-      const li = localItemsMap.get(key);
-      const ri = remoteItemsMap.get(key);
-      if (li && !ri) {
-        const remoteTombstoneIso = rpDeleted[key];
-        if (remoteTombstoneIso) {
-          const liMs = getSavedItemTimestampMs(li);
-          const delMs = Date.parse(remoteTombstoneIso);
-          if (Number.isFinite(liMs) && Number.isFinite(delMs) && liMs > delMs) {
-            combinedItems.push(li);
-            delete mergedDeletedKeys[key];
-            addedToRemote++;
-          } else {
-            mergedDeletedKeys[key] = remoteTombstoneIso;
-            updatedItems++;
-          }
-        } else {
-          combinedItems.push(li);
-          delete mergedDeletedKeys[key];
-          addedToRemote++;
-        }
-      } else if (ri && !li) {
-        const localTombstoneIso = lpDeleted[key];
-        if (localTombstoneIso) {
-          const riMs = getSavedItemTimestampMs(ri);
-          const delMs = Date.parse(localTombstoneIso);
-          if (Number.isFinite(riMs) && Number.isFinite(delMs) && riMs > delMs) {
-            combinedItems.push(ri);
-            delete mergedDeletedKeys[key];
-            addedToLocal++;
-          } else {
-            mergedDeletedKeys[key] = localTombstoneIso;
-            updatedItems++;
-          }
-        } else {
-          combinedItems.push(ri);
-          delete mergedDeletedKeys[key];
-          addedToLocal++;
-        }
-      } else if (li && ri) {
-        const res = mergeTwoSavedItemsLossless(profileId, li, ri);
-        combinedItems.push(res.merged);
-        delete mergedDeletedKeys[key];
-        if (res.conflict) conflicts.push(res.conflict);
-        if (res.changedLocal || res.changedRemote) updatedItems++;
-      }
-    }
-
-    const mergedDisliked = Array.from(
-      new Set<string>([
-        ...canonicalizeMediaKeyList(lp.preferences?.disliked || []),
-        ...canonicalizeMediaKeyList(rp.preferences?.disliked || []),
-      ])
-    );
-    const mergedHidden = Array.from(
-      new Set<string>([
-        ...canonicalizeMediaKeyList(lp.preferences?.hidden || []),
-        ...canonicalizeMediaKeyList(rp.preferences?.hidden || []),
-      ])
-    );
-    const mergedProviders = Array.from(
-      new Set<string>([
-        ...(lp.preferences?.providers || []).map(String),
-        ...(rp.preferences?.providers || []).map(String),
-      ])
-    ).sort();
-    const mergedNotified = Array.from(
-      new Set<string>([
-        ...(lp.preferences?.notified || []),
-        ...(rp.preferences?.notified || []),
-      ])
-    ).slice(-200);
-
-    const mergedPrefs: Preferences = normalizePreferences({
-      disliked: mergedDisliked,
-      ...(mergedHidden.length > 0 ? { hidden: mergedHidden } : {}),
-      providers: mergedProviders,
-      mood: lp.preferences?.mood || rp.preferences?.mood || '',
-      reminders: Boolean(lp.preferences?.reminders || rp.preferences?.reminders),
-      notified: mergedNotified,
-    });
-
-    const actorMap = new Map<number, FavoriteActorInfo>();
-    for (const actor of normalizeFavoriteActors([
-      ...(lp.favoriteActors || []),
-      ...(rp.favoriteActors || []),
-    ])) {
-      const prev = actorMap.get(actor.id);
-      if (!prev) {
-        actorMap.set(actor.id, actor);
-      } else {
-        actorMap.set(actor.id, {
-          id: actor.id,
-          name: prev.name || actor.name,
-          profile_path: prev.profile_path || actor.profile_path || null,
-          character: prev.character || actor.character,
-        });
-      }
-    }
-
-    const earliestCreated = [lp.createdAt, rp.createdAt].filter(Boolean).sort()[0] || '';
-    const profileName =
-      lp.name && lp.name !== 'Profilim'
-        ? lp.name
-        : rp.name && rp.name !== 'Profilim'
-        ? rp.name
-        : lp.name || rp.name || 'Profilim';
-
-    mergedProfiles.push({
-      id: profileId,
-      name: profileName,
-      createdAt: earliestCreated,
-      preferences: mergedPrefs,
-      items: dedupeItems(combinedItems),
-      favoriteActors: Array.from(actorMap.values()),
-      ...(Object.keys(mergedDeletedKeys).length > 0 ? { deleted_keys: mergedDeletedKeys } : {}),
-      isDemo: Boolean(lp.isDemo && rp.isDemo),
-    });
-  }
-
-  const preferredActive =
-    mergedProfiles.find((p) => p.id === localDoc.activeProfileId)?.id ||
-    mergedProfiles.find((p) => p.id === remoteDoc.activeProfileId)?.id ||
-    mergedProfiles[0]?.id ||
-    'profile-default';
-
-  const maxRev = Math.max(localDoc.revision ?? 0, remoteDoc.revision ?? 0);
-
-  return {
-    mergedDoc: {
-      version: 3,
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-      engineVersion: ENGINE_VERSION,
-      activeProfileId: preferredActive,
-      profiles: mergedProfiles,
-      revision: maxRev + 1,
-      updatedAt: new Date().toISOString(),
-    },
-    addedToLocal,
-    addedToRemote,
-    updatedItems,
-    conflicts,
-  };
 }
 
 /**
@@ -2437,14 +2041,21 @@ export class GitHubBidirectionalSyncManager {
     const apiUrl = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${repoPath}?ref=${encodeURIComponent(
       cfg.branch
     )}`;
-    const headers = {
-      Authorization: `Bearer ${cfg.token}`,
+    const makeHeaders = (tok: string) => ({
+      Authorization: `Bearer ${tok}`,
       Accept: 'application/vnd.github.v3+json',
       'User-Agent': 'CineTrack-Sync-Agent',
-    };
+    });
 
     try {
-      const res = await fetch(apiUrl, { headers });
+      let res = await fetch(apiUrl, { headers: makeHeaders(cfg.token) });
+      if (res.status === 401 && typeof this.deps.store.recoverGitHubTokenOn401 === 'function') {
+        const recovered = await this.deps.store.recoverGitHubTokenOn401(cfg.token);
+        if (recovered) {
+          cfg.token = recovered;
+          res = await fetch(apiUrl, { headers: makeHeaders(cfg.token) });
+        }
+      }
       if (res.status === 404) {
         // Yalnızca HTTP 404 dosya mevcut değil anlamına gelir
         return { ok: true, exists: false };
@@ -2464,7 +2075,7 @@ export class GitHubBidirectionalSyncManager {
           const dirUrl = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${parentDir}?ref=${encodeURIComponent(
             cfg.branch
           )}`;
-          const dirRes = await fetch(dirUrl, { headers });
+          const dirRes = await fetch(dirUrl, { headers: makeHeaders(cfg.token) });
           if (dirRes.status === 200) {
             const list = await dirRes.json().catch(() => null);
             if (Array.isArray(list)) {
@@ -2664,13 +2275,26 @@ export class GitHubBidirectionalSyncManager {
       cfg.branch
     )}`;
     try {
-      const res = await fetch(dirUrl, {
+      let res = await fetch(dirUrl, {
         headers: {
           Authorization: `Bearer ${cfg.token}`,
           Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'CineTrack-Sync-Agent',
         },
       });
+      if (res.status === 401 && typeof this.deps.store.recoverGitHubTokenOn401 === 'function') {
+        const recovered = await this.deps.store.recoverGitHubTokenOn401(cfg.token);
+        if (recovered) {
+          cfg.token = recovered;
+          res = await fetch(dirUrl, {
+            headers: {
+              Authorization: `Bearer ${cfg.token}`,
+              Accept: 'application/vnd.github.v3+json',
+              'User-Agent': 'CineTrack-Sync-Agent',
+            },
+          });
+        }
+      }
 
       if (res.status === 404) {
         // Dizin listesi yoksa veya mock ortamında yalnızca tekil dosya uçları tanımlıysa yerel ipuçlarını da yokla
@@ -3280,8 +2904,9 @@ export class GitHubBidirectionalSyncManager {
       const includeCatalog = !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
+      const activeToken = this.deps.getGitHubConfig().token || cfg.token;
       const remoteInspect = await this.inspectRemoteSide(
-        { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
+        { token: activeToken, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
           includeCatalogFiles: includeCatalog,
@@ -3439,8 +3064,9 @@ export class GitHubBidirectionalSyncManager {
       const includeCatalog = !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
+      const activeToken = this.deps.getGitHubConfig().token || cfg.token;
       const remoteInspect = await this.inspectRemoteSide(
-        { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
+        { token: activeToken, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
           includeCatalogFiles: includeCatalog,
@@ -4023,17 +3649,74 @@ export class GitHubBidirectionalSyncManager {
         );
       }
 
-      const localReady = await this.inspectLocalSide();
-      const localProfilePaths = Object.keys(localReady.derivedProfiles);
+      let localReady = await this.inspectLocalSide();
+      let localProfilePaths = Object.keys(localReady.derivedProfiles);
 
+      const activeBeforeToken = this.deps.getGitHubConfig().token || cfg.token;
       const remoteBeforeInspect = await this.inspectRemoteSide(
-        { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
+        { token: activeBeforeToken, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
           includeCatalogFiles: includeCatalog,
           localProfilePaths,
         }
       );
+
+      // Push sırasında GitHub'da mevcut kullanıcı listesi varsa üzerine yazmak yerine kayıpsız birleştir!
+      const pushFilesMerged: string[] = [];
+      const pushConflicts: UserDataConflictItem[] = [];
+      let pushUpdatedDataDocument: DataDocument | undefined;
+      let pushServerRevision: number | undefined;
+      let pushRecordsUpdated = 0;
+      let pushAddedToLocal = 0;
+
+      if (
+        includePersonal &&
+        !remoteBeforeInspect.transportFailed &&
+        remoteBeforeInspect.bundle.userData &&
+        remoteBeforeInspect.bundle.summary.files['data/cinetrack-data.json']?.valid &&
+        localReady.summary.files['data/cinetrack-data.json']?.valid !== false
+      ) {
+        if (localReady.userData) {
+          if (
+            localReady.summary.userDataSemanticHash !==
+            remoteBeforeInspect.bundle.summary.userDataSemanticHash
+          ) {
+            await this.deps.storage.createSafetySnapshotSerialized();
+            const mergedUser = reconcileUserDataDocumentsLossless(
+              localReady.userData,
+              remoteBeforeInspect.bundle.userData
+            );
+            const saveRes = await this.deps.storage.applySyncedDocumentSerialized(
+              mergedUser.mergedDoc
+            );
+            if (saveRes.ok) {
+              pushUpdatedDataDocument = saveRes.document;
+              pushServerRevision = saveRes.document.revision;
+              pushAddedToLocal = mergedUser.addedToLocal;
+              pushRecordsUpdated += mergedUser.updatedItems;
+              pushConflicts.push(...mergedUser.conflicts);
+              if (mergedUser.addedToLocal > 0 || mergedUser.updatedItems > 0) {
+                pushFilesMerged.push('data/cinetrack-data.json');
+              }
+              localReady = await this.inspectLocalSide();
+              localProfilePaths = Object.keys(localReady.derivedProfiles);
+            }
+          }
+        } else {
+          // Yerelde henüz cinetrack-data.json yok ama GitHub'da var: uzak veriyi koru
+          const saveRes = await this.deps.storage.applySyncedDocumentSerialized(
+            remoteBeforeInspect.bundle.userData
+          );
+          if (saveRes.ok) {
+            pushUpdatedDataDocument = saveRes.document;
+            pushServerRevision = saveRes.document.revision;
+            pushAddedToLocal = remoteBeforeInspect.bundle.summary.userUniqueSavedItemsCount;
+            localReady = await this.inspectLocalSide();
+            localProfilePaths = Object.keys(localReady.derivedProfiles);
+          }
+        }
+      }
 
       const verifiedRemoteHashes: Record<string, string | null> = {};
       for (const [repoPath, rawObj] of Object.entries(remoteBeforeInspect.rawRemoteContents)) {
@@ -4069,8 +3752,9 @@ export class GitHubBidirectionalSyncManager {
       }
 
       // Push tamamlandıktan sonra uzak dosyaları YENİDEN oku ve doğrula (Spec Bölüm 2 & 5.6)
+      const activeAfterToken = this.deps.getGitHubConfig().token || activeBeforeToken;
       const remoteAfterInspect = await this.inspectRemoteSide(
-        { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
+        { token: activeAfterToken, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
           includeCatalogFiles: includeCatalog,
@@ -4128,19 +3812,21 @@ export class GitHubBidirectionalSyncManager {
         filesDownloaded: [],
         filesUploaded: syncRes.filesCommitted,
         filesUnchanged: syncRes.filesSkipped,
-        filesMerged: [],
+        filesMerged: pushFilesMerged,
         filesFailed: syncRes.filesFailed,
         filesPending: remoteAfterInspect.transportFailed
           ? []
           : postComparison.differingFiles.map((d) => d.repoPath),
         filesBlockedPublic: syncRes.filesBlockedPublic,
-        recordsAdded: addedMovies + addedTv + addedUser,
-        recordsUpdated: 0,
-        recordsConflicted: 0,
-        conflicts: [],
+        recordsAdded: addedMovies + addedTv + addedUser + pushAddedToLocal,
+        recordsUpdated: pushRecordsUpdated,
+        recordsConflicted: pushConflicts.length,
+        conflicts: pushConflicts,
         warnings,
         errors: pushErrors,
         verifiedEqual,
+        ...(pushUpdatedDataDocument ? { updatedDataDocument: pushUpdatedDataDocument } : {}),
+        ...(pushServerRevision !== undefined ? { serverRevision: pushServerRevision } : {}),
       };
 
       this.deps.onSyncCompleted?.({
@@ -4253,8 +3939,9 @@ export class GitHubBidirectionalSyncManager {
           : !visibility.effectiveIsPublicRepo || allowCatalogOnPublic;
       const localProfilePaths = Object.keys(localBefore.derivedProfiles);
 
+      const activeBeforeToken = this.deps.getGitHubConfig().token || cfg.token;
       const remoteBeforeInspect = await this.inspectRemoteSide(
-        { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
+        { token: activeBeforeToken, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
           includeCatalogFiles: includeCatalog,
@@ -4889,8 +4576,9 @@ export class GitHubBidirectionalSyncManager {
 
       // --- E. İŞLEM SONRASI GERÇEK UZAK DOSYALARI YENİDEN OKU VE DOĞRULA ---
       const localAfter = await this.inspectLocalSide();
+      const activeAfterToken = this.deps.getGitHubConfig().token || activeBeforeToken;
       const remoteAfterInspect = await this.inspectRemoteSide(
-        { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
+        { token: activeAfterToken, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch },
         {
           includePersonalFiles: includePersonal,
           includeCatalogFiles: includeCatalog,

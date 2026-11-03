@@ -15,6 +15,10 @@ import {
   type SavedItem,
 } from '../core/cinetrack-core.ts';
 import {
+  areUserDataDocumentsSemanticallyEqual,
+  reconcileUserDataDocumentsLossless,
+} from '../core/user-data-merge.ts';
+import {
   DEFAULT_MAX_DATA_BYTES,
   DEFAULT_MAX_ITEMS_PER_PROFILE,
   DEFAULT_MAX_PROFILES,
@@ -53,6 +57,8 @@ export interface SaveDataOptions {
   requirePrecondition?: boolean;
   forceOverwrite?: boolean;
   hasInvalidIfMatch?: boolean;
+  mergeStrategy?: 'lossless';
+  foldUnhydratedDefaultProfile?: boolean;
 }
 
 export type SaveDataResult =
@@ -60,6 +66,7 @@ export type SaveDataResult =
       ok: true;
       document: DataDocument;
       totalItems: number;
+      merged?: boolean;
     }
   | {
       ok: false;
@@ -297,7 +304,7 @@ export function createDataStorage(options: StorageOptions) {
     rawPayload: unknown,
     saveOptions: SaveDataOptions
   ):
-    | { ok: true; documentToPersist: DataDocument; incomingItems: number }
+    | { ok: true; documentToPersist: DataDocument; incomingItems: number; merged: boolean }
     | Extract<SaveDataResult, { ok: false }> {
     if (unrecoverableCorruptionError) {
       return {
@@ -353,6 +360,57 @@ export function createDataStorage(options: StorageOptions) {
         message: `Geçersiz If-Match başlığı gönderildi (mevcut rev-${currentRevision}).`,
         currentRevision,
         serverDocument: current,
+      };
+    }
+
+    const useLosslessMerge =
+      saveOptions.mergeStrategy === 'lossless' &&
+      !saveOptions.forceOverwrite &&
+      !saveOptions.confirmBulkDelete;
+
+    if (useLosslessMerge) {
+      let effectiveDoc: DataDocument = normalized;
+      let mergedFlag = false;
+
+      if (Array.isArray(current.profiles) && current.profiles.length > 0) {
+        const isMatchingRevision =
+          expectedRevision !== undefined &&
+          expectedRevision !== null &&
+          Number.isSafeInteger(expectedRevision) &&
+          expectedRevision === currentRevision &&
+          !saveOptions.foldUnhydratedDefaultProfile;
+
+        const mergeOutcome = reconcileUserDataDocumentsLossless(normalized, current, {
+          foldUnhydratedDefaultProfile: saveOptions.foldUnhydratedDefaultProfile,
+          authoritativeScalarSide: isMatchingRevision ? 'local' : 'union',
+        });
+        effectiveDoc = mergeOutcome.mergedDoc;
+        mergedFlag = !areUserDataDocumentsSemanticallyEqual(normalized, effectiveDoc);
+      }
+
+      const nextRevision = currentRevision + 1;
+      const nowIso = new Date().toISOString();
+      const documentToPersist: DataDocument = {
+        ...effectiveDoc,
+        revision: nextRevision,
+        updatedAt: nowIso,
+      };
+
+      const persistedBytes = measureUtf8Bytes(JSON.stringify(documentToPersist, null, 2));
+      if (persistedBytes > maxDataBytes) {
+        return {
+          ok: false,
+          status: 413,
+          code: 'payload_too_large',
+          message: `Gönderilen veri boyutu izin verilen sınırı (${formatMaxDataLimitMb(maxDataBytes)}) aşıyor.`,
+        };
+      }
+
+      return {
+        ok: true,
+        documentToPersist,
+        incomingItems: countTotalItems(documentToPersist),
+        merged: mergedFlag,
       };
     }
 
@@ -425,7 +483,7 @@ export function createDataStorage(options: StorageOptions) {
       };
     }
 
-    return { ok: true, documentToPersist, incomingItems };
+    return { ok: true, documentToPersist, incomingItems, merged: false };
   }
 
   function writeDiskSnapshotSync(doc: DataDocument): void {
@@ -518,6 +576,7 @@ export function createDataStorage(options: StorageOptions) {
       ok: true,
       document: prepared.documentToPersist,
       totalItems: prepared.incomingItems,
+      merged: prepared.merged,
     };
   }
 
@@ -536,6 +595,7 @@ export function createDataStorage(options: StorageOptions) {
       ok: true,
       document: prepared.documentToPersist,
       totalItems: prepared.incomingItems,
+      merged: prepared.merged,
     };
   }
 

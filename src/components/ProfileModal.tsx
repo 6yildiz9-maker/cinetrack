@@ -49,6 +49,8 @@ interface ProfileModalProps {
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
   onImportCsvItems?: (items: SavedItem[]) => void;
+  onBeforeSyncFlush?: () => Promise<void>;
+  onMergeSyncedDocument?: (doc: DataDocument) => void;
   onApplyRestoredDocument?: (doc: DataDocument) => void;
   onMergeDuplicates?: (
     keepId: SavedItem['id'],
@@ -81,6 +83,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onExportBackup,
   onImportBackupFile,
   onImportCsvItems,
+  onBeforeSyncFlush,
+  onMergeSyncedDocument,
   onApplyRestoredDocument,
   onMergeDuplicates,
   isDemo = false,
@@ -525,6 +529,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 onRemoteSyncInfoChange={setRemoteSyncInfo}
                 profiles={profiles}
                 savedItems={savedItems}
+                onBeforeSyncFlush={onBeforeSyncFlush}
+                onMergeSyncedDocument={onMergeSyncedDocument}
                 onApplyRestoredDocument={onApplyRestoredDocument}
               />
 

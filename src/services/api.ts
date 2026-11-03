@@ -37,6 +37,8 @@ export interface PushServerDataResult {
   status: number;
   revision?: number;
   updatedAt?: string;
+  merged?: boolean;
+  document?: DataDocument;
   conflict?: ServerConflictDetail;
   errorMessage?: string;
 }
@@ -375,7 +377,13 @@ export async function fetchServerData(): Promise<DataDocument | null> {
 
 export async function pushServerDataDetailed(
   payload: DataDocument,
-  options: { baseRevision?: number | null; confirmBulkDelete?: boolean; forceOverwrite?: boolean } = {}
+  options: {
+    baseRevision?: number | null;
+    confirmBulkDelete?: boolean;
+    forceOverwrite?: boolean;
+    mergeStrategy?: 'lossless';
+    foldUnhydratedDefaultProfile?: boolean;
+  } = {}
 ): Promise<PushServerDataResult> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -389,6 +397,12 @@ export async function pushServerDataDetailed(
   }
   if (options.confirmBulkDelete) {
     headers['X-CineTrack-Confirm-Drop'] = '1';
+  }
+  if (options.mergeStrategy === 'lossless' && !options.forceOverwrite) {
+    headers['X-CineTrack-Merge'] = '1';
+    if (options.foldUnhydratedDefaultProfile) {
+      headers['X-CineTrack-Unhydrated-Default'] = '1';
+    }
   }
 
   try {
@@ -414,6 +428,8 @@ export async function pushServerDataDetailed(
         status: response.status,
         revision: bodyJson?.revision,
         updatedAt: bodyJson?.updatedAt,
+        merged: Boolean(bodyJson?.merged),
+        document: bodyJson?.document,
       };
     }
 
@@ -753,7 +769,11 @@ export async function pushGitHubSync(): Promise<BidirectionalSyncReport> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    return (await res.json()) as BidirectionalSyncReport;
+    const report = (await res.json()) as BidirectionalSyncReport;
+    if (typeof report?.serverRevision === 'number') {
+      setLastKnownServerRevision(report.serverRevision);
+    }
+    return report;
   } catch (e: any) {
     return buildClientNetworkErrorReport(
       'push',

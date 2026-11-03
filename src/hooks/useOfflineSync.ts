@@ -19,7 +19,10 @@ import {
 } from '../services/storage-idb.ts';
 import { useOnlineStatus } from './useOnlineStatus.ts';
 
-export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, localDoc: DataDocument) => void) {
+export function useOfflineSync(
+  onConflict?: (conflict: ServerConflictDetail, localDoc: DataDocument) => void,
+  onMergedServerDocument?: (serverDoc: DataDocument, sentPayload: DataDocument) => void
+) {
   const isOnline = useOnlineStatus();
   const [pendingSync, setPendingSync] = useState<boolean>(() => hasPendingOfflineSync());
   const [unpersistedWarning, setUnpersistedWarning] = useState<boolean>(
@@ -67,6 +70,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
 
     const res = await pushServerDataDetailed(queued.payload, {
       baseRevision: queued.baseRevision,
+      mergeStrategy: 'lossless',
     });
 
     if (res.ok) {
@@ -74,6 +78,9 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
       clearOfflineSyncSnapshot();
       setPendingSync(false);
       setUnpersistedWarning(hasUnpersistedIdbFallback());
+      if (res.document && res.merged) {
+        onMergedServerDocument?.(res.document, queued.payload);
+      }
       return;
     }
 
@@ -87,7 +94,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
     }
     // Network error (status 0) or transient 5xx: keep queued
     setPendingSync(true);
-  }, [onConflict]);
+  }, [onConflict, onMergedServerDocument]);
 
   useEffect(() => {
     if (isOnline && pendingSync && !conflictPausedRef.current) {
@@ -96,7 +103,14 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
   }, [isOnline, pendingSync, flushQueue]);
 
   const syncDocument = useCallback(
-    async (payload: DataDocument, options: { confirmBulkDelete?: boolean; forceOverwrite?: boolean } = {}) => {
+    async (
+      payload: DataDocument,
+      options: {
+        confirmBulkDelete?: boolean;
+        forceOverwrite?: boolean;
+        foldUnhydratedDefaultProfile?: boolean;
+      } = {}
+    ) => {
       if (options.forceOverwrite) {
         conflictPausedRef.current = false;
       }
@@ -108,10 +122,13 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
         return { ok: false, queued: true, persisted: enq.persisted };
       }
 
+      const useLossless = !options.forceOverwrite && !options.confirmBulkDelete;
       const res = await pushServerDataDetailed(payload, {
         baseRevision: options.forceOverwrite ? null : getLastKnownServerRevision(),
         confirmBulkDelete: options.confirmBulkDelete,
         forceOverwrite: options.forceOverwrite,
+        mergeStrategy: useLossless ? 'lossless' : undefined,
+        foldUnhydratedDefaultProfile: options.foldUnhydratedDefaultProfile,
       });
 
       if (res.ok) {
@@ -119,7 +136,10 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
         clearOfflineSyncSnapshot();
         setPendingSync(false);
         setUnpersistedWarning(hasUnpersistedIdbFallback());
-        return { ok: true, queued: false };
+        if (res.document && res.merged) {
+          onMergedServerDocument?.(res.document, payload);
+        }
+        return { ok: true, queued: false, merged: res.merged, document: res.document };
       }
 
       if (res.status === 0) {
@@ -135,7 +155,7 @@ export function useOfflineSync(onConflict?: (conflict: ServerConflictDetail, loc
 
       return { ok: false, queued: false, conflict: res.conflict };
     },
-    [onConflict]
+    [onConflict, onMergedServerDocument]
   );
 
   return {

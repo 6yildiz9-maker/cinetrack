@@ -21,7 +21,12 @@ import {
   type SecurityOptions,
 } from './security.ts';
 import { createTmdbProxyService, type TmdbProxyServiceOptions } from './tmdb-proxy.ts';
-import { PersistentDataStore, redactSecrets, type TokenSourceKind } from './persistent-store.ts';
+import {
+  PersistentDataStore,
+  redactSecrets,
+  type GitHubTokenCandidateInfo,
+  type TokenSourceKind,
+} from './persistent-store.ts';
 import { CorruptJsonFileError } from './atomic-json.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
 import {
@@ -40,6 +45,12 @@ export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, Tm
   maxDataBytes?: number;
   githubToken?: string;
   githubTokenSource?: TokenSourceKind;
+  githubTokenCandidates?: GitHubTokenCandidateInfo[];
+  getLiveGitHubTokenCandidates?: () => GitHubTokenCandidateInfo[];
+  onAuthFailureRefreshToken?: (
+    failedToken: string
+  ) => Promise<{ token: string; source?: TokenSourceKind } | string | null>;
+  onLocalDataMutated?: (reason: string) => void;
   githubOwner?: string;
   githubRepo?: string;
   githubBranch?: string;
@@ -128,6 +139,35 @@ function isBulkDeleteConfirmed(req: Request): boolean {
   if (headerVal === '1' || headerVal === 'true') return true;
   if (req.body && typeof req.body === 'object' && req.body.confirmBulkDelete === true) return true;
   return false;
+}
+
+function parseMergeWriteOptions(req: Request): {
+  mergeStrategy?: 'lossless';
+  foldUnhydratedDefaultProfile: boolean;
+} {
+  const mergeHeader = String(req.headers['x-cinetrack-merge'] || '').trim().toLowerCase();
+  const isLossless =
+    mergeHeader === '1' ||
+    mergeHeader === 'true' ||
+    mergeHeader === 'lossless' ||
+    Boolean(req.body && typeof req.body === 'object' && req.body.mergeStrategy === 'lossless');
+
+  const foldHeader = String(req.headers['x-cinetrack-unhydrated-default'] || '')
+    .trim()
+    .toLowerCase();
+  const foldUnhydratedDefaultProfile =
+    foldHeader === '1' ||
+    foldHeader === 'true' ||
+    Boolean(
+      req.body &&
+        typeof req.body === 'object' &&
+        req.body.foldUnhydratedDefaultProfile === true
+    );
+
+  return {
+    ...(isLossless ? { mergeStrategy: 'lossless' } : {}),
+    foldUnhydratedDefaultProfile,
+  };
 }
 
 async function computeFileSha256Async(filePath: string): Promise<string> {
@@ -276,6 +316,9 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       maxDataBytes,
       githubToken: options.githubToken,
       githubTokenSource: options.githubTokenSource,
+      githubTokenCandidates: options.githubTokenCandidates,
+      getLiveGitHubTokenCandidates: options.getLiveGitHubTokenCandidates,
+      onAuthFailureRefreshToken: options.onAuthFailureRefreshToken,
       githubOwner: options.githubOwner,
       githubRepo: options.githubRepo,
       githubBranch: options.githubBranch,
@@ -286,6 +329,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       localEnvIsPublicRepo: options.localEnvIsPublicRepo,
     });
   persistentStore.attachDataStorage(storage, maxDataBytes);
+
+  const notifyLocalMutation = (reason: string) => {
+    try {
+      options.onLocalDataMutated?.(reason);
+    } catch {
+      // arka plan bildirim hatası HTTP yanıtını etkilememeli
+    }
+  };
 
   const sec: SecurityOptions = { ...options, ...(options.security || {}) };
   const originGuard = createOriginMiddleware(sec);
@@ -381,12 +432,15 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     try {
       const { expectedRevision, hasInvalidIfMatch, forceOverwrite } = parseWritePrecondition(req);
       const confirmBulkDelete = isBulkDeleteConfirmed(req);
+      const { mergeStrategy, foldUnhydratedDefaultProfile } = parseMergeWriteOptions(req);
       const result = await storage.saveDataSerialized(req.body, {
         expectedRevision,
         hasInvalidIfMatch,
         requirePrecondition: true,
         forceOverwrite,
         confirmBulkDelete,
+        mergeStrategy,
+        foldUnhydratedDefaultProfile,
       });
 
       if (!result.ok) {
@@ -413,7 +467,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         updatedAt: result.document.updatedAt,
         profiles: result.document.profiles.length,
         items: result.totalItems,
+        ...(mergeStrategy === 'lossless'
+          ? {
+              merged: Boolean(result.merged),
+              document: result.document,
+            }
+          : {}),
       });
+      notifyLocalMutation('user-data-save');
     } catch (error: any) {
       if (error instanceof CorruptJsonFileError) {
         res.status(500).json({ status_message: error.message, code: error.code });
@@ -474,6 +535,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       items: countTotalItems(restored),
       document: restored,
     });
+    notifyLocalMutation('backup-restore');
   });
 
   // --- Kalıcı Veri Deposu & Çift Yönlü GitHub Senkronizasyonu ---
@@ -515,6 +577,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     try {
       const result = await persistentStore.saveStockSnapshotUpload({ movies, tv });
       res.json(result);
+      notifyLocalMutation('stock-upload');
     } catch (err: any) {
       res.status(500).json({ ok: false, status_message: err?.message || 'Stok anlık görüntüsü kaydedilemedi.' });
     }
@@ -983,6 +1046,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         items: result.totalItems,
         document: result.document,
       });
+      notifyLocalMutation('hybrid-merge');
     } catch (error: any) {
       console.error('Hibrit birleştirme hatası:', error?.message || error);
       res.status(500).json({

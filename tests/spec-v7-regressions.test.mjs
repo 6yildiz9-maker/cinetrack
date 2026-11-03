@@ -52,6 +52,7 @@ import {
 import {
   initStockEngine,
   executeStockReplenishment,
+  manualPullStock,
   setStockTmdbFetcher,
   resetStockEngineForTests,
 } from '../src/services/stock-engine.ts';
@@ -497,7 +498,11 @@ test('IMP-18 + IMP-19 + BUG-11: ErrorBoundary diagnostic recovery, empty-state g
   // IMP-19: Empty-state guides in MediaGrid, TasteMapView, RelationshipExplorer, and REG-03 in ProfileModal
   const mediaGridSrc = fs.readFileSync(path.join(root, 'src/components/MediaGrid.tsx'), 'utf8');
   assert.ok(mediaGridSrc.includes('Stok havuzunu indir'));
+  assert.ok(mediaGridSrc.includes('Stok İçerik Çek'));
   assert.ok(mediaGridSrc.includes('İzleme listen henüz boş — ilk içeriğini ekle'));
+
+  const stockHealthSrc = fs.readFileSync(path.join(root, 'src/components/StockHealthPanel.tsx'), 'utf8');
+  assert.ok(stockHealthSrc.includes('Stok İçerik Çek'));
 
   const tasteViewSrc = fs.readFileSync(path.join(root, 'src/components/TasteMapView.tsx'), 'utf8');
   assert.ok(tasteViewSrc.includes('Harita hazırlanıyor…'));
@@ -522,12 +527,15 @@ test('IMP-18 + IMP-19 + BUG-11: ErrorBoundary diagnostic recovery, empty-state g
     'src/services/client-depots.ts',
     'src/core/relationship-explorer.ts',
     'src/services/relationship-cache.ts',
+    'src/services/stock-filter.ts',
+    'src/services/stock-batch-fetcher.ts',
     'src/services/stock-engine.ts',
     'src/components/ErrorBoundary.tsx',
     'src/components/RelationshipCanvas.ts',
     'src/components/RelationshipExplorer.tsx',
     'src/components/TasteMapView.tsx',
     'src/components/MediaGrid.tsx',
+    'src/components/StockHealthPanel.tsx',
     'src/components/ProfileModal.tsx',
   ];
 
@@ -546,4 +554,148 @@ test('IMP-18 + IMP-19 + BUG-11: ErrorBoundary diagnostic recovery, empty-state g
       );
     }
   }
+});
+
+test('Manual Stock Pull: works above 250/500 threshold and never re-saves items already in user lists or already in stock', async () => {
+  setupCleanTestEnv();
+  const profileId = 'profile-manual-stock';
+
+  // Seed 300 movies (plus 1 accidental duplicate of 1005) and 500 TV shows (both >= 250 threshold!)
+  const seedMovies = Array.from({ length: 300 }, (_, idx) => ({
+    id: 1001 + idx,
+    media_type: 'movie',
+    title: `Mevcut Stok Film #${1001 + idx}`,
+    release_date: '2022-05-10',
+    vote_average: 7.5,
+    genre_ids: [18, 28],
+  }));
+  seedMovies.push({ ...seedMovies[4] }); // duplicate movie:1005
+
+  const seedTv = Array.from({ length: 500 }, (_, idx) => ({
+    id: 2001 + idx,
+    media_type: 'tv',
+    name: `Mevcut Stok Dizi #${2001 + idx}`,
+    first_air_date: '2022-05-10',
+    vote_average: 8.0,
+    genre_ids: [18],
+  }));
+
+  await saveStockIdb({
+    movies: seedMovies,
+    tv: seedTv,
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  });
+
+  const userItems = [
+    { id: 1401, media_type: 'movie', title: 'İzliyorum Film', status: 'watching' },
+    { id: 1402, media_type: 'movie', title: 'İzlenecek Film', status: 'watchlist' },
+    { id: 1403, media_type: 'movie', title: 'Tamamlanan Film', status: 'completed' },
+    { id: 2601, media_type: 'tv', name: 'İzlenecek Dizi', status: 'watchlist' },
+  ];
+  const preferences = {
+    disliked: ['movie:1404', 'tv:2602'],
+    hidden: ['movie:1405'],
+  };
+
+  await saveUserListsIdb(profileId, userItems);
+  await saveIsolatedProfileIdb({
+    profileId,
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    preferences,
+  });
+
+  setStockTmdbFetcher(async (reqPath) => {
+    if (reqPath.includes('movie')) {
+      return {
+        page: 1,
+        total_pages: 1,
+        results: [
+          // Already in stock -> MUST NOT be re-saved
+          { id: 1001, title: 'Mevcut Stok Film #1001', release_date: '2022-05-10', vote_average: 7.5, genre_ids: [18] },
+          { id: 1002, title: 'Mevcut Stok Film #1002', release_date: '2022-05-10', vote_average: 7.5, genre_ids: [18] },
+          // Already in user lists / disliked / hidden -> MUST NOT enter stock
+          { id: 1401, title: 'İzliyorum Film', release_date: '2023-01-10', vote_average: 8.1, genre_ids: [28] },
+          { id: 1402, title: 'İzlenecek Film', release_date: '2023-02-10', vote_average: 8.2, genre_ids: [12] },
+          { id: 1403, title: 'Tamamlanan Film', release_date: '2023-03-10', vote_average: 8.3, genre_ids: [878] },
+          { id: 1404, title: 'Disliked Film', release_date: '2023-04-10', vote_average: 6.1, genre_ids: [27] },
+          { id: 1405, title: 'Hidden Film', release_date: '2023-05-10', vote_average: 7.0, genre_ids: [53] },
+          // Genuinely new movies (1501 repeated twice across response to test intra-batch dedupe!)
+          { id: 1501, title: 'Yeni Keşif Film A', release_date: '2024-01-15', vote_average: 8.4, genre_ids: [878] },
+          { id: 1501, title: 'Yeni Keşif Film A Kopya', release_date: '2024-01-15', vote_average: 8.4, genre_ids: [878] },
+          { id: 1502, title: 'Yeni Keşif Film B', release_date: '2023-08-20', vote_average: 7.9, genre_ids: [35] },
+          { id: 1503, title: 'Yeni Keşif Film C', release_date: '2021-11-05', vote_average: 8.0, genre_ids: [80] },
+        ],
+      };
+    }
+    return {
+      page: 1,
+      total_pages: 1,
+      results: [
+        // Already in stock -> MUST NOT be re-saved
+        { id: 2001, name: 'Mevcut Stok Dizi #2001', first_air_date: '2022-05-10', vote_average: 8.0, genre_ids: [18] },
+        // Already in user lists / disliked -> MUST NOT enter stock
+        { id: 2601, name: 'İzlenecek Dizi', first_air_date: '2023-02-01', vote_average: 8.5, genre_ids: [18] },
+        { id: 2602, name: 'Disliked Dizi', first_air_date: '2023-03-01', vote_average: 6.5, genre_ids: [10765] },
+        // Genuinely new TV shows (even though TV stock is already at 500!)
+        { id: 2701, name: 'Yeni Dizi X', first_air_date: '2024-02-12', vote_average: 8.6, genre_ids: [10765] },
+        { id: 2702, name: 'Yeni Dizi Y', first_air_date: '2023-09-18', vote_average: 8.1, genre_ids: [9648] },
+      ],
+    };
+  });
+
+  await initStockEngine(profileId, { immediate: false });
+
+  // Autonomous replenishment stays idle when >= 250 (300 unique movies, 500 TV shows)
+  const autoAfter = await executeStockReplenishment(profileId, { userListItems: userItems, preferences });
+  assert.equal(autoAfter.movies.length, 300, 'Duplicate 1005 cleaned, autonomous does not pull when >= 250');
+  assert.equal(autoAfter.tv.length, 500);
+
+  // Manual pull MUST fetch new items even at 300 movies & 500 TV shows, skipping listed & existing stock!
+  const pullRes = await manualPullStock(profileId, {
+    userListItems: userItems,
+    preferences,
+    batchSizePerType: 10,
+  });
+
+  assert.equal(pullRes.ok, true);
+  assert.equal(pullRes.addedMovies, 3, 'Exactly 3 genuinely new movies (1501, 1502, 1503) must be added');
+  assert.equal(pullRes.addedTv, 2, 'Exactly 2 genuinely new TV shows (2701, 2702) must be added');
+  assert.ok(pullRes.skippedListedCount > 0, 'Listed/disliked/hidden candidates must be counted as skipped');
+  assert.ok(pullRes.skippedDuplicateStockCount > 0, 'Existing stock candidates must be counted as skipped');
+
+  const persisted = await loadStockIdb();
+  const movieIds = persisted.movies.map((m) => Number(m.id));
+  const tvIds = persisted.tv.map((t) => Number(t.id));
+
+  assert.equal(movieIds.length, 303);
+  assert.equal(tvIds.length, 502);
+  assert.equal(new Set(movieIds).size, movieIds.length, 'Zero duplicate movie IDs in ct:stock');
+  assert.equal(new Set(tvIds).size, tvIds.length, 'Zero duplicate TV IDs in ct:stock');
+
+  // Listed / disliked / hidden items MUST NOT be in stock
+  for (const forbiddenMovieId of [1401, 1402, 1403, 1404, 1405]) {
+    assert.equal(movieIds.includes(forbiddenMovieId), false, `Forbidden movie ${forbiddenMovieId} must not enter stock`);
+  }
+  for (const forbiddenTvId of [2601, 2602]) {
+    assert.equal(tvIds.includes(forbiddenTvId), false, `Forbidden TV ${forbiddenTvId} must not enter stock`);
+  }
+
+  // Genuinely new items MUST be in stock
+  for (const expectedMovieId of [1501, 1502, 1503]) {
+    assert.equal(movieIds.includes(expectedMovieId), true);
+  }
+  for (const expectedTvId of [2701, 2702]) {
+    assert.equal(tvIds.includes(expectedTvId), true);
+  }
+
+  // Second manual pull against the exact same catalog adds 0 duplicates
+  const secondPull = await manualPullStock(profileId, {
+    userListItems: userItems,
+    preferences,
+    batchSizePerType: 10,
+  });
+  assert.equal(secondPull.addedMovies, 0);
+  assert.equal(secondPull.addedTv, 0);
+  assert.equal(secondPull.moviesCount, 303);
+  assert.equal(secondPull.tvCount, 502);
 });

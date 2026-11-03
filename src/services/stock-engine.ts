@@ -20,38 +20,35 @@ import {
   type SavedItem,
 } from '../core/cinetrack-core.ts';
 import type { TmdbCastMember, TmdbItem } from '../types/tmdb.ts';
-import { isWithinReleaseWindow } from '../utils/release-window.ts';
-import { getItemEncodingSync } from './encoding-service.ts';
-import { cosineSimilarity } from '../core/encoding.ts';
+import {
+  buildStockExclusionSets,
+  dedupeAndPurgeStockList,
+  extractTopThreeCastIds,
+  isCandidateEligibleForStock,
+  normalizeRawStockId,
+  resolveItemMediaType,
+  type StockCandidateExclusionSets,
+} from './stock-filter.ts';
+import {
+  fetchStockCandidateBatch,
+  normalizeStockCandidate,
+  type CandidateBatchSkipStats,
+  type StockTmdbFetcher,
+  type TmdbPagePayload,
+} from './stock-batch-fetcher.ts';
+
+export {
+  buildStockExclusionSets,
+  dedupeAndPurgeStockList,
+  isCandidateEligibleForStock,
+  type StockCandidateExclusionSets,
+  type StockTmdbFetcher,
+  type TmdbPagePayload,
+};
 
 export const STOCK_TARGET_COUNT = 500;
 export const STOCK_REPLENISH_THRESHOLD = 250;
-
-export interface TmdbPagePayload {
-  page?: number;
-  total_pages?: number;
-  results?: TmdbItem[];
-  id?: number | string;
-  title?: string;
-  name?: string;
-  release_date?: string;
-  first_air_date?: string;
-  vote_average?: number;
-  vote_count?: number;
-  popularity?: number;
-  genre_ids?: number[];
-  poster_path?: string | null;
-  backdrop_path?: string | null;
-  overview?: string;
-  credits?: { cast?: TmdbCastMember[] };
-  cast?: TmdbCastMember[];
-  topCastIds?: number[];
-}
-
-export type StockTmdbFetcher = (
-  path: string,
-  params?: Record<string, string>
-) => Promise<TmdbPagePayload>;
+export const MANUAL_STOCK_PULL_BATCH = 40;
 
 let activeStockFetcher: StockTmdbFetcher = (path, params) =>
   fetchTmdb(path, params) as Promise<TmdbPagePayload>;
@@ -79,137 +76,15 @@ let lastReplenishmentError: string | null = null;
 let replenishmentTimeout: ReturnType<typeof setTimeout> | null = null;
 const stockListeners = new Set<(state: StockState) => void>();
 
-function extractTopThreeCastIds(item: TmdbItem): number[] | undefined {
-  if (Array.isArray(item.topCastIds) && item.topCastIds.length > 0) {
-    const clean = item.topCastIds
-      .map((id) => Number(id))
-      .filter((id) => Number.isInteger(id) && id > 0)
-      .slice(0, 3);
-    if (clean.length > 0) return clean;
-  }
-  const rawCast = Array.isArray(item.credits?.cast)
-    ? item.credits.cast
-    : Array.isArray(item.cast)
-      ? item.cast
-      : [];
-  if (rawCast.length === 0) return undefined;
-  const sorted = [...rawCast]
-    .filter((c) => c && Number.isInteger(Number(c.id)) && Number(c.id) > 0)
-    .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
-  const ids = sorted.slice(0, 3).map((c) => Number(c.id));
-  return ids.length > 0 ? ids : undefined;
-}
-
-function resolveItemMediaType(item: { media_type?: string; name?: string; title?: string }): 'movie' | 'tv' {
-  return item.media_type === 'tv' || (!item.media_type && Boolean(item.name) && !item.title)
-    ? 'tv'
-    : 'movie';
-}
-
-export interface StockCandidateExclusionSets {
-  listedKeys: ReadonlySet<string>;
-  dislikedKeys: ReadonlySet<string>;
-  hiddenKeys: ReadonlySet<string>;
-  existingStockKeys?: ReadonlySet<string>;
-}
-
-export function buildStockExclusionSets(
-  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
-  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null,
-  existingStockKeys?: ReadonlySet<string>
-): StockCandidateExclusionSets {
-  const listedKeys = new Set<string>();
-  for (const it of userItems) {
-    if (!it || it.id == null) continue;
-    const mType = resolveItemMediaType(it);
-    const rawId = String(it.id).replace(/^(movie|tv)[:-]/, '');
-    listedKeys.add(`${mType}:${rawId}`);
-    listedKeys.add(`${mType}-${rawId}`);
-    listedKeys.add(rawId);
-    listedKeys.add(String(it.id));
-  }
-  const dislikedKeys = new Set<string>();
-  for (const d of preferences?.disliked || []) {
-    if (!d) continue;
-    dislikedKeys.add(d);
-    const raw = String(d).replace(/^(movie|tv)[:-]/, '');
-    dislikedKeys.add(raw);
-    dislikedKeys.add(`movie:${raw}`);
-    dislikedKeys.add(`tv:${raw}`);
-  }
-  const hiddenKeys = new Set<string>();
-  for (const h of preferences?.hidden || []) {
-    if (!h) continue;
-    hiddenKeys.add(h);
-    const raw = String(h).replace(/^(movie|tv)[:-]/, '');
-    hiddenKeys.add(raw);
-    hiddenKeys.add(`movie:${raw}`);
-    hiddenKeys.add(`tv:${raw}`);
-  }
-  return {
-    listedKeys,
-    dislikedKeys,
-    hiddenKeys,
-    existingStockKeys,
-  };
-}
-
-/**
- * Bir aday içeriğin ct:stock havuzuna girip giremeyeceğini kontrol eder (Sorun 1 & TP-018):
- * 1. Kullanıcının listelerinde (watching, watchlist, completed) varsa -> false
- * 2. İlgilenmiyorum (preferences.disliked — negatif sinyal, TP-018) listesindeyse -> false
- * 3. Gizlenenler (preferences.hidden — nötr dışlama, TP-018) listesindeyse -> false
- * 4. Zaten stoktaysa (çift kayıt önleme) -> false
- */
-export function isCandidateEligibleForStock(
-  candidate: { id?: number | string; media_type?: string; name?: string; title?: string } | null | undefined,
-  userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
-  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null,
-  existingStockKeys?: ReadonlySet<string>,
-  precomputedSets?: StockCandidateExclusionSets
-): boolean {
-  if (!candidate || candidate.id == null) return false;
-  const mediaType = resolveItemMediaType(candidate);
-  const rawId = String(candidate.id).replace(/^(movie|tv)[:-]/, '');
-  const contentId = `${mediaType}:${rawId}`;
-
-  if (precomputedSets) {
-    if (precomputedSets.listedKeys.has(contentId) || precomputedSets.listedKeys.has(rawId)) return false;
-    if (precomputedSets.dislikedKeys.has(contentId) || precomputedSets.dislikedKeys.has(rawId)) return false;
-    if (precomputedSets.hiddenKeys.has(contentId) || precomputedSets.hiddenKeys.has(rawId)) return false;
-    if (precomputedSets.existingStockKeys?.has(contentId) || precomputedSets.existingStockKeys?.has(rawId)) return false;
-    if (existingStockKeys?.has(contentId) || existingStockKeys?.has(rawId)) return false;
-    return true;
-  }
-
-  // 1. Kullanıcının listelerinde (watching, watchlist, completed) var mı?
-  const isListed = userItems.some((it) => {
-    if (!it || it.id == null) return false;
-    const itRaw = String(it.id).replace(/^(movie|tv)[:-]/, '');
-    return itRaw === rawId || `${resolveItemMediaType(it)}:${itRaw}` === contentId;
-  });
-  if (isListed) return false;
-
-  // 2. İlgilenmiyorum (disliked — negatif sinyal, TP-018) listesinde mi?
-  if (preferences?.disliked?.some((d) => d === contentId || String(d).replace(/^(movie|tv)[:-]/, '') === rawId)) return false;
-
-  // 3. Gizlenenler (hidden — nötr dışlama, TP-018) listesinde mi?
-  if (preferences?.hidden?.some((h) => h === contentId || String(h).replace(/^(movie|tv)[:-]/, '') === rawId)) return false;
-
-  // 4. Zaten stokta mı? (Çift kayıt önleme)
-  if (existingStockKeys?.has(contentId) || existingStockKeys?.has(rawId)) return false;
-
-  return true;
-}
+let activeReplenishmentPromise: Promise<StockDepot> | null = null;
+let manualPullInFlightPromise: Promise<ManualStockPullResult> | null = null;
 
 export function getStockMovies(
   userItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }> = [],
   preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null
 ): TmdbItem[] {
   const sets = buildStockExclusionSets(userItems, preferences);
-  return activeStock.movies.filter((m) =>
-    isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userItems, preferences, undefined, sets)
-  );
+  return dedupeAndPurgeStockList(activeStock.movies, 'movie', userItems, preferences, sets);
 }
 
 export function getStockSeries(
@@ -217,9 +92,7 @@ export function getStockSeries(
   preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null
 ): TmdbItem[] {
   const sets = buildStockExclusionSets(userItems, preferences);
-  return activeStock.tv.filter((t) =>
-    isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userItems, preferences, undefined, sets)
-  );
+  return dedupeAndPurgeStockList(activeStock.tv, 'tv', userItems, preferences, sets);
 }
 
 export const stockEngine = {
@@ -279,6 +152,8 @@ export function resetStockEngineForTests(): void {
   activeStock = { movies: [], tv: [], updatedAt: '', cursors: {} };
   isInitialized = false;
   isReplenishingActive = false;
+  activeReplenishmentPromise = null;
+  manualPullInFlightPromise = null;
   lastReplenishmentError = null;
   setStockTmdbFetcher(null);
   notifyStockListeners();
@@ -585,12 +460,8 @@ export async function syncStockWithUserExclusions(
   const prevMoviesLen = activeStock.movies.length;
   const prevTvLen = activeStock.tv.length;
 
-  activeStock.movies = activeStock.movies.filter((m) =>
-    isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userItems, preferences, undefined, sets)
-  );
-  activeStock.tv = activeStock.tv.filter((t) =>
-    isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userItems, preferences, undefined, sets)
-  );
+  activeStock.movies = dedupeAndPurgeStockList(activeStock.movies, 'movie', userItems, preferences, sets);
+  activeStock.tv = dedupeAndPurgeStockList(activeStock.tv, 'tv', userItems, preferences, sets);
 
   const purgedMovies = prevMoviesLen - activeStock.movies.length;
   const purgedTv = prevTvLen - activeStock.tv.length;
@@ -654,10 +525,146 @@ export interface ReplenishmentOptions {
   preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null;
 }
 
+export interface ManualStockPullOptions extends ReplenishmentOptions {
+  batchSizePerType?: number;
+  targetMediaType?: 'all' | 'movie' | 'tv';
+}
+
+export interface ManualStockPullResult {
+  ok: boolean;
+  addedMovies: number;
+  addedTv: number;
+  skippedListedCount: number;
+  skippedDuplicateStockCount: number;
+  moviesCount: number;
+  tvCount: number;
+  error?: string | null;
+}
+
+async function prepareStockExecutionContext(profileId: string, options: ReplenishmentOptions) {
+  if (!isInitialized) {
+    const loaded = await loadStockIdb();
+    activeStock = {
+      movies: Array.isArray(loaded.movies) ? loaded.movies : [],
+      tv: Array.isArray(loaded.tv) ? loaded.tv : [],
+      updatedAt: loaded.updatedAt || '',
+      cursors: loaded.cursors || {},
+    };
+    isInitialized = true;
+  }
+
+  const nowMs = options.nowMs ?? Date.now();
+  const cooldownMs = options.recycleCooldownMs ?? SURFACED_RECYCLE_COOLDOWN_MS;
+
+  const [loadedUserListItems, surfacedPartition, loadedIsolatedProfile, activeSkipKeys] =
+    await Promise.all([
+      options.userListItems !== undefined
+        ? Promise.resolve(options.userListItems)
+        : loadUserListsIdb(profileId),
+      getSurfacedPartitionForReplenishment(cooldownMs, nowMs),
+      options.preferences !== undefined
+        ? Promise.resolve({ preferences: options.preferences })
+        : loadIsolatedProfileIdb(profileId),
+      getActiveSkippedKeys(profileId, undefined, nowMs),
+    ]);
+
+  const userListItems =
+    options.userListItems !== undefined ? options.userListItems : loadedUserListItems;
+  const userPrefs =
+    options.preferences !== undefined ? options.preferences : loadedIsolatedProfile?.preferences;
+  const eligibilitySets = buildStockExclusionSets(userListItems, userPrefs);
+
+  activeStock.movies = dedupeAndPurgeStockList(
+    activeStock.movies,
+    'movie',
+    userListItems,
+    userPrefs,
+    eligibilitySets,
+    activeSkipKeys
+  );
+  activeStock.tv = dedupeAndPurgeStockList(
+    activeStock.tv,
+    'tv',
+    userListItems,
+    userPrefs,
+    eligibilitySets,
+    activeSkipKeys
+  );
+
+  const userExclusionKeys = new Set<string>([
+    ...eligibilitySets.listedKeys,
+    ...eligibilitySets.dislikedKeys,
+    ...eligibilitySets.hiddenKeys,
+    ...activeSkipKeys,
+  ]);
+  const existingStockKeys = new Set<string>();
+  for (const m of activeStock.movies) existingStockKeys.add(`movie:${normalizeRawStockId(m.id)}`);
+  for (const t of activeStock.tv) existingStockKeys.add(`tv:${normalizeRawStockId(t.id)}`);
+
+  const stockPurgeExclusions = new Set<string>([...userExclusionKeys, ...existingStockKeys]);
+  const hardExclusions = new Set<string>([
+    ...stockPurgeExclusions,
+    ...surfacedPartition.activeCooldownKeys,
+  ]);
+  const allSurfacedExclusions = new Set<string>([
+    ...hardExclusions,
+    ...surfacedPartition.recyclableExpiredKeys,
+  ]);
+
+  return {
+    userListItems,
+    userPrefs,
+    eligibilitySets,
+    activeSkipKeys,
+    surfacedPartition,
+    userExclusionKeys,
+    existingStockKeys,
+    stockPurgeExclusions,
+    hardExclusions,
+    allSurfacedExclusions,
+  };
+}
+
+async function finalizeStockMutation(
+  cursors: Record<string, number>,
+  userListItems: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }>,
+  userPrefs: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null | undefined,
+  eligibilitySets: StockCandidateExclusionSets,
+  activeSkipKeys: ReadonlySet<string>,
+  newlyIndexedCandidates: TmdbItem[]
+): Promise<void> {
+  activeStock.movies = dedupeAndPurgeStockList(
+    activeStock.movies,
+    'movie',
+    userListItems,
+    userPrefs,
+    eligibilitySets,
+    activeSkipKeys
+  );
+  activeStock.tv = dedupeAndPurgeStockList(
+    activeStock.tv,
+    'tv',
+    userListItems,
+    userPrefs,
+    eligibilitySets,
+    activeSkipKeys
+  );
+  activeStock.cursors = cursors;
+  activeStock.updatedAt = new Date().toISOString();
+
+  const saveRes = await saveStockIdb(activeStock);
+  if (!saveRes.persisted && saveRes.error) {
+    lastReplenishmentError = `Stok IndexedDB kaydı tamamlanamadı: ${saveRes.error}`;
+    console.error('[StockEngine] saveStockIdb hatası:', saveRes.error);
+  }
+  if (newlyIndexedCandidates.length > 0) {
+    void indexItemsForSeriesBatch(newlyIndexedCandidates);
+  }
+}
+
 /**
  * Autonomous stock engine: fills movie and TV depot back to 500 items each whenever
  * either depot is below 250 (or during initial cold fill).
- * Excludes user-lists, disliked/hidden, active ct:skip-log, active-cooldown ct:surfaced, and current stock IDs.
  */
 export async function executeStockReplenishment(
   profileId: string,
@@ -669,321 +676,274 @@ export async function executeStockReplenishment(
     replenishmentTimeout = null;
   }
 
-  isReplenishingActive = true;
-  lastReplenishmentError = null;
-  notifyStockListeners();
+  const runPromise = (async (): Promise<StockDepot> => {
+    isReplenishingActive = true;
+    lastReplenishmentError = null;
+    notifyStockListeners();
 
-  try {
-    if (!isInitialized) {
-      const loaded = await loadStockIdb();
-      activeStock = {
-        movies: Array.isArray(loaded.movies) ? loaded.movies : [],
-        tv: Array.isArray(loaded.tv) ? loaded.tv : [],
-        updatedAt: loaded.updatedAt || '',
-        cursors: loaded.cursors || {},
-      };
-      isInitialized = true;
-    }
+    try {
+      const ctx = await prepareStockExecutionContext(profileId, options);
+      const cursors: Record<string, number> = { ...(activeStock.cursors || {}) };
+      const newlyIndexedCandidates: TmdbItem[] = [];
+      const recycledKeysUsed: string[] = [];
 
-    const nowMs = options.nowMs ?? Date.now();
-    const cooldownMs = options.recycleCooldownMs ?? SURFACED_RECYCLE_COOLDOWN_MS;
+      const refillMediaType = async (mediaType: 'movie' | 'tv', currentList: TmdbItem[]) => {
+        if (currentList.length >= STOCK_REPLENISH_THRESHOLD) return;
+        const shortage = Math.max(0, STOCK_TARGET_COUNT - currentList.length);
+        if (shortage <= 0) return;
 
-    const [loadedUserListItems, surfacedPartition, loadedIsolatedProfile, activeSkipKeys] = await Promise.all([
-      options.userListItems && options.userListItems.length > 0
-        ? Promise.resolve(options.userListItems)
-        : loadUserListsIdb(profileId),
-      getSurfacedPartitionForReplenishment(cooldownMs, nowMs),
-      options.preferences
-        ? Promise.resolve({ preferences: options.preferences })
-        : loadIsolatedProfileIdb(profileId),
-      getActiveSkippedKeys(profileId, undefined, nowMs),
-    ]);
+        const recyclableQueue = ctx.surfacedPartition.recyclableExpiredKeys.filter(
+          (k) => k.startsWith(`${mediaType}:`) && !ctx.hardExclusions.has(k)
+        );
+        const seenRecyclableMap = new Map<string, TmdbItem>();
 
-    const userListItems = options.userListItems && options.userListItems.length > 0 ? options.userListItems : loadedUserListItems;
-    const userPrefs = options.preferences || loadedIsolatedProfile?.preferences;
-    const eligibilitySets = buildStockExclusionSets(userListItems, userPrefs);
-    const stockPurgeExclusions = new Set<string>([
-      ...eligibilitySets.listedKeys,
-      ...eligibilitySets.dislikedKeys,
-      ...eligibilitySets.hiddenKeys,
-      ...activeSkipKeys,
-    ]);
-
-    // Purge stock items if saved/disliked/hidden/skipped
-    activeStock.movies = activeStock.movies.filter(
-      (m) =>
-        isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userListItems, userPrefs, undefined, eligibilitySets) &&
-        !activeSkipKeys.has(`movie:${m.id}`)
-    );
-    activeStock.tv = activeStock.tv.filter(
-      (t) =>
-        isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userListItems, userPrefs, undefined, eligibilitySets) &&
-        !activeSkipKeys.has(`tv:${t.id}`)
-    );
-
-    // Hard exclusions for Pass 1 & Pass 2 incoming candidates (includes active 7d surfaced cooldown)
-    const hardExclusions = new Set<string>([
-      ...stockPurgeExclusions,
-      ...surfacedPartition.activeCooldownKeys,
-    ]);
-
-    const allSurfacedExclusions = new Set<string>([
-      ...hardExclusions,
-      ...surfacedPartition.recyclableExpiredKeys,
-    ]);
-
-    for (const m of activeStock.movies) {
-      stockPurgeExclusions.add(`movie:${m.id}`);
-      hardExclusions.add(`movie:${m.id}`);
-      allSurfacedExclusions.add(`movie:${m.id}`);
-    }
-    for (const t of activeStock.tv) {
-      stockPurgeExclusions.add(`tv:${t.id}`);
-      hardExclusions.add(`tv:${t.id}`);
-      allSurfacedExclusions.add(`tv:${t.id}`);
-    }
-
-    const cursors: Record<string, number> = { ...(activeStock.cursors || {}) };
-    const newlyIndexedCandidates: TmdbItem[] = [];
-    const recycledKeysUsed: string[] = [];
-
-    const refillMediaType = async (mediaType: 'movie' | 'tv', currentList: TmdbItem[]) => {
-      if (currentList.length >= STOCK_REPLENISH_THRESHOLD) return;
-      const shortage = Math.max(0, STOCK_TARGET_COUNT - currentList.length);
-      if (shortage <= 0) return;
-
-      const recyclableQueue = surfacedPartition.recyclableExpiredKeys.filter(
-        (k) => k.startsWith(`${mediaType}:`) && !hardExclusions.has(k)
-      );
-      const seenRecyclableMap = new Map<string, TmdbItem>();
-
-      // Pass 1: Strictly fresh items (never surfaced)
-      const freshItems = await fetchCandidateBatch(
-        mediaType,
-        shortage,
-        allSurfacedExclusions,
-        cursors,
-        recyclableQueue.length > 0 ? new Set(recyclableQueue) : undefined,
-        seenRecyclableMap
-      );
-      currentList.push(...freshItems);
-      for (const item of freshItems) {
-        const key = `${mediaType}:${item.id}`;
-        stockPurgeExclusions.add(key);
-        hardExclusions.add(key);
-      }
-      newlyIndexedCandidates.push(...freshItems.slice(0, 60));
-
-      // Pass 2 (Halka-dönüşü / Recycle): Only if fresh sources ran out before reaching target!
-      const remainingShortage = Math.max(0, STOCK_TARGET_COUNT - currentList.length);
-      if (remainingShortage > 0 && recyclableQueue.length > 0) {
-        const toRecycleKeys = recyclableQueue
-          .filter((k) => !hardExclusions.has(k))
-          .slice(0, remainingShortage);
-
-        for (const recycleKey of toRecycleKeys) {
-          if (currentList.length >= STOCK_TARGET_COUNT) break;
-          let candidate = seenRecyclableMap.get(recycleKey);
-          if (!candidate) {
-            const rawId = recycleKey.slice(mediaType.length + 1);
-            try {
-              const detail = await activeStockFetcher(`/${mediaType}/${rawId}`);
-              if (detail && detail.id != null) {
-                candidate = normalizeStockCandidate(detail as TmdbItem, mediaType);
-              }
-            } catch {
-              candidate = undefined;
-            }
-          }
-          if (candidate) {
-            currentList.push(candidate);
-            stockPurgeExclusions.add(recycleKey);
-            hardExclusions.add(recycleKey);
-            recycledKeysUsed.push(recycleKey);
-          }
-        }
-      }
-
-      // Pass 3 (REG-01 Constrained / Demo Catalog Fallback):
-      // If the depot is still completely empty (0 items) because all items in a small/demo catalog
-      // were recently surfaced on Trending, populate non-listed, non-disliked items so Stok is never 0/0.
-      if (currentList.length === 0) {
-        const fallbackCursors: Record<string, number> = {};
-        const fallbackItems = await fetchCandidateBatch(
+        const freshItems = await fetchStockCandidateBatch(
+          activeStockFetcher,
           mediaType,
           shortage,
-          stockPurgeExclusions,
-          fallbackCursors
+          ctx.allSurfacedExclusions,
+          cursors,
+          recyclableQueue.length > 0 ? new Set(recyclableQueue) : undefined,
+          seenRecyclableMap
         );
-        if (fallbackItems.length > 0) {
-          currentList.push(...fallbackItems);
-          for (const item of fallbackItems) {
-            stockPurgeExclusions.add(`${mediaType}:${item.id}`);
-          }
-          newlyIndexedCandidates.push(...fallbackItems.slice(0, 60));
+        currentList.push(...freshItems);
+        for (const item of freshItems) {
+          const key = `${mediaType}:${normalizeRawStockId(item.id)}`;
+          ctx.existingStockKeys.add(key);
+          ctx.stockPurgeExclusions.add(key);
+          ctx.hardExclusions.add(key);
         }
+        newlyIndexedCandidates.push(...freshItems.slice(0, 60));
+
+        const remainingShortage = Math.max(0, STOCK_TARGET_COUNT - currentList.length);
+        if (remainingShortage > 0 && recyclableQueue.length > 0) {
+          const toRecycleKeys = recyclableQueue
+            .filter((k) => !ctx.hardExclusions.has(k))
+            .slice(0, remainingShortage);
+
+          for (const recycleKey of toRecycleKeys) {
+            if (currentList.length >= STOCK_TARGET_COUNT) break;
+            let candidate = seenRecyclableMap.get(recycleKey);
+            if (!candidate) {
+              const rawId = recycleKey.slice(mediaType.length + 1);
+              try {
+                const detail = await activeStockFetcher(`/${mediaType}/${rawId}`);
+                if (detail && detail.id != null) {
+                  candidate = normalizeStockCandidate(detail as TmdbItem, mediaType);
+                }
+              } catch {
+                candidate = undefined;
+              }
+            }
+            if (candidate) {
+              currentList.push(candidate);
+              ctx.existingStockKeys.add(recycleKey);
+              ctx.stockPurgeExclusions.add(recycleKey);
+              ctx.hardExclusions.add(recycleKey);
+              recycledKeysUsed.push(recycleKey);
+            }
+          }
+        }
+
+        if (currentList.length === 0) {
+          const fallbackCursors: Record<string, number> = {};
+          const fallbackItems = await fetchStockCandidateBatch(
+            activeStockFetcher,
+            mediaType,
+            shortage,
+            ctx.stockPurgeExclusions,
+            fallbackCursors
+          );
+          if (fallbackItems.length > 0) {
+            currentList.push(...fallbackItems);
+            for (const item of fallbackItems) {
+              const key = `${mediaType}:${normalizeRawStockId(item.id)}`;
+              ctx.existingStockKeys.add(key);
+              ctx.stockPurgeExclusions.add(key);
+            }
+            newlyIndexedCandidates.push(...fallbackItems.slice(0, 60));
+          }
+        }
+      };
+
+      await refillMediaType('movie', activeStock.movies);
+      await refillMediaType('tv', activeStock.tv);
+
+      if (recycledKeysUsed.length > 0) {
+        await markSurfacedKeysRecycled(recycledKeysUsed);
       }
-    };
 
-    await refillMediaType('movie', activeStock.movies);
-    await refillMediaType('tv', activeStock.tv);
-
-    // Kayıt aşamasında kesin arındırma: listelerdeki yapımlar asla stoğu işgal edemez
-    activeStock.movies = activeStock.movies.filter((m) =>
-      isCandidateEligibleForStock({ ...m, media_type: 'movie' }, userListItems, userPrefs, undefined, eligibilitySets)
-    );
-    activeStock.tv = activeStock.tv.filter((t) =>
-      isCandidateEligibleForStock({ ...t, media_type: 'tv' }, userListItems, userPrefs, undefined, eligibilitySets)
-    );
-
-    if (recycledKeysUsed.length > 0) {
-      await markSurfacedKeysRecycled(recycledKeysUsed);
+      await finalizeStockMutation(
+        cursors,
+        ctx.userListItems,
+        ctx.userPrefs,
+        ctx.eligibilitySets,
+        ctx.activeSkipKeys,
+        newlyIndexedCandidates
+      );
+    } catch (err) {
+      lastReplenishmentError =
+        err instanceof Error ? err.message : 'Stok doldurma sırasında beklenmeyen bir hata oluştu.';
+      console.error('[StockEngine] Stok doldurma hatası:', err);
+    } finally {
+      isReplenishingActive = false;
+      activeReplenishmentPromise = null;
+      notifyStockListeners();
     }
 
-    activeStock.cursors = cursors;
-    activeStock.updatedAt = new Date().toISOString();
-    const saveRes = await saveStockIdb(activeStock);
-    if (!saveRes.persisted && saveRes.error) {
-      lastReplenishmentError = `Stok IndexedDB kaydı tamamlanamadı: ${saveRes.error}`;
-      console.error('[StockEngine] saveStockIdb hatası:', saveRes.error);
-    }
+    return activeStock;
+  })();
 
-    if (newlyIndexedCandidates.length > 0) {
-      void indexItemsForSeriesBatch(newlyIndexedCandidates);
-    }
-  } catch (err) {
-    lastReplenishmentError =
-      err instanceof Error ? err.message : 'Stok doldurma sırasında beklenmeyen bir hata oluştu.';
-    console.error('[StockEngine] Stok doldurma hatası:', err);
-  } finally {
-    isReplenishingActive = false;
-    notifyStockListeners();
+  activeReplenishmentPromise = runPromise;
+  return runPromise;
+}
+
+/**
+ * Manuel Stok Çekme (Kullanıcı tetiklemeli):
+ * Mevcut stok sayısı >= 250 veya >= 500 olsa bile TMDB'den sıradaki sayfalardan yeni adaylar çeker.
+ * Çekilen içerikler kullanıcının listelerinde (watching, watchlist, completed), disliked/hidden
+ * kayıtlarında VEYA halihazırda ct:stock havuzunda varsa kesinlikle tekrar stok listesine kaydetmez.
+ */
+export async function manualPullStock(
+  profileId: string,
+  options: ManualStockPullOptions = {}
+): Promise<ManualStockPullResult> {
+  if (manualPullInFlightPromise) {
+    return manualPullInFlightPromise;
   }
 
-  return activeStock;
-}
-
-function normalizeStockCandidate(raw: TmdbItem, mediaType: 'movie' | 'tv'): TmdbItem {
-  const topCastIds = extractTopThreeCastIds(raw);
-  return {
-    ...raw,
-    media_type: mediaType,
-    ...(topCastIds ? { topCastIds } : {}),
-  };
-}
-
-function isStockCandidateDateAcceptable(item: TmdbItem): boolean {
-  const rawDate = item.release_date || item.first_air_date;
-  if (typeof rawDate === 'string' && rawDate.trim()) return isWithinReleaseWindow(rawDate);
-  return item.status !== 'Planned' && item.status !== 'Rumored';
-}
-
-async function fetchCandidateBatch(
-  mediaType: 'movie' | 'tv',
-  targetNeeded: number,
-  excludedKeys: Set<string>,
-  cursors: Record<string, number>,
-  recyclableKeySet?: Set<string>,
-  seenRecyclableOut?: Map<string, TmdbItem>
-): Promise<TmdbItem[]> {
-  const result: TmdbItem[] = [];
-  const overflowClusterBuffer: TmdbItem[] = [];
-  const recentVectors: number[][] = [];
-  const MAX_RECENT_VECTORS = 25;
-  const CLUSTER_SIMILARITY_THRESHOLD = 0.88;
-
-  const endpoints: Array<{ cursorKey: string; path: string; params?: Record<string, string>; maxPages: number }> = [
-    { cursorKey: `${mediaType}:popular`, path: `/${mediaType}/popular`, maxPages: 20 },
-    { cursorKey: `${mediaType}:top_rated`, path: `/${mediaType}/top_rated`, maxPages: 20 },
-    { cursorKey: `${mediaType}:discover_pop`, path: `/discover/${mediaType}`, params: { sort_by: 'popularity.desc', 'vote_count.gte': '80' }, maxPages: 25 },
-    { cursorKey: `${mediaType}:discover_vote`, path: `/discover/${mediaType}`, params: { sort_by: 'vote_average.desc', 'vote_count.gte': '250' }, maxPages: 20 },
-    { cursorKey: `${mediaType}:trending`, path: `/trending/${mediaType}/week`, maxPages: 10 },
-  ];
-
-  for (const ep of endpoints) {
-    if (result.length >= targetNeeded) break;
-
-    const startPage = Math.max(1, Number(cursors[ep.cursorKey]) || 1);
-    for (let offset = 0; offset < ep.maxPages; offset += 1) {
-      if (result.length >= targetNeeded) break;
-
-      const page = ((startPage - 1 + offset) % 50) + 1;
+  const runManual = (async (): Promise<ManualStockPullResult> => {
+    if (activeReplenishmentPromise) {
       try {
-        const queryParams: Record<string, string> = {
-          page: String(page),
-          ...(ep.params || {}),
-        };
-        const res = await activeStockFetcher(ep.path, queryParams);
-        const items = Array.isArray(res?.results) ? res.results : [];
-        if (items.length === 0) break;
-
-        let addedFromPage = 0;
-        for (const it of items) {
-          if (!it || it.id == null || !isStockCandidateDateAcceptable(it)) continue;
-          const key = `${mediaType}:${it.id}`;
-          const rawId = String(it.id).replace(/^(movie|tv)[:-]/, '');
-          if (recyclableKeySet?.has(key) && seenRecyclableOut && !seenRecyclableOut.has(key)) {
-            seenRecyclableOut.set(key, normalizeStockCandidate(it, mediaType));
-          }
-          if (
-            excludedKeys.has(key) ||
-            excludedKeys.has(rawId) ||
-            excludedKeys.has(`${mediaType}:${rawId}`)
-          ) {
-            continue;
-          }
-
-          const normalized = normalizeStockCandidate(it, mediaType);
-          excludedKeys.add(key);
-          excludedKeys.add(rawId);
-
-          // IMP-01: MMR diversity filtering
-          const candEnc = getItemEncodingSync(normalized);
-          let isTooSimilar = false;
-          if (recentVectors.length > 0 && candEnc?.denseVector?.length) {
-            for (const v of recentVectors) {
-              const sim = cosineSimilarity(v, candEnc.denseVector);
-              if (sim > CLUSTER_SIMILARITY_THRESHOLD) {
-                isTooSimilar = true;
-                break;
-              }
-            }
-          }
-
-          if (isTooSimilar) {
-            overflowClusterBuffer.push(normalized);
-          } else {
-            result.push(normalized);
-            if (candEnc?.denseVector?.length) {
-              recentVectors.push(candEnc.denseVector);
-              if (recentVectors.length > MAX_RECENT_VECTORS) {
-                recentVectors.shift();
-              }
-            }
-            addedFromPage += 1;
-          }
-
-          if (result.length >= targetNeeded) break;
-        }
-
-        cursors[ep.cursorKey] = (page % 50) + 1;
-        const totalPages = Number(res?.total_pages) || 1;
-        if (page >= totalPages && addedFromPage === 0) {
-          break;
-        }
+        await activeReplenishmentPromise;
       } catch {
-        break;
+        // Ignore autonomous error and proceed with manual pull
       }
     }
-  }
-
-  // Quota discipline: if diversity filter was strict and result < targetNeeded, backfill from overflow
-  if (result.length < targetNeeded && overflowClusterBuffer.length > 0) {
-    for (const overflowItem of overflowClusterBuffer) {
-      if (result.length >= targetNeeded) break;
-      result.push(overflowItem);
+    if (replenishmentTimeout) {
+      clearTimeout(replenishmentTimeout);
+      replenishmentTimeout = null;
     }
-  }
 
-  return result;
+    isReplenishingActive = true;
+    lastReplenishmentError = null;
+    notifyStockListeners();
+
+    let addedMovies = 0;
+    let addedTv = 0;
+    let skippedListedCount = 0;
+    let skippedDuplicateStockCount = 0;
+
+    try {
+      const ctx = await prepareStockExecutionContext(profileId, options);
+      const beforeMoviesCount = activeStock.movies.length;
+      const beforeTvCount = activeStock.tv.length;
+
+      const skipStats: CandidateBatchSkipStats = {
+        userExclusionKeys: ctx.userExclusionKeys,
+        existingStockKeys: ctx.existingStockKeys,
+        skippedListedCount: 0,
+        skippedDuplicateStockCount: 0,
+      };
+
+      const cursors: Record<string, number> = { ...(activeStock.cursors || {}) };
+      const newlyIndexedCandidates: TmdbItem[] = [];
+      const batchSize = Math.max(1, options.batchSizePerType ?? MANUAL_STOCK_PULL_BATCH);
+      const targetMediaType = options.targetMediaType || 'all';
+
+      const pullForMediaType = async (mediaType: 'movie' | 'tv', currentList: TmdbItem[]) => {
+        const targetNeeded =
+          currentList.length === 0
+            ? STOCK_TARGET_COUNT
+            : currentList.length < STOCK_TARGET_COUNT
+              ? Math.max(batchSize, STOCK_TARGET_COUNT - currentList.length)
+              : batchSize;
+
+        const passOne = await fetchStockCandidateBatch(
+          activeStockFetcher,
+          mediaType,
+          targetNeeded,
+          ctx.allSurfacedExclusions,
+          cursors,
+          undefined,
+          undefined,
+          skipStats
+        );
+        const collected: TmdbItem[] = [...passOne];
+        for (const item of passOne) {
+          const key = `${mediaType}:${normalizeRawStockId(item.id)}`;
+          ctx.existingStockKeys.add(key);
+          ctx.stockPurgeExclusions.add(key);
+          ctx.allSurfacedExclusions.add(key);
+        }
+
+        if (collected.length < targetNeeded) {
+          const passTwo = await fetchStockCandidateBatch(
+            activeStockFetcher,
+            mediaType,
+            targetNeeded - collected.length,
+            ctx.stockPurgeExclusions,
+            cursors,
+            undefined,
+            undefined,
+            skipStats
+          );
+          for (const item of passTwo) {
+            const key = `${mediaType}:${normalizeRawStockId(item.id)}`;
+            ctx.existingStockKeys.add(key);
+            ctx.stockPurgeExclusions.add(key);
+            collected.push(item);
+          }
+        }
+
+        if (collected.length > 0) {
+          currentList.push(...collected);
+          newlyIndexedCandidates.push(...collected.slice(0, 60));
+        }
+      };
+
+      if (targetMediaType === 'all' || targetMediaType === 'movie') {
+        await pullForMediaType('movie', activeStock.movies);
+      }
+      if (targetMediaType === 'all' || targetMediaType === 'tv') {
+        await pullForMediaType('tv', activeStock.tv);
+      }
+
+      await finalizeStockMutation(
+        cursors,
+        ctx.userListItems,
+        ctx.userPrefs,
+        ctx.eligibilitySets,
+        ctx.activeSkipKeys,
+        newlyIndexedCandidates
+      );
+
+      addedMovies = Math.max(0, activeStock.movies.length - beforeMoviesCount);
+      addedTv = Math.max(0, activeStock.tv.length - beforeTvCount);
+      skippedListedCount = skipStats.skippedListedCount;
+      skippedDuplicateStockCount = skipStats.skippedDuplicateStockCount;
+    } catch (err) {
+      lastReplenishmentError =
+        err instanceof Error ? err.message : 'Manuel stok çekme sırasında beklenmeyen bir hata oluştu.';
+      console.error('[StockEngine] Manuel stok çekme hatası:', err);
+    } finally {
+      isReplenishingActive = false;
+      manualPullInFlightPromise = null;
+      notifyStockListeners();
+    }
+
+    return {
+      ok: !lastReplenishmentError,
+      addedMovies,
+      addedTv,
+      skippedListedCount,
+      skippedDuplicateStockCount,
+      moviesCount: activeStock.movies.length,
+      tvCount: activeStock.tv.length,
+      error: lastReplenishmentError,
+    };
+  })();
+
+  manualPullInFlightPromise = runManual;
+  return runManual;
 }

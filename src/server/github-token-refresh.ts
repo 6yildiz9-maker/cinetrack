@@ -87,12 +87,21 @@ export async function refreshEnvGitHubPat(options: {
   currentToken: string;
   username?: string;
   timeoutMs?: number;
+  forceReplaceInvalidToken?: boolean;
 }): Promise<string | null> {
-  const { envFilePath, currentToken, username = '', timeoutMs = 45_000 } = options;
+  const {
+    envFilePath,
+    currentToken,
+    username = '',
+    timeoutMs = 45_000,
+    forceReplaceInvalidToken = false,
+  } = options;
   const trimmedCurrent = (currentToken || '').trim();
 
-  // Kullanıcının kalıcı token'ı varsa asla ezilmez
-  if (trimmedCurrent && isDurableGitHubToken(trimmedCurrent)) return null;
+  // Normal tazelemede kullanıcının kalıcı token'ı ezilmez; ancak GitHub 401 döndürdüyse yenilenebilir
+  if (!forceReplaceInvalidToken && trimmedCurrent && isDurableGitHubToken(trimmedCurrent)) {
+    return null;
+  }
   if (!existsSync(envFilePath)) return null;
 
   const fresh = await fetchGitHubTokenFromCredentialManager(username, timeoutMs);

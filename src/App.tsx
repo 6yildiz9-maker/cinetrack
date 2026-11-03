@@ -91,6 +91,7 @@ import {
   fetchTmdb,
   fetchTmdbCached,
   fetchServerData,
+  getLastKnownServerRevision,
   subscribeTmdbSource,
   checkServerTmdbStatus,
   fetchCatalogItems,
@@ -100,6 +101,10 @@ import {
   TmdbSourceMeta,
   ServerConflictDetail,
 } from './services/api.ts';
+import {
+  areUserDataDocumentsSemanticallyEqual,
+  reconcileUserDataDocumentsLossless,
+} from './core/user-data-merge.ts';
 import { computeSourceCatalogSignature } from './core/derived-profile-cache.ts';
 import {
   buildDerivedProfilePayloadFromTasteMap,
@@ -115,6 +120,7 @@ import { useItemActions } from './hooks/useItemActions.ts';
 import { hasPendingOfflineSync } from './services/offline-queue.ts';
 import {
   saveIsolatedProfileIdb,
+  loadUserListsIdb,
   saveUserListsIdb,
   removeSurfacedKey,
   subscribeSeriesIndex,
@@ -136,6 +142,7 @@ import {
   getStockMovies,
   getStockSeries,
   isCandidateEligibleForStock,
+  manualPullStock,
   markItemsAsSurfaced,
   seedCandidatePoolFromStock,
   subscribeStockState,
@@ -176,19 +183,34 @@ function preferencesStorageKey(profileId: string) {
   return `cinetrack.profile.${profileId}.preferences.v1`;
 }
 
+function hasPersistedProfilesInStorage(): boolean {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PROFILES_STORAGE) || 'null');
+    return Array.isArray(stored) && stored.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function loadInitialProfiles(): Profile[] {
   try {
     const stored = JSON.parse(localStorage.getItem(PROFILES_STORAGE) || 'null');
     const profiles = Array.isArray(stored)
       ? stored
           .filter((p) => p && /^profile-[A-Za-z0-9_-]{1,60}$/.test(p.id) && typeof p.name === 'string')
-          .map((p) => ({
-            id: p.id,
-            name: p.name.slice(0, 40),
-            createdAt: p.createdAt || '',
-            preferences: { disliked: [], providers: [], mood: '', reminders: false, notified: [] },
-            items: [],
-          }))
+          .map((p) => {
+            const delKeys = loadDeletedKeys(p.id);
+            return {
+              id: p.id,
+              name: p.name.slice(0, 40),
+              createdAt: p.createdAt || '',
+              isDemo: Boolean(p.isDemo),
+              preferences: loadProfilePreferences(p.id),
+              items: loadProfileItems(p.id),
+              favoriteActors: loadFavoriteActors(p.id),
+              ...(Object.keys(delKeys).length > 0 ? { deleted_keys: delKeys } : {}),
+            };
+          })
       : [];
     if (profiles.length) return profiles;
     const legacyName = localStorage.getItem(PROFILE_STORAGE) || '';
@@ -356,8 +378,12 @@ export function App() {
   selectedSortRef.current = selectedSort;
   const hideListedItemsRef = useRef<boolean>(hideListedItems);
   hideListedItemsRef.current = hideListedItems;
+  const profilesRef = useRef<Profile[]>(profiles);
+  profilesRef.current = profiles;
   const activeProfileIdRef = useRef<string>(activeProfileId);
   activeProfileIdRef.current = activeProfileId;
+  const profileNameRef = useRef<string>(profileName);
+  profileNameRef.current = profileName;
   const tasteMapRef = useRef<PersistentTasteMapData>(tasteMap);
   tasteMapRef.current = tasteMap;
   const forYouItemsRef = useRef<any[]>(forYouItems);
@@ -365,10 +391,21 @@ export function App() {
   const hasHydratedLocalEffectRef = useRef(false);
   const applyingRemoteSnapshotRef = useRef(false);
   const localEditedDuringStartupRef = useRef(false);
+  const hadStoredProfilesOnBootRef = useRef<boolean | null>(null);
+  if (hadStoredProfilesOnBootRef.current === null) {
+    hadStoredProfilesOnBootRef.current = hasPersistedProfilesInStorage();
+  }
   const localWasDirtyRef = useRef<boolean | null>(null);
   if (localWasDirtyRef.current === null) {
-    localWasDirtyRef.current = localStorage.getItem(DIRTY_KEY) === '1';
+    try {
+      localWasDirtyRef.current = localStorage.getItem(DIRTY_KEY) === '1';
+    } catch {
+      localWasDirtyRef.current = false;
+    }
   }
+  const isDirtyRef = useRef<boolean>(Boolean(localWasDirtyRef.current));
+  const isPushingRef = useRef<boolean>(false);
+  const inFlightPushRef = useRef<Promise<void> | null>(null);
   const savedItemsRef = useRef(savedItems);
   savedItemsRef.current = savedItems;
   const preferencesRef = useRef(preferences);
@@ -431,8 +468,10 @@ export function App() {
         tvCount: res.tvCount,
       });
     });
-    void saveUserListsIdb(activeProfileId, savedItems);
-  }, [activeProfileId, savedItems, preferences]);
+    if (serverSyncReady || savedItems.length > 0) {
+      void saveUserListsIdb(activeProfileId, savedItems);
+    }
+  }, [activeProfileId, savedItems, preferences, serverSyncReady]);
 
   // Stok görünümünde listeye eklenen içerik sayaç düşmesine rağmen ekranda kalıyordu; gridi anında arındır
   useEffect(() => {
@@ -585,6 +624,7 @@ export function App() {
       applyingRemoteSnapshotRef.current = false;
       return;
     }
+    isDirtyRef.current = true;
     if (serverSyncReady) {
       try {
         localStorage.setItem(DIRTY_KEY, '1');
@@ -603,6 +643,85 @@ export function App() {
     serverSyncReady,
   ]);
 
+  const persistProfilesBestEffort = useCallback((profilesList: Profile[]) => {
+    for (const p of profilesList) {
+      if (!p || !p.id) continue;
+      try {
+        localStorage.setItem(preferencesStorageKey(p.id), JSON.stringify(p.preferences || {}));
+        localStorage.setItem(favActorsStorageKey(p.id), JSON.stringify(p.favoriteActors || []));
+        localStorage.setItem(
+          deletedKeysStorageKey(p.id),
+          JSON.stringify(normalizeDeletedKeys(p.deleted_keys))
+        );
+      } catch {}
+      try {
+        localStorage.setItem(listStorageKey(p.id), JSON.stringify(p.items || []));
+      } catch {
+        try {
+          const compactSaved = (p.items || []).map((it) => ({
+            ...it,
+            overview: typeof it.overview === 'string' ? it.overview.slice(0, 120) : '',
+          }));
+          localStorage.setItem(listStorageKey(p.id), JSON.stringify(compactSaved));
+        } catch {}
+      }
+      void saveUserListsIdb(p.id, p.items || []);
+    }
+  }, []);
+
+  const buildCurrentLivePayloadFromRefs = useCallback((): DataDocument => {
+    const currentActiveId = activeProfileIdRef.current;
+    const currentProfiles = profilesRef.current;
+    const currentActiveProf =
+      currentProfiles.find((p) => p.id === currentActiveId) || currentProfiles[0];
+    return {
+      version: 3,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      engineVersion: ENGINE_VERSION,
+      activeProfileId: currentActiveId,
+      profiles: currentProfiles.map((p) => {
+        const isCurrent = p.id === currentActiveId;
+        const profDeletedKeys = isCurrent
+          ? normalizeDeletedKeys(deletedKeysRef.current)
+          : normalizeDeletedKeys(
+              p.deleted_keys && Object.keys(p.deleted_keys).length > 0
+                ? p.deleted_keys
+                : loadDeletedKeys(p.id)
+            );
+        const profItems = isCurrent
+          ? savedItemsRef.current
+          : Array.isArray(p.items) && p.items.length > 0
+          ? p.items
+          : loadProfileItems(p.id);
+        const profPrefs = isCurrent
+          ? preferencesRef.current
+          : p.preferences &&
+            ((p.preferences.disliked?.length || 0) > 0 ||
+              (p.preferences.hidden?.length || 0) > 0 ||
+              (p.preferences.providers?.length || 0) > 0 ||
+              Boolean(p.preferences.mood) ||
+              Boolean(p.preferences.reminders))
+          ? normalizePreferences(p.preferences, { knownMoods: Object.keys(MOOD_GENRES) })
+          : loadProfilePreferences(p.id);
+        const profFavActors = isCurrent
+          ? favoriteActorsRef.current || []
+          : Array.isArray(p.favoriteActors) && p.favoriteActors.length > 0
+          ? p.favoriteActors
+          : loadFavoriteActors(p.id);
+
+        return {
+          id: p.id,
+          name: isCurrent ? profileNameRef.current : p.name,
+          createdAt: p.createdAt || '',
+          preferences: profPrefs,
+          items: profItems,
+          favoriteActors: profFavActors,
+          isDemo: isCurrent ? Boolean(currentActiveProf?.isDemo) : Boolean(p.isDemo),
+          ...(Object.keys(profDeletedKeys).length > 0 ? { deleted_keys: profDeletedKeys } : {}),
+        };
+      }),
+    };
+  }, []);
 
   const buildCurrentPayload = useCallback((): DataDocument => {
     return {
@@ -611,21 +730,43 @@ export function App() {
       engineVersion: ENGINE_VERSION,
       activeProfileId,
       profiles: profiles.map((p) => {
-        const profDeletedKeys =
-          p.id === activeProfileId
-            ? normalizeDeletedKeys(deletedKeysRef.current)
-            : normalizeDeletedKeys(p.deleted_keys || loadDeletedKeys(p.id));
+        const isCurrent = p.id === activeProfileId;
+        const profDeletedKeys = isCurrent
+          ? normalizeDeletedKeys(deletedKeysRef.current)
+          : normalizeDeletedKeys(
+              p.deleted_keys && Object.keys(p.deleted_keys).length > 0
+                ? p.deleted_keys
+                : loadDeletedKeys(p.id)
+            );
+        const profItems = isCurrent
+          ? savedItems
+          : Array.isArray(p.items) && p.items.length > 0
+          ? p.items
+          : loadProfileItems(p.id);
+        const profPrefs = isCurrent
+          ? preferences
+          : p.preferences &&
+            ((p.preferences.disliked?.length || 0) > 0 ||
+              (p.preferences.hidden?.length || 0) > 0 ||
+              (p.preferences.providers?.length || 0) > 0 ||
+              Boolean(p.preferences.mood) ||
+              Boolean(p.preferences.reminders))
+          ? normalizePreferences(p.preferences, { knownMoods: Object.keys(MOOD_GENRES) })
+          : loadProfilePreferences(p.id);
+        const profFavActors = isCurrent
+          ? favoriteActorsRef.current || []
+          : Array.isArray(p.favoriteActors) && p.favoriteActors.length > 0
+          ? p.favoriteActors
+          : loadFavoriteActors(p.id);
+
         return {
           id: p.id,
-          name: p.id === activeProfileId ? profileName : p.name,
+          name: isCurrent ? profileName : p.name,
           createdAt: p.createdAt || '',
-          preferences: p.id === activeProfileId ? preferences : loadProfilePreferences(p.id),
-          items: p.id === activeProfileId ? savedItems : loadProfileItems(p.id),
-          favoriteActors:
-            p.id === activeProfileId
-              ? (favoriteActorsRef.current || [])
-              : (p.favoriteActors || loadFavoriteActors(p.id)),
-          isDemo: p.id === activeProfileId ? Boolean(activeProfile?.isDemo) : Boolean(p.isDemo),
+          preferences: profPrefs,
+          items: profItems,
+          favoriteActors: profFavActors,
+          isDemo: isCurrent ? Boolean(activeProfile?.isDemo) : Boolean(p.isDemo),
           ...(Object.keys(profDeletedKeys).length > 0 ? { deleted_keys: profDeletedKeys } : {}),
         };
       }),
@@ -637,13 +778,97 @@ export function App() {
     setSyncStatus(`Çakışma algılandı: ${conflict.message}`);
   }, []);
 
+  const mergeRemoteDocumentIntoState = useCallback(
+    (
+      rawRemoteDoc: DataDocument,
+      options: {
+        preferActiveFrom?: 'local' | 'remote';
+        foldUnhydrated?: boolean;
+        keepDirtyIfLocalAhead?: boolean;
+      } = {}
+    ): DataDocument | null => {
+      const remoteDoc = normalizeDataDocument(rawRemoteDoc);
+      if (!remoteDoc) return null;
+
+      const liveLocalDoc = buildCurrentLivePayloadFromRefs();
+      const { mergedDoc } = reconcileUserDataDocumentsLossless(liveLocalDoc, remoteDoc, {
+        foldUnhydratedDefaultProfile: Boolean(options.foldUnhydrated),
+        preferActiveProfileFrom: options.preferActiveFrom || 'local',
+      });
+
+      const active =
+        mergedDoc.profiles.find((p) => p.id === mergedDoc.activeProfileId) ||
+        mergedDoc.profiles[0];
+      const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
+      const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
+
+      applyingRemoteSnapshotRef.current = true;
+      hadStoredProfilesOnBootRef.current = true;
+
+      profilesRef.current = mergedDoc.profiles;
+      activeProfileIdRef.current = mergedDoc.activeProfileId;
+      profileNameRef.current = active.name;
+      preferencesRef.current = active.preferences;
+      savedItemsRef.current = active.items;
+      favoriteActorsRef.current = activeFavs;
+      deletedKeysRef.current = activeDeleted;
+
+      setProfiles(mergedDoc.profiles);
+      setActiveProfileId(mergedDoc.activeProfileId);
+      setProfileName(active.name);
+      setPreferences(active.preferences);
+      setSavedItems(active.items);
+      setFavoriteActors(activeFavs);
+      setDeletedKeys(activeDeleted);
+
+      const loadedMap = loadPersistentTasteMap(active.id);
+      tasteMapRef.current = loadedMap;
+      setTasteMap(loadedMap);
+
+      persistProfilesBestEffort(mergedDoc.profiles);
+
+      const localHasUnpushedAdditions = !areUserDataDocumentsSemanticallyEqual(
+        mergedDoc,
+        remoteDoc
+      );
+      const shouldStayDirty =
+        options.keepDirtyIfLocalAhead !== false && localHasUnpushedAdditions;
+
+      isDirtyRef.current = shouldStayDirty;
+      try {
+        if (shouldStayDirty) {
+          localStorage.setItem(DIRTY_KEY, '1');
+        } else {
+          localStorage.removeItem(DIRTY_KEY);
+        }
+      } catch {}
+
+      if (!shouldStayDirty) {
+        setServerConflict(null);
+      }
+
+      return mergedDoc;
+    },
+    [buildCurrentLivePayloadFromRefs, persistProfilesBestEffort]
+  );
+
+  const handleMergedServerDocument = useCallback(
+    (serverDoc: DataDocument) => {
+      mergeRemoteDocumentIntoState(serverDoc, {
+        preferActiveFrom: 'local',
+        keepDirtyIfLocalAhead: true,
+      });
+    },
+    [mergeRemoteDocumentIntoState]
+  );
+
   const {
     isOnline,
     pendingSync,
     unpersistedWarning,
     syncDocument,
     resolveQueuedConflict,
-  } = useOfflineSync(handleServerConflict);
+  } = useOfflineSync(handleServerConflict, handleMergedServerDocument);
 
   // Autonomous 500-movie + 500-TV IndexedDB stock engine & <250 background replenisher (Aşama 2 & 4)
   const stockEngineState = useStockEngine(activeProfileId);
@@ -692,57 +917,100 @@ export function App() {
     }
   }, [savedItems]);
 
-  const applyDataDocumentToState = useCallback((rawDoc: DataDocument) => {
-    const doc = normalizeDataDocument(rawDoc);
-    if (!doc) return;
-    applyingRemoteSnapshotRef.current = true;
-    setProfiles(doc.profiles);
-    setActiveProfileId(doc.activeProfileId);
-    activeProfileIdRef.current = doc.activeProfileId;
-    const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
-    setProfileName(active.name);
-    setPreferences(active.preferences);
-    setSavedItems(active.items);
-    const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
-    setFavoriteActors(activeFavs);
-    const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
-    deletedKeysRef.current = activeDeleted;
-    setDeletedKeys(activeDeleted);
-    const loadedMap = loadPersistentTasteMap(active.id);
-    tasteMapRef.current = loadedMap;
-    setTasteMap(loadedMap);
-    try {
-      localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
-      localStorage.setItem(deletedKeysStorageKey(active.id), JSON.stringify(activeDeleted));
-      localStorage.removeItem(DIRTY_KEY);
-    } catch {}
-    resolveQueuedConflict();
-    setServerConflict(null);
-  }, [resolveQueuedConflict]);
-
-  // Push server data on changes (with revision guard & offline queue)
-  const pushToServer = useCallback(async () => {
-    const payload = buildCurrentPayload();
-    const confirmBulkDelete = confirmNextBulkSyncRef.current;
-    const res = await syncDocument(payload, confirmBulkDelete ? { confirmBulkDelete: true } : undefined);
-    if (res.ok) {
-      confirmNextBulkSyncRef.current = false;
+  const applyDataDocumentToState = useCallback(
+    (rawDoc: DataDocument) => {
+      const doc = normalizeDataDocument(rawDoc);
+      if (!doc) return;
+      applyingRemoteSnapshotRef.current = true;
+      hadStoredProfilesOnBootRef.current = true;
+      profilesRef.current = doc.profiles;
+      setProfiles(doc.profiles);
+      setActiveProfileId(doc.activeProfileId);
+      activeProfileIdRef.current = doc.activeProfileId;
+      const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
+      profileNameRef.current = active.name;
+      setProfileName(active.name);
+      preferencesRef.current = active.preferences;
+      setPreferences(active.preferences);
+      savedItemsRef.current = active.items;
+      setSavedItems(active.items);
+      const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
+      favoriteActorsRef.current = activeFavs;
+      setFavoriteActors(activeFavs);
+      const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
+      deletedKeysRef.current = activeDeleted;
+      setDeletedKeys(activeDeleted);
+      const loadedMap = loadPersistentTasteMap(active.id);
+      tasteMapRef.current = loadedMap;
+      setTasteMap(loadedMap);
+      persistProfilesBestEffort(doc.profiles);
+      isDirtyRef.current = false;
       try {
         localStorage.removeItem(DIRTY_KEY);
       } catch {}
+      resolveQueuedConflict();
       setServerConflict(null);
-      setSyncStatus('Kayıt yeri: data/cinetrack-data.json (bu bilgisayarda, tüm profiller).');
-    } else if (res.queued) {
-      setSyncStatus('Çevrimdışı kuyrukta: bağlantı sağlandığında yerel sunucuya aktarılacak.');
-    } else if (!res.conflict) {
-      setSyncStatus('Değişiklikler yerel veri dosyasına yazılamadı; şimdilik yalnızca bu tarayıcıda.');
+    },
+    [persistProfilesBestEffort, resolveQueuedConflict]
+  );
+
+  // Push server data on changes (with lossless merge foundation & offline queue)
+  const executePushToServer = useCallback(async () => {
+    const payload = buildCurrentLivePayloadFromRefs();
+    const confirmBulkDelete = confirmNextBulkSyncRef.current;
+    const foldUnhydrated = !hadStoredProfilesOnBootRef.current;
+    isPushingRef.current = true;
+    try {
+      const res = await syncDocument(
+        payload,
+        confirmBulkDelete
+          ? { confirmBulkDelete: true }
+          : { foldUnhydratedDefaultProfile: foldUnhydrated }
+      );
+      if (res.ok) {
+        confirmNextBulkSyncRef.current = false;
+        hadStoredProfilesOnBootRef.current = true;
+        const authoritativeServerDoc = res.document || payload;
+        const liveNow = buildCurrentLivePayloadFromRefs();
+        if (areUserDataDocumentsSemanticallyEqual(liveNow, authoritativeServerDoc)) {
+          isDirtyRef.current = false;
+          try {
+            localStorage.removeItem(DIRTY_KEY);
+          } catch {}
+        }
+        setServerConflict(null);
+        setSyncStatus('Kayıt yeri: data/cinetrack-data.json (bu bilgisayarda, tüm profiller).');
+      } else if (res.queued) {
+        setSyncStatus('Çevrimdışı kuyrukta: bağlantı sağlandığında yerel sunucuya aktarılacak.');
+      } else if (!res.conflict) {
+        setSyncStatus('Değişiklikler yerel veri dosyasına yazılamadı; şimdilik yalnızca bu tarayıcıda.');
+      }
+    } finally {
+      isPushingRef.current = false;
     }
-  }, [buildCurrentPayload, syncDocument]);
+  }, [buildCurrentLivePayloadFromRefs, syncDocument]);
+
+  const pushToServer = useCallback(async () => {
+    if (inFlightPushRef.current) {
+      await inFlightPushRef.current;
+      if (!isDirtyRef.current && !confirmNextBulkSyncRef.current && !hasPendingOfflineSync()) {
+        return;
+      }
+    }
+    const promise = executePushToServer().finally(() => {
+      if (inFlightPushRef.current === promise) {
+        inFlightPushRef.current = null;
+      }
+    });
+    inFlightPushRef.current = promise;
+    await promise;
+  }, [executePushToServer]);
 
   const handleKeepLocalOnConflict = useCallback(async () => {
-    const payload = serverConflict?.localPayload || buildCurrentPayload();
+    const payload = serverConflict?.localPayload || buildCurrentLivePayloadFromRefs();
     const res = await syncDocument(payload, { forceOverwrite: true, confirmBulkDelete: true });
     if (res.ok) {
+      isDirtyRef.current = false;
       try {
         localStorage.removeItem(DIRTY_KEY);
       } catch {}
@@ -751,7 +1019,21 @@ export function App() {
       setSyncStatus('Yerel değişiklikler sunucuya kaydedildi.');
       showToast('Yerel verileriniz sunucuya kaydedildi.');
     }
-  }, [serverConflict, buildCurrentPayload, syncDocument, resolveQueuedConflict, showToast]);
+  }, [serverConflict, buildCurrentLivePayloadFromRefs, syncDocument, resolveQueuedConflict, showToast]);
+
+  const handleMergeBothOnConflict = useCallback(async () => {
+    if (serverConflict?.serverDocument) {
+      mergeRemoteDocumentIntoState(serverConflict.serverDocument, {
+        preferActiveFrom: 'local',
+        keepDirtyIfLocalAhead: true,
+      });
+    }
+    await pushToServer();
+    resolveQueuedConflict();
+    setServerConflict(null);
+    setSyncStatus('Yerel ve sunucu verileri kayıpsız birleştirildi.');
+    showToast('Yerel ve sunucu listeleriniz kayıpsız birleştirildi.');
+  }, [serverConflict, mergeRemoteDocumentIntoState, pushToServer, resolveQueuedConflict, showToast]);
 
   const handleUseServerOnConflict = useCallback(() => {
     if (serverConflict?.serverDocument) {
@@ -760,59 +1042,135 @@ export function App() {
     }
   }, [serverConflict, applyDataDocumentToState, showToast]);
 
+  const handleMergeSyncedDocument = useCallback(
+    (doc: DataDocument) => {
+      mergeRemoteDocumentIntoState(doc, {
+        preferActiveFrom: 'local',
+        keepDirtyIfLocalAhead: true,
+      });
+    },
+    [mergeRemoteDocumentIntoState]
+  );
+
+  // Debounced auto-push when user edits state (buildCurrentPayload tracks state dependencies)
   useEffect(() => {
     if (!serverSyncReady) return;
+    let lsDirty = false;
+    try {
+      lsDirty = localStorage.getItem(DIRTY_KEY) === '1';
+    } catch {}
+    if (!isDirtyRef.current && !lsDirty && !confirmNextBulkSyncRef.current && !hasPendingOfflineSync()) {
+      return;
+    }
     const timer = setTimeout(() => {
-      pushToServer();
+      void pushToServer();
     }, 500);
     return () => clearTimeout(timer);
-  }, [pushToServer, serverSyncReady, favoriteActors, deletedKeys]);
+  }, [buildCurrentPayload, pushToServer, serverSyncReady, favoriteActors, deletedKeys]);
 
-  // Otomatik 5 dakikalık periyodik arka plan senkronizasyonu (yalnızca kirli bayrak veya bekleyen kuyruk varsa)
+  // Arka plandaki GitHub otomatik senkronizasyonu (server.ts) revizyonu ilerlettiğinde
+  // veya bekleyen yerel değişiklik varsa kayıpsız eşitleme yap
+  const pullMergeFromServerIfAdvanced = useCallback(async () => {
+    if (isPushingRef.current || !navigator.onLine) return;
+    const prevRev = getLastKnownServerRevision();
+    const remote = await fetchServerData();
+    if (!remote) return;
+    if (
+      typeof remote.revision === 'number' &&
+      (prevRev === null || remote.revision > prevRev)
+    ) {
+      mergeRemoteDocumentIntoState(remote, {
+        preferActiveFrom: 'local',
+        keepDirtyIfLocalAhead: true,
+      });
+    }
+  }, [mergeRemoteDocumentIntoState]);
+
   useEffect(() => {
     if (!serverSyncReady) return;
-    const interval = setInterval(() => {
-      try {
-        if (localStorage.getItem(DIRTY_KEY) === '1' || hasPendingOfflineSync()) {
-          void pushToServer();
-        }
-      } catch {
-        void pushToServer();
-      }
-    }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [pushToServer, serverSyncReady]);
+    // Başlangıçtaki 1.5s sunucu-GitHub otomatik senkronunu yakalamak için erken kontrol
+    const initialFollowUp = setTimeout(() => {
+      void pullMergeFromServerIfAdvanced();
+    }, 5000);
 
-  // Initial startup sync with server & load genres
+    const interval = setInterval(() => {
+      let lsDirty = false;
+      try {
+        lsDirty = localStorage.getItem(DIRTY_KEY) === '1';
+      } catch {}
+      if (isDirtyRef.current || lsDirty || hasPendingOfflineSync()) {
+        void pushToServer();
+      } else {
+        void pullMergeFromServerIfAdvanced();
+      }
+    }, 60 * 1000);
+
+    const handleVisibilitySync = () => {
+      if (document.visibilityState === 'visible') {
+        void pullMergeFromServerIfAdvanced();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilitySync);
+
+    return () => {
+      clearTimeout(initialFollowUp);
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilitySync);
+    };
+  }, [pushToServer, pullMergeFromServerIfAdvanced, serverSyncReady]);
+
+  // Initial startup sync with server (always lossless-merged, even if local was dirty or edited during boot!)
   useEffect(() => {
     fetchServerData()
-      .then((remote) => {
+      .then(async (remote) => {
         if (remote) {
           const doc = normalizeDataDocument(remote);
           if (doc) {
-            const remoteHasData = doc.profiles.some((p) => p.items.length > 0) || doc.profiles.length > 1;
-            const isDirty = localWasDirtyRef.current || localEditedDuringStartupRef.current;
-            if (remoteHasData && !isDirty) {
+            const remoteHasData =
+              doc.profiles.some(
+                (p) =>
+                  p.items.length > 0 ||
+                  (p.preferences?.disliked?.length || 0) > 0 ||
+                  (p.preferences?.hidden?.length || 0) > 0 ||
+                  (p.favoriteActors?.length || 0) > 0
+              ) ||
+              doc.profiles.length > 1 ||
+              (doc.revision ?? 0) > 0;
+            const isDirty = Boolean(
+              localWasDirtyRef.current || localEditedDuringStartupRef.current || isDirtyRef.current
+            );
+            if (remoteHasData) {
+              const merged = mergeRemoteDocumentIntoState(doc, {
+                preferActiveFrom: isDirty ? 'local' : 'remote',
+                foldUnhydrated: !hadStoredProfilesOnBootRef.current,
+                keepDirtyIfLocalAhead: true,
+              });
+              if (merged && !areUserDataDocumentsSemanticallyEqual(merged, doc)) {
+                resolveQueuedConflict();
+              } else {
+                resolveQueuedConflict();
+              }
+            }
+          }
+          return;
+        }
+
+        // Sunucuya ulaşılamadıysa ve localStorage kotadan dolayı boş kaldıysa IndexedDB yedeğinden kurtar
+        if (savedItemsRef.current.length === 0) {
+          const idbCompact = await loadUserListsIdb(activeProfileIdRef.current);
+          if (idbCompact.length > 0 && savedItemsRef.current.length === 0) {
+            const recovered = idbCompact
+              .map((it) =>
+                normalizeSavedItem({
+                  ...it,
+                  title: `${it.media_type === 'tv' ? 'Dizi' : 'Film'} #${it.id}`,
+                })
+              )
+              .filter(Boolean) as SavedItem[];
+            if (recovered.length > 0) {
               applyingRemoteSnapshotRef.current = true;
-              setProfiles(doc.profiles);
-              setActiveProfileId(doc.activeProfileId);
-              activeProfileIdRef.current = doc.activeProfileId;
-              const active = doc.profiles.find((p) => p.id === doc.activeProfileId) || doc.profiles[0];
-              setProfileName(active.name);
-              setPreferences(active.preferences);
-              setSavedItems(active.items);
-              const activeFavs = normalizeFavoriteActors(active.favoriteActors || []);
-              setFavoriteActors(activeFavs);
-              const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
-              deletedKeysRef.current = activeDeleted;
-              setDeletedKeys(activeDeleted);
-              const loadedMap = loadPersistentTasteMap(active.id);
-              tasteMapRef.current = loadedMap;
-              setTasteMap(loadedMap);
-              try {
-                localStorage.setItem(favActorsStorageKey(active.id), JSON.stringify(activeFavs));
-                localStorage.setItem(deletedKeysStorageKey(active.id), JSON.stringify(activeDeleted));
-              } catch {}
+              savedItemsRef.current = recovered;
+              setSavedItems(recovered);
             }
           }
         }
@@ -837,7 +1195,7 @@ export function App() {
     return () => {
       unsubSource();
     };
-  }, []);
+  }, [mergeRemoteDocumentIntoState, resolveQueuedConflict]);
 
   // Release Reminders check (ref-backed with single batched state update — BUG-13.3)
   const checkReleaseReminders = useCallback(() => {
@@ -2191,13 +2549,46 @@ export function App() {
   const stockHasItems = stockStats.movieCount + stockStats.tvCount > 0;
 
   const handleManualStockReplenish = useCallback(() => {
-    void executeStockReplenishment(activeProfileId, {
+    void manualPullStock(activeProfileId, {
       userListItems: savedItemsRef.current,
       preferences: preferencesRef.current,
-    }).then(() => {
-      loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
+    }).then((res) => {
+      setStockStats({
+        movieCount: res.moviesCount,
+        tvCount: res.tvCount,
+      });
+      if (tab === 'discover' && category === 'stock' && !query.trim()) {
+        loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
+      }
+      if (!res.ok && res.error) {
+        showToast(`Stok çekilemedi: ${res.error}`);
+        return;
+      }
+      const totalAdded = res.addedMovies + res.addedTv;
+      const skippedTotal = res.skippedListedCount + res.skippedDuplicateStockCount;
+      if (totalAdded > 0) {
+        const skipNote =
+          skippedTotal > 0 ? ` (${skippedTotal} mevcut liste/stok kaydı atlandı)` : '';
+        showToast(
+          `✓ Stoka +${res.addedMovies} film ve +${res.addedTv} dizi eklendi${skipNote}.`
+        );
+      } else {
+        showToast(
+          'Yeni stok adayı bulunamadı; çekilen içerikler zaten listenizde veya stok havuzunda kayıtlı.'
+        );
+      }
     });
-  }, [activeProfileId, loadCategoryResults, selectedProvider, selectedType, selectedGenre]);
+  }, [
+    activeProfileId,
+    tab,
+    category,
+    query,
+    loadCategoryResults,
+    selectedProvider,
+    selectedType,
+    selectedGenre,
+    showToast,
+  ]);
 
   useEffect(() => {
     if (tab === 'discover') {
@@ -3000,14 +3391,46 @@ export function App() {
 
   const handleSwitchProfile = (newId: string) => {
     if (newId === activeProfileId) return;
+    const outgoingId = activeProfileId;
+    const outgoingDeleted = normalizeDeletedKeys(deletedKeysRef.current);
+    const updatedProfiles = profiles.map((p) =>
+      p.id === outgoingId
+        ? {
+            ...p,
+            name: profileName,
+            items: savedItems,
+            preferences,
+            favoriteActors: favoriteActorsRef.current || [],
+            ...(Object.keys(outgoingDeleted).length > 0 ? { deleted_keys: outgoingDeleted } : {}),
+          }
+        : p
+    );
+    profilesRef.current = updatedProfiles;
+    setProfiles(updatedProfiles);
+    persistProfilesBestEffort(updatedProfiles);
+
     setActiveProfileId(newId);
     activeProfileIdRef.current = newId;
-    const target = profiles.find((p) => p.id === newId);
-    setProfileName(target?.name || 'Profilim');
+    const target = updatedProfiles.find((p) => p.id === newId);
+    const nextName = target?.name || 'Profilim';
+    profileNameRef.current = nextName;
+    setProfileName(nextName);
     const items = target?.items?.length ? target.items : loadProfileItems(newId);
+    savedItemsRef.current = items;
     setSavedItems(items);
-    setPreferences(target?.preferences || loadProfilePreferences(newId));
+    const nextPrefs =
+      target?.preferences &&
+      ((target.preferences.disliked?.length || 0) > 0 ||
+        (target.preferences.hidden?.length || 0) > 0 ||
+        (target.preferences.providers?.length || 0) > 0 ||
+        Boolean(target.preferences.mood) ||
+        Boolean(target.preferences.reminders))
+        ? target.preferences
+        : loadProfilePreferences(newId);
+    preferencesRef.current = nextPrefs;
+    setPreferences(nextPrefs);
     const favs = target?.favoriteActors?.length ? target.favoriteActors : loadFavoriteActors(newId);
+    favoriteActorsRef.current = favs;
     setFavoriteActors(favs);
     const targetDeleted = normalizeDeletedKeys(target?.deleted_keys || loadDeletedKeys(newId));
     deletedKeysRef.current = targetDeleted;
@@ -3023,6 +3446,8 @@ export function App() {
   };
 
   const handleCreateProfile = (name: string, isDemo = false) => {
+    const outgoingId = activeProfileId;
+    const outgoingDeleted = normalizeDeletedKeys(deletedKeysRef.current);
     const newId = `profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newProf: Profile = {
       id: newId,
@@ -3033,12 +3458,34 @@ export function App() {
       favoriteActors: [],
       isDemo,
     };
-    setProfiles((prev) => [...prev, newProf]);
+    const nextProfiles = [
+      ...profiles.map((p) =>
+        p.id === outgoingId
+          ? {
+              ...p,
+              name: profileName,
+              items: savedItems,
+              preferences,
+              favoriteActors: favoriteActorsRef.current || [],
+              ...(Object.keys(outgoingDeleted).length > 0 ? { deleted_keys: outgoingDeleted } : {}),
+            }
+          : p
+      ),
+      newProf,
+    ];
+    profilesRef.current = nextProfiles;
+    setProfiles(nextProfiles);
+    persistProfilesBestEffort(nextProfiles);
+
     setActiveProfileId(newId);
     activeProfileIdRef.current = newId;
+    profileNameRef.current = name;
     setProfileName(name);
+    savedItemsRef.current = [];
     setSavedItems([]);
+    preferencesRef.current = newProf.preferences;
     setPreferences(newProf.preferences);
+    favoriteActorsRef.current = [];
     setFavoriteActors([]);
     deletedKeysRef.current = {};
     setDeletedKeys({});
@@ -3220,6 +3667,7 @@ export function App() {
       />
       <ConflictBanner
         conflict={serverConflict}
+        onMergeBoth={handleMergeBothOnConflict}
         onKeepLocal={handleKeepLocalOnConflict}
         onUseServer={handleUseServerOnConflict}
         onDismiss={() => setServerConflict(null)}
@@ -3276,6 +3724,8 @@ export function App() {
           hideListedItems={hideListedItems}
           onHideListedItemsChange={setHideListedItems}
           stockStats={stockStats}
+          onReplenishStock={handleManualStockReplenish}
+          isStockReplenishing={stockEngineState.isReplenishing}
         />
 
         {tab === 'relationships' ? (
@@ -3636,6 +4086,8 @@ export function App() {
           applyDataDocumentToState(doc);
           showToast('Sunucu yedeği başarıyla geri yüklendi.');
         }}
+        onBeforeSyncFlush={pushToServer}
+        onMergeSyncedDocument={handleMergeSyncedDocument}
         onMergeDuplicates={handleMergeDuplicates}
         isDemo={Boolean(activeProfile?.isDemo)}
         onToggleDemoMode={handleToggleDemoMode}

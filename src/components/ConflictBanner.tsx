@@ -4,6 +4,7 @@ import { t } from '../i18n/index.ts';
 
 interface ConflictBannerProps {
   conflict: ServerConflictDetail | null;
+  onMergeBoth?: () => void;
   onKeepLocal: () => void;
   onUseServer: () => void;
   onDismiss: () => void;
@@ -11,6 +12,7 @@ interface ConflictBannerProps {
 
 export const ConflictBanner: React.FC<ConflictBannerProps> = ({
   conflict,
+  onMergeBoth,
   onKeepLocal,
   onUseServer,
   onDismiss,
@@ -25,7 +27,16 @@ export const ConflictBanner: React.FC<ConflictBannerProps> = ({
         <span>{conflict.message}</span>
       </div>
       <div className="conflict-banner-actions">
-        <button type="button" className="btn btn-primary btn-sm" onClick={onKeepLocal}>
+        {conflict.serverDocument && onMergeBoth && (
+          <button type="button" className="btn btn-primary btn-sm" onClick={onMergeBoth}>
+            Kayıpsız Birleştir
+          </button>
+        )}
+        <button
+          type="button"
+          className={`btn btn-sm ${conflict.serverDocument && onMergeBoth ? 'btn-secondary' : 'btn-primary'}`}
+          onClick={onKeepLocal}
+        >
           {dict.keepLocalButton}
         </button>
         {conflict.serverDocument && (

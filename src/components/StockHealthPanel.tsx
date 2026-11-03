@@ -8,12 +8,16 @@ interface StockHealthPanelProps {
   isOpen: boolean;
   onClose: () => void;
   stockSignature?: string;
+  onReplenishStock?: () => void;
+  isStockReplenishing?: boolean;
 }
 
 export const StockHealthPanel: React.FC<StockHealthPanelProps> = ({
   isOpen,
   onClose,
   stockSignature = '',
+  onReplenishStock,
+  isStockReplenishing = false,
 }) => {
   const [metrics, setMetrics] = useState<StockHealthMetrics | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -49,6 +53,17 @@ export const StockHealthPanel: React.FC<StockHealthPanelProps> = ({
           </p>
         </div>
         <div className="stock-health-actions">
+          {onReplenishStock && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm whitespace-nowrap"
+              disabled={isStockReplenishing || loading}
+              onClick={onReplenishStock}
+              title="TMDB'den yeni stok içerikleri çek (mevcut liste ve stok kayıtları tekrar eklenmez)"
+            >
+              {isStockReplenishing ? 'Stok Çekiliyor…' : 'Stok İçerik Çek'}
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-sm whitespace-nowrap"

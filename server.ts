@@ -30,6 +30,10 @@ for (const warnMsg of resolved.warnings) {
   console.warn(warnMsg);
 }
 
+const envFilePath = path.join(root, '.env');
+let githubTokenLive = resolved.githubToken;
+let schedulePostMutationSync: ((reason: string) => void) | null = null;
+
 const { app, storage, persistentStore } = createCineTrackApp({
   dataDir,
   maxDataBytes,
@@ -42,6 +46,26 @@ const { app, storage, persistentStore } = createCineTrackApp({
   tmdbApiKey: resolved.tmdbApiKey,
   githubToken: resolved.githubToken,
   githubTokenSource: resolved.githubTokenSource,
+  githubTokenCandidates: resolved.githubTokenCandidates,
+  getLiveGitHubTokenCandidates: () => resolveConfig({ rootDir: root }).githubTokenCandidates,
+  onAuthFailureRefreshToken: async (failedToken: string) => {
+    if (isAiStudioContainerEnv(process.env)) return null;
+    const fresh = await refreshEnvGitHubPat({
+      envFilePath,
+      currentToken: failedToken,
+      username: resolved.githubOwner || '',
+      timeoutMs: 12_000,
+      forceReplaceInvalidToken: true,
+    });
+    if (fresh) {
+      githubTokenLive = fresh;
+      return { token: fresh, source: 'file:.env:CINETRACK_GITHUB_PAT' as const };
+    }
+    return null;
+  },
+  onLocalDataMutated: (reason: string) => {
+    schedulePostMutationSync?.(reason);
+  },
   githubOwner: resolved.githubOwner,
   githubRepo: resolved.githubRepo,
   githubBranch: resolved.githubBranch,
@@ -60,8 +84,6 @@ const { app, storage, persistentStore } = createCineTrackApp({
 async function startServer() {
   // GitHub OAuth token'ları (~8 saat) süresi dolduğunda Windows Kimlik Yöneticisi'nden
   // (Git Credential Manager) taze token alınır; .env ve canlı senkron yapılandırması güncellenir.
-  const envFilePath = path.join(root, '.env');
-  let githubTokenLive = resolved.githubToken;
   const applyFreshGitHubToken = async (reason: string, timeoutMs = 45_000): Promise<void> => {
     if (isAiStudioContainerEnv(process.env)) return;
     try {
@@ -73,7 +95,7 @@ async function startServer() {
       });
       if (fresh) {
         githubTokenLive = fresh;
-        persistentStore.updateGitHubToken(fresh);
+        persistentStore.updateGitHubToken(fresh, 'file:.env:CINETRACK_GITHUB_PAT');
         console.log(`[GitHub-Token] ${reason}: Kimlik Yöneticisi'nden taze token alındı (.env güncellendi).`);
       }
     } catch (e: any) {
@@ -138,38 +160,70 @@ async function startServer() {
       console.log('TMDB_API_KEY is not configured; running in fallback demo mode.');
     }
 
-    // 5 dakikada bir otomatik arka plan eşitlemesi — ilk çalıştırmada hiçbir tarafı körlemesine ezmemek için
-    // yalnızca kullanıcı ilk kayıpsız çift yönlü eşitlemeyi tamamladıktan sonra devreye girer.
-    const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
-    const autoSyncTimer = setInterval(async () => {
+    let mutationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingMutationWhileBusy = false;
+    const MUTATION_AUTO_SYNC_DEBOUNCE_MS = 3500;
+
+    // Arka planda kayıpsız iki yönlü GitHub eşitlemesi çalıştırır (reconcileWithGitHub hiçbir kaydı silmez, birleştirir).
+    const runSafeAutoReconcile = async (label: string) => {
       try {
         const currentStatus = persistentStore.getSyncStatus();
-        if (
-          currentStatus.configured &&
-          persistentStore.hasCompletedInitialReconcile() &&
-          !persistentStore.isSyncBusy()
-        ) {
-          const report = await persistentStore.reconcileWithGitHub();
-          if (report.ok) {
-            console.log(
-              `[Auto-Sync] Periyodik kayıpsız iki yönlü eşitleme tamamlandı (indirilen: ${report.filesDownloaded.length}, yüklenen: ${report.filesUploaded.length}, değişmeyen: ${report.filesUnchanged.length}, doğrulandı: ${report.verifiedEqual}).`
-            );
-          } else if (report.errors.length > 0) {
-            console.warn(
-              '[Auto-Sync] Eşitleme uyarısı:',
-              redactSecrets(
-                report.errors.map((e) => e.message).join('; '),
-                [githubTokenLive]
-              )
-            );
-          }
+        if (!currentStatus.configured) return;
+        if (persistentStore.isSyncBusy()) {
+          pendingMutationWhileBusy = true;
+          return;
+        }
+        const report = await persistentStore.reconcileWithGitHub();
+        if (report.ok) {
+          console.log(
+            `[Auto-Sync:${label}] Kayıpsız iki yönlü eşitleme tamamlandı (indirilen: ${report.filesDownloaded.length}, yüklenen: ${report.filesUploaded.length}, birleştirilen: ${report.filesMerged.length}, doğrulandı: ${report.verifiedEqual}).`
+          );
+        } else if (report.errors.length > 0) {
+          console.warn(
+            `[Auto-Sync:${label}] Eşitleme uyarısı:`,
+            redactSecrets(
+              report.errors.map((e) => e.message).join('; '),
+              persistentStore.getKnownSecretsForRedaction()
+            )
+          );
         }
       } catch (err: any) {
         console.error(
-          '[Auto-Sync] Otomatik senkronizasyon hatası:',
-          redactSecrets(err?.message || String(err), [githubTokenLive])
+          `[Auto-Sync:${label}] Otomatik senkronizasyon hatası:`,
+          redactSecrets(err?.message || String(err), persistentStore.getKnownSecretsForRedaction())
         );
+      } finally {
+        if (pendingMutationWhileBusy) {
+          pendingMutationWhileBusy = false;
+          schedulePostMutationSync?.('bekleyen-kayit');
+        }
       }
+    };
+
+    schedulePostMutationSync = (_reason: string) => {
+      if (mutationDebounceTimer) {
+        clearTimeout(mutationDebounceTimer);
+      }
+      mutationDebounceTimer = setTimeout(() => {
+        mutationDebounceTimer = null;
+        void runSafeAutoReconcile('otomatik-kayit');
+      }, MUTATION_AUTO_SYNC_DEBOUNCE_MS);
+      if (typeof mutationDebounceTimer.unref === 'function') {
+        mutationDebounceTimer.unref();
+      }
+    };
+
+    const startupSyncTimer = setTimeout(() => {
+      void runSafeAutoReconcile('başlangıç');
+    }, 1500);
+    if (typeof startupSyncTimer.unref === 'function') {
+      startupSyncTimer.unref();
+    }
+
+    // 5 dakikada bir otomatik arka plan eşitlemesi (kayıpsız iki yönlü birleştirme)
+    const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+    const autoSyncTimer = setInterval(() => {
+      void runSafeAutoReconcile('periyodik');
     }, AUTO_SYNC_INTERVAL_MS);
 
     if (typeof autoSyncTimer.unref === 'function') {

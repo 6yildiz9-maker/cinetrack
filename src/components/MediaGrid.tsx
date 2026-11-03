@@ -141,13 +141,25 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           {tab === 'discover' && category === 'for-you' && !isForYouSeriesMode && onRefreshForYou && (
             <button
               type="button"
-              className="for-you-head-refresh-btn"
+              className="for-you-head-refresh-btn whitespace-nowrap"
               disabled={isLoading}
               onClick={onRefreshForYou}
               title="Önerileri manuel olarak güncelle"
             >
               <span className={`refresh-icon ${isLoading ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
               <span>{isLoading ? 'Hesaplanıyor...' : 'Önerileri Güncelle'}</span>
+            </button>
+          )}
+          {tab === 'discover' && category === 'stock' && !query.trim() && onReplenishStock && (
+            <button
+              type="button"
+              className="for-you-head-refresh-btn whitespace-nowrap"
+              disabled={isStockReplenishing || isLoading}
+              onClick={onReplenishStock}
+              title="TMDB'den yeni stok içerikleri çek (listelerdeki ve stoktaki mevcut kayıtlar atlanır)"
+            >
+              <span className={`refresh-icon ${isStockReplenishing ? 'spinning' : ''}`} aria-hidden="true">↻</span>{' '}
+              <span>{isStockReplenishing ? 'Stok Çekiliyor…' : 'Stok İçerik Çek'}</span>
             </button>
           )}
           <div className={`loading ${isLoading || loadingMore ? 'visible' : ''}`} aria-live="polite">
@@ -589,6 +601,16 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                       >
                         Filtreleri temizle
                       </button>
+                      {onReplenishStock && (
+                        <button
+                          className="btn whitespace-nowrap"
+                          type="button"
+                          disabled={isStockReplenishing}
+                          onClick={onReplenishStock}
+                        >
+                          {isStockReplenishing ? 'Stok Çekiliyor…' : 'Stok İçerik Çek'}
+                        </button>
+                      )}
                     </div>
                   </>
                 );

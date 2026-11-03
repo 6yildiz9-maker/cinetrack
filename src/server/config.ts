@@ -128,6 +128,11 @@ export function parseDotenvContent(content: string, sourceLabel = '.env'): Parse
   return { values, warnings };
 }
 
+export interface GitHubTokenCandidate {
+  token: string;
+  source: TokenSourceKind;
+}
+
 export interface ResolvedServerConfig {
   port: number;
   defaultLoopbackHost: '127.0.0.1';
@@ -143,6 +148,7 @@ export interface ResolvedServerConfig {
   tmdbRateWindowMs: number | undefined;
   githubToken: string;
   githubTokenSource: TokenSourceKind;
+  githubTokenCandidates: GitHubTokenCandidate[];
   githubOwner: string;
   githubRepo: string;
   githubBranch: string;
@@ -308,24 +314,26 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
   const dotPat = dotEnvValues.CINETRACK_GITHUB_PAT?.trim() || '';
   const dotLegacyTok = dotEnvValues.CINETRACK_GITHUB_TOKEN?.trim() || '';
 
-  if (envPat) {
-    githubToken = envPat;
-    githubTokenSource = 'env:CINETRACK_GITHUB_PAT';
-  } else if (envLegacyTok) {
-    githubToken = envLegacyTok;
-    githubTokenSource = 'env:CINETRACK_GITHUB_TOKEN';
-  } else if (localPat) {
-    githubToken = localPat;
-    githubTokenSource = 'file:.env.local:CINETRACK_GITHUB_PAT';
-  } else if (localLegacyTok) {
-    githubToken = localLegacyTok;
-    githubTokenSource = 'file:.env.local:CINETRACK_GITHUB_TOKEN';
-  } else if (dotPat) {
-    githubToken = dotPat;
-    githubTokenSource = 'file:.env:CINETRACK_GITHUB_PAT';
-  } else if (dotLegacyTok) {
-    githubToken = dotLegacyTok;
-    githubTokenSource = 'file:.env:CINETRACK_GITHUB_TOKEN';
+  const rawTokenCandidates: Array<[string, TokenSourceKind]> = [
+    [envPat, 'env:CINETRACK_GITHUB_PAT'],
+    [envLegacyTok, 'env:CINETRACK_GITHUB_TOKEN'],
+    [localPat, 'file:.env.local:CINETRACK_GITHUB_PAT'],
+    [localLegacyTok, 'file:.env.local:CINETRACK_GITHUB_TOKEN'],
+    [dotPat, 'file:.env:CINETRACK_GITHUB_PAT'],
+    [dotLegacyTok, 'file:.env:CINETRACK_GITHUB_TOKEN'],
+  ];
+  const githubTokenCandidates: GitHubTokenCandidate[] = [];
+  const seenCandidateTokens = new Set<string>();
+  for (const [candToken, candSource] of rawTokenCandidates) {
+    if (candToken && !seenCandidateTokens.has(candToken)) {
+      seenCandidateTokens.add(candToken);
+      githubTokenCandidates.push({ token: candToken, source: candSource });
+    }
+  }
+
+  if (githubTokenCandidates.length > 0) {
+    githubToken = githubTokenCandidates[0].token;
+    githubTokenSource = githubTokenCandidates[0].source;
   }
 
   // Token gölgeleme / çakışma tespiti (sırları göstermeden)
@@ -374,6 +382,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedServe
     tmdbRateWindowMs,
     githubToken,
     githubTokenSource,
+    githubTokenCandidates,
     githubOwner,
     githubRepo,
     githubBranch,

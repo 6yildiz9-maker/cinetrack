@@ -76,7 +76,7 @@ export interface SeriesPartInfo {
 
 // "Şafak Vakti Bölüm 1", "Godfather Part II", "Bölüm İki/Üç" gibi sonda parça ibaresi
 const PART_PHRASE_PATTERN =
-  /^(.*?)\s+(?:part|bölüm|bolum|kısım|kisim)\s*(?:[:\-]?\s*)([\p{L}\d]{1,12})\s*$/iu;
+  /^(.*?)\s+(?:part|bölüm|bolum|kısım|kisim)\s*(?:[:-]?\s*)([\p{L}\d]{1,12})\s*$/iu;
 // "Görevimiz Tehlike III" gibi sonda Romen rakamı
 const TRAILING_ROMAN_PATTERN = /^(.*?)\s+(i{1,3}|iv|v|vi|vii|viii|ix|x)$/i;
 // "Hızlı ve Öfkeli 9" gibi sonda Arap rakamı ("Testere 3D" de yakalanır, 3D işareti ayrı tutulur)
@@ -85,7 +85,7 @@ const TRAILING_ARABIC_PATTERN = /^(.*?)\s+(\d{1,2}\s*d|\d{1,2})$/i;
 const COLON_SUBTITLE_PATTERN = /^(.{2,}?)\s*:\s*(.{1,})\s*$/u;
 // "X: Part 2", "X: Bölüm İki", "X: Episode IV" gibi alt başlık içinde parça ibaresi
 const SUBTITLE_PART_PREFIX_PATTERN =
-  /^(?:part|bölüm|bolum|kısım|kisim|episode|epizod)\s*(?:[:\-]?\s*)([\p{L}\d]{1,12})\s*$/iu;
+  /^(?:part|bölüm|bolum|kısım|kisim|episode|epizod)\s*(?:[:-]?\s*)([\p{L}\d]{1,12})\s*$/iu;
 
 /**
  * Bir başlıktan seri/film sıra numarasını, numarasız taban başlığı ve varsa

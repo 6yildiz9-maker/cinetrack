@@ -105,11 +105,21 @@ export type TokenFormatKind =
   | 'custom'
   | 'none';
 
+export interface GitHubTokenCandidateInfo {
+  token: string;
+  source: TokenSourceKind;
+}
+
 export interface PersistentStoreOptions {
   dataDir: string;
   maxDataBytes?: number;
   githubToken?: string;
   githubTokenSource?: TokenSourceKind;
+  githubTokenCandidates?: GitHubTokenCandidateInfo[];
+  getLiveGitHubTokenCandidates?: () => GitHubTokenCandidateInfo[];
+  onAuthFailureRefreshToken?: (
+    failedToken: string
+  ) => Promise<{ token: string; source?: TokenSourceKind } | string | null>;
   githubOwner?: string;
   githubRepo?: string;
   githubBranch?: string;
@@ -513,6 +523,12 @@ export class PersistentDataStore {
 
   private githubToken?: string;
   private githubTokenSource: TokenSourceKind;
+  private githubTokenCandidates: GitHubTokenCandidateInfo[] = [];
+  private getLiveGitHubTokenCandidates?: () => GitHubTokenCandidateInfo[];
+  private onAuthFailureRefreshToken?: (
+    failedToken: string
+  ) => Promise<{ token: string; source?: TokenSourceKind } | string | null>;
+  private invalidatedGitHubTokens = new Set<string>();
   private githubOwner?: string;
   private githubRepo?: string;
   private githubBranch: string;
@@ -535,6 +551,25 @@ export class PersistentDataStore {
     this.githubToken = options.githubToken?.trim();
     this.githubTokenSource =
       options.githubTokenSource ?? (this.githubToken ? 'options' : 'none');
+    if (Array.isArray(options.githubTokenCandidates)) {
+      for (const cand of options.githubTokenCandidates) {
+        const tok = cand?.token?.trim();
+        if (tok && !this.githubTokenCandidates.some((x) => x.token === tok)) {
+          this.githubTokenCandidates.push({ token: tok, source: cand.source });
+        }
+      }
+    }
+    if (
+      this.githubToken &&
+      !this.githubTokenCandidates.some((x) => x.token === this.githubToken)
+    ) {
+      this.githubTokenCandidates.unshift({
+        token: this.githubToken,
+        source: this.githubTokenSource,
+      });
+    }
+    this.getLiveGitHubTokenCandidates = options.getLiveGitHubTokenCandidates;
+    this.onAuthFailureRefreshToken = options.onAuthFailureRefreshToken;
     this.githubOwner = options.githubOwner?.trim();
     this.githubRepo = options.githubRepo?.trim();
     this.githubBranch = options.githubBranch?.trim() || 'main';
@@ -678,12 +713,104 @@ export class PersistentDataStore {
     this.bidirectionalManager = this.createBidirectionalManager();
   }
 
+  public getKnownSecretsForRedaction(): string[] {
+    const secrets = new Set<string>();
+    if (this.githubToken) secrets.add(this.githubToken);
+    for (const c of this.githubTokenCandidates) {
+      if (c.token) secrets.add(c.token);
+    }
+    for (const bad of this.invalidatedGitHubTokens) {
+      if (bad) secrets.add(bad);
+    }
+    return Array.from(secrets);
+  }
+
   // Çalışan sunucuda GitHub token'ını değiştirir; yönetici token'ı getGitHubConfig
   // üzerinden canlı okuduğu için yeniden başlatma gerekmez.
-  public updateGitHubToken(token: string): void {
+  public updateGitHubToken(token: string, source?: TokenSourceKind): void {
     const trimmed = (token || '').trim();
-    if (!trimmed || trimmed === this.githubToken) return;
+    if (!trimmed) return;
+    this.invalidatedGitHubTokens.delete(trimmed);
+    const nextSource: TokenSourceKind =
+      source ??
+      (trimmed === this.githubToken
+        ? this.githubTokenSource
+        : 'file:.env:CINETRACK_GITHUB_PAT');
     this.githubToken = trimmed;
+    this.githubTokenSource = nextSource;
+    if (!this.githubTokenCandidates.some((c) => c.token === trimmed)) {
+      this.githubTokenCandidates.unshift({ token: trimmed, source: nextSource });
+    }
+  }
+
+  /**
+   * HTTP 401 (Bad credentials / süresi dolmuş veya gölgelenmiş token) alındığında
+   * sıradaki geçerli adaya (.env.local / .env veya Kimlik Yöneticisi) otomatik geçiş yapar.
+   */
+  public async recoverGitHubTokenOn401(failedToken?: string): Promise<string | null> {
+    const bad = (failedToken || this.githubToken || '').trim();
+    if (bad) {
+      this.invalidatedGitHubTokens.add(bad);
+    }
+
+    if (
+      this.githubToken &&
+      this.githubToken !== bad &&
+      !this.invalidatedGitHubTokens.has(this.githubToken)
+    ) {
+      return this.githubToken;
+    }
+
+    const combinedCandidates: GitHubTokenCandidateInfo[] = [...this.githubTokenCandidates];
+    if (typeof this.getLiveGitHubTokenCandidates === 'function') {
+      try {
+        for (const liveCand of this.getLiveGitHubTokenCandidates()) {
+          const tok = liveCand?.token?.trim();
+          if (tok && tok !== bad && !combinedCandidates.some((c) => c.token === tok)) {
+            this.invalidatedGitHubTokens.delete(tok);
+            combinedCandidates.push({ token: tok, source: liveCand.source });
+          }
+        }
+      } catch {
+        // canlı .env okuma hatası yoksayılır
+      }
+    }
+
+    const nextCandidate = combinedCandidates.find(
+      (c) => c.token && c.token !== bad && !this.invalidatedGitHubTokens.has(c.token)
+    );
+    if (nextCandidate) {
+      this.githubToken = nextCandidate.token;
+      this.githubTokenSource = nextCandidate.source;
+      if (!this.githubTokenCandidates.some((c) => c.token === nextCandidate.token)) {
+        this.githubTokenCandidates.push(nextCandidate);
+      }
+      return nextCandidate.token;
+    }
+
+    if (typeof this.onAuthFailureRefreshToken === 'function' && bad) {
+      try {
+        const refreshed = await this.onAuthFailureRefreshToken(bad);
+        const refreshedTok =
+          typeof refreshed === 'string' ? refreshed.trim() : refreshed?.token?.trim() || '';
+        const refreshedSource: TokenSourceKind =
+          typeof refreshed === 'object' && refreshed?.source
+            ? refreshed.source
+            : 'file:.env:CINETRACK_GITHUB_PAT';
+        if (
+          refreshedTok &&
+          refreshedTok !== bad &&
+          !this.invalidatedGitHubTokens.has(refreshedTok)
+        ) {
+          this.updateGitHubToken(refreshedTok, refreshedSource);
+          return refreshedTok;
+        }
+      } catch {
+        // Kimlik yöneticisi hatası yoksayılır
+      }
+    }
+
+    return null;
   }
 
   public isSyncBusy(): boolean {
@@ -1127,23 +1254,40 @@ export class PersistentDataStore {
     }
 
     const apiUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/data/catalog/manifest.json`;
-    const baseHeaders = {
-      Authorization: `Bearer ${this.githubToken}`,
-      Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'CineTrack-Sync-Agent',
-    };
 
     if (!access.isEmptyRepo && !options.forceWriteProbe) {
       try {
-        const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
-          headers: baseHeaders,
+        let activeTok = this.githubToken;
+        let getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
+          headers: {
+            Authorization: `Bearer ${activeTok}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'CineTrack-Sync-Agent',
+          },
         });
+        if (getRes.status === 401) {
+          const recovered = await this.recoverGitHubTokenOn401(activeTok);
+          if (recovered) {
+            activeTok = recovered;
+            getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(this.githubBranch)}`, {
+              headers: {
+                Authorization: `Bearer ${activeTok}`,
+                Accept: 'application/vnd.github.v3+json',
+                'User-Agent': 'CineTrack-Sync-Agent',
+              },
+            });
+          }
+        }
         if (getRes.status === 200) {
           const resJson = await getRes.json().catch(() => null);
           let readBackHash: string | null = null;
           if (resJson && typeof resJson.content === 'string' && resJson.encoding !== 'none') {
             const decoded = Buffer.from(resJson.content.replace(/\s+/g, ''), 'base64').toString('utf8');
             readBackHash = hashContent(decoded.trim());
+          }
+          if (this.lastError) {
+            this.lastError = null;
+            this.persistSyncState();
           }
           return {
             ok: true,
@@ -1167,7 +1311,10 @@ export class PersistentDataStore {
           readBackHash: null,
           access,
           verifiedReadBack: false,
-          error: redactSecrets(`GitHub manifest okuma ağ hatası: ${e?.message || e}`, [this.githubToken]),
+          error: redactSecrets(
+            `GitHub manifest okuma ağ hatası: ${e?.message || e}`,
+            this.getKnownSecretsForRedaction()
+          ),
           errorCategory: 'network_error',
         };
       }
@@ -1193,6 +1340,11 @@ export class PersistentDataStore {
         error: commitRes.error,
         errorCategory: commitRes.errorCategory,
       };
+    }
+
+    if (this.lastError) {
+      this.lastError = null;
+      this.persistSyncState();
     }
 
     return {
@@ -2075,55 +2227,107 @@ export class PersistentDataStore {
       };
     }
 
-    const baseHeaders = {
-      Authorization: `Bearer ${this.githubToken}`,
-      Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'CineTrack-Sync-Agent',
-    };
+    const maxAuthAttempts = 6;
+    for (let authAttempt = 1; authAttempt <= maxAuthAttempts; authAttempt++) {
+      const activeToken = this.githubToken;
+      if (!activeToken) break;
 
-    // 1. Repo varlık ve erişim kontrolü
-    const repoUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}`;
-    let repoMeta: any = null;
+      const baseHeaders = {
+        Authorization: `Bearer ${activeToken}`,
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'CineTrack-Sync-Agent',
+      };
 
-    try {
-      const res = await fetch(repoUrl, { headers: baseHeaders });
-      if (res.status === 404) {
-        const notFoundMsg = redactSecrets(
-          `Uzak GitHub deposu (${this.githubOwner}/${this.githubRepo}) bulunamadı veya erişilemedi (HTTP 404). Özel (private) depo kullanıyorsanız GitHub Fine-Grained Personal Access Token izinlerinde bu deponun seçili olduğunu ve 'Contents: Read and write' yetkisine sahip olduğunu doğrulayın.`,
-          [this.githubToken]
-        );
-        return {
-          ok: false,
-          accessible: false,
-          repoExists: false,
-          branchExists: false,
-          isEmptyRepo: false,
-          isPrivate: !this.isPublicRepo,
-          effectiveIsPublicRepo: this.isPublicRepo,
-          configuredBranch: this.githubBranch,
-          hasPushPermission: false,
-          error: notFoundMsg,
-          errorCategory: 'not_found',
-        };
-      }
+      // 1. Repo varlık ve erişim kontrolü
+      const repoUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}`;
+      let repoMeta: any = null;
 
-      if (res.status === 401 || res.status === 403) {
-        const errJson = await res.json().catch(() => ({}));
-        const rawMsg = String(errJson?.message || '');
-        const acceptedPerms = res.headers.get('x-accepted-github-permissions');
-        const category = classifyHttpFailure(res.status, res.headers, rawMsg);
-        let guidance = '';
-        if (res.status === 401) {
-          guidance =
-            ' (GitHub token geçersiz, süresi dolmuş veya iptal edilmiş/yenilenmiş. Lütfen GitHub üzerinde geçerli bir Fine-grained PAT oluşturup CINETRACK_GITHUB_PAT ortam değişkenini güncelleyin)';
-        } else if (
-          res.status === 403 &&
-          category === 'auth_error'
-        ) {
-          guidance = ` (Fine-grained PAT ayarlarında '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' izninin seçili olduğunu doğrulayın${
-            acceptedPerms ? `; beklenen izin: ${acceptedPerms}` : ''
-          })`;
+      try {
+        const res = await fetch(repoUrl, { headers: baseHeaders });
+        if (res.status === 404) {
+          const notFoundMsg = redactSecrets(
+            `Uzak GitHub deposu (${this.githubOwner}/${this.githubRepo}) bulunamadı veya erişilemedi (HTTP 404). Özel (private) depo kullanıyorsanız GitHub Fine-Grained Personal Access Token izinlerinde bu deponun seçili olduğunu ve 'Contents: Read and write' yetkisine sahip olduğunu doğrulayın.`,
+            this.getKnownSecretsForRedaction()
+          );
+          return {
+            ok: false,
+            accessible: false,
+            repoExists: false,
+            branchExists: false,
+            isEmptyRepo: false,
+            isPrivate: !this.isPublicRepo,
+            effectiveIsPublicRepo: this.isPublicRepo,
+            configuredBranch: this.githubBranch,
+            hasPushPermission: false,
+            error: notFoundMsg,
+            errorCategory: 'not_found',
+          };
         }
+
+        if (res.status === 401 && authAttempt < maxAuthAttempts) {
+          const recovered = await this.recoverGitHubTokenOn401(activeToken);
+          if (recovered) {
+            continue;
+          }
+        }
+
+        if (res.status === 401 || res.status === 403) {
+          const errJson = await res.json().catch(() => ({}));
+          const rawMsg = String(errJson?.message || '');
+          const acceptedPerms = res.headers.get('x-accepted-github-permissions');
+          const category = classifyHttpFailure(res.status, res.headers, rawMsg);
+          let guidance = '';
+          if (res.status === 401) {
+            guidance =
+              ' (GitHub token geçersiz, süresi dolmuş veya iptal edilmiş/yenilenmiş. Lütfen GitHub üzerinde geçerli bir Fine-grained PAT oluşturup CINETRACK_GITHUB_PAT ortam değişkenini güncelleyin)';
+          } else if (res.status === 403 && category === 'auth_error') {
+            guidance = ` (Fine-grained PAT ayarlarında '${this.githubOwner}/${this.githubRepo}' deposu için 'Contents: Read and write' izninin seçili olduğunu doğrulayın${
+              acceptedPerms ? `; beklenen izin: ${acceptedPerms}` : ''
+            })`;
+          }
+          return {
+            ok: false,
+            accessible: false,
+            repoExists: false,
+            branchExists: false,
+            isEmptyRepo: false,
+            isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+            effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
+            configuredBranch: this.githubBranch,
+            hasPushPermission: false,
+            acceptedPermissionsHeader: acceptedPerms,
+            error: redactSecrets(
+              `GitHub erişim hatası (${category}): HTTP ${res.status}${rawMsg ? ` - ${rawMsg}` : ''}${guidance}`,
+              this.getKnownSecretsForRedaction()
+            ),
+            errorCategory: category,
+          };
+        }
+
+        if (res.status !== 200) {
+          const errJson = await res.json().catch(() => ({}));
+          const rawMsg = String(errJson?.message || '');
+          const category = classifyHttpFailure(res.status, res.headers, rawMsg);
+          return {
+            ok: false,
+            accessible: false,
+            repoExists: false,
+            branchExists: false,
+            isEmptyRepo: false,
+            isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+            effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
+            configuredBranch: this.githubBranch,
+            hasPushPermission: false,
+            error: redactSecrets(
+              `GitHub depo sorgulanamadı (${category}): HTTP ${res.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
+              this.getKnownSecretsForRedaction()
+            ),
+            errorCategory: category,
+          };
+        }
+
+        repoMeta = await res.json().catch(() => null);
+      } catch (e: any) {
         return {
           ok: false,
           accessible: false,
@@ -2134,19 +2338,15 @@ export class PersistentDataStore {
           effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
           configuredBranch: this.githubBranch,
           hasPushPermission: false,
-          acceptedPermissionsHeader: acceptedPerms,
           error: redactSecrets(
-            `GitHub erişim hatası (${category}): HTTP ${res.status}${rawMsg ? ` - ${rawMsg}` : ''}${guidance}`,
-            [this.githubToken]
+            `GitHub sunucusuna bağlanılamadı: ${e?.message || 'Ağ hatası'}`,
+            this.getKnownSecretsForRedaction()
           ),
-          errorCategory: category,
+          errorCategory: 'network_error',
         };
       }
 
-      if (res.status !== 200) {
-        const errJson = await res.json().catch(() => ({}));
-        const rawMsg = String(errJson?.message || '');
-        const category = classifyHttpFailure(res.status, res.headers, rawMsg);
+      if (!isPlainRecordObject(repoMeta)) {
         return {
           ok: false,
           accessible: false,
@@ -2157,128 +2357,50 @@ export class PersistentDataStore {
           effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
           configuredBranch: this.githubBranch,
           hasPushPermission: false,
-          error: redactSecrets(
-            `GitHub depo sorgulanamadı (${category}): HTTP ${res.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
-            [this.githubToken]
-          ),
-          errorCategory: category,
+          error: 'GitHub depo yanıtı geçerli JSON formatında değil.',
+          errorCategory: 'malformed_response',
         };
       }
 
-      repoMeta = await res.json().catch(() => null);
-    } catch (e: any) {
-      return {
-        ok: false,
-        accessible: false,
-        repoExists: false,
-        branchExists: false,
-        isEmptyRepo: false,
-        isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
-        effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
-        configuredBranch: this.githubBranch,
-        hasPushPermission: false,
-        error: redactSecrets(
-          `GitHub sunucusuna bağlanılamadı: ${e?.message || 'Ağ hatası'}`,
-          [this.githubToken]
-        ),
-        errorCategory: 'network_error',
-      };
-    }
+      const isRemotePrivate = repoMeta.private === true;
+      const remoteIsPublic = repoMeta.private === false;
+      this.lastObservedRemotePublic = remoteIsPublic;
+      const warning = this.buildPublicVisibilityWarning(remoteIsPublic);
 
-    if (!isPlainRecordObject(repoMeta)) {
-      return {
-        ok: false,
-        accessible: false,
-        repoExists: false,
-        branchExists: false,
-        isEmptyRepo: false,
-        isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
-        effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
-        configuredBranch: this.githubBranch,
-        hasPushPermission: false,
-        error: 'GitHub depo yanıtı geçerli JSON formatında değil.',
-        errorCategory: 'malformed_response',
-      };
-    }
+      const effectiveIsPublicRepo = remoteIsPublic;
+      this.repoVisibilityWarning = warning;
 
-    const isRemotePrivate = repoMeta.private === true;
-    const remoteIsPublic = repoMeta.private === false;
-    this.lastObservedRemotePublic = remoteIsPublic;
-    const warning = this.buildPublicVisibilityWarning(remoteIsPublic);
+      // Yetki kontrolü (permissions.push)
+      const hasPushPermission =
+        repoMeta.permissions && typeof repoMeta.permissions.push === 'boolean'
+          ? repoMeta.permissions.push
+          : true;
 
-    const effectiveIsPublicRepo = remoteIsPublic;
-    this.repoVisibilityWarning = warning;
-
-    // Yetki kontrolü (permissions.push)
-    const hasPushPermission =
-      repoMeta.permissions && typeof repoMeta.permissions.push === 'boolean'
-        ? repoMeta.permissions.push
-        : true;
-
-    if (repoMeta.permissions && repoMeta.permissions.push === false) {
-      return {
-        ok: false,
-        accessible: true,
-        repoExists: true,
-        branchExists: false,
-        isEmptyRepo: false,
-        isPrivate: isRemotePrivate,
-        effectiveIsPublicRepo,
-        defaultBranch: repoMeta.default_branch,
-        configuredBranch: this.githubBranch,
-        hasPushPermission: false,
-        warning,
-        error: `GitHub token bu depoda ('${this.githubOwner}/${this.githubRepo}') yazma (push) yetkisine sahip değil. Token ayarlarında 'Contents: Read and write' iznini kontrol edin.`,
-        errorCategory: 'auth_error',
-      };
-    }
-
-    // 2. Dal (branch) kontrolü
-    const branchUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/branches/${encodeURIComponent(
-      this.githubBranch
-    )}`;
-    try {
-      const branchRes = await fetch(branchUrl, { headers: baseHeaders });
-      if (branchRes.status === 200) {
+      if (repoMeta.permissions && repoMeta.permissions.push === false) {
         return {
-          ok: true,
+          ok: false,
           accessible: true,
           repoExists: true,
-          branchExists: true,
+          branchExists: false,
           isEmptyRepo: false,
           isPrivate: isRemotePrivate,
           effectiveIsPublicRepo,
           defaultBranch: repoMeta.default_branch,
           configuredBranch: this.githubBranch,
-          hasPushPermission,
+          hasPushPermission: false,
           warning,
+          error: `GitHub token bu depoda ('${this.githubOwner}/${this.githubRepo}') yazma (push) yetkisine sahip değil. Token ayarlarında 'Contents: Read and write' iznini kontrol edin.`,
+          errorCategory: 'auth_error',
         };
       }
 
-      if (branchRes.status === 404) {
-        // Dal bulunamadı; depo tamamen boş mu (0 commit) kontrol et
-        const branchesListUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/branches?per_page=1`;
-        const listRes = await fetch(branchesListUrl, { headers: baseHeaders });
-        if (listRes.status === 200) {
-          const listData = await listRes.json().catch(() => []);
-          if (Array.isArray(listData) && listData.length === 0) {
-            // Boş depo: ilk commit henüz atılmamış, ilk yazma varsayılan dalı oluşturacak
-            return {
-              ok: true,
-              accessible: true,
-              repoExists: true,
-              branchExists: false,
-              isEmptyRepo: true,
-              isPrivate: isRemotePrivate,
-              effectiveIsPublicRepo,
-              defaultBranch: repoMeta.default_branch,
-              configuredBranch: this.githubBranch,
-              hasPushPermission,
-              warning,
-            };
-          }
-        } else if (listRes.status === 404) {
-          // /branches uç noktası mock ortamında taklit edilmemişse, repo meta 200 olduğu için dalı varsayılan kabul et
+      // 2. Dal (branch) kontrolü
+      const branchUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/branches/${encodeURIComponent(
+        this.githubBranch
+      )}`;
+      try {
+        const branchRes = await fetch(branchUrl, { headers: baseHeaders });
+        if (branchRes.status === 200) {
           return {
             ok: true,
             accessible: true,
@@ -2294,34 +2416,102 @@ export class PersistentDataStore {
           };
         }
 
-        // Depo boş değil ama belirtilen dal mevcut değil!
-        const branchErrMsg = redactSecrets(
-          `Yapılandırılmış dal ('${this.githubBranch}') depoda bulunamadı (HTTP 404). Mevcut varsayılan dal: '${
-            repoMeta.default_branch || 'bilinmiyor'
-          }'.`,
-          [this.githubToken]
-        );
-        return {
-          ok: false,
-          accessible: true,
-          repoExists: true,
-          branchExists: false,
-          isEmptyRepo: false,
-          isPrivate: isRemotePrivate,
-          effectiveIsPublicRepo,
-          defaultBranch: repoMeta.default_branch,
-          configuredBranch: this.githubBranch,
-          hasPushPermission,
-          warning,
-          error: branchErrMsg,
-          errorCategory: 'not_found',
-        };
-      }
+        if (branchRes.status === 401 && authAttempt < maxAuthAttempts) {
+          const recovered = await this.recoverGitHubTokenOn401(activeToken);
+          if (recovered) {
+            continue;
+          }
+        }
 
-      if (branchRes.status === 401 || branchRes.status === 403) {
-        const errJson = await branchRes.json().catch(() => ({}));
-        const rawMsg = String(errJson?.message || '');
-        const category = classifyHttpFailure(branchRes.status, branchRes.headers, rawMsg);
+        if (branchRes.status === 404) {
+          // Dal bulunamadı; depo tamamen boş mu (0 commit) kontrol et
+          const branchesListUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/branches?per_page=1`;
+          const listRes = await fetch(branchesListUrl, { headers: baseHeaders });
+          if (listRes.status === 200) {
+            const listData = await listRes.json().catch(() => []);
+            if (Array.isArray(listData) && listData.length === 0) {
+              // Boş depo: ilk commit henüz atılmamış, ilk yazma varsayılan dalı oluşturacak
+              return {
+                ok: true,
+                accessible: true,
+                repoExists: true,
+                branchExists: false,
+                isEmptyRepo: true,
+                isPrivate: isRemotePrivate,
+                effectiveIsPublicRepo,
+                defaultBranch: repoMeta.default_branch,
+                configuredBranch: this.githubBranch,
+                hasPushPermission,
+                warning,
+              };
+            }
+          } else if (listRes.status === 404) {
+            // /branches uç noktası mock ortamında taklit edilmemişse, repo meta 200 olduğu için dalı varsayılan kabul et
+            return {
+              ok: true,
+              accessible: true,
+              repoExists: true,
+              branchExists: true,
+              isEmptyRepo: false,
+              isPrivate: isRemotePrivate,
+              effectiveIsPublicRepo,
+              defaultBranch: repoMeta.default_branch,
+              configuredBranch: this.githubBranch,
+              hasPushPermission,
+              warning,
+            };
+          }
+
+          // Depo boş değil ama belirtilen dal mevcut değil!
+          const branchErrMsg = redactSecrets(
+            `Yapılandırılmış dal ('${this.githubBranch}') depoda bulunamadı (HTTP 404). Mevcut varsayılan dal: '${
+              repoMeta.default_branch || 'bilinmiyor'
+            }'.`,
+            this.getKnownSecretsForRedaction()
+          );
+          return {
+            ok: false,
+            accessible: true,
+            repoExists: true,
+            branchExists: false,
+            isEmptyRepo: false,
+            isPrivate: isRemotePrivate,
+            effectiveIsPublicRepo,
+            defaultBranch: repoMeta.default_branch,
+            configuredBranch: this.githubBranch,
+            hasPushPermission,
+            warning,
+            error: branchErrMsg,
+            errorCategory: 'not_found',
+          };
+        }
+
+        if (branchRes.status === 401 || branchRes.status === 403) {
+          const errJson = await branchRes.json().catch(() => ({}));
+          const rawMsg = String(errJson?.message || '');
+          const category = classifyHttpFailure(branchRes.status, branchRes.headers, rawMsg);
+          return {
+            ok: false,
+            accessible: false,
+            repoExists: true,
+            branchExists: false,
+            isEmptyRepo: false,
+            isPrivate: isRemotePrivate,
+            effectiveIsPublicRepo,
+            defaultBranch: repoMeta.default_branch,
+            configuredBranch: this.githubBranch,
+            hasPushPermission,
+            warning,
+            error: redactSecrets(
+              `Dal kontrolünde yetki hatası (${category}): HTTP ${branchRes.status}${
+                rawMsg ? ` - ${rawMsg}` : ''
+              }`,
+              this.getKnownSecretsForRedaction()
+            ),
+            errorCategory: category,
+          };
+        }
+      } catch (e: any) {
         return {
           ok: false,
           accessible: false,
@@ -2335,20 +2525,18 @@ export class PersistentDataStore {
           hasPushPermission,
           warning,
           error: redactSecrets(
-            `Dal kontrolünde yetki hatası (${category}): HTTP ${branchRes.status}${
-              rawMsg ? ` - ${rawMsg}` : ''
-            }`,
-            [this.githubToken]
+            `Dal kontrolünde ağ hatası: ${e?.message || 'bağlantı hatası'}`,
+            this.getKnownSecretsForRedaction()
           ),
-          errorCategory: category,
+          errorCategory: 'network_error',
         };
       }
-    } catch (e: any) {
+
       return {
-        ok: false,
-        accessible: false,
+        ok: true,
+        accessible: true,
         repoExists: true,
-        branchExists: false,
+        branchExists: true,
         isEmptyRepo: false,
         isPrivate: isRemotePrivate,
         effectiveIsPublicRepo,
@@ -2356,25 +2544,21 @@ export class PersistentDataStore {
         configuredBranch: this.githubBranch,
         hasPushPermission,
         warning,
-        error: redactSecrets(`Dal kontrolünde ağ hatası: ${e?.message || 'bağlantı hatası'}`, [
-          this.githubToken,
-        ]),
-        errorCategory: 'network_error',
       };
     }
 
     return {
-      ok: true,
-      accessible: true,
-      repoExists: true,
-      branchExists: true,
+      ok: false,
+      accessible: false,
+      repoExists: false,
+      branchExists: false,
       isEmptyRepo: false,
-      isPrivate: isRemotePrivate,
-      effectiveIsPublicRepo,
-      defaultBranch: repoMeta.default_branch,
+      isPrivate: !this.getEffectiveConfiguredIsPublicRepo(),
+      effectiveIsPublicRepo: this.getEffectiveConfiguredIsPublicRepo(),
       configuredBranch: this.githubBranch,
-      hasPushPermission,
-      warning,
+      hasPushPermission: false,
+      error: 'GitHub kimlik doğrulaması tüm aday anahtarlarla başarısız oldu.',
+      errorCategory: 'auth_error',
     };
   }
 
@@ -2448,11 +2632,11 @@ export class PersistentDataStore {
     }
 
     const apiUrl = `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/${repoPath}`;
-    const baseHeaders = {
-      Authorization: `Bearer ${this.githubToken}`,
+    const makeAuthHeaders = (tok: string) => ({
+      Authorization: `Bearer ${tok}`,
       Accept: 'application/vnd.github.v3+json',
       'User-Agent': 'CineTrack-Sync-Agent',
-    };
+    });
     const targetBranch = options?.branchToUse || this.githubBranch;
     const isEmptyRepo = Boolean(options?.isEmptyRepo);
 
@@ -2462,9 +2646,19 @@ export class PersistentDataStore {
     // 1. Fetch current remote file SHA & content (skip ref param if empty repo)
     if (!isEmptyRepo) {
       try {
-        const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(targetBranch)}`, {
-          headers: baseHeaders,
+        let usedGetToken = this.githubToken;
+        let getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(targetBranch)}`, {
+          headers: makeAuthHeaders(usedGetToken),
         });
+        if (getRes.status === 401) {
+          const recovered = await this.recoverGitHubTokenOn401(usedGetToken);
+          if (recovered) {
+            usedGetToken = recovered;
+            getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(targetBranch)}`, {
+              headers: makeAuthHeaders(usedGetToken),
+            });
+          }
+        }
         if (getRes.status === 200) {
           let fileData: any = null;
           try {
@@ -2507,7 +2701,7 @@ export class PersistentDataStore {
               `https://api.github.com/repos/${this.githubOwner}/${this.githubRepo}/contents/${parentDir}?ref=${encodeURIComponent(
                 targetBranch
               )}`,
-              { headers: baseHeaders }
+              { headers: makeAuthHeaders(this.githubToken) }
             );
             if (dirRes.status === 200) {
               const list = await dirRes.json().catch(() => null);
@@ -2529,7 +2723,7 @@ export class PersistentDataStore {
               ok: false,
               error: redactSecrets(
                 `GitHub okuma hatası (${category}): HTTP ${getRes.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
-                [this.githubToken]
+                this.getKnownSecretsForRedaction()
               ),
               errorCategory: category,
             };
@@ -2542,7 +2736,7 @@ export class PersistentDataStore {
             ok: false,
             error: redactSecrets(
               `GitHub okuma hatası (${category}): HTTP ${getRes.status}${rawMsg ? ` - ${rawMsg}` : ''}`,
-              [this.githubToken]
+              this.getKnownSecretsForRedaction()
             ),
             errorCategory: category,
           };
@@ -2552,7 +2746,7 @@ export class PersistentDataStore {
           ok: false,
           error: redactSecrets(
             `GitHub ağ bağlantı hatası: ${e?.message || 'bağlantı kurulamadı'}`,
-            [this.githubToken]
+            this.getKnownSecretsForRedaction()
           ),
           errorCategory: 'network_error',
         };
@@ -2570,9 +2764,11 @@ export class PersistentDataStore {
       };
     }
 
-    // 3. Put content (with bounded retry up to 3 attempts on 409 conflict or transient network error)
+    // 3. Put content (with bounded retry up to 3 attempts on 409 conflict, 401 token failover, or transient network error)
     const maxAttempts = 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const activePutToken = this.githubToken || '';
+      const baseHeaders = makeAuthHeaders(activePutToken);
       const payload: Record<string, any> = {
         message: commitMessage,
         content: Buffer.from(contentString, 'utf8').toString('base64'),
@@ -2589,6 +2785,13 @@ export class PersistentDataStore {
           headers: { ...baseHeaders, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+
+        if (putRes.status === 401 && attempt < maxAttempts) {
+          const recovered = await this.recoverGitHubTokenOn401(activePutToken);
+          if (recovered) {
+            continue;
+          }
+        }
 
         if (putRes.status === 200 || putRes.status === 201) {
           let resData: any = null;
@@ -2723,7 +2926,7 @@ export class PersistentDataStore {
             `GitHub yazma reddedildi (${category}): HTTP ${putRes.status}${
               errDetail ? ` - ${errDetail}` : ''
             }`,
-            [this.githubToken]
+            this.getKnownSecretsForRedaction()
           ),
           errorCategory: category,
         };
@@ -2733,7 +2936,7 @@ export class PersistentDataStore {
             ok: false,
             error: redactSecrets(
               `GitHub ağ hatası (${maxAttempts} deneme başarısız): ${e?.message || 'bağlantı hatası'}`,
-              [this.githubToken]
+              this.getKnownSecretsForRedaction()
             ),
             errorCategory: 'network_error',
           };
