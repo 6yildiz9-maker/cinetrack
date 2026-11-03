@@ -434,6 +434,17 @@ export function App() {
     void saveUserListsIdb(activeProfileId, savedItems);
   }, [activeProfileId, savedItems, preferences]);
 
+  // Stok görünümünde listeye eklenen içerik sayaç düşmesine rağmen ekranda kalıyordu; gridi anında arındır
+  useEffect(() => {
+    if (tab !== 'discover' || category !== 'stock') return;
+    setCatalogItems((prev) => {
+      const filtered = prev.filter((it) =>
+        isCandidateEligibleForStock(it, savedItems, preferences)
+      );
+      return filtered.length === prev.length ? prev : filtered;
+    });
+  }, [savedItems, preferences, tab, category]);
+
   // IMP-17 (IDB Schema Migration) + IMP-16 (Weekly Auto-Backup Check) + IMP-11 (Idle Stock Enrichment)
   useEffect(() => {
     void runIdbSchemaMigrationsOnce();
