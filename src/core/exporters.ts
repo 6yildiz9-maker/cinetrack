@@ -239,19 +239,53 @@ export function parseCsvRows(csvText: string): string[][] {
   return rows;
 }
 
+export interface CsvExportProfileInfo {
+  profile: Profile | null;
+  activeProfileId?: string;
+}
+
+const CSV_CORE_HEADERS = [
+  'Title',
+  'Year',
+  'Rating10',
+  'WatchedDate',
+  'Status',
+  'MediaType',
+  'tmdbID',
+];
+
+const CSV_USER_DATA_HEADERS = [
+  'AddedDate',
+  'FirstAddedDate',
+  'UpdatedDate',
+  'CompletedDate',
+  'RatedDate',
+  'EpisodesWatched',
+  'CurrentSeason',
+  'NextEpisode',
+  'SeasonProgress',
+  'TotalWatchTimeMinutes',
+  'Custom',
+];
+
+function toCsvDate(value: string | undefined): string {
+  return value ? String(value).slice(0, 19).replace('T', ' ') : '';
+}
+
+function toCsvNumber(value: number | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+}
+
 /**
  * Exports profile items into Letterboxd / CineTrack compatible CSV format.
+ * İlk 7 sütun Letterboxd/CineTrack uyumluluğu için sabittir; ardından kullanıcıya ait
+ * tüm izleme verileri (tarihler, ilerleme, süre) ve dosya sonunda profil tercihleri gelir.
  */
-export function exportItemsToCsv(items: SavedItem[]): string {
-  const headers = [
-    'Title',
-    'Year',
-    'Rating10',
-    'WatchedDate',
-    'Status',
-    'MediaType',
-    'tmdbID',
-  ];
+export function exportItemsToCsv(
+  items: SavedItem[],
+  profileInfo?: CsvExportProfileInfo | null
+): string {
+  const headers = [...CSV_CORE_HEADERS, ...CSV_USER_DATA_HEADERS];
   const lines = [headers.join(',')];
 
   for (const item of items) {
@@ -261,6 +295,10 @@ export function exportItemsToCsv(items: SavedItem[]): string {
     const rating10 = typeof item.personal_rating === 'number' && item.personal_rating > 0 ? item.personal_rating : '';
     const watchedDate = (item.updatedAt || item.addedAt || '').slice(0, 10);
     const tmdbId = typeof item.id === 'number' || /^\d+$/.test(String(item.id)) ? String(item.id) : '';
+    const seasonProgress =
+      item.season_progress && Object.keys(item.season_progress).length > 0
+        ? JSON.stringify(item.season_progress)
+        : '';
     lines.push(
       [
         escapeCsvCell(title),
@@ -270,8 +308,48 @@ export function exportItemsToCsv(items: SavedItem[]): string {
         escapeCsvCell(item.status),
         escapeCsvCell(item.media_type),
         escapeCsvCell(tmdbId),
+        escapeCsvCell(toCsvDate(item.addedAt)),
+        escapeCsvCell(toCsvDate(item.firstAddedAt)),
+        escapeCsvCell(toCsvDate(item.updatedAt)),
+        escapeCsvCell(toCsvDate(item.completedAt)),
+        escapeCsvCell(toCsvDate(item.ratedAt)),
+        escapeCsvCell(toCsvNumber(item.episodes_watched)),
+        escapeCsvCell(toCsvNumber(item.current_season)),
+        escapeCsvCell(toCsvNumber(item.next_episode)),
+        escapeCsvCell(seasonProgress),
+        escapeCsvCell(toCsvNumber(item.totalWatchTimeMinutes)),
+        escapeCsvCell(item.custom ? '1' : ''),
       ].join(',')
     );
+  }
+
+  const profile = profileInfo?.profile || null;
+  if (profile) {
+    const pref = profile.preferences || {};
+    lines.push('');
+    lines.push('#CINETRACK-PROFILE');
+    lines.push(`#ProfileId,${escapeCsvCell(profile.id || '')}`);
+    lines.push(`#ProfileName,${escapeCsvCell(profile.name || '')}`);
+    lines.push(`#ProfileCreatedAt,${escapeCsvCell(toCsvDate(profile.createdAt))}`);
+    lines.push(`#ActiveProfileId,${escapeCsvCell(profileInfo?.activeProfileId || profile.id || '')}`);
+    lines.push(`#ExportDate,${escapeCsvCell(new Date().toISOString())}`);
+    lines.push(`#Mood,${escapeCsvCell(pref.mood || '')}`);
+    lines.push(`#Providers,${escapeCsvCell((Array.isArray(pref.providers) ? pref.providers : []).join('|'))}`);
+    lines.push(`#Disliked,${escapeCsvCell((Array.isArray(pref.disliked) ? pref.disliked : []).join('|'))}`);
+    lines.push(`#Hidden,${escapeCsvCell((Array.isArray(pref.hidden) ? pref.hidden : []).join('|'))}`);
+    lines.push(`#Reminders,${escapeCsvCell(pref.reminders === false ? '0' : '1')}`);
+    lines.push(`#Notified,${escapeCsvCell((Array.isArray(pref.notified) ? pref.notified : []).join('|'))}`);
+    for (const actor of Array.isArray(profile.favoriteActors) ? profile.favoriteActors : []) {
+      if (!actor || typeof actor !== 'object') continue;
+      const actorFields = [
+        String(actor.id ?? ''),
+        String(actor.name ?? ''),
+        String(actor.character ?? ''),
+        String(actor.profile_path ?? ''),
+      ];
+      lines.push(`#FavoriteActor,${escapeCsvCell(actorFields.join('|'))}`);
+    }
+    lines.push('#END');
   }
 
   return lines.join('\r\n');
@@ -316,6 +394,17 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
   const idxType = findCol('mediatype', 'media_type', 'title type', 'type', 'tür');
   const idxTmdb = findCol('tmdbid', 'tmdb_id', 'tmdb');
   const idxImdbVote = findCol('imdb rating', 'vote_average');
+  const idxAdded = findCol('addeddate');
+  const idxFirstAdded = findCol('firstaddeddate');
+  const idxUpdated = findCol('updateddate');
+  const idxCompleted = findCol('completeddate');
+  const idxRated = findCol('rateddate');
+  const idxEpisodes = findCol('episodeswatched');
+  const idxSeason = findCol('currentseason');
+  const idxNextEpisode = findCol('nextepisode');
+  const idxSeasonProgress = findCol('seasonprogress');
+  const idxWatchMinutes = findCol('totalwatchtimeminutes');
+  const idxCustom = findCol('custom');
 
   let detectedFormat: CsvImportResult['detectedFormat'] = 'generic';
   if (header.includes('tmdbid') && header.includes('rating10')) {
@@ -336,6 +425,9 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
 
   for (let r = 1; r < rows.length; r += 1) {
     const row = rows[r];
+    if (row.length > 0 && String(row[0] || '').startsWith('#')) {
+      continue; // Profil verisi bölümü (#CINETRACK-PROFILE … #END) içe aktarımda atlanır
+    }
     const rawTitle = (row[idxTitle] || '').trim();
     if (!rawTitle) {
       skippedCount += 1;
@@ -388,9 +480,58 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
     seenKeys.add(key);
 
     const rawWatchedDate = idxDate >= 0 ? (row[idxDate] || '').trim() : '';
-    const isoDate = /^\d{4}-\d{2}-\d{2}/.test(rawWatchedDate)
-      ? `${rawWatchedDate.slice(0, 10)}T12:00:00.000Z`
-      : new Date().toISOString();
+
+    const readCsvDate = (idx: number): string | undefined => {
+      if (idx < 0) return undefined;
+      const raw = (row[idx] || '').trim();
+      if (!raw) return undefined;
+      const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}:\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?)?$/.exec(raw);
+      if (!m) return undefined;
+      const [, datePart, timePart, zone] = m;
+      if (!timePart) return `${datePart}T12:00:00.000Z`;
+      return `${datePart}T${timePart}.000${zone || 'Z'}`;
+    };
+    const readCsvInt = (idx: number): number | undefined => {
+      if (idx < 0) return undefined;
+      const parsed = Number((row[idx] || '').trim());
+      return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+    };
+    const readCsvFloat = (idx: number): number | undefined => {
+      if (idx < 0) return undefined;
+      const parsed = Number((row[idx] || '').trim());
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+    };
+
+    const isoDate =
+      readCsvDate(idxDate) ??
+      (/^\d{4}-\d{2}-\d{2}/.test(rawWatchedDate)
+        ? `${rawWatchedDate.slice(0, 10)}T12:00:00.000Z`
+        : new Date().toISOString());
+    const addedIso = readCsvDate(idxAdded);
+    const firstAddedIso = readCsvDate(idxFirstAdded);
+    const updatedIso = readCsvDate(idxUpdated);
+    const completedIso = readCsvDate(idxCompleted);
+    const ratedIso = readCsvDate(idxRated);
+    const episodesWatched = readCsvInt(idxEpisodes);
+    const currentSeason = readCsvInt(idxSeason);
+    const nextEpisode = readCsvInt(idxNextEpisode);
+    const watchMinutes = readCsvFloat(idxWatchMinutes);
+    const customFlag = idxCustom >= 0 && (row[idxCustom] || '').trim() === '1' ? true : undefined;
+
+    let seasonProgress: Record<number, number> | undefined;
+    if (idxSeasonProgress >= 0 && (row[idxSeasonProgress] || '').trim()) {
+      try {
+        const parsed = JSON.parse(row[idxSeasonProgress]);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const entries = Object.entries(parsed)
+            .map(([k, v]) => [Number(k), Number(v)] as const)
+            .filter(([k, v]) => Number.isInteger(k) && k >= 0 && Number.isFinite(v));
+          if (entries.length > 0) seasonProgress = Object.fromEntries(entries);
+        }
+      } catch {
+        // Bozuk SeasonProgress değeri yoksayılır
+      }
+    }
 
     const extVote = idxImdbVote >= 0 && Number.isFinite(Number(row[idxImdbVote])) ? Number(row[idxImdbVote]) : 0;
 
@@ -407,9 +548,17 @@ export function importItemsFromCsv(csvText: string): CsvImportResult {
       genre_ids: [],
       status,
       personal_rating: personalRating,
-      addedAt: isoDate,
-      updatedAt: isoDate,
-      custom: numericTmdbId === null,
+      addedAt: addedIso || isoDate,
+      updatedAt: updatedIso || isoDate,
+      ...(firstAddedIso ? { firstAddedAt: firstAddedIso } : {}),
+      ...(completedIso ? { completedAt: completedIso } : {}),
+      ...(ratedIso ? { ratedAt: ratedIso } : {}),
+      ...(episodesWatched !== undefined ? { episodes_watched: episodesWatched } : {}),
+      ...(currentSeason !== undefined ? { current_season: currentSeason } : {}),
+      ...(nextEpisode !== undefined ? { next_episode: nextEpisode } : {}),
+      ...(seasonProgress ? { season_progress: seasonProgress } : {}),
+      ...(watchMinutes !== undefined ? { totalWatchTimeMinutes: watchMinutes } : {}),
+      custom: customFlag ?? numericTmdbId === null,
     };
 
     importedItems.push(item);

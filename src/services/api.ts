@@ -571,6 +571,37 @@ export async function fetchSyncStatus(): Promise<any> {
   }
 }
 
+export interface StockUploadResult {
+  ok: boolean;
+  moviesCount?: number;
+  tvCount?: number;
+  total?: number;
+  duplicatesRemoved?: number;
+  skippedInvalid?: number;
+  preservedExistingEmptyUpload?: boolean;
+  status_message?: string;
+}
+
+/**
+ * Stok içerik deposu anlık görüntüsünü sunucuya yükler (data/stock.json).
+ * Sunucu media:key bazında tekilleştirir; boyut sınırı yoktur.
+ */
+export async function uploadStockSnapshot(payload: {
+  movies?: unknown[];
+  tv?: unknown[];
+}): Promise<StockUploadResult> {
+  try {
+    const res = await fetch('/api/stock/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return (await res.json().catch(() => ({}))) as StockUploadResult;
+  } catch (e: any) {
+    return { ok: false, status_message: e?.message || 'Stok yükleme isteği başarısız oldu.' };
+  }
+}
+
 export interface HybridMergeReportPayload {
   csvRowsParsed: number;
   csvRowsFailed: number;

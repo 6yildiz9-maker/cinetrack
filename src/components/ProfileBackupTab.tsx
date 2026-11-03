@@ -81,7 +81,10 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
   };
 
   const handleExportCsv = () => {
-    const csvContent = exportItemsToCsv(savedItems);
+    const csvContent = exportItemsToCsv(savedItems, {
+      profile: effectiveActiveProfile,
+      activeProfileId,
+    });
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -89,7 +92,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
     link.download = `cinetrack-${activeProfileId}-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setCsvStatus(`${savedItems.length} içerik CSV olarak dışa aktarıldı.`);
+    setCsvStatus(`${savedItems.length} içerik ve tüm profil verileri CSV olarak dışa aktarıldı.`);
   };
 
   const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {

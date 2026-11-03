@@ -831,7 +831,7 @@ test('Faz 10: evaluateRecommendationEngine, Zevk DNA, CSV (Letterboxd/IMDb), ICS
 // YEREL (LOCALHOST) SIFIR ORTAM DEĞİŞKENİ, BUN.LOCK TEMİZLİĞİ VE GOLDEN SKORLAMA
 // ============================================================================
 test('Yerel mimari güvenceleri: bun.lock yoktur, VITE_ sırrı yoktur, CINETRACK_HOST=127.0.0.1 ve sıfır env ile token/rate-limit devre dışıdır', async () => {
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(import.meta.dirname, '..');
 
   // 1. bun.lock temizlenmiş olmalı
   assert.equal(fs.existsSync(path.join(repoRoot, 'bun.lock')), false, 'bun.lock depoda bulunmamalı');
@@ -1256,7 +1256,7 @@ test("Keşfet - 'Listemdekileri Gizle' filtresi: Gündemdekiler, Yüksek Puanlı
   assert.equal(isMediaRegisteredInUserProfile({ id: 509, media_type: 'movie' }, { savedItems, preferences, tasteMap }), false);
 
   // Controls.tsx ve App.tsx entegrasyon kontrolü
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(import.meta.dirname, '..');
   const controlsTsx = fs.readFileSync(path.join(repoRoot, 'src/components/Controls.tsx'), 'utf8');
   const appTsx = fs.readFileSync(path.join(repoRoot, 'src/App.tsx'), 'utf8');
   assert.ok(controlsTsx.includes('Listemdekileri Gizle'), 'Controls.tsx içinde Listemdekileri Gizle etiketi bulunmalı');
@@ -1268,7 +1268,7 @@ test("Keşfet - 'Listemdekileri Gizle' filtresi: Gündemdekiler, Yüksek Puanlı
 // >2 MB YEDEK YÜKLEME, 500+500 KULLANICI HAVUZ İŞLEME VE FAVORİ OYUNCULAR 2 SEKME TESTLERİ
 // ============================================================================
 test('>2 MB Yedek Yükleme Desteği: 2 MB üzeri büyük yedek dosyaları istemci ve sunucu katmanlarında kesintisiz kabul edilir ve kaydedilir', async () => {
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(import.meta.dirname, '..');
   const profileModalTsx = fs.readFileSync(path.join(repoRoot, 'src/components/ProfileModal.tsx'), 'utf8');
   assert.equal(
     profileModalTsx.includes('2_000_000'),
@@ -1651,7 +1651,7 @@ test('Listem > Favori Oyuncular 2 Sekmeli Yapı (Oyuncular & Öneriler) ve Taş�
 
   // UI bileşen doğrulaması: Controls.tsx Favori Oyuncular sekmesinde alt filtre barını gizlemeli,
   // MediaGrid.tsx ise 'Oyuncular' ve 'Öneriler' 2 sekmeli yapıyı ve Öneriler alt barını sunmalı
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(import.meta.dirname, '..');
   const controlsTsx = fs.readFileSync(path.join(repoRoot, 'src/components/Controls.tsx'), 'utf8');
   const mediaGridTsx = fs.readFileSync(path.join(repoRoot, 'src/components/MediaGrid.tsx'), 'utf8');
 

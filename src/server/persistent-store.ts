@@ -1418,6 +1418,128 @@ export class PersistentDataStore {
     return path.join(this.profilesDir, `${safeId}.json`);
   }
 
+  // --- STOCK DEPOT SNAPSHOT OPERATIONS (data/stock.json) ---
+
+  public getStockFilePath(): string {
+    return path.join(this.dataDir, 'stock.json');
+  }
+
+  public readStockSnapshot(): {
+    movies: any[];
+    tv: any[];
+    updatedAt: string;
+    schemaVersion: number;
+  } | null {
+    const filePath = this.getStockFilePath();
+    if (!existsSync(filePath)) return null;
+    const recovery = readJsonFileWithRecovery<any>(filePath, {
+      backupPaths: [`${filePath}.bak`],
+      validate: (raw) =>
+        isPlainRecordObject(raw) && Array.isArray(raw.movies) && Array.isArray(raw.tv)
+          ? raw
+          : null,
+      label: path.basename(filePath),
+      restoreRecoveredToTarget: true,
+    });
+    if (recovery.status !== 'ok' && recovery.status !== 'recovered') return null;
+    return {
+      movies: recovery.data.movies,
+      tv: recovery.data.tv,
+      updatedAt: typeof recovery.data.updatedAt === 'string' ? recovery.data.updatedAt : '',
+      schemaVersion: Number(recovery.data.schemaVersion) || 1,
+    };
+  }
+
+  /**
+   * Stok anlık görüntüsünü sınırsız ve tekilleştirilmiş biçimde kaydeder.
+   * - Aynı media:key (movie:<id> / tv:<id>) ikinci kez gelen kayıtlar atılır (ilk kayıt kazanır).
+   * - Gelen liste boşsa mevcut yedek korunur (yanlışlıkla veri kaybını önler).
+   * - Boyut sınırı YOKTUR; kullanıcının "yedekleme için sınırı olmasın" isteği gereği tüm havuz saklanır.
+   */
+  public async saveStockSnapshotUpload(input: {
+    movies?: unknown[];
+    tv?: unknown[];
+  }): Promise<{
+    ok: boolean;
+    moviesCount: number;
+    tvCount: number;
+    total: number;
+    duplicatesRemoved: number;
+    skippedInvalid: number;
+    preservedExistingEmptyUpload: boolean;
+    message: string;
+  }> {
+    const filePath = this.getStockFilePath();
+    const existing = this.readStockSnapshot();
+    const result = {
+      ok: true,
+      moviesCount: existing?.movies.length ?? 0,
+      tvCount: existing?.tv.length ?? 0,
+      total: (existing?.movies.length ?? 0) + (existing?.tv.length ?? 0),
+      duplicatesRemoved: 0,
+      skippedInvalid: 0,
+      preservedExistingEmptyUpload: false,
+      message: '',
+    };
+
+    const dedupList = (raw: unknown[], namespace: 'movie' | 'tv'): any[] => {
+      const seen = new Set<string>();
+      const out: any[] = [];
+      for (const candidate of raw) {
+        if (!isPlainRecordObject(candidate)) {
+          result.skippedInvalid++;
+          continue;
+        }
+        const id = Number((candidate as any).id);
+        if (!Number.isSafeInteger(id) || id <= 0) {
+          result.skippedInvalid++;
+          continue;
+        }
+        const key = `${namespace}:${id}`;
+        if (seen.has(key)) {
+          result.duplicatesRemoved++;
+          continue;
+        }
+        seen.add(key);
+        out.push(candidate);
+      }
+      return out;
+    };
+
+    let movies = existing?.movies ?? [];
+    let tv = existing?.tv ?? [];
+    if (Array.isArray(input.movies) && input.movies.length > 0) {
+      movies = dedupList(input.movies, 'movie');
+    } else if (Array.isArray(input.movies) && input.movies.length === 0 && movies.length > 0) {
+      result.preservedExistingEmptyUpload = true;
+    }
+    if (Array.isArray(input.tv) && input.tv.length > 0) {
+      tv = dedupList(input.tv, 'tv');
+    } else if (Array.isArray(input.tv) && input.tv.length === 0 && tv.length > 0) {
+      result.preservedExistingEmptyUpload = true;
+    }
+
+    const doc = {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      movies,
+      tv,
+    };
+    await writeJsonFileAtomicAsync(filePath, JSON.stringify(doc, null, 2), {
+      backupPath: `${filePath}.bak`,
+      validateParsed: (raw) =>
+        isPlainRecordObject(raw) && Array.isArray(raw.movies) && Array.isArray(raw.tv),
+    });
+
+    result.moviesCount = movies.length;
+    result.tvCount = tv.length;
+    result.total = movies.length + tv.length;
+    result.message = result.preservedExistingEmptyUpload
+      ? 'Boş stok yüklemesi yok sayıldı; mevcut yedek korundu.'
+      : 'Stok anlık görüntüsü güncellendi.';
+    return result;
+  }
+
   public readDerivedProfile(
     profileId: string,
     options: { allowNullOnCorrupt?: boolean } = {}
@@ -2638,6 +2760,15 @@ export class PersistentDataStore {
         repoPath: 'data/cinetrack-data.json',
         localPath: mainDataFile,
         commitMessage: 'chore(data): sync cinetrack-data.json [skip ci]',
+      });
+    }
+
+    const stockFile = path.join(this.dataDir, 'stock.json');
+    if (existsSync(stockFile)) {
+      items.push({
+        repoPath: 'data/stock.json',
+        localPath: stockFile,
+        commitMessage: 'chore(data): sync stock.json [skip ci]',
       });
     }
 

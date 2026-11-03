@@ -113,6 +113,12 @@ export const SYNC_STATIC_INVENTORY: ReadonlyArray<{
     personal: true,
     description: 'Kullanıcı Taste Engine profili ve metrikler',
   },
+  {
+    repoPath: 'data/stock.json',
+    category: 'stock',
+    personal: true,
+    description: 'Stok içerik deposu (film + dizi, sınırsız ve media:key tekilleştirmeli)',
+  },
 ]);
 
 function isPlainObject(val: unknown): val is Record<string, any> {
@@ -1458,6 +1464,166 @@ function inspectUserDataRawContent(
   };
 }
 
+function normalizeStockItemList(raw: unknown): any[] | null {
+  if (raw === undefined || raw === null) return [];
+  return Array.isArray(raw) ? raw.filter((it) => isPlainObject(it)) : null;
+}
+
+function inspectStockRawContent(
+  rawText: string,
+  maxBytes: number,
+  sha?: string
+): { inspection: SyncFileInspection } {
+  const repoPath = 'data/stock.json';
+  const sizeBytes = measureUtf8Bytes(rawText);
+  if (sizeBytes > maxBytes) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'stock',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: `Stok dosyası sınırı (${formatMaxDataLimitMb(maxBytes)}) aşıyor.`,
+        errorCategory: 'payload_too_large',
+      },
+    };
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err: any) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'stock',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: `Stok verisi geçersiz JSON: ${err?.message || 'ayrıştırılamadı'}`,
+        errorCategory: 'corrupt_remote_json',
+      },
+    };
+  }
+
+  if (!isPlainObject(parsed)) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'stock',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: 'data/stock.json kök düzeyi geçerli bir nesne değil.',
+        errorCategory: 'schema_mismatch',
+      },
+    };
+  }
+
+  const movies = normalizeStockItemList(parsed.movies);
+  const tv = normalizeStockItemList(parsed.tv);
+  if (movies === null || tv === null) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'stock',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+        sha,
+        error: 'data/stock.json movies/tv alanları dizi olmalı.',
+        errorCategory: 'schema_mismatch',
+      },
+    };
+  }
+
+  // Tekilleştirme doğrulaması: her media:key (movie:<id> / tv:<id>) yalnızca bir kez görünebilir
+  const seen = new Set<string>();
+  let duplicates = 0;
+  let invalidIds = 0;
+  for (const [type, list] of [
+    ['movie', movies],
+    ['tv', tv],
+  ] as const) {
+    for (const it of list) {
+      const id = Number(it?.id);
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        invalidIds++;
+        continue;
+      }
+      const key = `${type}:${id}`;
+      if (seen.has(key)) duplicates++;
+      else seen.add(key);
+    }
+  }
+
+  if (invalidIds > 0 || duplicates > 0) {
+    return {
+      inspection: {
+        repoPath,
+        category: 'stock',
+        personal: true,
+        exists: true,
+        valid: false,
+        sizeBytes,
+        rawFileHash: computeRawUtf8Hash(rawText),
+        semanticHash: null,
+        recordCount: movies.length + tv.length,
+        uniqueKeyCount: seen.size,
+        sha,
+        error:
+          duplicates > 0 && invalidIds === 0
+            ? `Stok verisinde tekrarlayan içerik kaydı var (${duplicates} adet media:key çifti).`
+            : invalidIds > 0 && duplicates === 0
+              ? `Stok verisinde geçersiz kimlikli içerik kaydı var (${invalidIds} adet).`
+              : `Stok verisinde ${invalidIds} geçersiz kimlik ve ${duplicates} tekrarlayan kayıt var.`,
+        errorCategory: 'schema_mismatch',
+      },
+    };
+  }
+
+  const sortedKeys = Array.from(seen).sort((a, b) => a.localeCompare(b));
+  return {
+    inspection: {
+      repoPath,
+      category: 'stock',
+      personal: true,
+      exists: true,
+      valid: true,
+      sizeBytes,
+      rawFileHash: computeRawUtf8Hash(rawText),
+      semanticHash: hashContent(sortedKeys.join('\n')),
+      recordCount: movies.length + tv.length,
+      uniqueKeyCount: seen.size,
+      sha,
+    },
+  };
+}
+
 function inspectDerivedProfileRawContent(
   repoPath: string,
   rawText: string,
@@ -2077,6 +2243,36 @@ export class GitHubBidirectionalSyncManager {
       files['data/cinetrack-data.json'] = {
         repoPath: 'data/cinetrack-data.json',
         category: 'user_data',
+        personal: true,
+        exists: false,
+        valid: true,
+        sizeBytes: 0,
+        rawFileHash: null,
+        semanticHash: null,
+        recordCount: 0,
+        uniqueKeyCount: 0,
+      };
+    }
+
+    const stockPath = path.join(this.deps.dataDir, 'stock.json');
+    if (existsSync(stockPath)) {
+      const raw = readFileSync(stockPath, 'utf8');
+      const res = inspectStockRawContent(raw, this.maxBytes);
+      if (!res.inspection.valid && res.inspection.errorCategory === 'corrupt_remote_json') {
+        res.inspection.errorCategory = 'corrupt_local_file';
+      }
+      files['data/stock.json'] = res.inspection;
+      if (!res.inspection.valid && res.inspection.error) {
+        errors.push({
+          repoPath: 'data/stock.json',
+          category: res.inspection.errorCategory || 'corrupt_local_file',
+          message: res.inspection.error,
+        });
+      }
+    } else {
+      files['data/stock.json'] = {
+        repoPath: 'data/stock.json',
+        category: 'stock',
         personal: true,
         exists: false,
         valid: true,
@@ -2792,6 +2988,50 @@ export class GitHubBidirectionalSyncManager {
             repoPath: 'data/cinetrack-data.json',
             category: inspected.inspection.errorCategory || 'corrupt_remote_json',
             message: `data/cinetrack-data.json: ${inspected.inspection.error}`,
+          });
+        }
+      }
+
+      const stockRes = await this.fetchRemoteFileRaw('data/stock.json', cfg);
+      if (!stockRes.ok) {
+        transportFailed = true;
+        errors.push(stockRes.error);
+        files['data/stock.json'] = {
+          repoPath: 'data/stock.json',
+          category: 'stock',
+          personal: true,
+          exists: false,
+          valid: false,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+          error: stockRes.error.message,
+          errorCategory: stockRes.error.category,
+        };
+      } else if (!stockRes.exists) {
+        files['data/stock.json'] = {
+          repoPath: 'data/stock.json',
+          category: 'stock',
+          personal: true,
+          exists: false,
+          valid: true,
+          sizeBytes: 0,
+          rawFileHash: null,
+          semanticHash: null,
+          recordCount: 0,
+          uniqueKeyCount: 0,
+        };
+      } else {
+        rawRemoteContents['data/stock.json'] = { content: stockRes.content, sha: stockRes.sha };
+        const inspected = inspectStockRawContent(stockRes.content, this.maxBytes, stockRes.sha);
+        files['data/stock.json'] = inspected.inspection;
+        if (!inspected.inspection.valid && inspected.inspection.error) {
+          errors.push({
+            repoPath: 'data/stock.json',
+            category: inspected.inspection.errorCategory || 'corrupt_remote_json',
+            message: `data/stock.json: ${inspected.inspection.error}`,
           });
         }
       }
@@ -3515,6 +3755,48 @@ export class GitHubBidirectionalSyncManager {
                 category: 'corrupt_local_file',
                 message: saveRes.message,
               });
+            }
+          }
+        }
+
+        // data/stock.json indirme (yerel eksik/bozuksa indirilir; yerel güncel yükleme korunur)
+        const rStockInfo = remoteInspect.bundle.summary.files['data/stock.json'];
+        const lStockInfo = localBefore.summary.files['data/stock.json'];
+        if (rStockInfo?.exists) {
+          if (!rStockInfo.valid) {
+            filesFailed.push('data/stock.json');
+            errors.push({
+              repoPath: 'data/stock.json',
+              category: rStockInfo.errorCategory || 'corrupt_remote_json',
+              message: `data/stock.json bozuk olduğu için yerel stok korundu (${rStockInfo.error}).`,
+            });
+          } else if (lStockInfo?.exists && lStockInfo.valid) {
+            if (lStockInfo.semanticHash === rStockInfo.semanticHash) {
+              filesUnchanged.push('data/stock.json');
+            } else {
+              warnings.push(
+                'data/stock.json: Yerel stok havuzu GitHub sürümünden farklı; yerel (en güncel istemci yüklemesi) korundu.'
+              );
+            }
+          } else {
+            const rawStock = remoteInspect.rawRemoteContents['data/stock.json'];
+            if (rawStock) {
+              try {
+                const parsedStock = JSON.parse(rawStock.content);
+                const stockTargetPath = path.join(this.deps.dataDir, 'stock.json');
+                writeJsonFileAtomic(stockTargetPath, JSON.stringify(parsedStock, null, 2), {
+                  backupPath: `${stockTargetPath}.bak`,
+                  validateParsed: isPlainObject,
+                });
+                filesDownloaded.push('data/stock.json');
+              } catch {
+                filesFailed.push('data/stock.json');
+                errors.push({
+                  repoPath: 'data/stock.json',
+                  category: 'corrupt_remote_json',
+                  message: 'data/stock.json GitHub içeriği ayrıştırılamadı.',
+                });
+              }
             }
           }
         }
@@ -4441,6 +4723,46 @@ export class GitHubBidirectionalSyncManager {
         }
       }
 
+      // --- C2. STOK DEPOSU (data/stock.json) ---
+      if (includePersonal) {
+        const stockRepoPath = 'data/stock.json';
+        const lStock = localBefore.summary.files[stockRepoPath];
+        const rStock = remoteBeforeInspect.bundle.summary.files[stockRepoPath];
+        if (lStock?.exists && !lStock.valid) {
+          filesFailed.push(stockRepoPath);
+          pathsBlockedFromPush.add(stockRepoPath);
+          errors.push({
+            repoPath: stockRepoPath,
+            category: 'corrupt_local_file',
+            message: `Yerel ${stockRepoPath} bozuk (${lStock.error}).`,
+          });
+        } else if (!lStock?.exists && rStock?.exists && rStock.valid) {
+          const rawStock = remoteBeforeInspect.rawRemoteContents[stockRepoPath];
+          if (rawStock) {
+            try {
+              const parsedStock = JSON.parse(rawStock.content);
+              const stockTargetPath = path.join(this.deps.dataDir, 'stock.json');
+              writeJsonFileAtomic(stockTargetPath, JSON.stringify(parsedStock, null, 2), {
+                backupPath: `${stockTargetPath}.bak`,
+                validateParsed: isPlainObject,
+              });
+              filesDownloaded.push(stockRepoPath);
+            } catch {
+              filesFailed.push(stockRepoPath);
+              errors.push({
+                repoPath: stockRepoPath,
+                category: 'corrupt_remote_json',
+                message: 'data/stock.json GitHub içeriği ayrıştırılamadı.',
+              });
+            }
+          }
+        } else if (lStock?.exists && rStock?.exists && lStock.valid && !rStock.valid) {
+          warnings.push(
+            `data/stock.json: GitHub sürümü bozuk/tekrarlı kayıt içerdiği için yerel stok korunup yüklenecek (${rStock.error}).`
+          );
+        }
+      }
+
       // --- D. BİRLEŞTİRİLMİŞ GÜNCEL YEREL DOSYALARI GITHUB'A YÜKLE ---
       const localPrepared = await this.inspectLocalSide();
       const uploadCandidates: Array<{ repoPath: string; localPath: string; commitMsg: string }> = [];
@@ -4471,6 +4793,13 @@ export class GitHubBidirectionalSyncManager {
           localPath: path.join(this.deps.dataDir, 'cinetrack-data.json'),
           commitMsg: 'chore(sync): reconcile cinetrack-data.json [skip ci]',
         });
+        if (existsSync(path.join(this.deps.dataDir, 'stock.json'))) {
+          uploadCandidates.push({
+            repoPath: 'data/stock.json',
+            localPath: path.join(this.deps.dataDir, 'stock.json'),
+            commitMsg: 'chore(sync): reconcile stock.json [skip ci]',
+          });
+        }
         for (const repoPath of Object.keys(localPrepared.derivedProfiles).sort()) {
           uploadCandidates.push({
             repoPath,

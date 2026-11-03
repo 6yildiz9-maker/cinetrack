@@ -1,11 +1,12 @@
 // Hibrit yedek birleştirme motoru
-// CSV dışa aktarımı (Title,Year,Rating10,WatchedDate,Status,MediaType,tmdbID) ile mevcut
-// uygulama verisini (GitHub ile senkron durumdaki) birleştirir ve çakışmaları temizler.
+// CSV dışa aktarımı (Title,Year,Rating10,WatchedDate,Status,MediaType,tmdbID + kullanıcı verisi
+// sütunları) ile mevcut uygulama verisini (GitHub ile senkron durumdaki) birleştirir ve çakışmaları temizler.
 import type { DataDocument, Profile, SavedItem } from '../core/cinetrack-core.ts';
 import {
   detectDuplicateSavedItems,
   normalizeWorkTitle,
 } from '../core/duplicate-detector.ts';
+import { parseCsvRows } from '../core/exporters.ts';
 
 export interface CsvBackupRow {
   title: string;
@@ -15,10 +16,39 @@ export interface CsvBackupRow {
   status: SavedItem['status'];
   mediaType: 'movie' | 'tv';
   tmdbId: string;
+  addedDate?: string | null;
+  firstAddedDate?: string | null;
+  updatedDate?: string | null;
+  completedDate?: string | null;
+  ratedDate?: string | null;
+  episodesWatched?: number;
+  currentSeason?: number;
+  nextEpisode?: number;
+  totalWatchTimeMinutes?: number;
+  custom?: boolean;
 }
 
-// Başlıklar virgül içerebildiği için satırın SON 6 alanı sabittir; başlık greedy yakalanır.
-const ROW_RE = /^(.*),(\d{4})?,([^,]*),([^,]*),(watching|watchlist|completed),(movie|tv),(\d+)$/;
+function csvDateToIso(rawDate: string | null | undefined): string | null {
+  if (!rawDate) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}:\d{2})(?:\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?)?$/.exec(
+    rawDate.trim()
+  );
+  if (!m) return null;
+  const [, d, t, z] = m;
+  return t ? `${d}T${t}.000${z || 'Z'}` : `${d}T12:00:00.000Z`;
+}
+
+function csvIntCell(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value.trim());
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function csvFloatCell(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
 
 export function parseCsvBackupRows(csvText: string): {
   rows: CsvBackupRow[];
@@ -26,44 +56,124 @@ export function parseCsvBackupRows(csvText: string): {
   skippedNoId: number;
 } {
   const raw = String(csvText || '').replace(/^\uFEFF/, '');
-  const lines = raw.split(/\r?\n/).filter((l) => l.trim() !== '');
+  const parsedRows = parseCsvRows(raw);
   const rows: CsvBackupRow[] = [];
   const failures: string[] = [];
   let skippedNoId = 0;
 
-  for (const line of lines.slice(1)) {
-    const m = ROW_RE.exec(line.trim());
-    if (!m) {
-      failures.push(line.slice(0, 80));
-      continue;
+  if (parsedRows.length < 2) {
+    return { rows, failures, skippedNoId };
+  }
+
+  const header = parsedRows[0].map((col) => col.toLowerCase().trim());
+  const findCol = (...candidates: string[]) => header.findIndex((h) => candidates.includes(h));
+  const idxTitle = findCol('title', 'name', 'original title', 'film', 'başlık');
+  const idxYear = findCol('year', 'yıl', 'release year');
+  const idxRating10 = findCol('rating10', 'your rating', 'personal_rating', 'puan');
+  const idxRating5 = findCol('rating');
+  const idxDate = findCol('watcheddate', 'watched date', 'date rated', 'date', 'created');
+  const idxStatus = findCol('status', 'durum');
+  const idxType = findCol('mediatype', 'media_type', 'title type', 'type', 'tür');
+  const idxTmdb = findCol('tmdbid', 'tmdb_id', 'tmdb');
+  const idxAdded = findCol('addeddate');
+  const idxFirstAdded = findCol('firstaddeddate');
+  const idxUpdated = findCol('updateddate');
+  const idxCompleted = findCol('completeddate');
+  const idxRated = findCol('rateddate');
+  const idxEpisodes = findCol('episodeswatched');
+  const idxSeason = findCol('currentseason');
+  const idxNextEpisode = findCol('nextepisode');
+  const idxWatchMinutes = findCol('totalwatchtimeminutes');
+  const idxCustom = findCol('custom');
+
+  if (idxTitle === -1) {
+    for (const line of parsedRows.slice(1)) {
+      if (line.length > 0 && !String(line[0] || '').startsWith('#')) {
+        failures.push(line.join(',').slice(0, 80));
+      }
     }
-    let [, rawTitle, yearStr, ratingStr, watchedDate, status, mediaType, tmdbId] = m;
-    const safeStatus = status as SavedItem['status'];
-    const safeMediaType = mediaType as 'movie' | 'tv';
-    let title = rawTitle.trim();
-    if (title.length >= 2 && title.startsWith('"') && title.endsWith('"')) {
-      title = title.slice(1, -1).replace(/""/g, '"').trim();
-    }
-    if (!title || !tmdbId) {
+    return { rows, failures, skippedNoId };
+  }
+
+  const cell = (row: string[], idx: number): string => (idx >= 0 ? (row[idx] || '').trim() : '');
+
+  for (const line of parsedRows.slice(1)) {
+    if (line.length === 0) continue;
+    if (String(line[0] || '').startsWith('#')) continue; // profil verisi fragmanı atlanır
+
+    const rawTitle = cell(line, idxTitle);
+    const tmdbId = cell(line, idxTmdb);
+    if (!rawTitle) {
       skippedNoId++;
       continue;
     }
-    const year = yearStr ? Number(yearStr) : null;
-    const ratingNum = Number(ratingStr);
-    const personal_rating =
-      ratingStr !== '' && Number.isInteger(ratingNum) && ratingNum >= 1 && ratingNum <= 10
-        ? ratingNum
-        : '';
+    if (!/^\d+$/.test(tmdbId)) {
+      failures.push(line.join(',').slice(0, 80));
+      continue;
+    }
+
+    const rawType = cell(line, idxType).toLowerCase();
+    const mediaType: 'movie' | 'tv' =
+      rawType.includes('tv') || rawType.includes('series') || rawType.includes('mini')
+        ? 'tv'
+        : 'movie';
+
+    const rawStatus = cell(line, idxStatus).toLowerCase();
+    let status: SavedItem['status'] = 'completed';
+    if (rawStatus === 'watchlist' || rawStatus === 'izlenecek') {
+      status = 'watchlist';
+    } else if (rawStatus === 'watching' || rawStatus === 'izleniyor') {
+      status = 'watching';
+    }
+
+    let rating: number | '' = '';
+    const rating10Cell = cell(line, idxRating10);
+    if (rating10Cell !== '') {
+      const ratingNum = Number(rating10Cell);
+      rating =
+        Number.isInteger(ratingNum) && ratingNum >= 1 && ratingNum <= 10 ? ratingNum : '';
+    } else if (idxRating5 >= 0 && cell(line, idxRating5) !== '') {
+      const rating5 = Number(cell(line, idxRating5));
+      const scaled = rating5 <= 5 ? Math.round(rating5 * 2) : Math.round(rating5);
+      rating = Number.isInteger(scaled) && scaled >= 1 && scaled <= 10 ? scaled : '';
+    }
+
+    const watchedDate = cell(line, idxDate);
+    const yearStr = cell(line, idxYear).slice(0, 4);
+    const yearNum = Number(yearStr);
+    const year = /^\d{4}$/.test(yearStr) && yearNum >= 1880 && yearNum <= 2040 ? yearNum : null;
+    const addedDate = cell(line, idxAdded) || null;
+    const firstAddedDate = cell(line, idxFirstAdded) || null;
+    const updatedDate = cell(line, idxUpdated) || null;
+    const completedDate = cell(line, idxCompleted) || null;
+    const ratedDate = cell(line, idxRated) || null;
+    const customFlag = cell(line, idxCustom) === '1' ? true : undefined;
+    const episodesWatched = csvIntCell(cell(line, idxEpisodes));
+    const currentSeason = csvIntCell(cell(line, idxSeason));
+    const nextEpisode = csvIntCell(cell(line, idxNextEpisode));
+    const totalWatchTimeMinutes = csvFloatCell(cell(line, idxWatchMinutes));
+
     rows.push({
-      title,
-      year: year && Number.isFinite(year) && year >= 1880 && year <= 2040 ? year : null,
-      rating: personal_rating as number | '',
-      watchedDate: /^\d{4}-\d{2}-\d{2}$/.test(watchedDate) ? watchedDate : null,
-      status: safeStatus,
-      mediaType: safeMediaType,
+      title: rawTitle,
+      year,
+      rating,
+      watchedDate: /^\d{4}-\d{2}-\d{2}/.test(watchedDate) ? watchedDate : null,
+      status,
+      mediaType,
       tmdbId,
+      ...(addedDate ? { addedDate } : {}),
+      ...(firstAddedDate ? { firstAddedDate } : {}),
+      ...(updatedDate ? { updatedDate } : {}),
+      ...(completedDate ? { completedDate } : {}),
+      ...(ratedDate ? { ratedDate } : {}),
+      ...(episodesWatched !== undefined ? { episodesWatched } : {}),
+      ...(currentSeason !== undefined ? { currentSeason } : {}),
+      ...(nextEpisode !== undefined ? { nextEpisode } : {}),
+      ...(totalWatchTimeMinutes !== undefined ? { totalWatchTimeMinutes } : {}),
+      ...(customFlag !== undefined ? { custom: customFlag } : {}),
     });
   }
+
   return { rows, failures, skippedNoId };
 }
 
@@ -95,11 +205,18 @@ function itemReleaseYear(item: SavedItem): number | null {
 }
 
 function csvRowDateIso(row: CsvBackupRow): string | null {
-  return row.watchedDate ? `${row.watchedDate}T00:00:00.000Z` : null;
+  return csvDateToIso(row.watchedDate);
 }
 
 function buildItemFromRow(row: CsvBackupRow): SavedItem {
-  const dateIso = csvRowDateIso(row);
+  const watchedIso = csvRowDateIso(row);
+  const addedIso = csvDateToIso(row.addedDate) || watchedIso;
+  const firstAddedIso = csvDateToIso(row.firstAddedDate) || addedIso;
+  const updatedIso = csvDateToIso(row.updatedDate) || addedIso || new Date().toISOString();
+  const completedIso =
+    csvDateToIso(row.completedDate) || (watchedIso && row.status === 'completed' ? watchedIso : null);
+  const ratedIso =
+    csvDateToIso(row.ratedDate) || (watchedIso && row.rating !== '' ? watchedIso : null);
   return {
     id: row.tmdbId,
     media_type: row.mediaType,
@@ -115,9 +232,18 @@ function buildItemFromRow(row: CsvBackupRow): SavedItem {
         ? { release_date: `${row.year}-01-01` }
         : { first_air_date: `${row.year}-01-01` }
       : {}),
-    ...(dateIso ? { addedAt: dateIso, firstAddedAt: dateIso, updatedAt: dateIso } : {}),
-    ...(dateIso && row.status === 'completed' ? { completedAt: dateIso } : {}),
-    ...(dateIso && row.rating !== '' ? { ratedAt: dateIso } : {}),
+    ...(addedIso ? { addedAt: addedIso } : {}),
+    ...(firstAddedIso ? { firstAddedAt: firstAddedIso } : {}),
+    ...(updatedIso ? { updatedAt: updatedIso } : {}),
+    ...(completedIso ? { completedAt: completedIso } : {}),
+    ...(ratedIso ? { ratedAt: ratedIso } : {}),
+    ...(row.episodesWatched !== undefined ? { episodes_watched: row.episodesWatched } : {}),
+    ...(row.currentSeason !== undefined ? { current_season: row.currentSeason } : {}),
+    ...(row.nextEpisode !== undefined ? { next_episode: row.nextEpisode } : {}),
+    ...(row.totalWatchTimeMinutes !== undefined
+      ? { totalWatchTimeMinutes: row.totalWatchTimeMinutes }
+      : {}),
+    ...(row.custom !== undefined ? { custom: row.custom } : {}),
   } as SavedItem;
 }
 
@@ -180,20 +306,50 @@ function mergeRowIntoItem(
   }
 
   const rowDate = csvRowDateIso(row);
-  if (rowDate) {
-    if (!next.addedAt || rowDate < next.addedAt) {
-      next.addedAt = rowDate;
-      next.firstAddedAt = rowDate;
+  const rowAddedDate = csvDateToIso(row.addedDate) || rowDate;
+  if (rowAddedDate) {
+    if (!next.addedAt || rowAddedDate < next.addedAt) {
+      next.addedAt = rowAddedDate;
       changed = true;
     }
-    if (row.status === 'completed' && !next.completedAt) {
-      next.completedAt = rowDate;
-      changed = true;
-    }
-    if (typeof row.rating === 'number' && row.rating > 0 && !next.ratedAt) {
-      next.ratedAt = rowDate;
-      changed = true;
-    }
+  }
+  const rowFirstAdded = csvDateToIso(row.firstAddedDate) || rowAddedDate;
+  if (rowFirstAdded && (!next.firstAddedAt || rowFirstAdded < next.firstAddedAt)) {
+    next.firstAddedAt = rowFirstAdded;
+    changed = true;
+  }
+  const rowCompletedDate =
+    csvDateToIso(row.completedDate) || (row.status === 'completed' ? rowDate : null);
+  if (rowCompletedDate && !next.completedAt) {
+    next.completedAt = rowCompletedDate;
+    changed = true;
+  }
+  const rowRatedDate = csvDateToIso(row.ratedDate) || (row.rating !== '' ? rowDate : null);
+  if (rowRatedDate && !next.ratedAt) {
+    next.ratedAt = rowRatedDate;
+    changed = true;
+  }
+
+  // İlerleme alanları: CSV'deki değer mevcuttan büyükse kazanır (geriye sarma olmaz)
+  if (row.episodesWatched !== undefined && (next.episodes_watched ?? 0) < row.episodesWatched) {
+    next.episodes_watched = row.episodesWatched;
+    changed = true;
+  }
+  if (row.currentSeason !== undefined && (next.current_season ?? 0) < row.currentSeason) {
+    next.current_season = row.currentSeason;
+    changed = true;
+  }
+  if (row.nextEpisode !== undefined && (next.next_episode ?? 0) < row.nextEpisode) {
+    next.next_episode = row.nextEpisode;
+    changed = true;
+  }
+  if (row.totalWatchTimeMinutes !== undefined && !next.totalWatchTimeMinutes) {
+    next.totalWatchTimeMinutes = row.totalWatchTimeMinutes;
+    changed = true;
+  }
+  if (row.custom !== undefined && next.custom === undefined) {
+    next.custom = row.custom;
+    changed = true;
   }
 
   if (changed) {

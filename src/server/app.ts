@@ -477,6 +477,49 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   });
 
   // --- Kalıcı Veri Deposu & Çift Yönlü GitHub Senkronizasyonu ---
+
+  app.get('/api/stock', tokenGuard, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const snapshot = persistentStore.readStockSnapshot();
+    if (!snapshot) {
+      res.json({ ok: true, exists: false, movies: [], tv: [], total: 0, updatedAt: '' });
+      return;
+    }
+    res.json({
+      ok: true,
+      exists: true,
+      schemaVersion: snapshot.schemaVersion,
+      updatedAt: snapshot.updatedAt,
+      movies: snapshot.movies,
+      tv: snapshot.tv,
+      total: snapshot.movies.length + snapshot.tv.length,
+    });
+  });
+
+  app.post('/api/stock/upload', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const movies = req.body?.movies;
+    const tv = req.body?.tv;
+    if (movies !== undefined && !Array.isArray(movies)) {
+      res.status(400).json({ ok: false, status_message: "'movies' alanı dizi olmalı.", code: 'invalid_stock_payload' });
+      return;
+    }
+    if (tv !== undefined && !Array.isArray(tv)) {
+      res.status(400).json({ ok: false, status_message: "'tv' alanı dizi olmalı.", code: 'invalid_stock_payload' });
+      return;
+    }
+    if (movies === undefined && tv === undefined) {
+      res.status(400).json({ ok: false, status_message: 'movies veya tv alanlarından en az biri gönderilmeli.', code: 'invalid_stock_payload' });
+      return;
+    }
+    try {
+      const result = await persistentStore.saveStockSnapshotUpload({ movies, tv });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, status_message: err?.message || 'Stok anlık görüntüsü kaydedilemedi.' });
+    }
+  });
+
   app.get('/api/sync/status', syncStatusGuard, (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(persistentStore.getSyncStatus());

@@ -9,8 +9,11 @@ import {
   reconcileGitHubSync,
   setPublicRepoPersonalSyncConsent,
   testGitHubConnection,
+  uploadStockSnapshot,
   type HybridMergeResult,
 } from '../services/api.ts';
+import { getCurrentStock } from '../services/stock-engine.ts';
+import { loadStockIdb } from '../services/storage-idb.ts';
 import {
   deriveSyncUiBanner,
   type BidirectionalSyncReport,
@@ -157,10 +160,30 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     }
   };
 
+  const uploadLocalStockSnapshot = async (): Promise<void> => {
+    try {
+      let depot = await loadStockIdb();
+      if (depot.movies.length === 0 && depot.tv.length === 0) {
+        const live = getCurrentStock();
+        if (live.movies.length > 0 || live.tv.length > 0) {
+          depot = live;
+        }
+      }
+      if (depot.movies.length === 0 && depot.tv.length === 0) return;
+      const result = await uploadStockSnapshot({ movies: depot.movies, tv: depot.tv });
+      if (!result.ok) {
+        console.warn('[sync] Stok yedekleme yüklemesi başarısız:', result.status_message);
+      }
+    } catch (err) {
+      console.warn('[sync] Stok yedekleme yüklenemedi:', err);
+    }
+  };
+
   const handlePushToGitHub = async () => {
     if (activeSyncOp !== null) return;
     setActiveSyncOp('push');
     try {
+      await uploadLocalStockSnapshot();
       const report = await pushGitHubSync();
       await applyCompletedSyncReport(report);
     } finally {
@@ -172,6 +195,7 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
     if (activeSyncOp !== null) return;
     setActiveSyncOp('reconcile');
     try {
+      await uploadLocalStockSnapshot();
       const report = await reconcileGitHubSync();
       await applyCompletedSyncReport(report);
     } finally {

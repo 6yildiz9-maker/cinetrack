@@ -223,7 +223,7 @@ test('Faz B: Tek kaynaklı boyut sınırı (UTF-8 bayt ölçümü), sınır alt�
   assert.ok(measureUtf8Bytes(multiByteSample) > multiByteSample.length);
 
   // Belge tutarlılığı: README.md ve ARCHITECTURE.md artık eski 2_000_000 sınırını içermemeli, 25 MB/MiB belirtmeli
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(import.meta.dirname, '..');
   const readme = fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
   const arch = fs.readFileSync(path.join(repoRoot, 'ARCHITECTURE.md'), 'utf8');
   assert.equal(readme.includes('2_000_000'), false);
@@ -500,7 +500,7 @@ test('Faz C: Türetilmiş profil verisi (signals & reasons değişiklik tespiti,
       assert.deepEqual(rebuiltPayload.items['movie:550'].reasons, ['Dram uyumu', 'Kült Başyapıt']);
 
       // App.tsx içinde fetchDerivedProfileData'nın gerçekten çağrıldığının statik doğrulaması
-      const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+      const repoRoot = path.resolve(import.meta.dirname, '..');
       const appCode = fs.readFileSync(path.join(repoRoot, 'src/App.tsx'), 'utf8');
       assert.ok(
         appCode.includes('fetchDerivedProfileData('),
@@ -746,7 +746,7 @@ test('Faz D: 7 döner sunucu yedeği sınırı, bozuk yedeğin geri yüklenmemes
 });
 
 test('Sır İzolasyonu: İstemci kodu ve .env.example içinde hiçbir GitHub token veya VITE_ sırrı sızmaz', () => {
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(import.meta.dirname, '..');
   const envExample = fs.readFileSync(path.join(repoRoot, '.env.example'), 'utf8');
 
   assert.equal(envExample.includes('ghp_'), false);
@@ -768,4 +768,168 @@ test('Sır İzolasyonu: İstemci kodu ve .env.example içinde hiçbir GitHub tok
       assert.equal(code.includes('CINETRACK_GITHUB_PAT'), false, `${rel} içinde GitHub token referansı olmamalı`);
     }
   }
+});
+
+test('Stok Yedekleme: Limitsiz tekilleştirilmiş anlık görüntü (media:key bazlı) ve boş yükleme koruması', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cinetrack-stock-test-'));
+  try {
+    await withTestApp({ dataDir: tmpDir }, async ({ baseUrl, persistentStore }) => {
+      // 1. İlk yükleme: filmlerde yinelenen id, tv'de geçersiz kayıtlar
+      const res1 = await fetch(`${baseUrl}/api/stock/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          movies: [
+            { id: 550, media_type: 'movie', title: 'Fight Club' },
+            { id: 550, media_type: 'movie', title: 'Fight Club (kopya)' },
+            { id: 680, media_type: 'movie', title: 'Pulp Fiction' },
+          ],
+          tv: [
+            { id: 1396, media_type: 'tv', name: 'Breaking Bad' },
+            { media_type: 'tv', name: 'Kimliksiz Dizi' },
+            'bozuk-kayıt',
+          ],
+        }),
+      });
+      assert.equal(res1.status, 200);
+      const body1 = await res1.json();
+      assert.equal(body1.ok, true);
+      assert.equal(body1.duplicatesRemoved, 1, 'Aynı film id tekrarı atılmalı');
+      assert.equal(body1.skippedInvalid, 2, 'Kimliksiz dizi ve dizi olmayan kayıt atılmalı');
+      assert.equal(body1.moviesCount, 2);
+      assert.equal(body1.tvCount, 1);
+      assert.equal(body1.total, 3);
+
+      // 2. Dosyaya yazılan anlık görüntüde tekrar olmamalı
+      const snapshot = persistentStore.readStockSnapshot();
+      assert.ok(snapshot, 'data/stock.json okunabilmeli');
+      const movieIds = snapshot.movies.map((m) => m.id);
+      assert.deepEqual(movieIds.sort((a, b) => a - b), [550, 680]);
+
+      // 3. İkinci yükleme: film listesi büyür, sınır yok; eski dizi korunur + yenisi eklenir
+      const res2 = await fetch(`${baseUrl}/api/stock/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          movies: [
+            { id: 680, media_type: 'movie', title: 'Pulp Fiction' },
+            { id: 155, media_type: 'movie', title: 'The Dark Knight' },
+          ],
+        }),
+      });
+      assert.equal(res2.status, 200);
+      const body2 = await res2.json();
+      assert.equal(body2.ok, true);
+      assert.equal(body2.moviesCount, 2, 'Film listesi yeni yüklemeyle değişir (replace)');
+      assert.equal(body2.tvCount, 1, 'Dizi listesi korunur');
+
+      // 4. Boş yükleme mevcut yedeği silmemeli
+      const res3 = await fetch(`${baseUrl}/api/stock/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ movies: [], tv: [] }),
+      });
+      assert.equal(res3.status, 200);
+      const body3 = await res3.json();
+      assert.equal(body3.ok, true);
+      assert.equal(body3.preservedExistingEmptyUpload, true);
+      assert.equal(body3.total, 3, 'Boş yükleme mevcut 3 kaydı korumalı');
+
+      // 5. GET /api/stock anlık görüntüyü döner
+      const getRes = await fetch(`${baseUrl}/api/stock`);
+      assert.equal(getRes.status, 200);
+      const getBody = await getRes.json();
+      assert.equal(getBody.ok, true);
+      assert.equal(getBody.exists, true);
+      assert.equal(getBody.total, 3);
+
+      // 6. Geçersiz payload reddedilir
+      const badRes = await fetch(`${baseUrl}/api/stock/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ movies: 'dizi-değil' }),
+      });
+      assert.equal(badRes.status, 400);
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('CSV Tam Veri Dışa Aktarımı: profil fragmanı + kullanıcı verisi sütunları dışa/içe aktarımda kaybolmaz', async () => {
+  const { exportItemsToCsv, importItemsFromCsv } = await import('../src/core/exporters.ts');
+  const profile = {
+    id: 'prof-csv',
+    name: 'Csv Profili',
+    createdAt: '2026-01-05T10:00:00.000Z',
+    preferences: {
+      disliked: ['movie:1', 'tv:2'],
+      hidden: ['movie:3'],
+      providers: ['netflix', 'blu-tv'],
+      mood: 'rahat',
+      reminders: false,
+      notified: ['movie:9'],
+    },
+    favoriteActors: [{ id: 62, name: 'Bruce Willis', character: 'Korben Dallas', profile_path: '/a.jpg' }],
+    items: [],
+  };
+  const items = [
+    {
+      id: 11,
+      media_type: 'movie',
+      title: 'Yıldızlararası',
+      release_date: '2014-11-05',
+      status: 'completed',
+      personal_rating: 9,
+      addedAt: '2026-02-01T09:00:00.000Z',
+      firstAddedAt: '2026-02-01T09:00:00.000Z',
+      updatedAt: '2026-03-01T12:00:00.000Z',
+      completedAt: '2026-02-15T12:00:00.000Z',
+      ratedAt: '2026-02-15T12:00:00.000Z',
+      totalWatchTimeMinutes: 169,
+      vote_average: 8.6,
+      vote_count: 20000,
+      popularity: 100,
+      genre_ids: [878],
+    },
+    {
+      id: 1396,
+      media_type: 'tv',
+      title: 'Breaking Bad',
+      status: 'watching',
+      personal_rating: '',
+      episodes_watched: 12,
+      current_season: 2,
+      next_episode: 13,
+      season_progress: { 1: 7, 2: 5 },
+      addedAt: '2026-02-10T09:00:00.000Z',
+      updatedAt: '2026-03-02T12:00:00.000Z',
+      vote_average: 8.9,
+      vote_count: 30000,
+      popularity: 200,
+      genre_ids: [18],
+    },
+  ];
+
+  const csv = exportItemsToCsv(items, { profile, activeProfileId: 'prof-csv' });
+  assert.ok(csv.includes('#CINETRACK-PROFILE'), 'Profil fragmanı yazılmalı');
+  assert.ok(csv.includes('#Mood,rahat'), 'Mood tercihi yazılmalı');
+  assert.ok(csv.includes('#Providers,netflix|blu-tv'), 'Sağlayıcılar yazılmalı');
+  assert.ok(csv.includes('#FavoriteActor'), 'Favori oyuncu yazılmalı');
+  assert.ok(csv.includes('#END'), 'Fragman bitişi yazılmalı');
+  assert.ok(csv.includes('AddedDate,FirstAddedDate,UpdatedDate,CompletedDate'), 'Kullanıcı verisi başlıkları yazılmalı');
+  assert.ok(csv.includes('2026-02-01 09:00:00'), 'Eklenme tarihi yazılmalı');
+
+  const result = importItemsFromCsv(csv);
+  assert.equal(result.detectedFormat, 'cinetrack');
+  assert.equal(result.importedItems.length, 2, 'Fragman satırları içerik olarak sayılmamalı');
+  const interstellar = result.importedItems.find((it) => it.id === 11);
+  assert.equal(interstellar.completedAt, '2026-02-15T12:00:00.000Z');
+  assert.equal(interstellar.ratedAt, '2026-02-15T12:00:00.000Z');
+  assert.equal(interstellar.totalWatchTimeMinutes, 169);
+  const bb = result.importedItems.find((it) => it.id === 1396);
+  assert.equal(bb.episodes_watched, 12);
+  assert.equal(bb.current_season, 2);
+  assert.equal(bb.next_episode, 13);
+  assert.deepEqual(bb.season_progress, { 1: 7, 2: 5 });
 });
