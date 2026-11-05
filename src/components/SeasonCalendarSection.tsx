@@ -42,7 +42,7 @@ export const SeasonCalendarSection: React.FC<SeasonCalendarSectionProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `cinetrack-yayin-takvimi-${new Date().toISOString().slice(0, 10)}.ics`;
+    link.download = `cinethos-yayin-takvimi-${new Date().toISOString().slice(0, 10)}.ics`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

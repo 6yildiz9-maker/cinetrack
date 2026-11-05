@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Versioned Constants (v1.0)
+// Cinethos Taste Engine — Versioned Constants (v1.0)
 // Tüm sabitler sürümlüdür; değiştirildiğinde algorithmConfigVersion artar.
 // ===========================================================================
 

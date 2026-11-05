@@ -94,7 +94,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `cinetrack-${activeProfileId}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `cinethos-${activeProfileId}-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setCsvStatus(
@@ -200,7 +200,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
       if (report.excelBackup.ok && report.excelBackup.downloadUrl) {
         await triggerVerifiedBlobDownload({
           downloadUrl: report.excelBackup.downloadUrl,
-          fileName: report.excelBackup.fileName || 'CineTrack_Profile.xlsx',
+          fileName: report.excelBackup.fileName || 'Cinethos_Profile.xlsx',
           kind: 'xlsx',
           expectedSizeBytes: report.excelBackup.sizeBytes,
           expectedSha256: report.excelBackup.sha256,
@@ -222,7 +222,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
       <div className="profile-tools-section">
         <strong className="profile-tools-heading">JSON Profil Yedeği</strong>
         <p className="provider-message">
-          CineTrack profilinizi, izleme listenizi ve ayarlarınızı standart JSON formatında dışa aktarın veya geri yükleyin.
+          Cinethos profilinizi, izleme listenizi ve ayarlarınızı standart JSON formatında dışa aktarın veya geri yükleyin.
         </p>
         <div className="csv-actions-row">
           <button
@@ -403,7 +403,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
                     void triggerVerifiedBlobDownload({
                       downloadUrl: excelExportReport.excelBackup.downloadUrl!,
                       fileName:
-                        excelExportReport.excelBackup.fileName || 'CineTrack_Profile.xlsx',
+                        excelExportReport.excelBackup.fileName || 'Cinethos_Profile.xlsx',
                       kind: 'xlsx',
                       expectedSizeBytes: excelExportReport.excelBackup.sizeBytes,
                       expectedSha256: excelExportReport.excelBackup.sha256,
@@ -424,7 +424,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
                     void triggerVerifiedBlobDownload({
                       downloadUrl: excelExportReport.jsonBackup.downloadUrl!,
                       fileName:
-                        excelExportReport.jsonBackup.fileName || 'CineTrack_Profile.json',
+                        excelExportReport.jsonBackup.fileName || 'Cinethos_Profile.json',
                       kind: 'json',
                       expectedSizeBytes: excelExportReport.jsonBackup.sizeBytes,
                       expectedSha256: excelExportReport.jsonBackup.sha256,

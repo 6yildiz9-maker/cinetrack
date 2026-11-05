@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ===========================================================================
-// CineTrack Taste Engine — Keyword ID Fetcher (Faz 6.5)
+// Cinethos Taste Engine — Keyword ID Fetcher (Faz 6.5)
 //
 // 42 metriğin keyword eşleşmelerini TMDB API'den otomatik çeker.
 // Sonuçları:

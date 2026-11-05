@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack — Derin Sinema Metrik Detay & Kanıt Listesi Modalı ("Bunu Nasıl Bildik?")
+// Cinethos — Derin Sinema Metrik Detay & Kanıt Listesi Modalı ("Bunu Nasıl Bildik?")
 // Gerçek zenginleştirilmiş katalog kanıtları + V1.5 "Bu yapımda yok" itiraz aksiyonu
 // ===========================================================================
 

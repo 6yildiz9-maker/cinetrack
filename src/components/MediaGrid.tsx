@@ -189,7 +189,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         <div className="catalog-source-banner banner-demo" role="status">
           <span className="catalog-source-banner-icon">🟡</span>
           <div>
-            <strong>Örnek Katalog Modu:</strong> TMDB_API_KEY tanımlanmadığından içerikler CineTrack örnek katalog verisiyle sunulmaktadır.
+            <strong>Örnek Katalog Modu:</strong> TMDB_API_KEY tanımlanmadığından içerikler Cinethos örnek katalog verisiyle sunulmaktadır.
           </div>
         </div>
       )}

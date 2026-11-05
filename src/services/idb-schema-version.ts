@@ -132,7 +132,7 @@ export async function runIdbSchemaMigrationsOnce(): Promise<IdbMigrationReport> 
 
     const completedAt = new Date().toISOString();
     if (migratedDepots.length > 0) {
-      console.info('[CineTrack IDB Schema] Eski önbellek depoları yeni şemaya geçirildi:', {
+      console.info('[Cinethos IDB Schema] Eski önbellek depoları yeni şemaya geçirildi:', {
         schemaVersion: SCHEMA_VERSION,
         migratedDepots,
       });

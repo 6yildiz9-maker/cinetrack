@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — TMDB Mappings (v1.0)
+// Cinethos Taste Engine — TMDB Mappings (v1.0)
 // Medya bazlı, ID tabanlı, sürümlü (TP-012)
 // ===========================================================================
 

@@ -1,4 +1,4 @@
-# CineTrack (React 19 + TypeScript + Express + PWA)
+# Cinethos (React 19 + TypeScript + Express + PWA)
 
 TMDB metaverileriyle çalışan, tamamen deterministik (kural tabanlı) öneri ve ilişki keşif motoruna sahip, kişisel film/dizi takip uygulaması.
 

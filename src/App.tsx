@@ -1197,7 +1197,7 @@ export function App() {
           }
         }
       })
-      .catch((error) => console.error('CineTrack: başlangıç verisi eşitlenemedi.', error))
+      .catch((error) => console.error('Cinethos: başlangıç verisi eşitlenemedi.', error))
       .finally(() => setServerSyncReady(true));
 
     // Load genres
@@ -1246,7 +1246,7 @@ export function App() {
           : '';
       const when = days === 0 ? 'bugün' : `${days} gün içinde`;
 
-      const notification = new Notification('CineTrack yayın hatırlatıcısı', {
+      const notification = new Notification('Cinethos yayın hatırlatıcısı', {
         body: `${displayTitle(item)} ${when} yayınlanıyor${episodeTag}.`,
       });
       notification.onclick = () => {
@@ -1387,7 +1387,7 @@ export function App() {
               tvCount: stockSeries.length,
             });
 
-            console.info('[CineTrack Stock] loadStockIdb (arındırılmış):', {
+            console.info('[Cinethos Stock] loadStockIdb (arındırılmış):', {
               movies: stockMovies.length,
               tv: stockSeries.length,
               updatedAt: stock.updatedAt || null,
@@ -3946,7 +3946,7 @@ export function App() {
       <footer>
         <div className="shell footer-shell">
           <div>
-            CineTrack | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
+            Cinethos | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
             <a
               href="https://www.themoviedb.org/"
               target="_blank"

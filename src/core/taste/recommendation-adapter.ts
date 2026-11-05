@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Recommendation Adapter (v1.0)
+// Cinethos Taste Engine — Recommendation Adapter (v1.0)
 // Tek dar arayüz: suggestFor(candidates, mediaType) (TP-001, TP-037)
 //
 // KRİTİK:

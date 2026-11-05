@@ -892,7 +892,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
         signal: AbortSignal.timeout(10000),
         headers: {
           Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          'User-Agent': 'CineTrack-Proxy/1.0',
+          'User-Agent': 'Cinethos-Proxy/1.0',
         },
       });
 

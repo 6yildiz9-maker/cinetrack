@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Feature Extractor v1.0
+// Cinethos Taste Engine — Feature Extractor v1.0
 //
 // KURALLAR:
 // - LLM çağrısı yok

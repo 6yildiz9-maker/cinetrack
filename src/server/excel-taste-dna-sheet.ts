@@ -265,7 +265,7 @@ export function populateTasteDnaWorksheet(
   // Title banner
   ws.mergeCells('A1:E1');
   const titleCell = ws.getCell('A1');
-  titleCell.value = `CineTrack Zevk İmzası (Taste DNA) & Zevk Kayması — ${analysis.dna.profileName}`;
+  titleCell.value = `Cinethos Zevk İmzası (Taste DNA) & Zevk Kayması — ${analysis.dna.profileName}`;
   titleCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.fill = {
     type: 'pattern',

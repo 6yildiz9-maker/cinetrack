@@ -1245,7 +1245,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
       const absPath = report.excelBackup.absolutePath;
       const stat = await fsPromises.stat(absPath);
-      const fileName = report.excelBackup.fileName || 'CineTrack_Profile.xlsx';
+      const fileName = report.excelBackup.fileName || 'Cinethos_Profile.xlsx';
       const sha256 = report.excelBackup.sha256 || (await computeFileSha256Async(absPath));
 
       await streamFileDownload(res, absPath, {

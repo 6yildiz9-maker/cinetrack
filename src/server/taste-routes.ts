@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste Routes (v1.5)
+// Cinethos Taste Engine — Taste Routes (v1.5)
 // HTTP uçları: GET/POST/DELETE /api/taste/*
 // ===========================================================================
 

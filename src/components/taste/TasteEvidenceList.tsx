@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack — Kanıt Listesi Bileşeni
+// Cinethos — Kanıt Listesi Bileşeni
 // Olumlu / olumsuz / belirsiz içerikler
 // ===========================================================================
 

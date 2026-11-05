@@ -783,7 +783,7 @@ test('Faz 10: evaluateRecommendationEngine, Zevk DNA, CSV (Letterboxd/IMDb), ICS
   assert.ok(dna.topGenres.some((g) => g.name === 'Bilim Kurgu'));
   assert.equal(dna.signatureTraits.length, 3);
 
-  // 3. CSV dışa ve içe aktarma (CineTrack + Letterboxd 5-yıldız ölçekleme)
+  // 3. CSV dışa ve içe aktarma (Cinethos + Letterboxd 5-yıldız ölçekleme)
   const csvOut = exportItemsToCsv(profileA.items);
   const reimported = importItemsFromCsv(csvOut);
   assert.equal(reimported.detectedFormat, 'cinetrack');

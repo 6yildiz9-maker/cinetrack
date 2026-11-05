@@ -301,8 +301,8 @@ function toCsvNumber(value: number | undefined): string {
 }
 
 /**
- * Exports profile items into Letterboxd / CineTrack compatible CSV format.
- * İlk 7 sütun Letterboxd/CineTrack uyumluluğu için sabittir; ardından kullanıcıya ait
+ * Exports profile items into Letterboxd / Cinethos compatible CSV format.
+ * İlk 7 sütun Letterboxd/Cinethos uyumluluğu için sabittir; ardından kullanıcıya ait
  * tüm izleme verileri (tarihler, ilerleme, süre, içerik ID'si, türler, oyuncular) ve
  * dosya sonunda profil + Sinema Künyesi verileri gelir.
  */
@@ -419,7 +419,7 @@ function stableCustomIdFromTitle(title: string, year: string, mediaType: 'movie'
 }
 
 /**
- * Parses Letterboxd, IMDb, or CineTrack CSV exports into valid SavedItem records + Sinema Künyesi metadata.
+ * Parses Letterboxd, IMDb, or Cinethos CSV exports into valid SavedItem records + Sinema Künyesi metadata.
  */
 export function importItemsFromCsv(csvText: string): CsvImportResult {
   const rows = parseCsvRows(csvText);
@@ -745,12 +745,12 @@ function addDaysCompact(yyyyMmDd: string, days: number): string {
 /**
  * Generates an RFC 5545 compliant .ics iCalendar feed for upcoming episodes and movies.
  */
-export function generateIcsCalendar(events: CalendarReleaseEvent[], calendarName = 'CineTrack Yayın Takvimi'): string {
+export function generateIcsCalendar(events: CalendarReleaseEvent[], calendarName = 'Cinethos Yayın Takvimi'): string {
   const dtStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//CineTrack//Release Calendar TR//TR',
+    'PRODID:-//Cinethos//Release Calendar TR//TR',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     `X-WR-CALNAME:${escapeIcsText(calendarName)}`,

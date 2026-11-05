@@ -1,5 +1,5 @@
 /* =========================================================
-   CineTrack v5/v6 — Component Layer Styles
+   Cinethos v5/v6 — Component Layer Styles
    ========================================================= */
 @layer components {
   /* --- 0. Global Focus, Buttons, PWA & Offline Banners --- */
@@ -391,7 +391,6 @@
     padding: var(--space-4);
     background-color: var(--bg-surface);
     backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1414,7 +1413,6 @@
     border-radius: var(--radius-md);
     background-color: var(--bg-surface);
     backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border: 1.5px solid var(--border-subtle);
     cursor: pointer;
     transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);

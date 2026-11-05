@@ -146,7 +146,7 @@ export function enqueueOfflineSyncSnapshot(
       return { ...entry, persisted: true };
     }
   } catch (err) {
-    console.warn('CineTrack: çevrimdışı kuyruk localStorage kotasına takıldı; bellek yedeği kullanılıyor.', err);
+    console.warn('Cinethos: çevrimdışı kuyruk localStorage kotasına takıldı; bellek yedeği kullanılıyor.', err);
   }
 
   memoryFallbackSnapshot = entry;

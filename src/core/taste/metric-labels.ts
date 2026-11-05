@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Türkçe Metrik Başlıkları & Efektif Override Çözümleyici
+// Cinethos Taste Engine — Türkçe Metrik Başlıkları & Efektif Override Çözümleyici
 // ===========================================================================
 
 import type { MetricState, TasteMetric } from "./types.ts";

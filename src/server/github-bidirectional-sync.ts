@@ -1039,7 +1039,7 @@ function inspectUserDataRawContent(
         recordCount: 0,
         uniqueKeyCount: 0,
         sha,
-        error: 'cinetrack-data.json beklenen CineTrack veri şemasına uymuyor.',
+        error: 'cinetrack-data.json beklenen Cinethos veri şemasına uymuyor.',
         errorCategory: 'schema_mismatch',
       },
     };
@@ -2135,7 +2135,7 @@ export class GitHubBidirectionalSyncManager {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'CineTrack-Sync-Agent',
+          'User-Agent': 'Cinethos-Sync-Agent',
         },
       });
       if (res.status !== 200) {
@@ -2212,7 +2212,7 @@ export class GitHubBidirectionalSyncManager {
     const makeHeaders = (tok: string) => ({
       Authorization: `Bearer ${tok}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'CineTrack-Sync-Agent',
+      'User-Agent': 'Cinethos-Sync-Agent',
     });
 
     try {
@@ -2382,7 +2382,7 @@ export class GitHubBidirectionalSyncManager {
           const dlRes = await fetch(fileData.download_url, {
             headers: {
               Authorization: `Bearer ${cfg.token}`,
-              'User-Agent': 'CineTrack-Sync-Agent',
+              'User-Agent': 'Cinethos-Sync-Agent',
             },
           });
           if (dlRes.status === 200) {
@@ -2447,7 +2447,7 @@ export class GitHubBidirectionalSyncManager {
         headers: {
           Authorization: `Bearer ${cfg.token}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'CineTrack-Sync-Agent',
+          'User-Agent': 'Cinethos-Sync-Agent',
         },
       });
       if (res.status === 401 && typeof this.deps.store.recoverGitHubTokenOn401 === 'function') {
@@ -2458,7 +2458,7 @@ export class GitHubBidirectionalSyncManager {
             headers: {
               Authorization: `Bearer ${cfg.token}`,
               Accept: 'application/vnd.github.v3+json',
-              'User-Agent': 'CineTrack-Sync-Agent',
+              'User-Agent': 'Cinethos-Sync-Agent',
             },
           });
         }

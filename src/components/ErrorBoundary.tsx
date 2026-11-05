@@ -67,7 +67,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     console.error(
-      `[CineTrack ErrorBoundary${this.props.sectionName ? `: ${this.props.sectionName}` : ''}]`,
+      `[Cinethos ErrorBoundary${this.props.sectionName ? `: ${this.props.sectionName}` : ''}]`,
       error,
       info
     );

@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Feature Normalizer v1.0
+// Cinethos Taste Engine — Feature Normalizer v1.0
 //
 // Sorumluluk: Aynı içerikte fazla etiketlerin şişirme yapmasını engeller.
 //

@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack — "Sinema Kimliğim" Ana Ekranı (Derin Sinema Kabuk Tasarımı)
+// Cinethos — "Sinema Kimliğim" Ana Ekranı (Derin Sinema Kabuk Tasarımı)
 // Takımyıldızı (Constellation Grid) + Kategori Filtreleri + Kanıt Modalı
 // ===========================================================================
 

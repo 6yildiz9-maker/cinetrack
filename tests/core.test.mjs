@@ -219,7 +219,7 @@ describe("parseBackupText", () => {
   });
 
   it("geçersiz sürüm ve yapıyı reddeder", () => {
-    const wrong = (message) => /geçerli bir CineTrack yedeği değil/.test(message);
+    const wrong = (message) => /geçerli bir Cinethos yedeği değil/.test(message);
     assert.throws(() => parseBackupText(validBackup({ version: 4 })), (error) => wrong(error.message));
     assert.throws(() => parseBackupText(validBackup({ version: 0 })), (error) => wrong(error.message));
     assert.throws(() => parseBackupText(validBackup({ version: "2" })), (error) => wrong(error.message));

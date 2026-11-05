@@ -1,5 +1,5 @@
 /**
- * CineTrack — Paylaşılan Veri Boyutu ve Koleksiyon Sınırları (Tek Kaynak)
+ * Cinethos — Paylaşılan Veri Boyutu ve Koleksiyon Sınırları (Tek Kaynak)
  *
  * Seçim gerekçesi:
  * - Gerçek kullanıcı kütüphanesi (~1.250 film/dizi kaydı + zengin metaveri) yaklaşık 2.2 MB yer kaplar.

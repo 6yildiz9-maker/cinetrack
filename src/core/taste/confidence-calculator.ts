@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Confidence Calculator (v1.0)
+// Cinethos Taste Engine — Confidence Calculator (v1.0)
 // Destek/nitelik/kapsam üçlüsü (TP-025)
 // ===========================================================================
 

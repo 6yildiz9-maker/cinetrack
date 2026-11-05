@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Evidence Ledger (v1.0)
+// Cinethos Taste Engine — Evidence Ledger (v1.0)
 // posMass/negMass/uncertainMass ayrımı; idempotency; katkı geri çekme (TP-015)
 // ===========================================================================
 

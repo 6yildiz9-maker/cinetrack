@@ -22,7 +22,7 @@ export interface TranslationDictionary {
 }
 
 const trDictionary: TranslationDictionary = {
-  appName: 'CineTrack',
+  appName: 'Cinethos',
   searchPlaceholder: "Film veya dizi ara… (Kısayol: '/')",
   installApp: 'Uygulamayı Yükle',
   installIos: 'Ana Ekrana Ekle',

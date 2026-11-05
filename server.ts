@@ -149,7 +149,7 @@ async function startServer() {
 
   httpServer.listen(port, listenHost, () => {
     console.log(
-      `CineTrack is running at http://${listenHost}:${port} (bind policy: ${bindHost}, ${isDevMode ? 'development' : 'production'})`
+      `Cinethos is running at http://${listenHost}:${port} (bind policy: ${bindHost}, ${isDevMode ? 'development' : 'production'})`
     );
     console.log('Profil ve izleme listesi: Yerel dosya sistemi (data/cinetrack-data.json)');
     const syncStatus = persistentStore.getSyncStatus();

@@ -65,7 +65,7 @@ function computeNormalizedShannonEntropy(counts: Map<number, number>): number {
 }
 
 /**
- * Deterministic offline evaluation harness for CineTrack's recommendation engine (Faz 10).
+ * Deterministic offline evaluation harness for Cinethos's recommendation engine (Faz 10).
  * Simulates sequential recommendation batches without mutating global browser storage.
  */
 export function evaluateRecommendationEngine(input: EvaluateEngineInput): RecommendationEvaluationReport {

@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Temporal Analyzer (v1.5)
+// Cinethos Taste Engine — Temporal Analyzer (v1.5)
 // lifetime/longTerm(730g)/recent(180g); timeSource (TP-029) + V1.5 experiencedAt
 // ===========================================================================
 

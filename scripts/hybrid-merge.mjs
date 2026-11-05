@@ -1,4 +1,4 @@
-// CineTrack Hibrit Yedek Birleştirme CLI
+// Cinethos Hibrit Yedek Birleştirme CLI
 // Kullanım: node scripts/hybrid-merge.mjs [csv-yolu] [--apply] [--server <url>]
 // Varsayılan: Downloads'taki en yeni cinetrack-profile-*.csv, kuru çalıştırma (önizleme).
 // --apply: birleştirmeyi kaydeder (ardından UI'dan veya sync API'sinden GitHub'a eşitlenebilir).

@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste Profile Worker (v1.0)
+// Cinethos Taste Engine — Taste Profile Worker (v1.0)
 // Ağır hesapları main thread dışında çalıştırır (§4.2, §18.2/F)
 //
 // KRİTİK: Bu dosya worker_threads içinde çalışır.

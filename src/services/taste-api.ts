@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste API (v1.0)
+// Cinethos Taste Engine — Taste API (v1.0)
 // İstemci tarafı API çağrıları — /api/taste/* uç noktaları
 // ===========================================================================
 

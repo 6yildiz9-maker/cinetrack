@@ -372,7 +372,7 @@ export async function fetchServerData(): Promise<DataDocument | null> {
     }
     return null;
   } catch (error) {
-    console.warn('CineTrack: yerel veri dosyası okunamadı (çevrimdışı yedek kullanılıyor).', error);
+    console.warn('Cinethos: yerel veri dosyası okunamadı (çevrimdışı yedek kullanılıyor).', error);
     return null;
   } finally {
     clearTimeout(timeout);
@@ -468,7 +468,7 @@ export async function pushServerDataDetailed(
       errorMessage: bodyJson?.status_message || `Sunucu kaydı başarısız (${response.status}).`,
     };
   } catch (error: any) {
-    console.warn('CineTrack: yerel veri dosyasına yazılamadı (çevrimdışı kuyruğa alınıyor).', error);
+    console.warn('Cinethos: yerel veri dosyasına yazılamadı (çevrimdışı kuyruğa alınıyor).', error);
     return {
       ok: false,
       status: 0,

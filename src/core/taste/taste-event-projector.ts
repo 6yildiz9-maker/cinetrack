@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste Event Projector (v1.0)
+// Cinethos Taste Engine — Taste Event Projector (v1.0)
 // Olay → geçerli öğrenme durumu (TP-005)
 // ===========================================================================
 

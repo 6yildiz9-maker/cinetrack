@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Preference Calculator (v1.0)
+// Cinethos Taste Engine — Preference Calculator (v1.0)
 // A_m formülü, shrinkage, nötr payda, durum etiketi (TP-015/021/024)
 // ===========================================================================
 

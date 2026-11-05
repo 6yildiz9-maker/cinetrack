@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — useTasteProfile Hook (v1.0)
+// Cinethos Taste Engine — useTasteProfile Hook (v1.0)
 // Profil verisi + loading/error state yönetimi
 // ===========================================================================
 

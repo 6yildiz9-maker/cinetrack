@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Profile Aggregator (v1.0)
+// Cinethos Taste Engine — Profile Aggregator (v1.0)
 // movie/series/unified profil üretimi, aktarım politikaları (TP-026/027)
 //
 // MUTLAK KURALLAR:

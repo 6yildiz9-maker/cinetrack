@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Type Definitions (v1.1)
+// Cinethos Taste Engine — Type Definitions (v1.1)
 // Faz 1 + Faz 2 çıktısı. Değiştirilmeden önce ADR onayı gerekir.
 // ===========================================================================
 

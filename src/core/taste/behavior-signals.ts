@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Behavior Signals (v1.0)
+// Cinethos Taste Engine — Behavior Signals (v1.0)
 // Kullanıcı davranışlarını [-1, +1] aralığında sinyallere dönüştürür (TP-015/017/019)
 // ===========================================================================
 

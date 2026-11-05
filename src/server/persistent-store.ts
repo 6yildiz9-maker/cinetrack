@@ -1268,7 +1268,7 @@ export class PersistentDataStore {
           headers: {
             Authorization: `Bearer ${activeTok}`,
             Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'CineTrack-Sync-Agent',
+            'User-Agent': 'Cinethos-Sync-Agent',
           },
         });
         if (getRes.status === 401) {
@@ -1279,7 +1279,7 @@ export class PersistentDataStore {
               headers: {
                 Authorization: `Bearer ${activeTok}`,
                 Accept: 'application/vnd.github.v3+json',
-                'User-Agent': 'CineTrack-Sync-Agent',
+                'User-Agent': 'Cinethos-Sync-Agent',
               },
             });
           }
@@ -2324,7 +2324,7 @@ export class PersistentDataStore {
       const baseHeaders = {
         Authorization: `Bearer ${activeToken}`,
         Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'CineTrack-Sync-Agent',
+        'User-Agent': 'Cinethos-Sync-Agent',
       };
 
       // 1. Repo varlık ve erişim kontrolü
@@ -2680,7 +2680,7 @@ export class PersistentDataStore {
         headers: {
           Authorization: `Bearer ${this.githubToken}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'CineTrack-Sync-Agent',
+          'User-Agent': 'Cinethos-Sync-Agent',
         },
       });
       if (res.status !== 200) return null;
@@ -2724,7 +2724,7 @@ export class PersistentDataStore {
     const makeAuthHeaders = (tok: string) => ({
       Authorization: `Bearer ${tok}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'CineTrack-Sync-Agent',
+      'User-Agent': 'Cinethos-Sync-Agent',
     });
     const targetBranch = options?.branchToUse || this.githubBranch;
     const isEmptyRepo = Boolean(options?.isEmptyRepo);
@@ -3830,7 +3830,7 @@ export class PersistentDataStore {
         headers: {
           Authorization: `Bearer ${this.githubToken}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'CineTrack-Sync-Agent',
+          'User-Agent': 'Cinethos-Sync-Agent',
         },
       });
       if (res.status !== 200) return null;
@@ -3868,7 +3868,7 @@ export class PersistentDataStore {
   }> {
     const localHash = crypto.createHash('sha256').update(params.contentBuffer).digest('hex');
     const safeBase = path.posix.basename(String(params.fileName || '').trim());
-    if (!/^CineTrack_Profile_\d{4}-\d{2}-\d{2}_\d{4}(?:_\d{2,14})?\.(?:xlsx|json)$/.test(safeBase)) {
+    if (!/^Cinethos_Profile_\d{4}-\d{2}-\d{2}_\d{4}(?:_\d{2,14})?\.(?:xlsx|json)$/.test(safeBase)) {
       return {
         attempted: true,
         ok: false,
@@ -3926,7 +3926,7 @@ export class PersistentDataStore {
     const baseHeaders = {
       Authorization: `Bearer ${this.githubToken}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'CineTrack-Sync-Agent',
+      'User-Agent': 'Cinethos-Sync-Agent',
     };
     const targetBranch = this.githubBranch;
 

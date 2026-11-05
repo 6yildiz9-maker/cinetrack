@@ -12,8 +12,8 @@ export default defineConfig({
       includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png', 'sw-poster-lru.js'],
       manifest: {
         id: '/',
-        name: 'CineTrack — Kişisel Film & Dizi Kataloğu',
-        short_name: 'CineTrack',
+        name: 'Cinethos — Kişisel Film & Dizi Kataloğu',
+        short_name: 'Cinethos',
         description: 'TMDB destekli kişisel film ve dizi izleme kataloğu, deterministik zevk haritası ve ilişki keşif motoru.',
         theme_color: '#050507',
         background_color: '#050507',

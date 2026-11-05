@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Migration Service (v1.5)
+// Cinethos Taste Engine — Migration Service (v1.5)
 // Eski cinetrack-data.json → yeni taste-events.json dönüşümü (TP-029 & V1.5)
 // KRİTİK: cinetrack-data.json ASLA değiştirilmez, sadece okunur
 // ===========================================================================

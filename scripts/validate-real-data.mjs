@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ===========================================================================
-// CineTrack Taste Engine — Gerçek Veri Doğrulama Scripti
+// Cinethos Taste Engine — Gerçek Veri Doğrulama Scripti
 //
 // Faz 2 (Deterministik İndeks) + Faz 3 (Profil Motoru) mantığını GERÇEK
 // TMDB verileriyle uçtan uca doğrular.

@@ -215,7 +215,7 @@ export const Header: React.FC<HeaderProps> = ({
               <use href="#icon-film"></use>
             </svg>
           </span>
-          <span className="brand-title">CineTrack</span>
+          <span className="brand-title">Cinethos</span>
         </div>
 
         {/* Primary Desktop Nav Tabs (Section 4) */}

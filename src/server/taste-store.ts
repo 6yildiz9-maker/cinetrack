@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste Store (v1.5)
+// Cinethos Taste Engine — Taste Store (v1.5)
 // data/taste/ ağacının sahibi, atomik yazım, manifest (TP-008/TP-027)
 // ===========================================================================
 

@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Profile Explainer (v1.0)
+// Cinethos Taste Engine — Profile Explainer (v1.0)
 // Metrik kartı açıklama verisi: kanıt listesi, ilgili metrikler (L10)
 // KRİTİK: UI hesaplama yapmaz, yalnızca gösterir
 // ===========================================================================

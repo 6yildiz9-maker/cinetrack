@@ -44,7 +44,7 @@ if not exist "dist\index.html" (
 )
 
 set NODE_ENV=production
-echo CineTrack uretim modunda baslatiliyor. Tarayicida http://127.0.0.1:3000 adresini acin.
+echo Cinethos uretim modunda baslatiliyor. Tarayicida http://127.0.0.1:3000 adresini acin.
 echo Sunucuyu durdurmak icin bu pencerede Ctrl+C tuslarina basin.
 call npm start
 pause

@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack — Kategori Altı Toplu Görünüm
+// Cinethos — Kategori Altı Toplu Görünüm
 // Bir kategori içindeki tüm metrikleri liste halinde gösterir
 // ===========================================================================
 

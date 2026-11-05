@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Server Rebuild Coordinator (v1.5)
+// Cinethos Taste Engine — Server Rebuild Coordinator (v1.5)
 // Olay güdümlü (event-driven) arka plan profil yeniden hesaplama koordinatörü.
 //
 // MUTLAK KURALLAR:

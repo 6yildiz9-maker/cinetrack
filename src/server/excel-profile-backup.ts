@@ -325,7 +325,7 @@ export function formatBackupDateTime(isoValue?: string | null): string | null {
 }
 
 /**
- * Builds the canonical timestamped filename `CineTrack_Profile_YYYY-MM-DD_HHmm.<ext>`
+ * Builds the canonical timestamped filename `Cinethos_Profile_YYYY-MM-DD_HHmm.<ext>`
  * using local runtime wall-clock time.
  */
 export function formatExportBaseName(now: Date = new Date()): string {
@@ -334,7 +334,7 @@ export function formatExportBaseName(now: Date = new Date()): string {
   const dd = String(now.getDate()).padStart(2, '0');
   const hh = String(now.getHours()).padStart(2, '0');
   const min = String(now.getMinutes()).padStart(2, '0');
-  return `CineTrack_Profile_${yyyy}-${mm}-${dd}_${hh}${min}`;
+  return `Cinethos_Profile_${yyyy}-${mm}-${dd}_${hh}${min}`;
 }
 
 /**
@@ -363,7 +363,7 @@ export function resolveUniqueExportFileName(
 }
 
 export const EXPORT_FILE_NAME_PATTERN =
-  /^CineTrack_Profile_\d{4}-\d{2}-\d{2}_\d{4}(?:_\d{2,14})?\.(?:xlsx|json)$/;
+  /^(?:Cinethos|CineTrack)_Profile_\d{4}-\d{2}-\d{2}_\d{4}(?:_\d{2,14})?\.(?:xlsx|json)$/;
 
 /**
  * Inspects image magic bytes to ensure only valid binary JPEG/PNG/GIF images are embedded into Excel.
@@ -638,7 +638,7 @@ function makePngChunk(type: string, data: Buffer): Buffer {
 let cachedPlaceholderPng: Buffer | null = null;
 
 /**
- * Generates a crisp, neutral CineTrack 2:3 dark-slate placeholder PNG (144x216 px — 2x retina for 72x108 px)
+ * Generates a crisp, neutral Cinethos 2:3 dark-slate placeholder PNG (144x216 px — 2x retina for 72x108 px)
  * using pure Node.js built-ins (no native dependencies).
  */
 export function getNeutralPosterPlaceholderPng(): Buffer {
@@ -666,7 +666,7 @@ export function getNeutralPosterPlaceholderPng(): Buffer {
 
       let r = 0x1e;
       let g = 0x29;
-      let b = 0x3b; // #1E293B CineTrack slate-navy
+      let b = 0x3b; // #1E293B Cinethos slate-navy
       if (isOuterBorder) {
         r = 0x33;
         g = 0x41;
@@ -785,7 +785,7 @@ const defaultPosterFetcher: PosterFetcherFn = async (url, timeoutMs) => {
         signal: controller.signal,
         headers: {
           Accept: 'image/jpeg,image/png,image/gif,image/*;q=0.8',
-          'User-Agent': 'CineTrack-Backup-Exporter/1.0',
+          'User-Agent': 'Cinethos-Backup-Exporter/1.0',
         },
       });
 
@@ -1319,7 +1319,7 @@ function mapRecordToExportRow(
     mediaType = catalogResolved;
   } else {
     console.warn(
-      `[CineTrack Backup] Kayıt medya türü belirsiz (id=${String(source.id ?? catalogMatch?.id ?? '')}); varsayılan 'movie' kullanıldı.`
+      `[Cinethos Backup] Kayıt medya türü belirsiz (id=${String(source.id ?? catalogMatch?.id ?? '')}); varsayılan 'movie' kullanıldı.`
     );
     mediaType = 'movie';
   }
@@ -1454,7 +1454,7 @@ export interface BuildDatasetOptions {
 }
 
 /**
- * Pure, non-mutating builder that maps a CineTrack `Profile` into the 5-sheet dataset.
+ * Pure, non-mutating builder that maps a Cinethos `Profile` into the 5-sheet dataset.
  * Strictly preserves `movie:<id>` vs `tv:<id>` separation and reports any dual-state keys.
  */
 export async function buildProfileBackupDataset(
@@ -1492,7 +1492,7 @@ export async function buildProfileBackupDataset(
     const mType = resolveMediaType(hint);
     if (mType === 'unknown') {
       console.warn(
-        `[CineTrack Backup] dislikedItemsHint kaydında medya türü belirsiz (id=${String(hint.id)}); atlanıyor.`
+        `[Cinethos Backup] dislikedItemsHint kaydında medya türü belirsiz (id=${String(hint.id)}); atlanıyor.`
       );
       continue;
     }
@@ -2345,8 +2345,8 @@ export async function generateProfileExcelBuffer(
   }
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'CineTrack';
-  workbook.lastModifiedBy = 'CineTrack';
+  workbook.creator = 'Cinethos';
+  workbook.lastModifiedBy = 'Cinethos';
   workbook.created = options.exportedAt || new Date();
   workbook.modified = options.exportedAt || new Date();
 
@@ -2528,7 +2528,7 @@ function populateSummaryWorksheet(
     c2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
   }
   const titleCell = ws.getCell('B1');
-  titleCell.value = 'CineTrack — Kişisel Film & Dizi Arşivi Özeti';
+  titleCell.value = 'Cinethos — Kişisel Film & Dizi Arşivi Özeti';
   titleCell.font = { name: FONT_FAMILY, size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
 
@@ -2912,7 +2912,7 @@ function populateContentWorksheet(
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
     cell.alignment = { vertical: 'middle', horizontal: 'left' };
   }
-  titleRow.getCell(1).value = `CineTrack — ${sheetName}`;
+  titleRow.getCell(1).value = `Cinethos — ${sheetName}`;
   titleRow.getCell(1).font = {
     name: FONT_FAMILY,
     size: 13,

@@ -1,4 +1,4 @@
-// CineTrack CSV -> cinetrack-data.json tohumlama aracı
+// Cinethos CSV -> cinetrack-data.json tohumlama aracı
 // Kullanım: node scripts/seed-from-csv.mjs "<csv-yolu>" [server-url]
 // Varsayılan: en yeni profil CSV'si ve http://127.0.0.1:3000
 import fs from 'node:fs';

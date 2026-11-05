@@ -1,4 +1,4 @@
-/* CineTrack Service Worker Poster Cache Manager (EXT-03)
+/* Cinethos Service Worker Poster Cache Manager (EXT-03)
  * Enforces a strict 200 MiB (209,715,200 bytes) maximum quota on cached TMDB posters
  * with automatic Least-Recently-Used (LRU) eviction.
  */

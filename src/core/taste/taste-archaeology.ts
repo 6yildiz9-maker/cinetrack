@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste Archaeology (v1.0)
+// Cinethos Taste Engine — Taste Archaeology (v1.0)
 // Zaman sıralı holdout, Spearman ρ, taban karşılaştırma (TP-036, §13.2)
 //
 // KRİTİK: ratedAt/watchedAt yoksa (Faz 0 bulgusu), zaman sıralı ayrım yapılamaz.

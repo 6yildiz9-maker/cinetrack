@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack V1.5 (Feedback Intelligence) — useItemActions Hook
+// Cinethos V1.5 (Feedback Intelligence) — useItemActions Hook
 // Puanlama (rateItem -> ratedAt) ve durum tamamlama (status === 'completed' -> completedAt)
 // işlemlerinde gerçek zamanlı ISO-8601 zaman damgalarını yönetir.
 // Eski kayıtlarda bu alanlar yoksa undefined korunur (Faz 0 / TP-029).

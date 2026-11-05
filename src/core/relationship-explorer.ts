@@ -882,7 +882,7 @@ export function buildRelationshipGraph(
         confidence: scores.has(relationshipNodeKey(item)) ? 82 : item.personal_rating ? 70 : 45,
         evidence: [
           scores.has(relationshipNodeKey(item))
-            ? 'Mevcut CineTrack kişisel puanlama sinyalleri kullanıldı.'
+            ? 'Mevcut Cinethos kişisel puanlama sinyalleri kullanıldı.'
             : item.personal_rating
               ? `Kullanıcının kişisel puanı: ${item.personal_rating}/10.`
               : 'Kişisel puan bulunmadığı için nötr konum kullanıldı.',

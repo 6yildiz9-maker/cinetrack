@@ -607,7 +607,7 @@ test('12. JSON + Excel error isolation & collision-safe timestamped filenames ne
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
   const fixedNow = new Date(2026, 9, 28, 14, 5, 0); // 2026-10-28_1405
-  assert.equal(formatExportBaseName(fixedNow), 'CineTrack_Profile_2026-10-28_1405');
+  assert.equal(formatExportBaseName(fixedNow), 'Cinethos_Profile_2026-10-28_1405');
 
   const doc = {
     version: 3,
@@ -629,7 +629,7 @@ test('12. JSON + Excel error isolation & collision-safe timestamped filenames ne
   assert.equal(partialReport.jsonBackup.ok, true);
   assert.equal(partialReport.excelBackup.ok, false);
   assert.equal(partialReport.partialFailure, true);
-  assert.equal(partialReport.jsonBackup.fileName, 'CineTrack_Profile_2026-10-28_1405.json');
+  assert.equal(partialReport.jsonBackup.fileName, 'Cinethos_Profile_2026-10-28_1405.json');
   assert.ok(fs.existsSync(partialReport.jsonBackup.absolutePath));
 
   // Case B: Full export at exact same minute creates _02.json and primary .xlsx without overwriting first .json
@@ -647,16 +647,16 @@ test('12. JSON + Excel error isolation & collision-safe timestamped filenames ne
   });
 
   assert.equal(secondReport.ok, true);
-  assert.equal(secondReport.jsonBackup.fileName, 'CineTrack_Profile_2026-10-28_1405_02.json');
-  assert.equal(secondReport.excelBackup.fileName, 'CineTrack_Profile_2026-10-28_1405.xlsx');
+  assert.equal(secondReport.jsonBackup.fileName, 'Cinethos_Profile_2026-10-28_1405_02.json');
+  assert.equal(secondReport.excelBackup.fileName, 'Cinethos_Profile_2026-10-28_1405.xlsx');
 
   // Case C: Another export at exact same minute creates _02.xlsx without overwriting first .xlsx
   const thirdName = resolveUniqueExportFileName(
     path.join(tmpDir, 'exports'),
-    'CineTrack_Profile_2026-10-28_1405',
+    'Cinethos_Profile_2026-10-28_1405',
     'xlsx'
   );
-  assert.equal(thirdName.fileName, 'CineTrack_Profile_2026-10-28_1405_02.xlsx');
+  assert.equal(thirdName.fileName, 'Cinethos_Profile_2026-10-28_1405_02.xlsx');
 
   // Formula sanitization direct unit checks
   assert.equal(sanitizeSpreadsheetText('=HYPERLINK("http://evil")'), '\'=HYPERLINK("http://evil")');
@@ -787,7 +787,7 @@ test('13. GitHub binary .xlsx upload verifies post-upload SHA-256 read-back (inc
 
   // 13a: Public repo WITHOUT explicit consent blocks personal Excel upload
   const blockedRes = await store.uploadBinaryBackupToGitHub({
-    fileName: 'CineTrack_Profile_2026-10-28_1500.xlsx',
+    fileName: 'Cinethos_Profile_2026-10-28_1500.xlsx',
     contentBuffer: sampleBuffer,
   });
   assert.equal(blockedRes.ok, false);
@@ -798,27 +798,27 @@ test('13. GitHub binary .xlsx upload verifies post-upload SHA-256 read-back (inc
   // 13b: Switch repo to private (or grant consent) -> >1MB binary upload + Git Blob SHA-256 read-back succeeds
   repoIsPrivate = true;
   const uploadRes = await store.uploadBinaryBackupToGitHub({
-    fileName: 'CineTrack_Profile_2026-10-28_1500.xlsx',
+    fileName: 'Cinethos_Profile_2026-10-28_1500.xlsx',
     contentBuffer: sampleBuffer,
   });
   assert.equal(uploadRes.ok, true);
   assert.equal(uploadRes.verifiedReadBack, true);
-  assert.equal(uploadRes.repoPath, 'data/exports/CineTrack_Profile_2026-10-28_1500.xlsx');
+  assert.equal(uploadRes.repoPath, 'data/exports/Cinethos_Profile_2026-10-28_1500.xlsx');
   assert.equal(uploadRes.localHash, expectedSha256);
   assert.equal(uploadRes.readBackHash, expectedSha256);
 
   // 13c: Uploading different content with the same timestamped filename chooses _02.xlsx instead of overwriting!
   const secondBuffer = Buffer.from('PK-second-distinct-xlsx-archive-bytes');
   const secondRes = await store.uploadBinaryBackupToGitHub({
-    fileName: 'CineTrack_Profile_2026-10-28_1500.xlsx',
+    fileName: 'Cinethos_Profile_2026-10-28_1500.xlsx',
     contentBuffer: secondBuffer,
   });
   assert.equal(secondRes.ok, true);
   assert.equal(secondRes.verifiedReadBack, true);
-  assert.equal(secondRes.repoPath, 'data/exports/CineTrack_Profile_2026-10-28_1500_02.xlsx');
+  assert.equal(secondRes.repoPath, 'data/exports/Cinethos_Profile_2026-10-28_1500_02.xlsx');
   // Original file on GitHub remains untouched
   assert.equal(
-    remoteFiles.get('data/exports/CineTrack_Profile_2026-10-28_1500.xlsx').buffer.length,
+    remoteFiles.get('data/exports/Cinethos_Profile_2026-10-28_1500.xlsx').buffer.length,
     sampleBuffer.length
   );
 });
@@ -1057,7 +1057,7 @@ test('15. ZIP/OpenXML package inspection, 10 KB HTML/JSON download rejection, bi
 
   // Verify 10 KB HTML response (Service Worker index.html / auth gate) is strictly rejected!
   const fake10KbHtml = Buffer.from(
-    '<!DOCTYPE html><html lang="tr"><head><title>CineTrack</title></head><body>' +
+    '<!DOCTYPE html><html lang="tr"><head><title>Cinethos</title></head><body>' +
       'x'.repeat(10_000) +
       '</body></html>',
     'utf8'
@@ -1111,8 +1111,8 @@ test('15. ZIP/OpenXML package inspection, 10 KB HTML/JSON download rejection, bi
 
   // Case 2: Simulated Service Worker / replica 404 or HTML fallback on GET automatically recovers via POST /api/backup/profile-export/stream!
   const verifiedFallback = await downloadVerifiedBackupBinary({
-    downloadUrl: `${baseUrl}/api/backup/exports/CineTrack_Profile_2099-01-01_0000.xlsx`,
-    fileName: 'CineTrack_Profile_2099-01-01_0000.xlsx',
+    downloadUrl: `${baseUrl}/api/backup/exports/Cinethos_Profile_2099-01-01_0000.xlsx`,
+    fileName: 'Cinethos_Profile_2099-01-01_0000.xlsx',
     kind: 'xlsx',
     fallbackStreamPayload: {
       profileId: 'profile-default',

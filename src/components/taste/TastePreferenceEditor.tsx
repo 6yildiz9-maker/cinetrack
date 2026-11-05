@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack — Derin Sinema Manuel Tercih Kontrol Paneli (TP-028)
+// Cinethos — Derin Sinema Manuel Tercih Kontrol Paneli (TP-028)
 // Otomatik / Güçlendir / Azalt / İlgisiz + Hassas Sabitleme (Replace)
 // ===========================================================================
 

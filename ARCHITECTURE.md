@@ -1,6 +1,6 @@
-# CineTrack Mimari Belgesi (`ARCHITECTURE.md`)
+# Cinethos Mimari Belgesi (`ARCHITECTURE.md`)
 
-Bu belge CineTrack uygulamasının modül sınırlarını, veri akışını, kalıcı depolama şemasını, önbellek ayrımını, migrasyon kurallarını ve veri bütünlüğü güvencelerini açıklar.
+Bu belge Cinethos uygulamasının modül sınırlarını, veri akışını, kalıcı depolama şemasını, önbellek ayrımını, migrasyon kurallarını ve veri bütünlüğü güvencelerini açıklar.
 
 ---
 
@@ -36,7 +36,7 @@ Tarayıcı DOM'undan ve Express sunucusundan bağımsız, saf ve deterministik i
 
 ## 2. Kalıcı Veri Katmanları ve Önbellek İzolasyonu
 
-CineTrack'te kalıcı veri ve önbellek katmanları görevlerine göre kesin sınırlarla ayrılmıştır:
+Cinethos'te kalıcı veri ve önbellek katmanları görevlerine göre kesin sınırlarla ayrılmıştır:
 
 1. **Kullanıcıya Özel Ana Durum (`data/cinetrack-data.json`, `schemaVersion: 3`)**:
    - Kullanıcının doğruluk kaynağıdır (source of truth): izleme listeleri (`watching`, `watchlist`, `completed`), kişisel puanlar, tercihler (`disliked`, `hidden`, `providers`, `mood`) ve favori oyuncular burada tutulur.

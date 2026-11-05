@@ -608,10 +608,10 @@ export function parseBackupText(
   }
   const backup = JSON.parse(text);
   if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
-    throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
+    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
   }
   if (![1, 2, 3].includes(backup.version)) {
-    throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
+    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
   }
 
   let rawItems: any[] = [];
@@ -639,7 +639,7 @@ export function parseBackupText(
     rawFavoriteActors = Array.isArray(backup.favoriteActors) ? backup.favoriteActors : [];
     isDemo = backup.isDemo === true;
   } else {
-    throw new Error('Bu dosya geçerli bir CineTrack yedeği değil.');
+    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
   }
 
   if (
@@ -2125,7 +2125,7 @@ export function savePersistentTasteMap(profileId: string, data: PersistentTasteM
     } catch {}
     trackCoreIdbWrite(
       idbSet(key, normalizedData, store).catch((err) => {
-        console.warn('[CineTrack] Discovery history IDB write failed:', err);
+        console.warn('[Cinethos] Discovery history IDB write failed:', err);
       })
     );
     return;
@@ -5451,7 +5451,7 @@ export function savePersistentPoolData(
     } catch {}
     trackCoreIdbWrite(
       idbSet(key, poolRecord, store).catch((err) => {
-        console.warn('[CineTrack] Candidate pool IDB write failed:', err);
+        console.warn('[Cinethos] Candidate pool IDB write failed:', err);
       })
     );
     return;

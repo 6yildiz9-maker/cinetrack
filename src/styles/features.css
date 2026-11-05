@@ -47,7 +47,6 @@
     border-radius: var(--radius-md);
     background-color: var(--bg-surface);
     backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border-subtle);
     color: var(--text-1);
     text-align: left;

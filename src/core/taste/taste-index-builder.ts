@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Taste Index Builder v1.0
+// Cinethos Taste Engine — Taste Index Builder v1.0
 //
 // Sorumluluk: Toplu içerik listesini indeksler.
 //

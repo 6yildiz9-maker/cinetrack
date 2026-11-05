@@ -1,5 +1,5 @@
 // ===========================================================================
-// CineTrack Taste Engine — Behavioral Patterns (v1.0)
+// Cinethos Taste Engine — Behavioral Patterns (v1.0)
 // pattern.completionist/sampler/devotee/explorer (TP-020)
 // V1'de sadece alan hazırlığı; güvenilir veri yoksa hesaplanmaz
 // ===========================================================================
