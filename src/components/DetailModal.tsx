@@ -59,6 +59,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 }) => {
   const [details, setDetails] = useState<any>(null);
   const [providers, setProviders] = useState<any>(null);
+  const [similarItems, setSimilarItems] = useState<any[]>([]);
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [overviewFallbackUsed, setOverviewFallbackUsed] = useState<boolean>(false);
@@ -80,6 +81,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
     if (!item || !isOpen) {
       setDetails(null);
       setProviders(null);
+      setSimilarItems([]);
       setDetailError(null);
       setOverviewFallbackUsed(false);
       return;
@@ -153,6 +155,13 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         if (active) setLoadingProviders(false);
       });
 
+    fetchTmdb(`/${mediaType}/${item.id}/similar`)
+      .then((data) => {
+        if (!active) return;
+        setSimilarItems(Array.isArray(data?.results) ? data.results : []);
+      })
+      .catch((err) => console.warn('Similar fetch error:', err));
+
     return () => {
       active = false;
     };
@@ -198,6 +207,40 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
   const cast = (currentItem.credits?.cast || [])
     .filter((p: any) => p.id != null && p.name)
+    .slice(0, 10);
+
+  const crewList: any[] = currentItem.credits?.crew || [];
+  const crewOf = (jobs: string[]) => {
+    const seen = new Set<string>();
+    const picked: Array<{ id: number; name: string }> = [];
+    for (const c of crewList) {
+      if (!c || typeof c.job !== 'string' || jobs.indexOf(c.job) === -1) continue;
+      if (c.id == null || !c.name || seen.has(c.name)) continue;
+      seen.add(c.name);
+      picked.push({ id: Number(c.id), name: c.name });
+      if (picked.length >= 2) break;
+    }
+    return picked;
+  };
+
+  const productionNames: string[] = (currentItem.production_companies || [])
+    .map((p: any) => (p && typeof p.name === 'string' ? p.name.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 2);
+
+  // filmizlehell tarzı yalın künye: yalnızca dolu satırlar gösterilir
+  const kunyeRows: Array<{ label: string; persons?: Array<{ id: number; name: string }>; text?: string }> = [
+    { label: 'Yönetmen', persons: crewOf(currentItem.media_type === 'tv' ? ['Series Director', 'Director'] : ['Director']) },
+    currentItem.media_type === 'tv' ? { label: 'Yaratıcı', persons: crewOf(['Creator']) } : null,
+    { label: 'Senaryo', persons: crewOf(['Screenplay', 'Writer', 'Teleplay']) },
+    { label: 'Müzik', persons: crewOf(['Original Music Composer', 'Music', 'Songs']) },
+    { label: 'Görüntü', persons: crewOf(['Director of Photography']) },
+    { label: 'Yapım', persons: crewOf(currentItem.media_type === 'tv' ? ['Executive Producer'] : ['Producer']) },
+    productionNames.length > 0 ? { label: 'Şirket', text: productionNames.join(', ') } : null,
+  ].filter((row): row is NonNullable<typeof row> => Boolean(row) && Boolean(row!.persons?.length || row!.text));
+
+  const similarList = similarItems
+    .filter((s: any) => s && s.id != null && (s.title || s.name))
     .slice(0, 10);
 
   // TV Seasons & tracker
@@ -504,6 +547,31 @@ export const DetailModal: React.FC<DetailModalProps> = ({
           <p id="detailOverview" className="detail-overview clamp-3">
             {currentItem.overview || 'Bu içerik için açıklama bulunmuyor.'}
           </p>
+
+          {kunyeRows.length > 0 && (
+            <dl id="detailKunye" className="detail-kunye">
+              {kunyeRows.map((row) => (
+                <div key={row.label} className="detail-kunye-row">
+                  <dt>{row.label}</dt>
+                  <dd>
+                    {row.text ||
+                      (row.persons || []).map((p, idx) => (
+                        <React.Fragment key={p.id}>
+                          {idx > 0 && <span className="detail-kunye-sep"> · </span>}
+                          <button
+                            type="button"
+                            className="detail-kunye-person"
+                            onClick={() => onOpenPerson(p.id, p.name)}
+                          >
+                            {p.name}
+                          </button>
+                        </React.Fragment>
+                      ))}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
 
           {/* Neden Önerildi Bölümü */}
           {(() => {
@@ -830,6 +898,44 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                         {isFav ? '❤️' : '🤍'}
                       </button>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Benzer İçerikler Şeridi */}
+          {similarList.length > 0 && (
+            <div id="detailSimilar" className="detail-similar">
+              <strong className="cast-heading">Benzer İçerikler</strong>
+              <div className="similar-row">
+                {similarList.map((sim: any) => {
+                  const poster = sim.poster_path ? imageUrl(sim.poster_path, 'w185') : '';
+                  return (
+                    <button
+                      key={`${currentItem.media_type}-${sim.id}`}
+                      type="button"
+                      className="similar-card"
+                      onClick={() => onSelectMedia?.({ ...sim, media_type: currentItem.media_type })}
+                      aria-label={`${displayTitle(sim)} ayrıntılarını aç`}
+                    >
+                      {poster ? (
+                        <img
+                          src={poster}
+                          alt=""
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => handleImageError(e, poster, 'w185')}
+                        />
+                      ) : (
+                        <span className="similar-photo-fallback" aria-hidden="true" />
+                      )}
+                      <strong>{displayTitle(sim)}</strong>
+                      <span className="similar-meta tabular-nums">
+                        {releaseYear(sim)}
+                        {Number(sim.vote_average) > 0 ? ` · ★ ${Number(sim.vote_average).toFixed(1)}` : ''}
+                      </span>
+                    </button>
                   );
                 })}
               </div>
