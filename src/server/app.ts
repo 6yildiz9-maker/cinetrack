@@ -605,6 +605,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         updatedAt: doc.updatedAt,
         entries: doc.entries,
         entriesCount: Object.keys(doc.entries).length,
+        cinemaKunye: doc,
       });
     } catch (err: any) {
       res.status(500).json({
@@ -627,7 +628,11 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
     const mode: 'merge' | 'overwrite' = req.body?.mode === 'overwrite' ? 'overwrite' : 'merge';
     const rawDoc =
-      req.body?.document && typeof req.body.document === 'object' ? req.body.document : req.body;
+      req.body?.cinemaKunye && typeof req.body.cinemaKunye === 'object'
+        ? req.body.cinemaKunye
+        : req.body?.document && typeof req.body.document === 'object'
+          ? req.body.document
+          : req.body;
     try {
       const saved = await persistentStore.saveCinemaKunyeSerialized(rawDoc, { mode });
       res.json({

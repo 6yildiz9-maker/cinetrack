@@ -160,7 +160,7 @@ export function useCinemaKunye({
       const attemptKey = `${mediaType}:${numericId}`;
       if (attemptedTmdbKeysRef.current.has(attemptKey)) return false;
 
-      const existing = findCinemaKunyeEntryForItem(cinemaKunyeRef.current, item);
+      const existing = findCinemaKunyeEntryForItem(item, cinemaKunyeRef.current);
       if (!existing) return true;
       return (
         existing.actors.length === 0 ||

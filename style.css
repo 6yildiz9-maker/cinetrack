@@ -14,10 +14,66 @@
     min-height: 100vh;
     background-color: var(--bg-app);
     background-image:
-      radial-gradient(circle at 15% 50%, rgba(0, 229, 255, 0.03) 0%, transparent 25%),
-      radial-gradient(circle at 85% 30%, rgba(255, 179, 0, 0.03) 0%, transparent 25%);
+      radial-gradient(circle at 0% 50%, rgba(0, 229, 255, 0.05) 0%, transparent 45%),
+      radial-gradient(circle at 100% 0%, rgba(255, 179, 0, 0.05) 0%, transparent 45%),
+      radial-gradient(circle at 50% 100%, rgba(168, 85, 247, 0.035) 0%, transparent 45%);
+    background-attachment: fixed;
     color: var(--text-1);
     font-family: var(--font-sans);
+    position: relative;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Derin Sinema Film Greni (Grain) Dokusu — inline SVG feTurbulence veri-URI'si */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+  }
+
+  /* Tipografi 1. Katman: Başlıklar Serif */
+  h1, h2, h3, h4, h5, h6,
+  .brand-title,
+  .hero-title,
+  .section-head h2,
+  .detail-title,
+  .card-title,
+  .modal-title,
+  .wrapped-card-title {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+  }
+
+  /* Tipografi 3. Katman: Sayı, etiket ve rozetlerde Monospace */
+  .badge,
+  .match-badge,
+  .rating,
+  .rating-badge,
+  .personal-rating,
+  .season-calendar-date,
+  .stat-value,
+  .metric-value,
+  .dna-stat-value,
+  .card-date,
+  .tabular-nums,
+  .release-countdown,
+  .source-tag,
+  .chip,
+  .provider-chip,
+  .search-dropdown-badge,
+  .season-progress-label,
+  .nav-tab-badge,
+  .ring-tab-count,
+  .hero-carousel-indicator {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
   button,
@@ -364,12 +420,15 @@
     padding: 10px 14px;
     color: var(--text-1);
     background-color: var(--bg-surface);
-    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: background-color var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease), color var(--dur-med) var(--ease), box-shadow var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
   }
 
   .btn:hover {
     background-color: var(--bg-elevated);
-    border-color: var(--border-strong);
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 16px rgba(0, 229, 255, 0.16);
   }
 
   .btn-primary {
@@ -377,23 +436,27 @@
     border-color: var(--gold);
     color: var(--text-on-accent);
     font-weight: 700;
-    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    transition: background-color var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease), box-shadow var(--dur-med) var(--ease), color var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
   }
 
   .btn-primary:hover {
     background-color: #fbbf24;
     border-color: #fbbf24;
-    box-shadow: 0 0 20px rgba(255, 179, 0, 0.3);
+    box-shadow: 0 0 24px rgba(255, 179, 0, 0.35);
   }
 
   .btn-danger {
     color: var(--danger);
     border-color: var(--danger-border);
     background-color: var(--bg-surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: background-color var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease), box-shadow var(--dur-med) var(--ease);
   }
 
   .btn-danger:hover {
     background-color: var(--danger-soft);
+    box-shadow: 0 0 18px rgba(255, 69, 58, 0.28);
   }
 
   .btn[hidden] {
@@ -722,15 +785,18 @@
     flex-direction: column;
     overflow: hidden;
     background-color: var(--bg-elevated);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     isolation: isolate;
   }
 
   .card:hover {
-    transform: translateY(-2px);
-    border-color: var(--border-strong);
+    transform: translateY(-3px);
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.75), 0 0 18px rgba(0, 229, 255, 0.12);
   }
 
   .poster {
@@ -1097,6 +1163,8 @@
     flex: 1;
     min-width: 0;
     background-color: var(--bg-elevated);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
   }
 
   .card-title {
@@ -1109,9 +1177,11 @@
     color: var(--text-1);
     background: transparent;
     text-align: left;
-    font-size: 13.5px;
+    font-family: var(--font-display);
+    font-size: 14px;
     font-weight: 700;
     line-height: 1.35;
+    letter-spacing: -0.01em;
     cursor: pointer;
   }
 
@@ -1380,7 +1450,8 @@
     justify-content: center;
     padding: 16px;
     background-color: var(--bg-scrim);
-    backdrop-filter: blur(5px);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
 
   .modal-wrap.open {
@@ -1393,9 +1464,11 @@
     max-height: 90vh;
     max-height: 90dvh;
     overflow: auto;
-    border: 1px solid var(--border-strong);
+    border: 1px solid var(--border-subtle);
     border-radius: 18px;
     background-color: var(--bg-surface);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
     box-shadow: var(--shadow-float);
   }
 
@@ -1429,7 +1502,10 @@
 
   .detail-title {
     margin: 0 40px 8px 0;
-    font-size: 23px;
+    font-family: var(--font-display);
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
   }
 
   .detail-meta {

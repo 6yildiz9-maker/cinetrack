@@ -390,8 +390,17 @@
     gap: 6px;
     padding: var(--space-4);
     background-color: var(--bg-surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .stat-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 229, 255, 0.1);
   }
 
   .stat-card-header {
@@ -1404,17 +1413,21 @@
     padding: 14px 10px;
     border-radius: var(--radius-md);
     background-color: var(--bg-surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1.5px solid var(--border-subtle);
     cursor: pointer;
-    transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     color: var(--text-1);
     text-align: center;
     min-width: 0;
   }
 
   .profile-picker-card:hover {
-    border-color: var(--border-strong);
+    border-color: rgba(255, 255, 255, 0.2);
     background-color: var(--bg-elevated);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 229, 255, 0.1);
   }
 
   .profile-picker-card.is-active,

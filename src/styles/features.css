@@ -19,8 +19,10 @@
 
   .season-calendar-title {
     margin: 0;
-    font-size: 16px;
+    font-family: var(--font-display);
+    font-size: 17px;
     font-weight: 700;
+    letter-spacing: -0.01em;
     color: var(--text-1);
   }
 
@@ -44,15 +46,18 @@
     padding: 11px 13px;
     border-radius: var(--radius-md);
     background-color: var(--bg-surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border-subtle);
     color: var(--text-1);
     text-align: left;
-    transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    transition: border-color var(--dur-med) var(--ease), transform var(--dur-med) var(--ease), box-shadow var(--dur-med) var(--ease);
   }
 
   .season-calendar-card:hover {
-    border-color: var(--accent);
-    transform: translateY(-1px);
+    border-color: rgba(255, 255, 255, 0.2);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 22px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 229, 255, 0.12);
   }
 
   .season-calendar-date {

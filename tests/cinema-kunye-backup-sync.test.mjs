@@ -227,17 +227,18 @@ test('1. contentId (film/dizi adı + yıl) deterministik üretimi ve -belirsiz y
 test('2. Ayrı sinema-kunyesi.json dosyası, /api/cinema-kunye uç noktaları ve Sinema Künyen zenginleştirmesi', async () => {
   const tmpDir = createTempDir();
   try {
-    const dataFile = path.join(tmpDir, 'data', 'cinetrack-data.json');
-    const store = new PersistentDataStore(dataFile);
+    const dataDir = path.join(tmpDir, 'data');
+    const dataFile = path.join(dataDir, 'cinetrack-data.json');
+    const store = new PersistentDataStore({ dataDir });
     const storage = createDataStorage(dataFile, { persistentStore: store });
     const config = resolveConfig({
       PORT: '0',
       HOST: '127.0.0.1',
       DATA_FILE: dataFile,
     });
-    const app = createCineTrackApp({ config, storage, persistentStore: store });
+    const appBundle = createCineTrackApp({ config, storage, persistentStore: store });
     const server = await new Promise((resolve) => {
-      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+      const s = appBundle.app.listen(0, '127.0.0.1', () => resolve(s));
     });
     const port = server.address().port;
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -327,7 +328,7 @@ test('2. Ayrı sinema-kunyesi.json dosyası, /api/cinema-kunye uç noktaları ve
         getBody.cinemaKunye
       );
       assert.ok(wrapped.topGenres.some((g) => g.name === 'Bilim Kurgu'));
-      assert.ok(wrapped.topEras.some((e) => e.era === '2010s'));
+      assert.ok(wrapped.topEras.some((e) => e.era === "2010'lar"));
       assert.ok(wrapped.topActors.some((a) => a.name === 'Leonardo DiCaprio'));
     } finally {
       await new Promise((resolve) => server.close(resolve));
@@ -340,8 +341,9 @@ test('2. Ayrı sinema-kunyesi.json dosyası, /api/cinema-kunye uç noktaları ve
 test('3. Profil JSON ve CSV tam yedeklemesi (contentId ile) ve geri yüklemede çakışma birleştirme', async () => {
   const tmpDir = createTempDir();
   try {
-    const dataFile = path.join(tmpDir, 'data', 'cinetrack-data.json');
-    const store = new PersistentDataStore(dataFile);
+    const dataDir = path.join(tmpDir, 'data');
+    const dataFile = path.join(dataDir, 'cinetrack-data.json');
+    const store = new PersistentDataStore({ dataDir });
     const storage = createDataStorage(dataFile, { persistentStore: store });
 
     const watchedMovie = {
@@ -388,14 +390,17 @@ test('3. Profil JSON ve CSV tam yedeklemesi (contentId ile) ve geri yüklemede �
     const backupReport = await executeProfileBackupExport({
       profileId: 'profile-default',
       exportMode: 'json_and_xlsx',
+      includeJson: true,
+      includeXlsx: true,
       genresMap: genreMap,
       storage,
       persistentStore: store,
       projectRoot: tmpDir,
+      dataDir: tmpDir,
     });
     assert.equal(backupReport.jsonBackup.ok, true);
     const exportedServerJsonText = fs.readFileSync(
-      path.join(tmpDir, backupReport.jsonBackup.relativePath),
+      backupReport.jsonBackup.absolutePath,
       'utf8'
     );
     const parsedFromJsonBackup = parseBackupText(exportedServerJsonText);
@@ -490,9 +495,18 @@ test('4. GitHub çift yönlü senkronizasyonda data/sinema-kunyesi.json kayıps�
   const gh = createMockGitHubServer();
 
   try {
-    const dataFile = path.join(tmpDir, 'data', 'cinetrack-data.json');
-    const store = new PersistentDataStore(dataFile);
+    const dataDir = path.join(tmpDir, 'data');
+    const dataFile = path.join(dataDir, 'cinetrack-data.json');
+    const store = new PersistentDataStore({
+      dataDir,
+      githubToken: TEST_TOKEN,
+      githubOwner: TEST_OWNER,
+      githubRepo: TEST_REPO,
+      githubBranch: TEST_BRANCH,
+      isPublicRepo: false,
+    });
     const storage = createDataStorage(dataFile, { persistentStore: store });
+    store.attachDataStorage(storage);
 
     const localKunye = extractCinemaKunyeFromItems(
       [
@@ -565,25 +579,8 @@ test('4. GitHub çift yönlü senkronizasyonda data/sinema-kunyesi.json kayıps�
       ],
     });
 
-    const config = resolveConfig({
-      PORT: '0',
-      HOST: '127.0.0.1',
-      DATA_FILE: dataFile,
-      GITHUB_TOKEN: TEST_TOKEN,
-      GITHUB_OWNER: TEST_OWNER,
-      GITHUB_REPO: TEST_REPO,
-      GITHUB_BRANCH: TEST_BRANCH,
-      GITHUB_REPO_IS_PUBLIC: 'false',
-    });
-
-    const syncManager = new GitHubBidirectionalSyncManager({
-      config,
-      persistentStore: store,
-      storage,
-    });
-
     await gh.withMockFetch(async () => {
-      const inspectBefore = await syncManager.inspect();
+      const inspectBefore = await store.inspectGitHub();
       assert.equal(inspectBefore.ok, true);
       assert.equal(
         inspectBefore.localAfter.files['data/sinema-kunyesi.json']?.uniqueKeyCount,
@@ -595,7 +592,7 @@ test('4. GitHub çift yönlü senkronizasyonda data/sinema-kunyesi.json kayıps�
       );
       assert.equal(inspectBefore.comparison.semanticEqual, false);
 
-      const reconcileReport = await syncManager.reconcile();
+      const reconcileReport = await store.reconcileWithGitHub();
       assert.equal(reconcileReport.ok, true);
       assert.equal(reconcileReport.verifiedEqual, true);
       assert.equal(reconcileReport.comparison?.semanticEqual, true);
