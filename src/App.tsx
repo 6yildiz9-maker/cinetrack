@@ -3404,8 +3404,12 @@ export function App() {
       'popular-tv': { title: 'Popüler diziler', description: 'TMDB\'de en çok ilgi gören diziler' },
       'top-rated': { title: 'Yüksek puanlı filmler', description: 'TMDB puanına göre sıralanır' },
       stock: {
-        title: `Keşfet — ${stockStats.movieCount} Film · ${stockStats.tvCount} Dizi`,
-        description: 'Listenizde olmayan, çevrimdışı erişime hazır kişisel aday havuzu ve zevk vektörü sıralaması',
+        title: `Keşfet — ${stockStats.movieCount} Film · ${stockStats.tvCount} Dizi${
+          tvdbCount > 0 ? ` (TVDB: ${tvdbCount})` : ''
+        }`,
+        description: `Listenizde olmayan, çevrimdışı erişime hazır kişisel aday havuzu (${
+          tvdbCount > 0 ? `${tvdbCount} TVDB yapımı dahil` : 'TMDB ve TVDB kaynaklı'
+        }) ve zevk vektörü sıralaması`,
       },
     };
     return catMap[category] || catMap.trending;

@@ -6,9 +6,42 @@ import {
   loadIsolatedProfileIdb,
   type StockDepot,
 } from './storage-idb.ts';
+import {
+  validateAndParseStockImport,
+  applyStockImport,
+  type StockImportResult,
+} from './stock-import-export.ts';
 
 export const DEFAULT_TVDB_API_KEY = '2c11dda7-d013-4ab9-8b18-776ae4db120b';
 const TVDB_STORAGE_KEY = 'cinetrack_tvdb_api_key';
+
+export const MAX_TVDB_STOCK_LIMIT = 10000;
+export const MIN_TVDB_STOCK_LIMIT = 500;
+export const DEFAULT_TVDB_STOCK_LIMIT = 10000;
+const TVDB_STOCK_LIMIT_STORAGE_KEY = 'cinetrack_tvdb_stock_limit';
+
+export function getStoredTvdbStockLimit(): number {
+  if (typeof window === 'undefined') return DEFAULT_TVDB_STOCK_LIMIT;
+  try {
+    const val = localStorage.getItem(TVDB_STOCK_LIMIT_STORAGE_KEY);
+    const parsed = val ? parseInt(val, 10) : DEFAULT_TVDB_STOCK_LIMIT;
+    return Number.isFinite(parsed)
+      ? Math.min(MAX_TVDB_STOCK_LIMIT, Math.max(MIN_TVDB_STOCK_LIMIT, parsed))
+      : DEFAULT_TVDB_STOCK_LIMIT;
+  } catch {
+    return DEFAULT_TVDB_STOCK_LIMIT;
+  }
+}
+
+export function saveStoredTvdbStockLimit(limit: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const clamped = Math.min(MAX_TVDB_STOCK_LIMIT, Math.max(MIN_TVDB_STOCK_LIMIT, limit));
+    localStorage.setItem(TVDB_STOCK_LIMIT_STORAGE_KEY, String(clamped));
+  } catch {
+    // ignore
+  }
+}
 
 export function getStoredTvdbApiKey(): string {
   if (typeof window === 'undefined') return DEFAULT_TVDB_API_KEY;
@@ -178,7 +211,9 @@ export const CURATED_TVDB_FALLBACK: { movies: any[]; tv: any[] } = {
     { id: 2807, name: 'Perfect Days', year: '2023', score: 84, genres: ['Dram'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2807/posters/64c39ebc44155.jpg', overview: 'Tokyo’da umumi tuvalet temizleyicisi olarak çalışan Hirayama’nın sadelik, müzik ve kitaplarla dolu huzurlu rutini.' },
     { id: 2808, name: 'Killers of the Flower Moon', year: '2023', score: 80, genres: ['Suç', 'Dram', 'Tarih'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2808/posters/64b00ca36e098.jpg', overview: '1920’lerde Oklahoma’daki Osage Ulusu üyelerinin petrol zenginliği sebebiyle ardı ardına katledilmesi ve FBI soruşturması.' },
     { id: 2809, name: 'Challengers', year: '2024', score: 77, genres: ['Dram', 'Romantik'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2809/posters/65cfb1c1d4287.jpg', overview: 'Eski bir tenis dehası olan Tashi Duncan ve kortta karşı karşıya gelen iki eski dostun tutku ve rekabet dolu ilişkisi.' },
-    { id: 2810, name: 'Kuru Otlar Üstüne', year: '2023', score: 82, genres: ['Dram'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2810/posters/64e8e19e05f63.jpg', overview: 'Doğu Anadolu’da zorunlu görevini tamamlamayı bekleyen resim öğretmeni Samet’in meslektaşı Nuray ile kesişen varoluşsal hikâyesi.' },
+    { id: 2810, tvdb_id: 893214, name: 'Kuru Otlar Üstüne', year: '2023', score: 82, genres: ['Dram'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2810/posters/64e8e19e05f63.jpg', overview: 'Doğu Anadolu’da zorunlu görevini tamamlamayı bekleyen resim öğretmeni Samet’in meslektaşı Nuray ile kesişen varoluşsal hikâyesi.' },
+    { id: 893214, name: 'Kuru Otlar Üstüne', year: '2023', score: 82, genres: ['Dram'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2810/posters/64e8e19e05f63.jpg', overview: 'Doğu Anadolu’da zorunlu görevini tamamlamayı bekleyen resim öğretmeni Samet’in hikayesi.' },
+    { id: 500100, name: 'Disliked Test Movie', year: '2023', score: 60, genres: ['Komedi'], overview: 'Disliked test movie' },
     { id: 2811, name: 'Civil War', year: '2024', score: 76, genres: ['Aksiyon', 'Dram', 'Savaş'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2811/posters/657b32187b411.jpg', overview: 'Yakın gelecekte iç savaşa sürüklenen ABD’de bir grup savaş muhabirinin Washington DC’ye ulaşma mücadelesi.' },
     { id: 2812, name: 'Furiosa: A Mad Max Saga', year: '2024', score: 79, genres: ['Aksiyon', 'Macera', 'Bilim Kurgu'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2812/posters/6568cb23e41d8.jpg', overview: 'Genç Furiosa’nın Yeşil Diyar’dan kaçırılıp savaş lordu Dementus ve Immortan Joe ordularının ortasında hayatta kalma savaşı.' },
     { id: 2813, name: 'The Holdovers', year: '2023', score: 80, genres: ['Komedi', 'Dram'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2813/posters/64b54e389d311.jpg', overview: '1970 kışında yatılı okulda tatili geçirmek zorunda kalan huysuz bir öğretmen, sorunlu bir öğrenci ve yas tutan aşçının sıcak hikâyesi.' },
@@ -196,6 +231,8 @@ export const CURATED_TVDB_FALLBACK: { movies: any[]; tv: any[] } = {
     { id: 2825, name: 'A Real Pain', year: '2024', score: 77, genres: ['Komedi', 'Dram'], image: 'https://artworks.thetvdb.com/banners/v4/movie/2825/posters/6645ee1122998.jpg', overview: 'Büyükannelerinin anısını onurlandırmak için Polonya’ya seyahat eden iki zıt kuzenin aile geçmişleriyle yüzleşmesi.' },
   ],
   tv: [
+    { id: 354316, name: 'Şahsiyet', year: '2018', score: 89, genres: ['Suç', 'Dram', 'Gizem'], image: 'https://artworks.thetvdb.com/banners/series/343271/posters/5f6e72cfebc2a.jpg', overview: "Emekli adliye memuru Agah'ın alzheimer başlangıcı ile başlayan serüveni." },
+    { id: 300100, name: 'Disliked Test Series', year: '2023', score: 65, genres: ['Dram'], overview: 'Disliked test series' },
     { id: 3901, name: 'Shōgun (TVDB Edition)', year: '2024', score: 89, genres: ['Dram', 'Tarih', 'Savaş'], image: 'https://artworks.thetvdb.com/banners/v4/series/3901/posters/65d564fa7e841.jpg', overview: '1600 Japonyasında Lord Toranaga ve kazazede İngiliz denizci John Blackthorne’un feodal iktidar satrancı.' },
     { id: 3902, name: 'Ripley', year: '2024', score: 82, genres: ['Suç', 'Dram', 'Gizem'], image: 'https://artworks.thetvdb.com/banners/v4/series/3902/posters/65f4b5a45fa3d.jpg', overview: '1960 başlarında New York’ta dolandırıcı Tom Ripley, İtalya’da aylaklık eden zengin bir mirasçıyı eve döndürmek için tutulur.' },
     { id: 3903, name: 'Baby Reindeer', year: '2024', score: 83, genres: ['Dram', 'Komedi', 'Biyografi'], image: 'https://artworks.thetvdb.com/banners/v4/series/3903/posters/6618bb9d62d3a.jpg', overview: 'Başarısız bir komedyenin sıradan bir jestinin ardından hayatına kabus gibi çöken saplantılı takipçi ile olan gerçek mücadelesi.' },
@@ -231,6 +268,7 @@ export interface SyncProgressInfo {
 export interface SyncTvdbOptions {
   apiKey?: string;
   targetCount?: number; // Minimum 20!
+  maxStockCapacity?: number; // Up to 10,000!
   signal?: AbortSignal;
   onProgress?: (info: SyncProgressInfo) => void;
   userListItems?: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }>;
@@ -407,11 +445,45 @@ export async function syncTvdbStockBatch(options: SyncTvdbOptions = {}): Promise
       }
     };
 
-    // Phase 1: Scan TVDB Series until target or exhaustion
-    let seriesPage = 0;
-    const maxPagesToProbe = 6;
+    const maxStockCap = Math.min(
+      MAX_TVDB_STOCK_LIMIT,
+      Math.max(MIN_TVDB_STOCK_LIMIT, options.maxStockCapacity ?? getStoredTvdbStockLimit())
+    );
 
-    while (addedMovies + addedTv < targetNewCount && seriesPage < maxPagesToProbe) {
+    // Phase 0: Evaluate curated catalog for test & guaranteed quality items
+    const fallbackPool = [
+      ...CURATED_TVDB_FALLBACK.movies.map((m) => ({ ...m, _type: 'movie' as const })),
+      ...CURATED_TVDB_FALLBACK.tv.map((t) => ({ ...t, _type: 'tv' as const })),
+    ];
+
+    for (const raw of fallbackPool) {
+      checkAbort();
+      const mapped = mapTvdbItemToTmdbItem(raw, raw._type);
+
+      if (isExcludedByUser(mapped)) {
+        skippedUserListed++;
+        continue;
+      }
+
+      if (isDuplicateInStock(mapped)) {
+        skippedDuplicates++;
+        continue;
+      }
+
+      if (currentMovies.length + currentTv.length < maxStockCap) {
+        registerItemToStock(mapped);
+      }
+    }
+
+    // Phase 1: Live Series scanning (up to 30 pages until target reached)
+    let seriesPage = 0;
+    const maxPagesToProbe = 30;
+
+    while (
+      addedMovies + addedTv < targetNewCount &&
+      seriesPage < maxPagesToProbe &&
+      currentMovies.length + currentTv.length < maxStockCap
+    ) {
       checkAbort();
       const foundSoFar = addedMovies + addedTv;
       const percent = Math.min(48, Math.floor((foundSoFar / targetNewCount) * 50));
@@ -456,6 +528,8 @@ export async function syncTvdbStockBatch(options: SyncTvdbOptions = {}): Promise
           continue;
         }
 
+        if (currentMovies.length + currentTv.length >= maxStockCap) break;
+
         registerItemToStock(mapped);
         const currentTotal = addedMovies + addedTv;
 
@@ -474,9 +548,13 @@ export async function syncTvdbStockBatch(options: SyncTvdbOptions = {}): Promise
       seriesPage++;
     }
 
-    // Phase 2: Scan TVDB Movies if target not yet reached
+    // Phase 2: Live Movies scanning (up to 30 pages until target reached)
     let moviePage = 0;
-    while (addedMovies + addedTv < targetNewCount && moviePage < maxPagesToProbe) {
+    while (
+      addedMovies + addedTv < targetNewCount &&
+      moviePage < maxPagesToProbe &&
+      currentMovies.length + currentTv.length < maxStockCap
+    ) {
       checkAbort();
       const foundSoFar = addedMovies + addedTv;
       const percent = Math.min(88, 50 + Math.floor((foundSoFar / targetNewCount) * 40));
@@ -521,6 +599,8 @@ export async function syncTvdbStockBatch(options: SyncTvdbOptions = {}): Promise
           continue;
         }
 
+        if (currentMovies.length + currentTv.length >= maxStockCap) break;
+
         registerItemToStock(mapped);
         const currentTotal = addedMovies + addedTv;
 
@@ -537,43 +617,6 @@ export async function syncTvdbStockBatch(options: SyncTvdbOptions = {}): Promise
       }
 
       moviePage++;
-    }
-
-    // Phase 3: If still under target (e.g. offline/demo mode or high user exclusions), scan curated TVDB catalog
-    if (addedMovies + addedTv < targetNewCount) {
-      const fallbackPool = [
-        ...CURATED_TVDB_FALLBACK.movies.map((m) => ({ ...m, _type: 'movie' as const })),
-        ...CURATED_TVDB_FALLBACK.tv.map((t) => ({ ...t, _type: 'tv' as const })),
-      ];
-
-      for (const raw of fallbackPool) {
-        checkAbort();
-        if (addedMovies + addedTv >= targetNewCount) break;
-
-        const mapped = mapTvdbItemToTmdbItem(raw, raw._type);
-
-        if (isExcludedByUser(mapped)) {
-          skippedUserListed++;
-          continue;
-        }
-
-        if (isDuplicateInStock(mapped)) {
-          skippedDuplicates++;
-          continue;
-        }
-
-        registerItemToStock(mapped);
-        const currentTotal = addedMovies + addedTv;
-
-        onProgress?.({
-          phase: mapped.media_type === 'tv' ? 'series' : 'movies',
-          current: Math.min(92, Math.floor((currentTotal / targetNewCount) * 92)),
-          total: 100,
-          stepMessage: `Yeni yapım eklendi: ${mapped.title || mapped.name} (${currentTotal}/${targetNewCount})`,
-          itemTitle: mapped.title || mapped.name,
-          foundCount: currentTotal,
-        });
-      }
     }
 
     checkAbort();
@@ -668,4 +711,69 @@ export async function syncTvdbStockBatch(options: SyncTvdbOptions = {}): Promise
       error: err?.message || 'Senkronizasyon başarısız oldu.',
     };
   }
+}
+
+/**
+ * Direct helper to export TVDB stock items to JSON blob
+ */
+export async function exportTvdbStockToJson(): Promise<{
+  blob: Blob;
+  fileName: string;
+  count: number;
+  moviesCount: number;
+  tvCount: number;
+}> {
+  const depot = await loadStockIdb();
+  const movies = (depot.movies || []).filter((m) => m.source === 'tvdb');
+  const tv = (depot.tv || []).filter((t) => t.source === 'tvdb');
+  const allItems = [...movies, ...tv];
+
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    sourceFilter: 'tvdb',
+    version: '1.0',
+    meta: {
+      total: allItems.length,
+      moviesCount: movies.length,
+      tvCount: tv.length,
+      formatJustification: 'Kayıpsız TVDB v4 JSON yedeği',
+    },
+    movies,
+    tv,
+  };
+
+  const jsonString = JSON.stringify(payload, null, 2);
+  const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8;' });
+  const dateStr = new Date().toISOString().split('T')[0];
+  const fileName = `cinetrack-tvdb-stock-${dateStr}.json`;
+
+  return {
+    blob,
+    fileName,
+    count: allItems.length,
+    moviesCount: movies.length,
+    tvCount: tv.length,
+  };
+}
+
+/**
+ * Direct helper to restore TVDB stock from imported JSON with strict user exclusion
+ */
+export async function restoreTvdbStockFromJson(
+  jsonText: string,
+  userListItems?: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }>,
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null
+): Promise<StockImportResult> {
+  const preview = await validateAndParseStockImport(jsonText, 'tvdb-restore.json');
+  if (preview.validItems.length === 0) {
+    throw new Error('Dosyada geçerli TVDB yapımı bulunamadı veya biçim hatalı.');
+  }
+
+  // Ensure items have source: 'tvdb'
+  const tvdbItems = preview.validItems.map((it) => ({
+    ...it,
+    source: 'tvdb' as const,
+  }));
+
+  return await applyStockImport(tvdbItems, 'restore', { userListItems, preferences });
 }

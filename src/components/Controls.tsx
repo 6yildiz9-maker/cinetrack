@@ -231,7 +231,11 @@ export const Controls: React.FC<ControlsProps> = ({
               className={`category-pill tabular-nums ${selectedCategory === 'stock' ? 'active' : ''}`}
               onClick={() => onCategoryChange('stock')}
             >
-              {stockStats ? `Stok (${stockStats.movieCount}+${stockStats.tvCount})` : 'Stok'}
+              {stockStats
+                ? `Stok (${stockStats.movieCount}+${stockStats.tvCount}${
+                    tvdbCount !== undefined && tvdbCount > 0 ? ` • TVDB: ${tvdbCount}` : ''
+                  })`
+                : 'Stok'}
             </button>
             <button
               type="button"
@@ -245,13 +249,7 @@ export const Controls: React.FC<ControlsProps> = ({
             {onOpenTvdbStock && (
               <button
                 type="button"
-                className="category-pill whitespace-nowrap flex items-center gap-1.5"
-                style={{
-                  backgroundColor: 'rgba(99, 184, 171, 0.14)',
-                  color: '#63b8ab',
-                  border: '1px solid rgba(99, 184, 171, 0.3)',
-                  fontWeight: 600,
-                }}
+                className="category-pill whitespace-nowrap flex items-center gap-1.5 bg-[#63b8ab]/15 text-[#63b8ab] border border-[#63b8ab]/30 font-semibold hover:bg-[#63b8ab]/25 transition-colors"
                 onClick={onOpenTvdbStock}
                 title={`TheTVDB v4 Stok Entegrasyonu ve İçe/Dışa Aktar (${tvdbCount ?? 0} Yapım)`}
               >

@@ -5,6 +5,12 @@ import {
   saveStoredTvdbApiKey,
   syncTvdbStockBatch,
   DEFAULT_TVDB_API_KEY,
+  MAX_TVDB_STOCK_LIMIT,
+  MIN_TVDB_STOCK_LIMIT,
+  getStoredTvdbStockLimit,
+  saveStoredTvdbStockLimit,
+  exportTvdbStockToJson,
+  restoreTvdbStockFromJson,
   type TvdbStatusResponse,
   type SyncProgressInfo,
 } from '../services/tvdb-service.ts';
@@ -18,7 +24,6 @@ import {
   type StockImportPreview,
 } from '../services/stock-import-export.ts';
 import { loadStockIdb, type StockDepot } from '../services/storage-idb.ts';
-
 import type { TmdbItem } from '../types/tmdb.ts';
 
 export interface TvdbStockModalProps {
@@ -45,6 +50,10 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
   const [showKey, setShowKey] = useState<boolean>(false);
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [statusResult, setStatusResult] = useState<TvdbStatusResponse | null>(null);
+
+  // Stock capacity limit (500 up to 10,000)
+  const [stockLimit, setStockLimit] = useState<number>(() => getStoredTvdbStockLimit());
+  const [scanBatchTarget, setScanBatchTarget] = useState<number>(20);
 
   // Stock counts
   const [stockStats, setStockStats] = useState<{
@@ -83,6 +92,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
   const [importResultNotice, setImportResultNotice] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const tvdbRestoreInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshStockStats = async () => {
     try {
@@ -111,6 +121,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setApiKey(getStoredTvdbApiKey());
+      setStockLimit(getStoredTvdbStockLimit());
       void refreshStockStats();
       void handleTestConnection(getStoredTvdbApiKey());
     }
@@ -148,6 +159,12 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
     void handleTestConnection(DEFAULT_TVDB_API_KEY);
   };
 
+  const handleStockLimitChange = (newLimit: number) => {
+    const clamped = Math.min(MAX_TVDB_STOCK_LIMIT, Math.max(MIN_TVDB_STOCK_LIMIT, newLimit));
+    setStockLimit(clamped);
+    saveStoredTvdbStockLimit(clamped);
+  };
+
   const handleStartSync = async () => {
     setIsSyncing(true);
     setSyncSummary(null);
@@ -157,7 +174,8 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
       const result = await syncTvdbStockBatch({
         apiKey,
         signal: abortControllerRef.current.signal,
-        targetCount: 20,
+        targetCount: scanBatchTarget,
+        maxStockCapacity: stockLimit,
         userListItems,
         preferences,
         profileId,
@@ -168,7 +186,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
       if (result.ok) {
         setSyncSummary(
-          `Başarılı: ${result.addedMovies} yeni film ve ${result.addedTv} yeni dizi TVDB stoğuna eklendi (En az 20 içerik taraması tamamlandı, ${result.skippedUserListed || 0} kullanıcı listelerindeki yapım hariç tutuldu, ${result.skippedDuplicates} mükerrer kayıt korundu).`
+          `Tarama Başarılı: ${result.addedMovies} yeni film ve ${result.addedTv} yeni dizi TVDB stoğuna eklendi (En az ${scanBatchTarget} içerik hedefine ulaşıldı, ${result.skippedUserListed || 0} kullanıcı listelerindeki yapım elendi, ${result.skippedDuplicates} mükerrer kayıt korundu).`
         );
       } else if (result.error === 'İşlem iptal edildi.') {
         setSyncSummary('Senkronizasyon kullanıcı tarafından iptal edildi.');
@@ -192,7 +210,47 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
     }
   };
 
-  // Export Trigger
+  // Direct TVDB Export
+  const handleTvdbExportDirect = async () => {
+    setIsExporting(true);
+    try {
+      const res = await exportTvdbStockToJson();
+      const url = URL.createObjectURL(res.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSyncSummary(
+        `TVDB Stoğu Dışa Aktarıldı: ${res.count} yapım (${res.moviesCount} film, ${res.tvCount} dizi) "${res.fileName}" olarak indirildi.`
+      );
+    } catch (e: any) {
+      setSyncSummary(`Dışa aktarma hatası: ${e?.message || 'Bilinmeyen hata'}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Direct TVDB Restore
+  const handleTvdbRestoreFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const res = await restoreTvdbStockFromJson(text, userListItems, preferences);
+      setSyncSummary(`TVDB Stoğu Geri Yüklendi: ${res.message}`);
+      await refreshStockStats();
+      onStockMutated?.();
+    } catch (e: any) {
+      setSyncSummary(`Geri yükleme hatası: ${e?.message || 'Dosya okunamadı'}`);
+    } finally {
+      if (tvdbRestoreInputRef.current) tvdbRestoreInputRef.current.value = '';
+    }
+  };
+
+  // Generic Export Trigger
   const handleExport = async () => {
     setIsExporting(true);
     setExportNotice(null);
@@ -217,7 +275,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
     }
   };
 
-  // Import File Selection
+  // Generic Import File Selection
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -245,14 +303,17 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
     }
   };
 
-  // Import Confirmation
+  // Generic Import Confirmation
   const handleConfirmImport = async () => {
     if (!importPreview || importPreview.validItems.length === 0) return;
     setIsApplyingImport(true);
     setImportResultNotice(null);
 
     try {
-      const res = await applyStockImport(importPreview.validItems, importStrategy);
+      const res = await applyStockImport(importPreview.validItems, importStrategy, {
+        userListItems,
+        preferences,
+      });
       setImportResultNotice(res.message);
       setImportPreview(null);
       setImportFile(null);
@@ -267,6 +328,9 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
     }
   };
 
+  const tvdbTotalCount = stockStats.tvdbMovies + stockStats.tvdbTv;
+  const grandTotalStock = stockStats.totalMovies + stockStats.totalTv;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
@@ -274,31 +338,11 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
       aria-modal="true"
       aria-labelledby="tvdb-modal-title"
     >
-      <div
-        className="relative w-full max-w-3xl max-h-[92vh] flex flex-col rounded-2xl overflow-hidden shadow-2xl border"
-        style={{
-          backgroundColor: '#0f1116',
-          borderColor: 'rgba(255, 255, 255, 0.08)',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05)',
-        }}
-      >
+      <div className="relative w-full max-w-3xl max-h-[92vh] flex flex-col rounded-2xl overflow-hidden shadow-2xl border border-white/10 bg-[#0f1116]">
         {/* Modal Header */}
-        <div
-          className="flex items-center justify-between px-6 py-4 border-b shrink-0"
-          style={{
-            backgroundColor: 'rgba(22, 24, 29, 0.85)',
-            borderColor: 'rgba(255, 255, 255, 0.08)',
-          }}
-        >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#16181d]/85 shrink-0">
           <div className="flex items-center gap-3">
-            <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs tracking-wider"
-              style={{
-                backgroundColor: 'rgba(99, 184, 171, 0.15)',
-                color: '#63b8ab',
-                border: '1px solid rgba(99, 184, 171, 0.3)',
-              }}
-            >
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs tracking-wider bg-[#63b8ab]/15 text-[#63b8ab] border border-[#63b8ab]/30">
               TVDB
             </div>
             <div>
@@ -307,20 +351,15 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   TheTVDB v4 Entegrasyonu & Stok Yönetimi
                 </h2>
                 <span
-                  className="px-2.5 py-0.5 rounded-full text-xs font-semibold tabular-nums inline-flex items-center gap-1.5"
-                  style={{
-                    backgroundColor: 'rgba(99, 184, 171, 0.15)',
-                    color: '#63b8ab',
-                    border: '1px solid rgba(99, 184, 171, 0.35)',
-                  }}
+                  className="px-2.5 py-0.5 rounded-full text-xs font-semibold tabular-nums inline-flex items-center gap-1.5 bg-[#63b8ab]/15 text-[#63b8ab] border border-[#63b8ab]/35"
                   title={`TVDB Stok: ${stockStats.tvdbMovies} Film, ${stockStats.tvdbTv} Dizi`}
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-[#63b8ab]" />
-                  TVDB Stoğu: {stockStats.tvdbMovies + stockStats.tvdbTv} Yapım
+                  TVDB Stoğu: {tvdbTotalCount} Yapım ({stockStats.tvdbMovies} Film, {stockStats.tvdbTv} Dizi)
                 </span>
               </div>
               <p className="text-xs text-[#8b9099]">
-                Bağımsız TVDB stok kaynağı, 20+ yeni içerik garantili manuel tarama ve kayıpsız yedekle & geri yükle
+                Bağımsız TVDB stok kaynağı, 20+ yeni içerik garantili tarama, 10.000 tavan kapasite ve kayıpsız yedekleme
               </p>
             </div>
           </div>
@@ -338,13 +377,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
         </div>
 
         {/* Tab Navigation */}
-        <div
-          className="flex items-center px-6 pt-3 border-b gap-2 shrink-0"
-          style={{
-            backgroundColor: '#13151a',
-            borderColor: 'rgba(255, 255, 255, 0.07)',
-          }}
-        >
+        <div className="flex items-center px-6 pt-3 border-b border-white/10 bg-[#13151a] gap-2 shrink-0">
           <button
             onClick={() => setActiveTab('tvdb')}
             className={`px-4 py-2.5 text-xs sm:text-sm font-medium rounded-t-lg transition-all relative ${
@@ -353,7 +386,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                 : 'text-[#8b9099] hover:text-[#eef0f2]'
             }`}
           >
-            TVDB Entegrasyonu & Senkron ({stockStats.tvdbMovies + stockStats.tvdbTv})
+            TVDB Entegrasyonu & Senkron ({tvdbTotalCount})
           </button>
           <button
             onClick={() => setActiveTab('import-export')}
@@ -372,13 +405,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
           {activeTab === 'tvdb' ? (
             <>
               {/* API Configuration Card */}
-              <div
-                className="p-5 rounded-xl border space-y-4"
-                style={{
-                  backgroundColor: 'rgba(22, 24, 29, 0.62)',
-                  borderColor: 'rgba(255, 255, 255, 0.08)',
-                }}
-              >
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-[#d3b579]" />
@@ -387,20 +414,16 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
                   {statusResult && (
                     <span
-                      className="text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5"
-                      style={{
-                        backgroundColor: statusResult.ok
-                          ? 'rgba(111, 191, 138, 0.15)'
-                          : 'rgba(224, 100, 94, 0.15)',
-                        color: statusResult.ok ? '#6fbf8a' : '#e0645e',
-                        border: `1px solid ${
-                          statusResult.ok ? 'rgba(111, 191, 138, 0.3)' : 'rgba(224, 100, 94, 0.3)'
-                        }`,
-                      }}
+                      className={`text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5 ${
+                        statusResult.ok
+                          ? 'bg-[#6fbf8a]/15 text-[#6fbf8a] border border-[#6fbf8a]/30'
+                          : 'bg-[#e0645e]/15 text-[#e0645e] border border-[#e0645e]/30'
+                      }`}
                     >
                       <span
-                        className="w-1.5 h-1.5 rounded-full"
-                        style={{ backgroundColor: statusResult.ok ? '#6fbf8a' : '#e0645e' }}
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          statusResult.ok ? 'bg-[#6fbf8a]' : 'bg-[#e0645e]'
+                        }`}
                       />
                       {statusResult.ok ? 'Bağlantı Aktif (JWT)' : 'Bağlantı Başarısız'}
                     </span>
@@ -448,7 +471,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] text-[#676c75]">
-                    <span>PDF Planı Varsayılan Anahtarı: {DEFAULT_TVDB_API_KEY.slice(0, 8)}...</span>
+                    <span>Varsayılan Anahtar: {DEFAULT_TVDB_API_KEY.slice(0, 8)}...</span>
                     <button
                       onClick={handleResetDefaultKey}
                       className="text-[#63b8ab] hover:underline"
@@ -460,63 +483,54 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
                 {statusResult && (
                   <div
-                    className="p-3 rounded-lg text-xs"
-                    style={{
-                      backgroundColor: statusResult.ok
-                        ? 'rgba(111, 191, 138, 0.08)'
-                        : 'rgba(224, 100, 94, 0.08)',
-                      color: statusResult.ok ? '#6fbf8a' : '#e0645e',
-                      border: `1px solid ${
-                        statusResult.ok ? 'rgba(111, 191, 138, 0.2)' : 'rgba(224, 100, 94, 0.2)'
-                      }`,
-                    }}
+                    className={`p-3 rounded-lg text-xs border ${
+                      statusResult.ok
+                        ? 'bg-[#6fbf8a]/10 text-[#6fbf8a] border-[#6fbf8a]/20'
+                        : 'bg-[#e0645e]/10 text-[#e0645e] border-[#e0645e]/20'
+                    }`}
                   >
                     {statusResult.status_message}
                   </div>
                 )}
               </div>
 
-              {/* Stock Inventory Overview */}
-              <div
-                className="p-5 rounded-xl border space-y-4"
-                style={{
-                  backgroundColor: 'rgba(22, 24, 29, 0.62)',
-                  borderColor: 'rgba(255, 255, 255, 0.08)',
-                }}
-              >
+              {/* Stock Inventory Overview with TVDB Count Visibility */}
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-[#63b8ab]" />
-                    Mevcut Stok Envanteri
+                    Mevcut Stok Envanteri & Sayıları
                   </h3>
-                  <span className="text-xs text-[#8b9099]">
-                    Toplam Depo: {stockStats.totalMovies + stockStats.totalTv} Yapım
+                  <span className="text-xs text-[#8b9099] font-medium">
+                    Toplam Depo: <strong className="text-[#eef0f2]">{grandTotalStock}</strong> / {stockLimit} Yapım
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="p-3 rounded-xl bg-[#0a0b0e] border border-white/5">
+                  <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
                     <div className="text-[11px] text-[#8b9099]">TVDB Filmleri</div>
-                    <div className="text-lg font-semibold text-[#63b8ab] mt-1">{stockStats.tvdbMovies}</div>
-                    <div className="text-[10px] text-[#676c75]">source: tvdb</div>
+                    <div className="text-xl font-bold text-[#63b8ab] mt-1 tabular-nums">{stockStats.tvdbMovies}</div>
+                    <div className="text-[10px] text-[#676c75]">kaynak: tvdb</div>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-[#0a0b0e] border border-white/5">
+                  <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
                     <div className="text-[11px] text-[#8b9099]">TVDB Dizileri</div>
-                    <div className="text-lg font-semibold text-[#63b8ab] mt-1">{stockStats.tvdbTv}</div>
-                    <div className="text-[10px] text-[#676c75]">source: tvdb</div>
+                    <div className="text-xl font-bold text-[#63b8ab] mt-1 tabular-nums">{stockStats.tvdbTv}</div>
+                    <div className="text-[10px] text-[#676c75]">kaynak: tvdb</div>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-[#0a0b0e] border border-white/5">
-                    <div className="text-[11px] text-[#8b9099]">TMDB Filmleri</div>
-                    <div className="text-lg font-semibold text-[#d3b579] mt-1">{stockStats.tmdbMovies}</div>
-                    <div className="text-[10px] text-[#676c75]">source: tmdb</div>
+                  <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
+                    <div className="text-[11px] text-[#8b9099]">Toplam TVDB Stoğu</div>
+                    <div className="text-xl font-bold text-[#d3b579] mt-1 tabular-nums">{tvdbTotalCount}</div>
+                    <div className="text-[10px] text-[#676c75]">film + dizi toplamı</div>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-[#0a0b0e] border border-white/5">
-                    <div className="text-[11px] text-[#8b9099]">TMDB Dizileri</div>
-                    <div className="text-lg font-semibold text-[#d3b579] mt-1">{stockStats.tmdbTv}</div>
-                    <div className="text-[10px] text-[#676c75]">source: tmdb</div>
+                  <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
+                    <div className="text-[11px] text-[#8b9099]">TMDB Stoğu</div>
+                    <div className="text-xl font-bold text-[#8b9099] mt-1 tabular-nums">
+                      {stockStats.tmdbMovies + stockStats.tmdbTv}
+                    </div>
+                    <div className="text-[10px] text-[#676c75]">kaynak: tmdb</div>
                   </div>
                 </div>
 
@@ -525,24 +539,53 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <span>
-                    TVDB stoğu TMDB stoğundan bağımsız etiketlenir. Keşfet ve Zevk Haritası algoritmaları her iki
+                    TVDB stoğu TMDB stoğundan bağımsız tutulur. Keşfet ve Zevk Haritası algoritmaları her iki
                     kaynağı da destekler ve TVDB yapımlarına kart üzerinde özel TVDB rozeti eklenir.
                   </span>
                 </div>
               </div>
 
-              {/* Manual Sync Section */}
-              <div
-                className="p-5 rounded-xl border space-y-4"
-                style={{
-                  backgroundColor: 'rgba(22, 24, 29, 0.62)',
-                  borderColor: 'rgba(255, 255, 255, 0.08)',
-                }}
-              >
+              {/* Stock Capacity Ceiling (10.000'e kadar yükseltilebilir) */}
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#d3b579]" />
+                    Stok Üst Kapasitesi Sınırı (10.000'e Kadar Genişletilebilir)
+                  </h3>
+                  <span className="text-xs font-semibold text-[#d3b579] tabular-nums">
+                    Mevcut Sınır: {stockLimit.toLocaleString('tr-TR')} Yapım
+                  </span>
+                </div>
+
+                <p className="text-xs text-[#8b9099] leading-relaxed">
+                  TVDB taraması ile stok havuzunuzun üst kapasitesini 500'den 10.000 yapıma kadar yükseltebilirsiniz.
+                  Her taramada taranan yapımlar bu kapasiteye kadar eklenir.
+                </p>
+
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1">
+                  {[500, 1000, 2500, 5000, 10000].map((cap) => (
+                    <button
+                      key={cap}
+                      type="button"
+                      onClick={() => handleStockLimitChange(cap)}
+                      className={`py-2 px-3 rounded-xl text-xs font-medium border transition-all ${
+                        stockLimit === cap
+                          ? 'bg-[#d3b579] text-[#10120f] border-[#d3b579] shadow-sm font-semibold'
+                          : 'bg-[#0a0b0e] text-[#8b9099] border-white/10 hover:border-white/20 hover:text-[#eef0f2]'
+                      }`}
+                    >
+                      {cap.toLocaleString('tr-TR')} Yapım
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Manual Scan Section (En az 20 içerik garantili tarama) */}
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-[#a58fd0]" />
-                    Manuel Tara & Yeni İçerik Ekle (En Az 20 İçerik)
+                    Manuel TVDB Taraması (En Az 20 Yeni İçerik)
                   </h3>
                   {isSyncing && (
                     <span className="text-xs text-[#63b8ab] animate-pulse">Tarama ve İndirme Devam Ediyor...</span>
@@ -550,17 +593,37 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                 </div>
 
                 <p className="text-xs text-[#8b9099] leading-relaxed">
-                  TheTVDB v4 API üzerinden yüksek puanlı ve popüler dizi/filmleri tarar. Her tarama, listenizde veya
+                  TheTVDB v4 API üzerinden yüksek puanlı ve popüler dizi ve filmleri tarar. Her tarama, listenizde veya
                   stoğunuzda olmayan <strong className="text-[#eef0f2]">en az 20 yeni yapım</strong> bulunana kadar
                   sayfalar boyunca taramayı sürdürür.
                 </p>
+
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-medium text-[#8b9099]">Tarama Hedefi:</span>
+                  <div className="flex gap-2">
+                    {[20, 50, 100].map((target) => (
+                      <button
+                        key={target}
+                        type="button"
+                        onClick={() => setScanBatchTarget(target)}
+                        className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-colors ${
+                          scanBatchTarget === target
+                            ? 'bg-[#63b8ab] text-[#10120f] font-semibold'
+                            : 'bg-[#0a0b0e] text-[#8b9099] hover:text-[#eef0f2] border border-white/5'
+                        }`}
+                      >
+                        En Az {target} İçerik
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5 space-y-2 text-xs">
                   <div className="flex items-start gap-2 text-[#8b9099]">
                     <span className="text-[#63b8ab] font-bold">✓</span>
                     <span>
                       <strong className="text-[#eef0f2]">Kullanıcı Listeleri Koruması:</strong> İzleniyor, İzleme Listesi,
-                      Tamamlanan veya İlgilenmiyorum listelerinizde yer alan hiçbir yapım stoğa eklenmez, taranan havuzdan
+                      Tamamlanan veya İlgilenmiyorum listelerinizdeki yapımlar stoğa eklenmez, taranan havuzdan
                       otomatik elenir.
                     </span>
                   </div>
@@ -582,11 +645,8 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
                     <div className="w-full bg-white/10 rounded-full h-2 overflow-hidden">
                       <div
-                        className="h-full rounded-full transition-all duration-300"
-                        style={{
-                          width: `${syncProgress.current}%`,
-                          background: 'linear-gradient(90deg, #63b8ab 0%, #d3b579 100%)',
-                        }}
+                        className="h-full rounded-full transition-all duration-300 bg-gradient-to-r from-[#63b8ab] to-[#d3b579]"
+                        style={{ width: `${syncProgress.current}%` }}
                       />
                     </div>
                   </div>
@@ -598,7 +658,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   </div>
                 )}
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   {!isSyncing ? (
                     <button
                       onClick={handleStartSync}
@@ -607,7 +667,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                       </svg>
-                      Manuel Tara & Yeni İçerik Ekle (En Az 20 İçerik)
+                      Manuel TVDB Taraması Başlat (En Az {scanBatchTarget} İçerik)
                     </button>
                   ) : (
                     <button
@@ -622,17 +682,58 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Quick TVDB Export & Restore Card */}
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#63b8ab]" />
+                    TVDB Stoğunu Dışa Aktar & Geri Yükle
+                  </h3>
+                  <span className="text-xs text-[#8b9099]">{tvdbTotalCount} TVDB Yapımı Kayıtlı</span>
+                </div>
+
+                <p className="text-xs text-[#8b9099] leading-relaxed">
+                  TVDB stoğunuzu JSON dosyası olarak tek tıkla cihazınıza indirebilir veya daha önce kaydettiğiniz bir
+                  TVDB stoğunu geri yükleyebilirsiniz. Geri yükleme sırasında listelerinizdeki yapımlar otomatik korunur.
+                </p>
+
+                <div className="flex flex-wrap gap-3 pt-1">
+                  <button
+                    onClick={handleTvdbExportDirect}
+                    disabled={isExporting}
+                    className="px-4 py-2.5 rounded-xl font-medium text-xs bg-[#63b8ab]/20 text-[#63b8ab] border border-[#63b8ab]/35 hover:bg-[#63b8ab]/30 transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    TVDB Stoğunu Dışa Aktar (.json)
+                  </button>
+
+                  <input
+                    ref={tvdbRestoreInputRef}
+                    type="file"
+                    accept=".json"
+                    onChange={handleTvdbRestoreFile}
+                    className="hidden"
+                  />
+
+                  <button
+                    onClick={() => tvdbRestoreInputRef.current?.click()}
+                    className="px-4 py-2.5 rounded-xl font-medium text-xs bg-white/5 text-[#eef0f2] border border-white/10 hover:border-white/20 hover:bg-white/10 transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    TVDB Stoğunu Yedekten Geri Yükle (.json)
+                  </button>
+                </div>
+              </div>
             </>
           ) : (
             <>
-              {/* Export Section */}
-              <div
-                className="p-5 rounded-xl border space-y-4"
-                style={{
-                  backgroundColor: 'rgba(22, 24, 29, 0.62)',
-                  borderColor: 'rgba(255, 255, 255, 0.08)',
-                }}
-              >
+              {/* Full Export Section */}
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-[#63b8ab]" />
@@ -653,11 +754,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                           key={src}
                           type="button"
                           onClick={() => setExportSource(src)}
-                          className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                            exportSource === src
-                              ? 'bg-[#d3b579] text-[#10120f]'
-                              : 'text-[#8b9099] hover:text-[#eef0f2]'
-                          }`}
+                          className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${exportSource === src ? 'bg-[#d3b579] text-[#10120f]' : 'text-[#8b9099] hover:text-[#eef0f2]'}`}
                         >
                           {src === 'tvdb' ? 'Sadece TVDB' : src === 'tmdb' ? 'Sadece TMDB' : 'Tümü'}
                         </button>
@@ -673,11 +770,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                           key={fmt}
                           type="button"
                           onClick={() => setExportFormat(fmt)}
-                          className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                            exportFormat === fmt
-                              ? 'bg-[#d3b579] text-[#10120f]'
-                              : 'text-[#8b9099] hover:text-[#eef0f2]'
-                          }`}
+                          className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${exportFormat === fmt ? 'bg-[#d3b579] text-[#10120f]' : 'text-[#8b9099] hover:text-[#eef0f2]'}`}
                         >
                           {fmt.toUpperCase()} {fmt === 'json' ? '(Kayıpsız)' : '(Düz Tablo)'}
                         </button>
@@ -717,14 +810,8 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                 </button>
               </div>
 
-              {/* Import Section */}
-              <div
-                className="p-5 rounded-xl border space-y-4"
-                style={{
-                  backgroundColor: 'rgba(22, 24, 29, 0.62)',
-                  borderColor: 'rgba(255, 255, 255, 0.08)',
-                }}
-              >
+              {/* Full Import Section */}
+              <div className="p-5 rounded-xl border border-white/10 bg-[#16181d]/60 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-[#d3b579]" />
@@ -734,7 +821,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
                 <p className="text-xs text-[#8b9099] leading-relaxed">
                   Daha önce dışa aktarılmış JSON veya CSV stok dosyasını yükleyin. Yükleme öncesi şema doğrulanır ve
-                  çakışan kayıtlar için seçenek sunulur.
+                  kullanıcı listelerinizdeki yapımlar otomatik süzülerek stoğa alınmaz.
                 </p>
 
                 {/* Dropzone */}
@@ -799,39 +886,20 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                       <div className="space-y-2 pt-2 border-t border-white/5">
                         <label className="text-xs font-medium text-[#8b9099]">Çakışma / Geri Yükleme Stratejisi</label>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setImportStrategy('skip')}
-                            className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
-                              importStrategy === 'skip'
-                                ? 'bg-[#d3b579]/15 text-[#d3b579] border-[#d3b579]/40'
-                                : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'
-                            }`}
-                          >
-                            Mevcutları Koru (Atla)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setImportStrategy('overwrite')}
-                            className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
-                              importStrategy === 'overwrite'
-                                ? 'bg-[#d3b579]/15 text-[#d3b579] border-[#d3b579]/40'
-                                : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'
-                            }`}
-                          >
-                            Üzerine Yaz / Güncelle
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setImportStrategy('restore')}
-                            className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
-                              importStrategy === 'restore'
-                                ? 'bg-[#63b8ab]/20 text-[#63b8ab] border-[#63b8ab]/50'
-                                : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'
-                            }`}
-                          >
-                            Yedekten Geri Yükle
-                          </button>
+                          {[
+                            { key: 'skip' as const, label: 'Mevcutları Koru (Atla)', activeCls: 'bg-[#d3b579]/15 text-[#d3b579] border-[#d3b579]/40' },
+                            { key: 'overwrite' as const, label: 'Üzerine Yaz / Güncelle', activeCls: 'bg-[#d3b579]/15 text-[#d3b579] border-[#d3b579]/40' },
+                            { key: 'restore' as const, label: 'Yedekten Geri Yükle', activeCls: 'bg-[#63b8ab]/20 text-[#63b8ab] border-[#63b8ab]/50' },
+                          ].map((st) => (
+                            <button
+                              key={st.key}
+                              type="button"
+                              onClick={() => setImportStrategy(st.key)}
+                              className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${importStrategy === st.key ? st.activeCls : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'}`}
+                            >
+                              {st.label}
+                            </button>
+                          ))}
                         </div>
 
                         <p className="text-[11px] text-[#8b9099] italic">
@@ -869,13 +937,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div
-          className="flex items-center justify-between px-6 py-3.5 border-t shrink-0 text-xs text-[#8b9099]"
-          style={{
-            backgroundColor: 'rgba(22, 24, 29, 0.85)',
-            borderColor: 'rgba(255, 255, 255, 0.08)',
-          }}
-        >
+        <div className="flex items-center justify-between px-6 py-3.5 border-t border-white/10 bg-[#16181d]/85 shrink-0 text-xs text-[#8b9099]">
           <span>Cinethos • Bağımsız TVDB v4 & TMDB Çoklu Kaynak Kataloğu</span>
           <button
             onClick={onClose}

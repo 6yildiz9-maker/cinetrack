@@ -445,40 +445,84 @@ function parseCsvLine(line: string): string[] {
   return result;
 }
 
+export interface StockImportOptions {
+  userListItems?: ReadonlyArray<{ id?: number | string; media_type?: string; name?: string; title?: string }>;
+  preferences?: { disliked?: ReadonlyArray<string>; hidden?: ReadonlyArray<string> } | null;
+}
+
 /**
  * Applies the parsed items to IndexedDB and server persistent store
  */
 export async function applyStockImport(
   items: TmdbItem[],
-  strategy: StockImportStrategy = 'skip'
+  strategy: StockImportStrategy = 'skip',
+  options: StockImportOptions = {}
 ): Promise<StockImportResult> {
   const depot = await loadStockIdb();
   let movies = Array.isArray(depot.movies) ? [...depot.movies] : [];
   let tv = Array.isArray(depot.tv) ? [...depot.tv] : [];
+
+  // Exclude user-listed items from import candidates
+  const userExclusionKeys = new Set<string>();
+  const userTitleSet = new Set<string>();
+
+  if (Array.isArray(options.userListItems)) {
+    for (const it of options.userListItems) {
+      if (!it || it.id == null) continue;
+      const rawId = String(it.id).replace(/^(movie|tv)[:-]/, '').toLowerCase();
+      const mType = it.media_type === 'tv' ? 'tv' : 'movie';
+      userExclusionKeys.add(`${mType}:${rawId}`);
+      userExclusionKeys.add(`raw:${rawId}`);
+      const normTitle = (it.title || it.name || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+      if (normTitle) userTitleSet.add(normTitle);
+    }
+  }
+
+  if (options.preferences && Array.isArray(options.preferences.disliked)) {
+    for (const d of options.preferences.disliked) {
+      if (!d) continue;
+      const cleanKey = String(d).toLowerCase().trim();
+      userExclusionKeys.add(cleanKey);
+    }
+  }
+
+  const isUserExcluded = (item: TmdbItem): boolean => {
+    const rawId = String(item.id).replace(/^(movie|tv)[:-]/, '').toLowerCase();
+    const typeKey = `${item.media_type}:${rawId}`;
+    const tvdbKey = item.tvdb_id ? `${item.media_type}:${item.tvdb_id}` : '';
+    const normTitle = (item.title || item.name || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    if (userExclusionKeys.has(typeKey) || userExclusionKeys.has(`raw:${rawId}`)) return true;
+    if (tvdbKey && userExclusionKeys.has(tvdbKey)) return true;
+    if (normTitle && userTitleSet.has(normTitle)) return true;
+    return false;
+  };
+
+  const eligibleItems = items.filter((it) => !isUserExcluded(it));
+  const userFilteredCount = items.length - eligibleItems.length;
 
   let imported = 0;
   let updated = 0;
   let skipped = 0;
 
   if (strategy === 'restore') {
-    const isOnlyTvdb = items.length > 0 && items.every((i) => i.source === 'tvdb');
+    const isOnlyTvdb = eligibleItems.length > 0 && eligibleItems.every((i) => i.source === 'tvdb');
     if (isOnlyTvdb) {
       // TMDB stoğuna dokunmadan TVDB stoğunu yedekten tam geri yükle
       movies = movies.filter((m) => m.source !== 'tvdb');
       tv = tv.filter((t) => t.source !== 'tvdb');
-      const newTvdbMovies = items.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
-      const newTvdbTv = items.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
+      const newTvdbMovies = eligibleItems.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
+      const newTvdbTv = eligibleItems.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
       movies.push(...newTvdbMovies);
       tv.push(...newTvdbTv);
-      imported = items.length;
+      imported = eligibleItems.length;
     } else {
       // Tam stok geri yüklemesi
-      movies = items.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
-      tv = items.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
-      imported = items.length;
+      movies = eligibleItems.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
+      tv = eligibleItems.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
+      imported = eligibleItems.length;
     }
   } else {
-    for (const item of items) {
+    for (const item of eligibleItems) {
       const isTv = item.media_type === 'tv' || (!item.title && Boolean(item.name));
       const targetList = isTv ? tv : movies;
       const title = (item.title || item.name || '').toLowerCase().trim();
@@ -528,10 +572,11 @@ export async function applyStockImport(
     // ignore server snapshot failure
   }
 
+  const filterNotice = userFilteredCount > 0 ? ` (${userFilteredCount} kullanıcı listesindeki içerik elendi)` : '';
   const message =
     strategy === 'restore'
-      ? `${imported} yapım yedekten başarıyla geri yüklendi (Toplam ${movies.length} film, ${tv.length} dizi).`
-      : `${imported} yeni yapım stoğa eklendi, ${updated} yapım güncellendi, ${skipped} kopya atlandı.`;
+      ? `${imported} yapım yedekten başarıyla geri yüklendi${filterNotice} (Toplam ${movies.length} film, ${tv.length} dizi).`
+      : `${imported} yeni yapım stoğa eklendi, ${updated} yapım güncellendi, ${skipped} kopya atlandı${filterNotice}.`;
 
   return {
     ok: true,
