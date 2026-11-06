@@ -375,3 +375,41 @@ export function formatWatchTime(totalMinutes: number): string {
   return `${hours} sa ${remainingMins} dk`;
 }
 
+function localDayKey(date: Date): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * Üst üste etkinlik günü sayısı. Bugün (veya dün) etkinlik yoksa seri 0'dır.
+ */
+export function computeActivityStreak(
+  items: Array<{ addedAt?: string; updatedAt?: string }>,
+  now: Date = new Date()
+): number {
+  const days = new Set<string>();
+  for (const item of items) {
+    for (const raw of [item?.updatedAt, item?.addedAt]) {
+      if (typeof raw !== 'string' || !raw) continue;
+      const date = new Date(raw);
+      if (!Number.isNaN(date.getTime())) days.add(localDayKey(date));
+    }
+  }
+  if (days.size === 0) return 0;
+
+  const cursor = new Date(now);
+  if (!days.has(localDayKey(cursor))) {
+    cursor.setDate(cursor.getDate() - 1);
+    if (!days.has(localDayKey(cursor))) return 0;
+  }
+
+  let streak = 0;
+  while (days.has(localDayKey(cursor))) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+

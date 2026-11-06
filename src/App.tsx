@@ -170,7 +170,7 @@ import {
   recordProfileChangeAndMaybeBackup,
 } from './services/auto-backup-service.ts';
 import { startIdleStockEnrichment } from './services/idle-enrichment-service.ts';
-import { dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
+import { computeActivityStreak, dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
 import {
   compareMediaDatesAscending,
   compareMediaDatesDescending,
@@ -3312,6 +3312,7 @@ export function App() {
   const allListCount = savedItems.filter(
     (item) => selectedType === 'all' || item.media_type === selectedType
   ).length;
+  const streakDays = React.useMemo(() => computeActivityStreak(savedItems), [savedItems]);
 
   const tasteSummary = React.useMemo<TasteProfileSummary>(() => {
     if (tasteMap.summary && tasteMap.summary.topGenres && tasteMap.summary.topGenres.length > 0) {
@@ -3720,6 +3721,7 @@ export function App() {
         tab={tab}
         onTabChange={setTab}
         myListCount={allListCount}
+        streakDays={streakDays}
         onSearchChange={setQuery}
         onSearchSubmit={handleSearchSubmit}
         onSearchClear={handleSearchClear}

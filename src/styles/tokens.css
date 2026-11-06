@@ -7,66 +7,66 @@
     --font-sans: 'Plus Jakarta Sans', 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
 
-    /* Zeminler — Derin Sinema hiyerarşisi (#0a0b0e -> rgba(22, 24, 29, 0.62) -> #13151a) */
-    --bg-app: #0a0b0e; /* Zemin (antrasit) */
-    --bg-canvas: #0a0b0e; /* Grafik / derin tuval zemini */
-    --bg-surface: rgba(22, 24, 29, 0.62); /* Panel: cam efektli yarı saydam yüzey */
-    --bg-elevated: #13151a; /* Katı panel: kart gövdesi, modal, drawer yüzeyi */
-    --bg-solid: #13151a; /* Katı panel */
-    --bg-header: rgba(10, 11, 14, 0.85);
+    /* Zeminler — Derin Sinema antrasit hiyerarşisi (#0a0b0e -> panel -> katı panel #13151a) */
+    --bg-app: #0a0b0e; /* Antrasit zemin */
+    --bg-canvas: #0d0e12; /* Grafik tuvali zemini */
+    --bg-surface: rgba(22, 24, 29, 0.62); /* Cam efektli yarı saydam füme panel */
+    --bg-elevated: rgba(22, 24, 29, 0.85); /* Yüzen katman: dropdown, modal gövdesi */
+    --bg-header: rgba(10, 11, 14, 0.82);
     --bg-scrim: rgba(10, 11, 14, 0.78);
-    --bg-overlay: rgba(10, 11, 14, 0.85);
+    --bg-overlay: rgba(10, 11, 14, 0.82);
     --bg-hover: rgba(255, 255, 255, 0.05);
 
-    /* Kenar & metin — Çok ince beyaz çizgiler */
-    --border-subtle: rgba(255, 255, 255, 0.07); /* İnce çizgi */
-    --border-strong: rgba(255, 255, 255, 0.14); /* Güçlü çizgi */
-    --text-1: #eef0f2; /* Metin: başlıklar, sayılar */
-    --text-2: #8b9099; /* İkincil metin: gövde, meta */
-    --text-3: #676c75; /* Üçüncül metin: pasif, ipucu */
-    --text-on-accent: #10120f; /* Altın yüzey üstü metin: koyu zemin tonu */
-    --text-on-gold: #10120f;
+    /* Kenar & metin — Çok ince beyaz çizgiler (rgba(255,255,255,0.07)) */
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --text-1: #eef0f2; /* başlıklar, sayılar */
+    --text-2: #8b9099; /* gövde, meta */
+    --text-3: #676c75; /* pasif, ipucu */
+    --text-on-accent: #10131a; /* altın yüzey üzerinde koyu mürekkep */
 
-    /* Vurgu & anlam — Yumuşak Altın (eski kamera tonu) & Deniz Camı Turkuaz */
-    --gold: #d3b579; /* Yumuşak altın (ana vurgu) */
-    --gold-hover: #e2c68f; /* Altın hover tonu */
-    --gold-deep: #b58c4f; /* Altın derin ton */
-    --gold-soft: rgba(211, 181, 121, 0.12);
-    --gold-glow: rgba(211, 181, 121, 0.25);
-
-    --accent: #63b8ab; /* Turkuaz (ikincil vurgu): deniz camı tonu */
-    --accent-strong: #52a396;
+    /* Vurgu & anlam — Deniz camı turkuaz (accent) + eski kamera altını; doygun neon yok */
+    --accent: #63b8ab;
+    --accent-hover: #7fcbc0;
+    --accent-strong: #4f9a8e;
+    --accent-deep: #4f9a8e;
     --accent-soft: rgba(99, 184, 171, 0.12);
     --accent-border: rgba(99, 184, 171, 0.32);
-    --cyan-glow: rgba(99, 184, 171, 0.25);
-
-    --danger: #e0645e; /* Kırmızı: uyarı/silme/kör nokta */
-    --danger-soft: rgba(224, 100, 94, 0.12);
-    --danger-border: rgba(224, 100, 94, 0.34);
-
-    --success: #6fbf8a; /* Yeşil: başarı/izledim */
+    --turquoise: #63b8ab; /* deniz camı: veri görselleştirme, ikincil vurgu */
+    --turquoise-soft: rgba(99, 184, 171, 0.12);
+    --turquoise-border: rgba(99, 184, 171, 0.32);
+    --gold: #d3b579; /* yüksek puan, başarı, birincil CTA */
+    --gold-hover: #e2c68f;
+    --gold-deep: #b58c4f;
+    --gold-soft: rgba(211, 181, 121, 0.12);
+    --gold-border: rgba(211, 181, 121, 0.32);
+    --gold-glow: rgba(211, 181, 121, 0.28);
+    --cyan-glow: rgba(99, 184, 171, 0.28);
+    --purple-ambient: rgba(165, 143, 208, 0.035);
+    --success: #6fbf8a;
     --success-soft: rgba(111, 191, 138, 0.12);
     --success-border: rgba(111, 191, 138, 0.32);
-
-    --purple: #a58fd0; /* Mor: ek kategori */
-    --purple-soft: rgba(165, 143, 208, 0.12);
-    --purple-ambient: rgba(165, 143, 208, 0.035);
-
     --warning: #d3b579;
     --warning-soft: rgba(211, 181, 121, 0.12);
     --warning-border: rgba(211, 181, 121, 0.32);
+    --danger: #e0645e;
+    --danger-soft: rgba(224, 100, 94, 0.12);
+    --danger-border: rgba(224, 100, 94, 0.32);
+    --violet: #a58fd0; /* ek kategori */
+    --violet-soft: rgba(165, 143, 208, 0.12);
+    --violet-border: rgba(165, 143, 208, 0.32);
 
     /* İlişki grafiği ek anlam renkleri */
-    --link-person: #a58fd0; /* Mor */
-    --link-atmosphere: #63b8ab; /* Turkuaz */
-    --link-contrast: #d3b579; /* Altın */
-    --link-universe: #6fbf8a; /* Yeşil */
+    --link-person: #a58fd0;
+    --link-atmosphere: #63b8ab;
+    --link-contrast: #e0a064;
+    --link-universe: #6fbf8a;
     --node-profile: #63b8ab;
 
     /* Zevk halkaları (sabit anlam renkleri) */
-    --ring-0: #6fbf8a; /* Yeni Eşleşme (Yeşil) */
-    --ring-1: #8b9099; /* Son Öneri (İkincil) */
-    --ring-2: #d3b579; /* Yedek Halka (Yumuşak Altın) */
+    --ring-0: #6fbf8a; /* Yeni Eşleşme */
+    --ring-1: #94a3b8; /* Son Öneri */
+    --ring-2: #d3b579; /* Yedek Halka */
 
     /* Yerleşim tokenları */
     --space-1: 4px;
@@ -88,7 +88,7 @@
     --dur-med: 220ms;
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
 
-    --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
+    --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--gold);
 
     /* Katman tokenları (v5) */
     --z-header: 100;
@@ -116,14 +116,15 @@
     --muted: var(--text-2);
     --text: var(--text-1);
     --brand: var(--accent);
-    --brand-hover: var(--accent-strong);
+    --brand-hover: var(--accent-hover);
     --amber: var(--gold);
     --green: var(--success);
     --red: var(--danger);
     --surface-elevated: var(--bg-elevated);
     --surface-subtle: var(--bg-surface);
-    --accent-sky: var(--accent);
-    --accent-teal: var(--accent);
+    --panel-solid: #13151a; /* katı panel tonu */
+    --accent-sky: var(--turquoise);
+    --accent-teal: var(--turquoise);
     --accent-primary: var(--accent);
   }
 }
@@ -133,9 +134,9 @@
     font-family: var(--font-sans);
     background-color: var(--bg-app);
     background-image:
-      radial-gradient(circle at 0% 50%, rgba(99, 184, 171, 0.04) 0%, transparent 45%),
-      radial-gradient(circle at 100% 0%, rgba(211, 181, 121, 0.04) 0%, transparent 45%),
-      radial-gradient(circle at 50% 100%, rgba(165, 143, 208, 0.025) 0%, transparent 45%);
+      radial-gradient(circle at 0% 50%, rgba(99, 184, 171, 0.05) 0%, transparent 45%),
+      radial-gradient(circle at 100% 0%, rgba(211, 181, 121, 0.05) 0%, transparent 45%),
+      radial-gradient(circle at 50% 100%, rgba(165, 143, 208, 0.035) 0%, transparent 45%);
     background-attachment: fixed;
     color: var(--text-1);
     min-height: 100vh;

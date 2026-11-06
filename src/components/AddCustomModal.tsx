@@ -167,7 +167,7 @@ export const AddCustomModal: React.FC<AddCustomModalProps> = ({ isOpen, onClose,
           </div>
 
           {errorMsg && (
-            <p style={{ color: '#fb7185', fontSize: '12px', margin: '0 0 10px' }}>{errorMsg}</p>
+            <p style={{ color: 'var(--danger)', fontSize: '12px', margin: '0 0 10px' }}>{errorMsg}</p>
           )}
 
           <label>

@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { displayTitle, getPoster, releaseYear, handleImageError } from '../utils/helpers.ts';
-import { SavedItem, makeMediaKey } from '../core/cinetrack-core.ts';
+import {
+  displayTitle,
+  getPoster,
+  releaseYear,
+  handleImageError,
+  computeActivityStreak,
+} from '../utils/helpers.ts';import { SavedItem, makeMediaKey } from '../core/cinetrack-core.ts';
 import { fetchTmdb } from '../services/api.ts';
 import { TmdbItem } from '../types/tmdb.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
@@ -10,6 +15,7 @@ interface HeaderProps {
   tab: 'discover' | 'list' | 'taste-map' | 'relationships' | 'identity' | 'universes';
   onTabChange: (tab: any) => void;
   myListCount: number;
+  streakDays: number;
   query: string;
   onSearchChange: (q: string) => void;
   onSearchSubmit: (q: string) => void;
@@ -29,6 +35,7 @@ export const Header: React.FC<HeaderProps> = ({
   tab,
   onTabChange,
   myListCount,
+  streakDays,
   query,
   onSearchChange,
   onSearchSubmit,
@@ -219,7 +226,10 @@ export const Header: React.FC<HeaderProps> = ({
               <use href="#icon-film"></use>
             </svg>
           </span>
-          <span className="brand-title">Cinethos</span>
+          <span className="brand-title">
+            <span className="brand-title-lead">Cine</span>
+            <span className="brand-title-accent">thos</span>
+          </span>
         </div>
 
         {/* Primary Desktop Nav Tabs (Section 4) */}
@@ -404,6 +414,20 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right Actions Zone: Source tag, PWA, Profile, Add */}
         <div className="topbar-actions">
+          {streakDays >= 2 && (
+            <span
+              className="streak-chip"
+              title={`${streakDays} gündir üst üste izleme etkinliği var`}
+              aria-label={`${streakDays} günlük izleme serisi`}
+            >
+              <svg className="icon" aria-hidden="true">
+                <use href="#icon-fire"></use>
+              </svg>
+              <span className="streak-chip-value">{streakDays}</span>
+              <span className="streak-chip-label">GÜN SERİ</span>
+            </span>
+          )}
+
           {tmdbSource && tmdbSource !== 'live' && (
             <span
               className={`topbar-source-badge ${

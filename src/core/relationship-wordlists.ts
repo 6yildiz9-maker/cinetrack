@@ -44,27 +44,27 @@ export function getRelationshipTypeLabel(type: RelationshipType): string {
 }
 
 export function getRelationshipNodeColor(node: { kind: string; personalScore: number }): string {
-  if (node.kind === 'profile') return '#5eead4';
-  if (node.kind === 'source') return '#ec4899';
-  if (node.kind === 'saved') return '#38bdf8';
-  if (node.personalScore >= 80) return '#4ade80';
-  if (node.personalScore >= 60) return '#a78bfa';
+  if (node.kind === 'profile') return '#63b8ab';
+  if (node.kind === 'source') return '#c98bab';
+  if (node.kind === 'saved') return '#d3b579';
+  if (node.personalScore >= 80) return '#6fbf8a';
+  if (node.personalScore >= 60) return '#a58fd0';
   return '#94a3b8';
 }
 
 export function getRelationshipLinkColor(type: RelationshipType): string {
   switch (type) {
     case 'semantic':
-      return '#38bdf8';
+      return '#d3b579';
     case 'person':
-      return '#a78bfa';
+      return '#a58fd0';
     case 'universe':
-      return '#4ade80';
+      return '#6fbf8a';
     case 'atmosphere':
-      return '#2dd4bf';
+      return '#63b8ab';
     case 'contrast':
-      return '#fb923c';
+      return '#e0a064';
     case 'personal':
-      return '#64748b';
+      return '#676c75';
   }
 }

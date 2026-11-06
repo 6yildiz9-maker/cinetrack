@@ -39,7 +39,7 @@ export function renderRelationshipCanvasNode(
       ctx.setLineDash([2.5, 2]);
       ctx.strokeStyle = '#d3b579';
     } else {
-      ctx.strokeStyle = '#63b8ab';
+      ctx.strokeStyle = '#6fbf8a';
     }
     ctx.stroke();
     ctx.restore();
@@ -50,7 +50,7 @@ export function renderRelationshipCanvasNode(
     ctx.beginPath();
     ctx.arc(x, y, radius + 4, 0, 2 * Math.PI, false);
     ctx.lineWidth = 1.4;
-    ctx.strokeStyle = '#f8fafc';
+    ctx.strokeStyle = '#eef0f2';
     ctx.stroke();
     ctx.restore();
   }
@@ -60,7 +60,7 @@ export function renderRelationshipCanvasNode(
     ctx.font = `${node.id === selectedNodeId ? '600 ' : ''}${fontSize}px Inter, Arial, sans-serif`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#dbeafe';
+    ctx.fillStyle = '#eef0f2';
     ctx.fillText(node.label, x + radius + 4, y);
   }
 }
