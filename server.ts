@@ -44,6 +44,7 @@ const { app, storage, persistentStore } = createCineTrackApp({
   ...(resolved.tmdbRateLimit !== undefined ? { rateLimitMaxRequests: resolved.tmdbRateLimit } : {}),
   ...(resolved.tmdbRateWindowMs !== undefined ? { rateLimitWindowMs: resolved.tmdbRateWindowMs } : {}),
   tmdbApiKey: resolved.tmdbApiKey,
+  tvdbApiKey: resolved.tvdbApiKey,
   githubToken: resolved.githubToken,
   githubTokenSource: resolved.githubTokenSource,
   githubTokenCandidates: resolved.githubTokenCandidates,

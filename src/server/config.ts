@@ -141,6 +141,7 @@ export interface ResolvedServerConfig {
   effectiveBindHost: string;
   isRemoteHostWithoutToken: boolean;
   tmdbApiKey: string;
+  tvdbApiKey?: string;
   authToken: string;
   suggestedAuthToken?: string;
   trustProxy: boolean;

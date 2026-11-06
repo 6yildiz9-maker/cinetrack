@@ -164,7 +164,7 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
                 </span>
                 <span
                   id="quickRatingScoreText"
-                  style={{ fontSize: '11px', color: '#fbbf24', fontWeight: 800 }}
+                  style={{ fontSize: '11px', color: '#d3b579', fontWeight: 800 }}
                 >
                   {ratingText}
                 </span>

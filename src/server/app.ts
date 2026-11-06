@@ -21,6 +21,7 @@ import {
   type SecurityOptions,
 } from './security.ts';
 import { createTmdbProxyService, type TmdbProxyServiceOptions } from './tmdb-proxy.ts';
+import { createTvdbProxyService } from './tvdb-proxy.ts';
 import {
   PersistentDataStore,
   redactSecrets,
@@ -39,6 +40,7 @@ import { createTasteRouter } from './taste-routes.ts';
 import { runHybridMerge } from './hybrid-merge.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
+  tvdbApiKey?: string;
   dataDir?: string;
   persistentStore?: PersistentDataStore;
   security?: SecurityOptions;
@@ -303,12 +305,14 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app: Express;
   storage: ReturnType<typeof createDataStorage>;
   tmdbProxy: ReturnType<typeof createTmdbProxyService>;
+  tvdbProxy: ReturnType<typeof createTvdbProxyService>;
   persistentStore: PersistentDataStore;
 } {
   const resolvedDataDir = path.resolve(options.dataDir || path.join(process.cwd(), 'data'));
   const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   const storage = createDataStorage({ ...options, dataDir: resolvedDataDir, maxDataBytes });
   const tmdbProxy = createTmdbProxyService(options);
+  const tvdbProxy = createTvdbProxyService({ tvdbApiKey: options.tvdbApiKey });
   const persistentStore =
     options.persistentStore ??
     new PersistentDataStore({
@@ -356,7 +360,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org; connect-src 'self' https://api.themoviedb.org; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'"
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org https://artworks.thetvdb.com https://*.thetvdb.com; connect-src 'self' https://api.themoviedb.org https://api4.thetvdb.com; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'"
     );
     if (!process.env.APP_URL) {
       res.setHeader('X-Frame-Options', 'DENY');
@@ -410,6 +414,10 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app.get('/api/tmdb-status', tmdbProxy.handleStatus);
   app.get('/api/tmdb', tmdbRateLimiter, tmdbProxy.handleTmdb);
   app.get('/api/tmdb-image', tmdbProxy.handleTmdbImage);
+
+  app.get('/api/tvdb-status', tvdbProxy.handleStatus);
+  app.get('/api/tvdb', tmdbRateLimiter, tvdbProxy.handleTvdb);
+  app.post('/api/tvdb-login', originGuard, tokenGuard, tvdbProxy.handleLogin);
 
   app.get('/api/data', tokenGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -503,7 +511,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app.post('/api/data/backup-now', originGuard, tokenGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-      await storage.backupExistingDataAsync();
+      await storage.createSafetySnapshotSerialized();
       const backups = await storage.listBackupsAsync();
       res.json({ ok: true, message: 'Yedek anlık görüntüsü başarıyla alındı.', backups });
     } catch (err: any) {
@@ -1401,5 +1409,5 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     });
   });
 
-  return { app, storage, tmdbProxy, persistentStore };
+  return { app, storage, tmdbProxy, tvdbProxy, persistentStore };
 }

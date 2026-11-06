@@ -33,6 +33,7 @@ export interface MediaCardProps {
   onQuickSave?: (item: any) => void;
   onToggleDislike?: (key: string) => void;
   onOpenWhyModal?: (item: any) => void;
+  onOpenEvidence?: (item: any, reason?: string) => void;
   matchScore?: number;
   selectionRing?: string;
   eager?: boolean;
@@ -248,6 +249,22 @@ export const MediaCard: React.FC<MediaCardProps> = ({
               title="TMDB API anahtarı girilmediğinden örnek katalogdan listelendi"
             >
               Demo
+            </span>
+          )}
+
+          {item.source === 'tvdb' && size !== 'xs' && (
+            <span
+              className="source-tag source-tvdb"
+              style={{
+                background: 'rgba(99, 184, 171, 0.2)',
+                color: '#63b8ab',
+                border: '1px solid rgba(99, 184, 171, 0.35)',
+                fontWeight: 600,
+                letterSpacing: '0.04em',
+              }}
+              title="TheTVDB v4 veritabanı stoğundan sağlanan içerik"
+            >
+              TVDB
             </span>
           )}
         </div>

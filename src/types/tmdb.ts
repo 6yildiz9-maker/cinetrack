@@ -131,6 +131,11 @@ export interface TmdbItem {
   ring?: string;
   lifecycleRing?: string;
   stale?: boolean;
+  source?: 'tmdb' | 'tvdb' | string;
+  tvdb_id?: number | string;
+  tvdb_slug?: string;
+  tvdb_status?: string;
+  tvdb_score?: number;
   _source?: 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
   _cacheStatus?: 'hit' | 'miss' | 'stale' | 'none';
 }

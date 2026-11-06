@@ -37,9 +37,9 @@ export function renderRelationshipCanvasNode(
     ctx.lineWidth = 1.25;
     if (node.statusSignal === 'interest') {
       ctx.setLineDash([2.5, 2]);
-      ctx.strokeStyle = '#fbbf24';
+      ctx.strokeStyle = '#d3b579';
     } else {
-      ctx.strokeStyle = '#7dd3fc';
+      ctx.strokeStyle = '#63b8ab';
     }
     ctx.stroke();
     ctx.restore();

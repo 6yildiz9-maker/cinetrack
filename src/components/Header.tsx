@@ -7,8 +7,8 @@ import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 interface HeaderProps {
   profileName: string;
-  tab: 'discover' | 'list' | 'taste-map' | 'relationships';
-  onTabChange: (tab: 'discover' | 'list' | 'taste-map' | 'relationships') => void;
+  tab: 'discover' | 'list' | 'taste-map' | 'relationships' | 'identity' | 'universes';
+  onTabChange: (tab: any) => void;
   myListCount: number;
   query: string;
   onSearchChange: (q: string) => void;
@@ -20,6 +20,7 @@ interface HeaderProps {
   getSaved: (item: TmdbItem) => SavedItem | undefined;
   tmdbSource?: string;
   tmdbStaleReason?: string;
+  onOpenTvdbStock?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -37,6 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
   getSaved,
   tmdbSource = 'live',
   tmdbStaleReason,
+  onOpenTvdbStock,
 }) => {
   const [dropdownItems, setDropdownItems] = useState<TmdbItem[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -247,20 +249,20 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             role="tab"
-            aria-selected={tab === 'taste-map'}
-            className={`nav-tab-btn ${tab === 'taste-map' ? 'is-active' : ''}`}
-            onClick={() => onTabChange('taste-map')}
+            aria-selected={tab === 'taste-map' || tab === 'identity'}
+            className={`nav-tab-btn ${tab === 'taste-map' || tab === 'identity' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('identity')}
           >
-            <span>Zevkim</span>
+            <span>Kimliğim</span>
           </button>
           <button
             type="button"
             role="tab"
-            aria-selected={tab === 'relationships'}
-            className={`nav-tab-btn ${tab === 'relationships' ? 'is-active' : ''}`}
-            onClick={() => onTabChange('relationships')}
+            aria-selected={tab === 'relationships' || tab === 'universes'}
+            className={`nav-tab-btn ${tab === 'relationships' || tab === 'universes' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('universes')}
           >
-            <span>İlişkiler</span>
+            <span>Evrenler</span>
           </button>
         </nav>
 
@@ -416,6 +418,37 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           <PWAInstallButton />
+
+          {onOpenTvdbStock && (
+            <button
+              type="button"
+              className="btn profile-btn"
+              onClick={onOpenTvdbStock}
+              title="TheTVDB v4 Stoğu & İçe/Dışa Aktar"
+              aria-label="TVDB Stok ve İçe Dışa Aktar"
+              style={{
+                borderColor: 'rgba(99, 184, 171, 0.35)',
+                color: '#63b8ab',
+                backgroundColor: 'rgba(99, 184, 171, 0.1)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '6px 10px',
+                fontSize: '12px',
+                fontWeight: 600,
+              }}
+            >
+              <span
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  backgroundColor: '#63b8ab',
+                }}
+              />
+              TVDB
+            </button>
+          )}
 
           {/* Profile Switcher Button with Avatar Initial */}
           <button

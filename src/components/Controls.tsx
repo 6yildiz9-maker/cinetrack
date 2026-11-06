@@ -32,6 +32,7 @@ interface ControlsProps {
   stockStats?: { movieCount: number; tvCount: number };
   onReplenishStock?: () => void;
   isStockReplenishing?: boolean;
+  onOpenTvdbStock?: () => void;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -62,6 +63,7 @@ export const Controls: React.FC<ControlsProps> = ({
   stockStats,
   onReplenishStock,
   isStockReplenishing = false,
+  onOpenTvdbStock,
 }) => {
   const [showStockHealth, setShowStockHealth] = useState(false);
 
@@ -238,6 +240,23 @@ export const Controls: React.FC<ControlsProps> = ({
             >
               Stok Kalitesi
             </button>
+            {onOpenTvdbStock && (
+              <button
+                type="button"
+                className="category-pill whitespace-nowrap flex items-center gap-1.5"
+                style={{
+                  backgroundColor: 'rgba(99, 184, 171, 0.14)',
+                  color: '#63b8ab',
+                  border: '1px solid rgba(99, 184, 171, 0.3)',
+                  fontWeight: 600,
+                }}
+                onClick={onOpenTvdbStock}
+                title="TheTVDB v4 Stok Entegrasyonu ve İçe/Dışa Aktar"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#63b8ab]" />
+                TVDB Stok
+              </button>
+            )}
           </div>
         )}
 

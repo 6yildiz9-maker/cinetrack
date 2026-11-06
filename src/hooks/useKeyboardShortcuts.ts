@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 export interface KeyboardShortcutsHandlers {
   onFocusSearch?: () => void;
   onSelectTab?: (tab: 'discover' | 'list' | 'taste-map' | 'relationships') => void;
+  onOpenSettings?: () => void;
   onQuickSaveOrSync?: () => void;
   onOpenAddCustom?: () => void;
   onEscape?: () => void;
@@ -37,7 +38,7 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutsHandlers): void 
         return;
       }
 
-      // 1-4 switches tabs
+      // 1-5 switches tabs and opens settings
       if (e.key === '1') {
         e.preventDefault();
         handlers.onSelectTab?.('discover');
@@ -56,6 +57,11 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutsHandlers): void 
       if (e.key === '4') {
         e.preventDefault();
         handlers.onSelectTab?.('relationships');
+        return;
+      }
+      if (e.key === '5') {
+        e.preventDefault();
+        handlers.onOpenSettings?.();
         return;
       }
 

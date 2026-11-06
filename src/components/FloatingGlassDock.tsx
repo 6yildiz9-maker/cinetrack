@@ -60,9 +60,9 @@ const DOCK_ITEMS: readonly DockItemConfig[] = [
     label: 'Evrenler',
     shortcut: '4',
     Icon: Orbit,
-    activeTextClass: 'text-violet-300',
-    activeBgClass: 'bg-violet-500/15 border-violet-400/40',
-    activeDotClass: 'bg-violet-400',
+    activeTextClass: 'text-cinema-purple',
+    activeBgClass: 'bg-cinema-purple/15 border-cinema-purple/40',
+    activeDotClass: 'bg-cinema-purple',
   },
 ];
 

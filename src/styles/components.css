@@ -399,7 +399,7 @@
   .stat-card:hover {
     transform: translateY(-2px);
     border-color: rgba(255, 255, 255, 0.18);
-    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 229, 255, 0.1);
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(99, 184, 171, 0.12);
   }
 
   .stat-card-header {
@@ -1425,7 +1425,7 @@
     border-color: rgba(255, 255, 255, 0.2);
     background-color: var(--bg-elevated);
     transform: translateY(-2px);
-    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 229, 255, 0.1);
+    box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6), 0 0 14px rgba(99, 184, 171, 0.12);
   }
 
   .profile-picker-card.is-active,

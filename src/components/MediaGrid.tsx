@@ -40,6 +40,7 @@ interface MediaGridProps {
   onSetStatus: (item: TmdbItem, status: 'watching' | 'watchlist' | 'completed') => void;
   onQuickSave: (item: TmdbItem) => void;
   onToggleDislike: (key: string) => void;
+  onOpenEvidence?: (item: any, reason?: string) => void;
   onEmptyAction: (action: string) => void;
   onOpenPerson?: (id: number, name: string) => void;
   onToggleFavoriteActor?: (actor: FavoriteActorInfo) => void;
@@ -93,6 +94,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onSetStatus,
   onQuickSave,
   onToggleDislike,
+  onOpenEvidence,
   onEmptyAction,
   onOpenPerson,
   onToggleFavoriteActor,
@@ -719,6 +721,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 onSetStatus={onSetStatus}
                 onQuickSave={onQuickSave}
                 onToggleDislike={onToggleDislike}
+                onOpenEvidence={onOpenEvidence}
               />
             );
           })

@@ -98,36 +98,36 @@ export const RelationshipDetailsPanel: React.FC<RelationshipDetailsPanelProps> =
                   Kanıt güveni: {detail.confidence}/100
                   {detail.type === 'semantic' ? ' · Özet ve tür verisine dayalı' : ''}
                 </span>
-                {detail.breakdown && (
+                {Boolean((detail as any).breakdown) && (
                   <div className="relationship-breakdown-tags" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', margin: '4px 0 6px 0', fontSize: '11px', color: '#94a3b8' }}>
-                    {detail.breakdown.vectorContribution !== undefined && (
+                    {(detail as any).breakdown.vectorContribution !== undefined && (
                       <span className="breakdown-tag" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#93c5fd', padding: '1px 6px', borderRadius: '4px' }}>
-                        %{detail.breakdown.vectorContribution} Vektör
+                        %{(detail as any).breakdown.vectorContribution} Vektör
                       </span>
                     )}
-                    {detail.breakdown.genreContribution !== undefined && (
+                    {(detail as any).breakdown.genreContribution !== undefined && (
                       <span className="breakdown-tag" style={{ background: 'rgba(168, 85, 247, 0.15)', color: '#d8b4fe', padding: '1px 6px', borderRadius: '4px' }}>
-                        %{detail.breakdown.genreContribution} Tür
+                        %{(detail as any).breakdown.genreContribution} Tür
                       </span>
                     )}
-                    {detail.breakdown.personContribution !== undefined && (
+                    {(detail as any).breakdown.personContribution !== undefined && (
                       <span className="breakdown-tag" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#f472b6', padding: '1px 6px', borderRadius: '4px' }}>
-                        %{detail.breakdown.personContribution} Kadro
+                        %{(detail as any).breakdown.personContribution} Kadro
                       </span>
                     )}
-                    {detail.breakdown.toneContribution !== undefined && (
+                    {(detail as any).breakdown.toneContribution !== undefined && (
                       <span className="breakdown-tag" style={{ background: 'rgba(234, 179, 8, 0.15)', color: '#fde047', padding: '1px 6px', borderRadius: '4px' }}>
-                        %{detail.breakdown.toneContribution} Ton
+                        %{(detail as any).breakdown.toneContribution} Ton
                       </span>
                     )}
-                    {detail.breakdown.seriesContribution !== undefined && (
+                    {(detail as any).breakdown.seriesContribution !== undefined && (
                       <span className="breakdown-tag" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#86efac', padding: '1px 6px', borderRadius: '4px' }}>
-                        %{detail.breakdown.seriesContribution} Evren
+                        %{(detail as any).breakdown.seriesContribution} Evren
                       </span>
                     )}
-                    {detail.breakdown.contrastContribution !== undefined && (
+                    {(detail as any).breakdown.contrastContribution !== undefined && (
                       <span className="breakdown-tag" style={{ background: 'rgba(249, 115, 22, 0.15)', color: '#fdba74', padding: '1px 6px', borderRadius: '4px' }}>
-                        %{detail.breakdown.contrastContribution} Karşıtlık
+                        %{(detail as any).breakdown.contrastContribution} Karşıtlık
                       </span>
                     )}
                   </div>

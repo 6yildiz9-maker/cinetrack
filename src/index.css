@@ -5,26 +5,34 @@
 @import "tailwindcss";
 
 @theme {
-  --color-cinema-bg: #050507;
-  --color-cinema-surface: rgba(18, 18, 24, 0.72);
-  --color-cinema-surfaceHover: rgba(26, 26, 34, 0.85);
-  --color-cinema-gold: #FFB300;
-  --color-cinema-goldDim: rgba(255, 179, 0, 0.15);
-  --color-cinema-cyan: #00E5FF;
-  --color-cinema-cyanDim: rgba(0, 229, 255, 0.15);
-  --color-cinema-danger: #FF453A;
-  --color-cinema-dangerDim: rgba(255, 69, 58, 0.15);
-  --color-cinema-text: #F5F5F7;
-  --color-cinema-textMuted: #86868B;
+  --color-cinema-bg: #0a0b0e;
+  --color-cinema-surface: rgba(22, 24, 29, 0.62);
+  --color-cinema-surfaceHover: #13151a;
+  --color-cinema-solid: #13151a;
+  --color-cinema-gold: #d3b579;
+  --color-cinema-goldHover: #e2c68f;
+  --color-cinema-goldDeep: #b58c4f;
+  --color-cinema-goldDim: rgba(211, 181, 121, 0.15);
+  --color-cinema-cyan: #63b8ab;
+  --color-cinema-cyanDim: rgba(99, 184, 171, 0.15);
+  --color-cinema-danger: #e0645e;
+  --color-cinema-dangerDim: rgba(224, 100, 94, 0.15);
+  --color-cinema-success: #6fbf8a;
+  --color-cinema-purple: #a58fd0;
+  --color-cinema-text: #eef0f2;
+  --color-cinema-textPrimary: #eef0f2;
+  --color-cinema-textMuted: #8b9099;
+  --color-cinema-textTertiary: #676c75;
+  --color-cinema-ink: #10120f;
 
   --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
   --font-body: "Plus Jakarta Sans", "Inter", "Segoe UI", system-ui, sans-serif;
   --font-sans: "Plus Jakarta Sans", "Inter", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
 
-  --shadow-glowGold: 0 0 24px rgba(255, 179, 0, 0.35);
-  --shadow-glowCyan: 0 0 20px rgba(0, 229, 255, 0.25);
-  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+  --shadow-glowGold: 0 0 24px rgba(211, 181, 121, 0.25);
+  --shadow-glowCyan: 0 0 20px rgba(99, 184, 171, 0.22);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.55);
 
   --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-shimmer: cinema-shimmer 2s linear infinite;
@@ -41,13 +49,13 @@
 
 @layer base {
   body {
-    background-color: #050507;
+    background-color: #0a0b0e;
     background-image:
-      radial-gradient(circle at 0% 50%, rgba(0, 229, 255, 0.05) 0%, transparent 45%),
-      radial-gradient(circle at 100% 0%, rgba(255, 179, 0, 0.05) 0%, transparent 45%),
-      radial-gradient(circle at 50% 100%, rgba(168, 85, 247, 0.035) 0%, transparent 45%);
+      radial-gradient(circle at 0% 50%, rgba(99, 184, 171, 0.04) 0%, transparent 45%),
+      radial-gradient(circle at 100% 0%, rgba(211, 181, 121, 0.04) 0%, transparent 45%),
+      radial-gradient(circle at 50% 100%, rgba(165, 143, 208, 0.025) 0%, transparent 45%);
     background-attachment: fixed;
-    color: #F5F5F7;
+    color: #eef0f2;
     font-family: var(--font-body);
     min-height: 100vh;
     position: relative;
@@ -122,15 +130,15 @@
   }
 
   .glass-panel {
-    background-color: rgba(18, 18, 24, 0.72);
+    background-color: rgba(22, 24, 29, 0.62);
     backdrop-filter: blur(16px);
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 16px;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.55);
   }
 
   .glass-card {
-    background-color: rgba(26, 26, 34, 0.82);
+    background-color: #13151a;
     backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 12px;
@@ -139,8 +147,8 @@
 
   .glass-card:hover {
     transform: translateY(-3px);
-    border-color: rgba(255, 255, 255, 0.18);
-    box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.75), 0 0 16px rgba(0, 229, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.14);
+    box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.75), 0 0 16px rgba(99, 184, 171, 0.12);
   }
 
   .metric-value {
@@ -163,14 +171,14 @@
     gap: 8px;
     white-space: nowrap;
     border: 1px solid rgba(255, 255, 255, 0.07);
-    background-color: rgba(18, 18, 24, 0.72);
-    color: #F5F5F7;
+    background-color: rgba(22, 24, 29, 0.62);
+    color: #eef0f2;
   }
 
   .btn-cinematic:hover {
-    background-color: rgba(26, 26, 34, 0.85);
-    border-color: rgba(255, 255, 255, 0.2);
-    box-shadow: 0 0 16px rgba(0, 229, 255, 0.15);
+    background-color: #13151a;
+    border-color: rgba(255, 255, 255, 0.14);
+    box-shadow: 0 0 16px rgba(99, 184, 171, 0.15);
   }
 
   .btn-primary {
@@ -184,15 +192,15 @@
     justify-content: center;
     gap: 8px;
     white-space: nowrap;
-    background-color: #FFB300;
-    color: #050507;
-    border: 1px solid #FFB300;
+    background-color: #d3b579;
+    color: #10120f;
+    border: 1px solid #d3b579;
   }
 
   .btn-primary:hover {
-    background-color: #fbbf24;
-    border-color: #fbbf24;
-    box-shadow: 0 0 24px rgba(255, 179, 0, 0.35);
+    background-color: #e2c68f;
+    border-color: #e2c68f;
+    box-shadow: 0 0 24px rgba(211, 181, 121, 0.28);
   }
 
   .btn-ghost {
@@ -206,16 +214,16 @@
     justify-content: center;
     gap: 8px;
     white-space: nowrap;
-    color: #86868B;
-    background-color: rgba(18, 18, 24, 0.72);
+    color: #8b9099;
+    background-color: rgba(22, 24, 29, 0.62);
     border: 1px solid rgba(255, 255, 255, 0.07);
   }
 
   .btn-ghost:hover {
-    color: #F5F5F7;
-    background-color: rgba(26, 26, 34, 0.85);
-    border-color: rgba(255, 255, 255, 0.18);
-    box-shadow: 0 0 16px rgba(0, 229, 255, 0.15);
+    color: #eef0f2;
+    background-color: #13151a;
+    border-color: rgba(255, 255, 255, 0.14);
+    box-shadow: 0 0 16px rgba(99, 184, 171, 0.12);
   }
 }
 

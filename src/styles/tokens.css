@@ -7,55 +7,66 @@
     --font-sans: 'Plus Jakarta Sans', 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
 
-    /* Zeminler — Derin Sinema hiyerarşisi (#050507 -> #121218 -> #1a1a22) */
-    --bg-app: #050507; /* Derin boşluk siyahı */
-    --bg-canvas: #07070a; /* Grafik / derin tuval zemini */
-    --bg-surface: rgba(18, 18, 24, 0.72); /* Cam efektli yarı saydam füme yüzeyler */
-    --bg-elevated: rgba(26, 26, 34, 0.82); /* Kart gövdesi, modal, drawer yüzeyi */
-    --bg-header: rgba(5, 5, 7, 0.82);
-    --bg-scrim: rgba(5, 5, 7, 0.78);
-    --bg-overlay: rgba(5, 5, 7, 0.82);
+    /* Zeminler — Derin Sinema hiyerarşisi (#0a0b0e -> rgba(22, 24, 29, 0.62) -> #13151a) */
+    --bg-app: #0a0b0e; /* Zemin (antrasit) */
+    --bg-canvas: #0a0b0e; /* Grafik / derin tuval zemini */
+    --bg-surface: rgba(22, 24, 29, 0.62); /* Panel: cam efektli yarı saydam yüzey */
+    --bg-elevated: #13151a; /* Katı panel: kart gövdesi, modal, drawer yüzeyi */
+    --bg-solid: #13151a; /* Katı panel */
+    --bg-header: rgba(10, 11, 14, 0.85);
+    --bg-scrim: rgba(10, 11, 14, 0.78);
+    --bg-overlay: rgba(10, 11, 14, 0.85);
     --bg-hover: rgba(255, 255, 255, 0.05);
 
-    /* Kenar & metin — Çok ince beyaz çizgiler (rgba(255,255,255,0.07)) */
-    --border-subtle: rgba(255, 255, 255, 0.07);
-    --border-strong: rgba(255, 255, 255, 0.14);
-    --text-1: #f5f5f7; /* başlıklar, sayılar */
-    --text-2: #a1a1aa; /* gövde, meta */
-    --text-3: #86868b; /* pasif, ipucu — bg-app üzerinde WCAG AA */
-    --text-on-accent: #050507; /* parlak altın/camgöbeği üzerinde yüksek kontrast koyu mürekkep */
+    /* Kenar & metin — Çok ince beyaz çizgiler */
+    --border-subtle: rgba(255, 255, 255, 0.07); /* İnce çizgi */
+    --border-strong: rgba(255, 255, 255, 0.14); /* Güçlü çizgi */
+    --text-1: #eef0f2; /* Metin: başlıklar, sayılar */
+    --text-2: #8b9099; /* İkincil metin: gövde, meta */
+    --text-3: #676c75; /* Üçüncül metin: pasif, ipucu */
+    --text-on-accent: #10120f; /* Altın yüzey üstü metin: koyu zemin tonu */
+    --text-on-gold: #10120f;
 
-    /* Vurgu & anlam — Derin Sinema Yumuşak Altın & Turkuaz */
-    --accent: #00e5ff; /* turkuaz: keşif, veri görselleştirme, aktif odak */
-    --accent-strong: #00b8d4;
-    --accent-soft: rgba(0, 229, 255, 0.12);
-    --accent-border: rgba(0, 229, 255, 0.32);
-    --gold: #ffb300; /* altın: yüksek puan, başarı, birincil sinematik vurgu */
-    --gold-soft: rgba(255, 179, 0, 0.12);
-    --gold-glow: rgba(255, 179, 0, 0.28);
-    --cyan-glow: rgba(0, 229, 255, 0.28);
-    --purple-ambient: rgba(168, 85, 247, 0.035);
-    --success: #34d399;
-    --success-soft: rgba(52, 211, 153, 0.12);
-    --success-border: rgba(52, 211, 153, 0.32);
-    --warning: #ffb300;
-    --warning-soft: rgba(255, 179, 0, 0.12);
-    --warning-border: rgba(255, 179, 0, 0.32);
-    --danger: #ff453a;
-    --danger-soft: rgba(255, 69, 58, 0.12);
-    --danger-border: rgba(255, 69, 58, 0.34);
+    /* Vurgu & anlam — Yumuşak Altın (eski kamera tonu) & Deniz Camı Turkuaz */
+    --gold: #d3b579; /* Yumuşak altın (ana vurgu) */
+    --gold-hover: #e2c68f; /* Altın hover tonu */
+    --gold-deep: #b58c4f; /* Altın derin ton */
+    --gold-soft: rgba(211, 181, 121, 0.12);
+    --gold-glow: rgba(211, 181, 121, 0.25);
+
+    --accent: #63b8ab; /* Turkuaz (ikincil vurgu): deniz camı tonu */
+    --accent-strong: #52a396;
+    --accent-soft: rgba(99, 184, 171, 0.12);
+    --accent-border: rgba(99, 184, 171, 0.32);
+    --cyan-glow: rgba(99, 184, 171, 0.25);
+
+    --danger: #e0645e; /* Kırmızı: uyarı/silme/kör nokta */
+    --danger-soft: rgba(224, 100, 94, 0.12);
+    --danger-border: rgba(224, 100, 94, 0.34);
+
+    --success: #6fbf8a; /* Yeşil: başarı/izledim */
+    --success-soft: rgba(111, 191, 138, 0.12);
+    --success-border: rgba(111, 191, 138, 0.32);
+
+    --purple: #a58fd0; /* Mor: ek kategori */
+    --purple-soft: rgba(165, 143, 208, 0.12);
+    --purple-ambient: rgba(165, 143, 208, 0.035);
+
+    --warning: #d3b579;
+    --warning-soft: rgba(211, 181, 121, 0.12);
+    --warning-border: rgba(211, 181, 121, 0.32);
 
     /* İlişki grafiği ek anlam renkleri */
-    --link-person: #a78bfa;
-    --link-atmosphere: #2dd4bf;
-    --link-contrast: #fb923c;
-    --link-universe: #4ade80;
-    --node-profile: #5eead4;
+    --link-person: #a58fd0; /* Mor */
+    --link-atmosphere: #63b8ab; /* Turkuaz */
+    --link-contrast: #d3b579; /* Altın */
+    --link-universe: #6fbf8a; /* Yeşil */
+    --node-profile: #63b8ab;
 
     /* Zevk halkaları (sabit anlam renkleri) */
-    --ring-0: #34d399; /* Yeni Eşleşme */
-    --ring-1: #94a3b8; /* Son Öneri */
-    --ring-2: #f59e0b; /* Yedek Halka */
+    --ring-0: #6fbf8a; /* Yeni Eşleşme (Yeşil) */
+    --ring-1: #8b9099; /* Son Öneri (İkincil) */
+    --ring-2: #d3b579; /* Yedek Halka (Yumuşak Altın) */
 
     /* Yerleşim tokenları */
     --space-1: 4px;
@@ -122,9 +133,9 @@
     font-family: var(--font-sans);
     background-color: var(--bg-app);
     background-image:
-      radial-gradient(circle at 0% 50%, rgba(0, 229, 255, 0.05) 0%, transparent 45%),
-      radial-gradient(circle at 100% 0%, rgba(255, 179, 0, 0.05) 0%, transparent 45%),
-      radial-gradient(circle at 50% 100%, rgba(168, 85, 247, 0.035) 0%, transparent 45%);
+      radial-gradient(circle at 0% 50%, rgba(99, 184, 171, 0.04) 0%, transparent 45%),
+      radial-gradient(circle at 100% 0%, rgba(211, 181, 121, 0.04) 0%, transparent 45%),
+      radial-gradient(circle at 50% 100%, rgba(165, 143, 208, 0.025) 0%, transparent 45%);
     background-attachment: fixed;
     color: var(--text-1);
     min-height: 100vh;

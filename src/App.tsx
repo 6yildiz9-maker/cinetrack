@@ -10,6 +10,7 @@ import { PersonDrawer } from './components/PersonDrawer.tsx';
 import { AddCustomModal } from './components/AddCustomModal.tsx';
 import { ProfileModal } from './components/ProfileModal.tsx';
 import { ImportChoiceModal } from './components/ImportChoiceModal.tsx';
+import { TvdbStockModal } from './components/TvdbStockModal.tsx';
 import { Toast } from './components/Toast.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
@@ -370,6 +371,7 @@ export function App() {
   const [relationshipInitialSourceKey, setRelationshipInitialSourceKey] = useState<string>('');
   const [addCustomOpen, setAddCustomOpen] = useState<boolean>(false);
   const [profileOpen, setProfileOpen] = useState<boolean>(false);
+  const [tvdbModalOpen, setTvdbModalOpen] = useState<boolean>(false);
   const [pendingBackup, setPendingBackup] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -3714,6 +3716,7 @@ export function App() {
         getSaved={(item) => findSavedItem(savedItems, item)}
         tmdbSource={tmdbSourceMeta.source}
         tmdbStaleReason={tmdbSourceMeta.staleReason}
+        onOpenTvdbStock={() => setTvdbModalOpen(true)}
       />
       <ConflictBanner
         conflict={serverConflict}
@@ -3777,6 +3780,7 @@ export function App() {
           stockStats={stockStats}
           onReplenishStock={handleManualStockReplenish}
           isStockReplenishing={stockEngineState.isReplenishing}
+          onOpenTvdbStock={() => setTvdbModalOpen(true)}
         />
 
         {tab === 'relationships' ? (
@@ -4165,6 +4169,17 @@ export function App() {
         isOpen={Boolean(pendingBackup)}
         onClose={() => setPendingBackup(null)}
         onConfirm={handleConfirmImport}
+      />
+
+      <TvdbStockModal
+        isOpen={tvdbModalOpen}
+        onClose={() => setTvdbModalOpen(false)}
+        onStockMutated={() => {
+          if (category === 'stock') {
+            loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
+          }
+          showToast('✓ Stok başarıyla güncellendi!');
+        }}
       />
 
       <Toast message={toastMessage} />
