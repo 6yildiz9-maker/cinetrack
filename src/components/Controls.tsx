@@ -33,6 +33,7 @@ interface ControlsProps {
   onReplenishStock?: () => void;
   isStockReplenishing?: boolean;
   onOpenTvdbStock?: () => void;
+  tvdbCount?: number;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -64,6 +65,7 @@ export const Controls: React.FC<ControlsProps> = ({
   onReplenishStock,
   isStockReplenishing = false,
   onOpenTvdbStock,
+  tvdbCount,
 }) => {
   const [showStockHealth, setShowStockHealth] = useState(false);
 
@@ -251,10 +253,10 @@ export const Controls: React.FC<ControlsProps> = ({
                   fontWeight: 600,
                 }}
                 onClick={onOpenTvdbStock}
-                title="TheTVDB v4 Stok Entegrasyonu ve İçe/Dışa Aktar"
+                title={`TheTVDB v4 Stok Entegrasyonu ve İçe/Dışa Aktar (${tvdbCount ?? 0} Yapım)`}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-[#63b8ab]" />
-                TVDB Stok
+                TVDB Stok {tvdbCount !== undefined ? `(${tvdbCount})` : ''}
               </button>
             )}
           </div>

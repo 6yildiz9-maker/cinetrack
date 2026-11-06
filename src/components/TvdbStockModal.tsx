@@ -19,16 +19,24 @@ import {
 } from '../services/stock-import-export.ts';
 import { loadStockIdb, type StockDepot } from '../services/storage-idb.ts';
 
+import type { TmdbItem } from '../types/tmdb.ts';
+
 export interface TvdbStockModalProps {
   isOpen: boolean;
   onClose: () => void;
   onStockMutated?: () => void;
+  userListItems?: TmdbItem[];
+  preferences?: any;
+  profileId?: string;
 }
 
 export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
   isOpen,
   onClose,
   onStockMutated,
+  userListItems,
+  preferences,
+  profileId,
 }) => {
   const [activeTab, setActiveTab] = useState<'tvdb' | 'import-export'>('tvdb');
 
@@ -149,6 +157,10 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
       const result = await syncTvdbStockBatch({
         apiKey,
         signal: abortControllerRef.current.signal,
+        targetCount: 20,
+        userListItems,
+        preferences,
+        profileId,
         onProgress: (info) => {
           setSyncProgress(info);
         },
@@ -156,7 +168,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
       if (result.ok) {
         setSyncSummary(
-          `Başarılı: ${result.addedMovies} yeni film ve ${result.addedTv} yeni dizi TVDB stoğuna eklendi (${result.skippedDuplicates} mükerrer kayıt korundu).`
+          `Başarılı: ${result.addedMovies} yeni film ve ${result.addedTv} yeni dizi TVDB stoğuna eklendi (En az 20 içerik taraması tamamlandı, ${result.skippedUserListed || 0} kullanıcı listelerindeki yapım hariç tutuldu, ${result.skippedDuplicates} mükerrer kayıt korundu).`
         );
       } else if (result.error === 'İşlem iptal edildi.') {
         setSyncSummary('Senkronizasyon kullanıcı tarafından iptal edildi.');
@@ -290,11 +302,25 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
               TVDB
             </div>
             <div>
-              <h2 id="tvdb-modal-title" className="text-lg font-semibold text-[#eef0f2] tracking-tight">
-                TheTVDB v4 Entegrasyonu & Stok Yönetimi
-              </h2>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h2 id="tvdb-modal-title" className="text-lg font-semibold text-[#eef0f2] tracking-tight">
+                  TheTVDB v4 Entegrasyonu & Stok Yönetimi
+                </h2>
+                <span
+                  className="px-2.5 py-0.5 rounded-full text-xs font-semibold tabular-nums inline-flex items-center gap-1.5"
+                  style={{
+                    backgroundColor: 'rgba(99, 184, 171, 0.15)',
+                    color: '#63b8ab',
+                    border: '1px solid rgba(99, 184, 171, 0.35)',
+                  }}
+                  title={`TVDB Stok: ${stockStats.tvdbMovies} Film, ${stockStats.tvdbTv} Dizi`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#63b8ab]" />
+                  TVDB Stoğu: {stockStats.tvdbMovies + stockStats.tvdbTv} Yapım
+                </span>
+              </div>
               <p className="text-xs text-[#8b9099]">
-                Bağımsız TVDB stok kaynağı, manuel senkronizasyon ve kayıpsız içe/dışa aktar
+                Bağımsız TVDB stok kaynağı, 20+ yeni içerik garantili manuel tarama ve kayıpsız yedekle & geri yükle
               </p>
             </div>
           </div>
@@ -327,7 +353,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                 : 'text-[#8b9099] hover:text-[#eef0f2]'
             }`}
           >
-            TVDB Entegrasyonu & Senkron
+            TVDB Entegrasyonu & Senkron ({stockStats.tvdbMovies + stockStats.tvdbTv})
           </button>
           <button
             onClick={() => setActiveTab('import-export')}
@@ -337,7 +363,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                 : 'text-[#8b9099] hover:text-[#eef0f2]'
             }`}
           >
-            Stok İçe / Dışa Aktar (JSON & CSV)
+            Stok İçe / Dışa Aktar & Geri Yükle
           </button>
         </div>
 
@@ -516,17 +542,36 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium text-[#eef0f2] flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-[#a58fd0]" />
-                    Manuel İndir & Senkronize Et
+                    Manuel Tara & Yeni İçerik Ekle (En Az 20 İçerik)
                   </h3>
                   {isSyncing && (
-                    <span className="text-xs text-[#63b8ab] animate-pulse">İndirme Devam Ediyor...</span>
+                    <span className="text-xs text-[#63b8ab] animate-pulse">Tarama ve İndirme Devam Ediyor...</span>
                   )}
                 </div>
 
                 <p className="text-xs text-[#8b9099] leading-relaxed">
-                  TheTVDB v4 API üzerinden yüksek puanlı ve popüler dizi/filmleri çeker, mevcut TMDB stoğuna
-                  dokunmadan ve mükerrer oluşturmadan stoğu zenginleştirir.
+                  TheTVDB v4 API üzerinden yüksek puanlı ve popüler dizi/filmleri tarar. Her tarama, listenizde veya
+                  stoğunuzda olmayan <strong className="text-[#eef0f2]">en az 20 yeni yapım</strong> bulunana kadar
+                  sayfalar boyunca taramayı sürdürür.
                 </p>
+
+                <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5 space-y-2 text-xs">
+                  <div className="flex items-start gap-2 text-[#8b9099]">
+                    <span className="text-[#63b8ab] font-bold">✓</span>
+                    <span>
+                      <strong className="text-[#eef0f2]">Kullanıcı Listeleri Koruması:</strong> İzleniyor, İzleme Listesi,
+                      Tamamlanan veya İlgilenmiyorum listelerinizde yer alan hiçbir yapım stoğa eklenmez, taranan havuzdan
+                      otomatik elenir.
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2 text-[#8b9099]">
+                    <span className="text-[#d3b579] font-bold">✓</span>
+                    <span>
+                      <strong className="text-[#eef0f2]">20+ Yeni İçerik Garantisi:</strong> Hedef 20 benzersiz içerik
+                      sağlanana kadar TheTVDB sayfalarında sırayla taranır ve TMDB stoğuna dokunulmadan depoya eklenir.
+                    </span>
+                  </div>
+                </div>
 
                 {isSyncing && syncProgress && (
                   <div className="space-y-2 p-3.5 rounded-xl bg-[#0a0b0e] border border-white/10">
@@ -562,7 +607,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                       </svg>
-                      TVDB Stoğunu İndir / Senkronize Et
+                      Manuel Tara & Yeni İçerik Ekle (En Az 20 İçerik)
                     </button>
                   ) : (
                     <button
@@ -752,12 +797,12 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
                     {importPreview.validCount > 0 && (
                       <div className="space-y-2 pt-2 border-t border-white/5">
-                        <label className="text-xs font-medium text-[#8b9099]">Çakışma Stratejisi</label>
-                        <div className="flex gap-2">
+                        <label className="text-xs font-medium text-[#8b9099]">Çakışma / Geri Yükleme Stratejisi</label>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           <button
                             type="button"
                             onClick={() => setImportStrategy('skip')}
-                            className={`flex-1 py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
+                            className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
                               importStrategy === 'skip'
                                 ? 'bg-[#d3b579]/15 text-[#d3b579] border-[#d3b579]/40'
                                 : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'
@@ -768,7 +813,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                           <button
                             type="button"
                             onClick={() => setImportStrategy('overwrite')}
-                            className={`flex-1 py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
+                            className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
                               importStrategy === 'overwrite'
                                 ? 'bg-[#d3b579]/15 text-[#d3b579] border-[#d3b579]/40'
                                 : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'
@@ -776,14 +821,37 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                           >
                             Üzerine Yaz / Güncelle
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setImportStrategy('restore')}
+                            className={`py-1.5 px-3 text-xs font-medium rounded-lg border transition-colors ${
+                              importStrategy === 'restore'
+                                ? 'bg-[#63b8ab]/20 text-[#63b8ab] border-[#63b8ab]/50'
+                                : 'bg-transparent text-[#8b9099] border-white/10 hover:text-[#eef0f2]'
+                            }`}
+                          >
+                            Yedekten Geri Yükle
+                          </button>
                         </div>
+
+                        <p className="text-[11px] text-[#8b9099] italic">
+                          {importStrategy === 'restore'
+                            ? '★ Geri Yükle: Yüklenen dosyadaki içerikler stoğu tam geri yükler (TVDB yedeği ise yalnızca TVDB yapımlarını günceller).'
+                            : importStrategy === 'overwrite'
+                            ? '★ Üzerine Yaz: Stoğunuzdaki mevcut eşleşen yapımların detayları yüklenen dosyadaki verilerle güncellenir.'
+                            : '★ Mevcutları Koru: Yalnızca stoğunuzda henüz bulunmayan yeni yapımlar eklenir, mevcutlara dokunulmaz.'}
+                        </p>
 
                         <button
                           onClick={handleConfirmImport}
                           disabled={isApplyingImport}
                           className="w-full mt-2 py-2.5 rounded-xl font-medium text-xs bg-[#6fbf8a] text-[#10120f] hover:bg-[#7ed19a] active:bg-[#5da776] transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
                         >
-                          {isApplyingImport ? 'Stoğa Ekleniyor...' : `${importPreview.validCount} Yapımı Stoğa Aktar`}
+                          {isApplyingImport
+                            ? 'Stoğa Ekleniyor...'
+                            : importStrategy === 'restore'
+                            ? `${importPreview.validCount} Yapımı Yedekten Geri Yükle`
+                            : `${importPreview.validCount} Yapımı Stoğa Aktar`}
                         </button>
                       </div>
                     )}

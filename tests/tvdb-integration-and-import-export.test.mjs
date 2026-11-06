@@ -145,3 +145,76 @@ test('Stock Import & Validation: Validates CSV import structure', async () => {
   assert.equal(preview.validItems[1].title, 'Test Dizi');
   assert.equal(preview.validItems[1].media_type, 'tv');
 });
+
+test('Stock Import & Restore: Strategy restore replaces stock and preserves TMDB items if TVDB only', async () => {
+  const { applyStockImport } = await import('../src/services/stock-import-export.ts');
+  const { loadStockIdb, saveStockIdb } = await import('../src/services/storage-idb.ts');
+
+  // Seed with initial TMDB and old TVDB items
+  await saveStockIdb({
+    movies: [
+      { id: '100', title: 'TMDB Film 1', media_type: 'movie', source: 'tmdb' },
+      { id: 'tvdb-old-1', title: 'Old TVDB Film', media_type: 'movie', source: 'tvdb' },
+    ],
+    tv: [
+      { id: '200', name: 'TMDB Dizi 1', media_type: 'tv', source: 'tmdb' },
+      { id: 'tvdb-old-2', name: 'Old TVDB Dizi', media_type: 'tv', source: 'tvdb' },
+    ],
+    updatedAt: new Date().toISOString(),
+  });
+
+  // Restore with a TVDB-only backup
+  const backupItems = [
+    { id: 'tvdb-new-1', title: 'Restored TVDB Film 1', media_type: 'movie', source: 'tvdb' },
+    { id: 'tvdb-new-2', title: 'Restored TVDB Film 2', media_type: 'movie', source: 'tvdb' },
+    { id: 'tvdb-new-3', name: 'Restored TVDB Dizi 1', media_type: 'tv', source: 'tvdb' },
+  ];
+
+  const res = await applyStockImport(backupItems, 'restore');
+
+  assert.equal(res.ok, true);
+  assert.equal(res.imported, 3);
+  assert.ok(res.message.includes('geri yüklendi'));
+
+  const finalDepot = await loadStockIdb();
+  // TMDB items preserved
+  assert.ok(finalDepot.movies.some((m) => m.id === '100'));
+  assert.ok(finalDepot.tv.some((t) => t.id === '200'));
+  // Old TVDB items removed
+  assert.ok(!finalDepot.movies.some((m) => m.id === 'tvdb-old-1'));
+  assert.ok(!finalDepot.tv.some((t) => t.id === 'tvdb-old-2'));
+  // New TVDB items restored
+  assert.ok(finalDepot.movies.some((m) => m.id === 'tvdb-new-1'));
+  assert.ok(finalDepot.movies.some((m) => m.id === 'tvdb-new-2'));
+  assert.ok(finalDepot.tv.some((t) => t.id === 'tvdb-new-3'));
+});
+
+test('TVDB Sync Batch: Strictly excludes user-listed items and enforces minimum 20 items', async () => {
+  const { syncTvdbStockBatch } = await import('../src/services/tvdb-service.ts');
+  const { saveStockIdb } = await import('../src/services/storage-idb.ts');
+
+  // Empty out stock first
+  await saveStockIdb({ movies: [], tv: [], updatedAt: new Date().toISOString() });
+
+  // User has "Şahsiyet" and "Kuru Otlar Üstüne" in user lists
+  const userListItems = [
+    { id: 'tvdb-354316', title: 'Şahsiyet', name: 'Şahsiyet', media_type: 'tv' },
+    { id: 'tvdb-893214', title: 'Kuru Otlar Üstüne', media_type: 'movie' },
+  ];
+  const preferences = {
+    disliked: ['tv:tvdb-300100', 'movie:tvdb-500100'],
+  };
+
+  const result = await syncTvdbStockBatch({
+    targetCount: 20,
+    userListItems,
+    preferences,
+  });
+
+  assert.equal(result.ok, true);
+  // Total added must be at least 20
+  const totalAdded = result.addedMovies + result.addedTv;
+  assert.ok(totalAdded >= 20, `Total added should be >= 20, got ${totalAdded}`);
+  // User list items must have been skipped
+  assert.ok(result.skippedUserListed >= 2, `Should have skipped at least 2 user-listed items, got ${result.skippedUserListed}`);
+});

@@ -430,23 +430,29 @@ export function App() {
 
   const uiPrefsHydratedProfileRef = useRef<string>('');
   const [stockStats, setStockStats] = useState({ movieCount: 0, tvCount: 0 });
+  const [tvdbCount, setTvdbCount] = useState<number>(0);
 
   const refreshStockStats = useCallback(() => {
     void loadStockIdb().then((stock) => {
-      const cleanMovies = (stock.movies || []).filter((m) =>
+      const allM = stock.movies || [];
+      const allT = stock.tv || [];
+      const cleanMovies = allM.filter((m) =>
         isCandidateEligibleForStock(
           { ...m, media_type: 'movie' },
           savedItemsRef.current,
           preferencesRef.current
         )
       );
-      const cleanTv = (stock.tv || []).filter((t) =>
+      const cleanTv = allT.filter((t) =>
         isCandidateEligibleForStock(
           { ...t, media_type: 'tv' },
           savedItemsRef.current,
           preferencesRef.current
         )
       );
+      const tvdbM = allM.filter((m) => m.source === 'tvdb').length;
+      const tvdbT = allT.filter((t) => t.source === 'tvdb').length;
+      setTvdbCount(tvdbM + tvdbT);
       setStockStats({
         movieCount: cleanMovies.length,
         tvCount: cleanTv.length,
@@ -459,6 +465,9 @@ export function App() {
     const unsubscribeStock = subscribeStockState(() => {
       const cleanMovies = getStockMovies(savedItemsRef.current, preferencesRef.current);
       const cleanTv = getStockSeries(savedItemsRef.current, preferencesRef.current);
+      const tvdbM = cleanMovies.filter((m) => m.source === 'tvdb').length;
+      const tvdbT = cleanTv.filter((t) => t.source === 'tvdb').length;
+      setTvdbCount(tvdbM + tvdbT);
       setStockStats({
         movieCount: cleanMovies.length,
         tvCount: cleanTv.length,
@@ -3717,6 +3726,7 @@ export function App() {
         tmdbSource={tmdbSourceMeta.source}
         tmdbStaleReason={tmdbSourceMeta.staleReason}
         onOpenTvdbStock={() => setTvdbModalOpen(true)}
+        tvdbCount={tvdbCount}
       />
       <ConflictBanner
         conflict={serverConflict}
@@ -3781,6 +3791,7 @@ export function App() {
           onReplenishStock={handleManualStockReplenish}
           isStockReplenishing={stockEngineState.isReplenishing}
           onOpenTvdbStock={() => setTvdbModalOpen(true)}
+          tvdbCount={tvdbCount}
         />
 
         {tab === 'relationships' ? (
@@ -4174,11 +4185,15 @@ export function App() {
       <TvdbStockModal
         isOpen={tvdbModalOpen}
         onClose={() => setTvdbModalOpen(false)}
+        userListItems={savedItems}
+        preferences={preferences}
+        profileId={activeProfileId}
         onStockMutated={() => {
+          refreshStockStats();
           if (category === 'stock') {
             loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
           }
-          showToast('✓ Stok başarıyla güncellendi!');
+          showToast('✓ TVDB ve stok verileri başarıyla güncellendi!');
         }}
       />
 

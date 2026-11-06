@@ -21,6 +21,7 @@ interface HeaderProps {
   tmdbSource?: string;
   tmdbStaleReason?: string;
   onOpenTvdbStock?: () => void;
+  tvdbCount?: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -39,6 +40,7 @@ export const Header: React.FC<HeaderProps> = ({
   tmdbSource = 'live',
   tmdbStaleReason,
   onOpenTvdbStock,
+  tvdbCount,
 }) => {
   const [dropdownItems, setDropdownItems] = useState<TmdbItem[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -424,8 +426,8 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               className="btn profile-btn"
               onClick={onOpenTvdbStock}
-              title="TheTVDB v4 Stoğu & İçe/Dışa Aktar"
-              aria-label="TVDB Stok ve İçe Dışa Aktar"
+              title={`TheTVDB v4 Stoğu: ${tvdbCount ?? 0} Yapım • İçe/Dışa Aktar`}
+              aria-label={`TVDB Stok (${tvdbCount ?? 0}) ve İçe Dışa Aktar`}
               style={{
                 borderColor: 'rgba(99, 184, 171, 0.35)',
                 color: '#63b8ab',
@@ -446,7 +448,7 @@ export const Header: React.FC<HeaderProps> = ({
                   backgroundColor: '#63b8ab',
                 }}
               />
-              TVDB
+              TVDB {tvdbCount !== undefined ? `(${tvdbCount})` : ''}
             </button>
           )}
 

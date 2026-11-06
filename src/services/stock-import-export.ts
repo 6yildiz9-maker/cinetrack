@@ -3,7 +3,7 @@ import { loadStockIdb, saveStockIdb, type StockDepot } from './storage-idb.ts';
 
 export type StockSourceFilter = 'all' | 'tvdb' | 'tmdb';
 export type StockExportFormat = 'json' | 'csv';
-export type StockImportStrategy = 'overwrite' | 'skip';
+export type StockImportStrategy = 'overwrite' | 'skip' | 'restore';
 
 export interface StockExportOptions {
   source?: StockSourceFilter;
@@ -453,36 +453,55 @@ export async function applyStockImport(
   strategy: StockImportStrategy = 'skip'
 ): Promise<StockImportResult> {
   const depot = await loadStockIdb();
-  const movies = Array.isArray(depot.movies) ? [...depot.movies] : [];
-  const tv = Array.isArray(depot.tv) ? [...depot.tv] : [];
+  let movies = Array.isArray(depot.movies) ? [...depot.movies] : [];
+  let tv = Array.isArray(depot.tv) ? [...depot.tv] : [];
 
   let imported = 0;
   let updated = 0;
   let skipped = 0;
 
-  for (const item of items) {
-    const isTv = item.media_type === 'tv' || (!item.title && Boolean(item.name));
-    const targetList = isTv ? tv : movies;
-    const title = (item.title || item.name || '').toLowerCase().trim();
-    const rawId = String(item.id).toLowerCase();
-
-    const existingIdx = targetList.findIndex((existing) => {
-      if (!existing) return false;
-      if (String(existing.id).toLowerCase() === rawId) return true;
-      const exTitle = (existing.title || existing.name || '').toLowerCase().trim();
-      return exTitle && exTitle === title;
-    });
-
-    if (existingIdx >= 0) {
-      if (strategy === 'overwrite') {
-        targetList[existingIdx] = { ...targetList[existingIdx], ...item };
-        updated++;
-      } else {
-        skipped++;
-      }
+  if (strategy === 'restore') {
+    const isOnlyTvdb = items.length > 0 && items.every((i) => i.source === 'tvdb');
+    if (isOnlyTvdb) {
+      // TMDB stoğuna dokunmadan TVDB stoğunu yedekten tam geri yükle
+      movies = movies.filter((m) => m.source !== 'tvdb');
+      tv = tv.filter((t) => t.source !== 'tvdb');
+      const newTvdbMovies = items.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
+      const newTvdbTv = items.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
+      movies.push(...newTvdbMovies);
+      tv.push(...newTvdbTv);
+      imported = items.length;
     } else {
-      targetList.push(item);
-      imported++;
+      // Tam stok geri yüklemesi
+      movies = items.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
+      tv = items.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
+      imported = items.length;
+    }
+  } else {
+    for (const item of items) {
+      const isTv = item.media_type === 'tv' || (!item.title && Boolean(item.name));
+      const targetList = isTv ? tv : movies;
+      const title = (item.title || item.name || '').toLowerCase().trim();
+      const rawId = String(item.id).toLowerCase();
+
+      const existingIdx = targetList.findIndex((existing) => {
+        if (!existing) return false;
+        if (String(existing.id).toLowerCase() === rawId) return true;
+        const exTitle = (existing.title || existing.name || '').toLowerCase().trim();
+        return exTitle && exTitle === title;
+      });
+
+      if (existingIdx >= 0) {
+        if (strategy === 'overwrite') {
+          targetList[existingIdx] = { ...targetList[existingIdx], ...item };
+          updated++;
+        } else {
+          skipped++;
+        }
+      } else {
+        targetList.push(item);
+        imported++;
+      }
     }
   }
 
@@ -509,6 +528,11 @@ export async function applyStockImport(
     // ignore server snapshot failure
   }
 
+  const message =
+    strategy === 'restore'
+      ? `${imported} yapım yedekten başarıyla geri yüklendi (Toplam ${movies.length} film, ${tv.length} dizi).`
+      : `${imported} yeni yapım stoğa eklendi, ${updated} yapım güncellendi, ${skipped} kopya atlandı.`;
+
   return {
     ok: true,
     imported,
@@ -516,6 +540,6 @@ export async function applyStockImport(
     skipped,
     totalMovies: movies.length,
     totalTv: tv.length,
-    message: `${imported} yeni yapım stoğa eklendi, ${updated} yapım güncellendi, ${skipped} kopya atlandı.`,
+    message,
   };
 }
