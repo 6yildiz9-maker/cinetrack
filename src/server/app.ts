@@ -1370,7 +1370,10 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   });
 
   // Faz 6: Taste Engine HTTP uçları
-  app.use('/api/taste', createTasteRouter(resolvedDataDir));
+  app.use(
+    '/api/taste',
+    createTasteRouter(resolvedDataDir, { tmdbApiKey: options.tmdbApiKey })
+  );
 
   if (typeof options.registerCustomRoutes === 'function') {
     options.registerCustomRoutes(app);

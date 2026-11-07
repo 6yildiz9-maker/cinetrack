@@ -33,6 +33,7 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
 const TasteMapView = lazyWithRetry(() => import('./components/TasteMapView.tsx'));
 const RelationshipExplorer = lazyWithRetry(() => import('./components/RelationshipExplorer.tsx'));
 const TasteProfileDashboard = lazyWithRetry(() => import('./components/taste/TasteProfileDashboard.tsx'));
+const TasteProfileMinimal = lazyWithRetry(() => import('./components/taste/TasteProfileMinimal.tsx'));
 
 import {
   SavedItem,
@@ -127,6 +128,7 @@ import { useStockEngine } from './hooks/useStockEngine.ts';
 import { useCinemaKunye } from './hooks/useCinemaKunye.ts';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.ts';
 import { useItemActions } from './hooks/useItemActions.ts';
+import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import { hasPendingOfflineSync } from './services/offline-queue.ts';
 import {
   saveIsolatedProfileIdb,
@@ -351,7 +353,8 @@ export function App() {
 
   // Discover & Grid State
   const [tab, setTab] = useState<'discover' | 'list' | 'taste-map' | 'relationships'>('discover');
-  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'graph' | 'identity'>('identity');
+  const [tasteMapDisplayMode, setTasteMapDisplayMode] = useState<'poster' | 'identity'>('identity');
+  const isMobileViewport = useMediaQuery('(max-width: 768px)');
   const [tasteMap, setTasteMap] = useState<PersistentTasteMapData>(() => loadPersistentTasteMap(activeProfileId));
   const [category, setCategory] = useState<string>('trending');
   const [forYouSubTab, setForYouSubTab] = useState<'recommendations' | 'series'>('recommendations');
@@ -3964,14 +3967,14 @@ export function App() {
           </ErrorBoundary>
         ) : tab === 'taste-map' ? (
           <div className="taste-map-page">
-            <div className="taste-map-view-toggle" role="group" aria-label="Zevk haritası görünüm modu">
+            <div className="taste-map-view-toggle" role="group" aria-label="Zevkim görünüm modu">
               <button
                 className={`btn ${tasteMapDisplayMode === 'identity' ? 'btn-primary' : ''}`}
                 type="button"
                 onClick={() => setTasteMapDisplayMode('identity')}
                 aria-pressed={tasteMapDisplayMode === 'identity'}
               >
-                Sinema Kimliğim
+                Zevkim
               </button>
               <button
                 className={`btn ${tasteMapDisplayMode === 'poster' ? 'btn-primary' : ''}`}
@@ -3981,21 +3984,13 @@ export function App() {
               >
                 Poster Duvarı
               </button>
-              <button
-                className={`btn ${tasteMapDisplayMode === 'graph' ? 'btn-primary' : ''}`}
-                type="button"
-                onClick={() => setTasteMapDisplayMode('graph')}
-                aria-pressed={tasteMapDisplayMode === 'graph'}
-              >
-                Zevk Ağı (Grafik)
-              </button>
             </div>
 
-            <ErrorBoundary sectionName="Zevk Haritası">
+            <ErrorBoundary sectionName="Zevkim">
               <Suspense
                 fallback={
                   <div className="lazy-tab-fallback" role="status">
-                    Zevk Haritası yükleniyor…
+                    Zevkim yükleniyor…
                   </div>
                 }
               >
@@ -4015,22 +4010,10 @@ export function App() {
                     tmdbSource={tmdbSourceMeta.source}
                     tmdbStaleReason={tmdbSourceMeta.staleReason}
                   />
-                ) : tasteMapDisplayMode === 'identity' ? (
+                ) : isMobileViewport ? (
                   <TasteProfileDashboard />
                 ) : (
-                  <RelationshipExplorer
-                    key={`${activeProfileId}-taste-map`}
-                    mode="taste-map"
-                    profileId={activeProfileId}
-                    savedItems={savedItems}
-                    preferences={preferences}
-                    candidates={[]}
-                    favoriteActors={favoriteActors}
-                    genreNames={genresMap}
-                    onRefresh={handleLoadRelationshipCandidates}
-                    onOpenDetails={(item) => setDetailItem(item as SavedItem)}
-                    onQuickSave={(item) => setQuickSaveItem(item as SavedItem)}
-                  />
+                  <TasteProfileMinimal />
                 )}
               </Suspense>
             </ErrorBoundary>
@@ -4175,15 +4158,6 @@ export function App() {
           <span className="mobile-tab-label">Zevkim</span>
         </button>
 
-        <button
-          type="button"
-          className={`mobile-tab-btn ${tab === 'relationships' ? 'active' : ''}`}
-          onClick={() => setTab('relationships')}
-          aria-label="İlişkiler"
-        >
-          <svg className="icon" aria-hidden="true"><use href="#icon-network" /></svg>
-          <span className="mobile-tab-label">İlişkiler</span>
-        </button>
       </nav>
 
       {/* Modals & Drawers */}
@@ -4248,11 +4222,15 @@ export function App() {
         onMarkCompleted={handleMarkCompleted}
         onQuickSave={(item) => setQuickSaveItem(item)}
         onToggleFavoriteActor={handleToggleFavoriteActor}
-        onOpenInRelationships={(mediaKey) => {
-          setPersonId(null);
-          setRelationshipInitialSourceKey(mediaKey);
-          setTab('relationships');
-        }}
+        onOpenInRelationships={
+          isMobileViewport
+            ? undefined
+            : (mediaKey) => {
+                setPersonId(null);
+                setRelationshipInitialSourceKey(mediaKey);
+                setTab('relationships');
+              }
+        }
       />
 
       <AddCustomModal

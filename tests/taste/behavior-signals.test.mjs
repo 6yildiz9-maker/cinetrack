@@ -112,11 +112,12 @@ describe("Behavior Signals — Niyet (kanıt sayacına girmez)", () => {
 });
 
 describe("Behavior Signals — İzlendi ama puan verilmedi", () => {
-  it("watched_no_rating → 0, isEvidence: false", () => {
+  it("watched_no_rating → zayıf pozitif kanıt", () => {
     const r = computeBehaviorSignal({ type: "watched_no_rating" });
-    assert.strictEqual(r.signal, 0);
-    assert.strictEqual(r.isEvidence, false);
-    assert.strictEqual(r.category, "neutral");
+    assert.strictEqual(r.signal, BEHAVIOR_SIGNALS.watched_no_rating);
+    assert.ok(r.signal > 0);
+    assert.strictEqual(r.isEvidence, true);
+    assert.strictEqual(r.category, "positive");
   });
 });
 

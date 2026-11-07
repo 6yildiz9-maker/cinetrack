@@ -6,7 +6,7 @@
 export const TASTE_SCHEMA_VERSION = "1.0.0";
 export const TAXONOMY_VERSION = "v0.1";
 export const ALGORITHM_VERSION = "v1.0";
-export const CONFIG_VERSION = "v1.0";
+export const CONFIG_VERSION = "v1.1";
 
 // === HESAPLAMA SABİTLERİ ===
 export const SHRINKAGE_K = 2.5;                    // k_m (TP-021)
@@ -29,7 +29,7 @@ export const BEHAVIOR_SIGNALS = {
   quick_dislike: -0.55,
   watchlist: +0.25,         // niyet, kanıt sayacına girmez
   watching: +0.10,
-  watched_no_rating: 0,
+  watched_no_rating: +0.25, // izlendi+tamamlandı, puan yok → zayıf pozitif kanıt
   not_interested: 0,        // öneri kontrolü, negatif tercih değil
   hidden: 0,                // kesin dışlama, sinyal üretmez
   abandoned_disliked: -0.80,

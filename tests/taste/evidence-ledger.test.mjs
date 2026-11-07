@@ -71,6 +71,19 @@ describe("Evidence Ledger — Idempotency (TP-005)", () => {
     const masses = ledger.computeMasses("genre.drama");
     assert.strictEqual(masses.evidenceCount, 2);
   });
+
+  it("Aynı olay farklı metrikler için bir kez sayılır", () => {
+    const ledger = new EvidenceLedger();
+    const event = makeEvent({ eventId: "multi-metric-001" });
+    ledger.addEvent(event, "genre.drama", 100, 0.95, 1.0, 1.0);
+    ledger.addEvent(event, "mood.dark", 80, 0.8, 1.0, 1.0);
+    ledger.addEvent(event, "concept.identity", 70, 0.7, 1.0, 1.0);
+
+    assert.strictEqual(ledger.computeMasses("genre.drama").evidenceCount, 1, "genre kanıtı olmalı");
+    assert.strictEqual(ledger.computeMasses("mood.dark").evidenceCount, 1, "mood kanıtı olmalı");
+    assert.strictEqual(ledger.computeMasses("concept.identity").evidenceCount, 1, "concept kanıtı olmalı");
+    assert.ok(ledger.computeMasses("mood.dark").posMass > 0, "mood posMass > 0");
+  });
 });
 
 describe("Evidence Ledger — Katkı Geri Çekme (TP-005)", () => {

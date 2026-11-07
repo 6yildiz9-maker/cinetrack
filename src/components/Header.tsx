@@ -267,7 +267,7 @@ export const Header: React.FC<HeaderProps> = ({
             className={`nav-tab-btn ${tab === 'taste-map' ? 'is-active' : ''}`}
             onClick={() => onTabChange('taste-map')}
           >
-            <span>Kimliğim</span>
+            <span>Zevkim</span>
           </button>
           <button
             type="button"

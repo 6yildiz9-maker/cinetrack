@@ -33,10 +33,11 @@ export interface MetricMasses {
 
 export class EvidenceLedger {
   private evidence: Map<string, MetricEvidence[]> = new Map(); // metricId -> evidence[]
-  private processedEventIds: Set<string> = new Set();
+  private processedKeys: Set<string> = new Set();
 
   /**
    * Olay ekle (idempotent — TP-005)
+   * Idempotency anahtarı eventId+metricId: aynı olay her metrik için bir kez sayılır.
    */
   addEvent(
     event: TasteEvent,
@@ -46,8 +47,8 @@ export class EvidenceLedger {
     timeWeight: number,
     groupDamping: number
   ): void {
-    // Idempotency: aynı eventId iki kez işlenmez
-    if (this.processedEventIds.has(event.eventId)) {
+    const idempotencyKey = `${event.eventId}::${metricId}`;
+    if (this.processedKeys.has(idempotencyKey)) {
       return;
     }
 
@@ -86,7 +87,7 @@ export class EvidenceLedger {
       this.evidence.set(metricId, []);
     }
     this.evidence.get(metricId)!.push(evidence);
-    this.processedEventIds.add(event.eventId);
+    this.processedKeys.add(idempotencyKey);
   }
 
   /**
@@ -98,9 +99,7 @@ export class EvidenceLedger {
       const filtered = evidences.filter((e) => e.contentId !== contentId);
       this.evidence.set(metricId, filtered);
     }
-    // Artık o içerik için işlenmiş eventId'leri serbest bırak (yeni puan kabul edilsin)
-    // Not: processedEventIds'ten silmiyoruz — sadece katkıları geri çekiyoruz.
-    // Yeni olay yeni eventId ile gelecek.
+    // Artık o içerik için işlenmiş katkıları geri çekiyoruz; yeni olay yeni eventId ile gelecek.
   }
 
   /**
@@ -163,11 +162,6 @@ export class EvidenceLedger {
   /** Kayıtlı metrik ID listesi */
   getMetricIds(): string[] {
     return Array.from(this.evidence.keys());
-  }
-
-  /** İşlenmiş olay sayısı */
-  getProcessedEventCount(): number {
-    return this.processedEventIds.size;
   }
 
   private extractSignal(event: TasteEvent): { signal: number; isEvidence: boolean } {

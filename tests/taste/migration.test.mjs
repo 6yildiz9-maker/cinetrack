@@ -126,35 +126,46 @@ describe("Migration — Temel Dönüşüm", () => {
   });
 });
 
-describe("Migration — Boş Puan Atlama (TP kuralı)", () => {
-  it("personal_rating boş dizge olan kayıt olay üretmemeli", () => {
+describe("Migration — Puansız tamamlananlar için izleme olayı", () => {
+  it("personal_rating boş + completed → status_changed olayı üretilmeli", () => {
     const doc = makeDoc();
     doc.profiles[0].items = [makeMovieItem(550, "")];
-    const { events, result } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
-    assert.strictEqual(events.length, 0);
-    assert.strictEqual(result.eventsSkipped, 1);
+    const { events } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].eventType, "status_changed");
+    assert.strictEqual(events[0].payload.newValue, "completed");
   });
 
-  it("personal_rating olmayan kayıt olay üretmemeli", () => {
+  it("personal_rating olmayan completed kayıt → status_changed olayı üretilmeli", () => {
     const doc = makeDoc();
     doc.profiles[0].items = [makeMovieItem(550, undefined)];
-    const { events, result } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
-    assert.strictEqual(events.length, 0);
-    assert.strictEqual(result.eventsSkipped, 1);
+    const { events } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].contentId, "movie:550");
   });
 
-  it("personal_rating null olan kayıt olay üretmemeli", () => {
+  it("personal_rating null olan completed kayıt → status_changed olayı üretilmeli", () => {
     const doc = makeDoc();
     doc.profiles[0].items = [makeMovieItem(550, null)];
     const { events } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
-    assert.strictEqual(events.length, 0);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].eventType, "status_changed");
   });
 
-  it("personal_rating 0 olan kayıt olay üretmemeli (Faz 0: 0 puan yok)", () => {
+  it("personal_rating 0 + completed → status_changed olayı üretilmeli (0 puan yok)", () => {
     const doc = makeDoc();
     doc.profiles[0].items = [makeMovieItem(550, 0)];
     const { events } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].eventType, "status_changed");
+  });
+
+  it("watchlist kaydı için olay üretilmemeli", () => {
+    const doc = makeDoc();
+    doc.profiles[0].items = [makeMovieItem(550, "", { status: "watchlist" })];
+    const { events, result } = migrateExistingData({ dataDocument: doc, asOf: new Date().toISOString() });
     assert.strictEqual(events.length, 0);
+    assert.strictEqual(result.eventsSkipped, 1);
   });
 });
 
@@ -379,7 +390,10 @@ describe("Migration — Canlı Veri (sadece dosya mevcutsa)", () => {
     for (const p of doc.profiles || []) {
       for (const it of p.items || []) {
         if (it && it.media_type && it.id != null) {
-          ratedByContentId.set(`${it.media_type}:${it.id}`, Boolean(it.ratedAt));
+          ratedByContentId.set(`${it.media_type}:${it.id}`, {
+            hasRatedAt: Boolean(it.ratedAt),
+            hasCompletedAt: Boolean(it.completedAt),
+          });
         }
       }
     }
@@ -390,11 +404,17 @@ describe("Migration — Canlı Veri (sadece dosya mevcutsa)", () => {
     assert.ok(result.eventsSkipped >= 0);
     assert.strictEqual(typeof result.completedAt, "string");
 
-    // V1.5: ratedAt olmayan eski kayıtlar 'imported', ratedAt taşıyan yeni kayıtlar 'actual' olmalı
+    // V1.5: ratedAt/completedAt olmayan eski kayıtlar 'imported', taşıyan yeni kayıtlar 'actual' olmalı
     for (const event of events) {
-      const hasExplicitRatedAt =
-        event.eventType === "rating_changed" && ratedByContentId.get(event.contentId) === true;
-      const expectedSource = hasExplicitRatedAt ? "actual" : "imported";
+      const info = ratedByContentId.get(event.contentId);
+      const hasExplicitTimestamp =
+        event.eventType === "rating_changed"
+          ? info?.hasRatedAt === true
+          : event.eventType === "status_changed" &&
+            event.payload?.newValue === "completed"
+            ? info?.hasCompletedAt === true
+            : false;
+      const expectedSource = hasExplicitTimestamp ? "actual" : "imported";
       assert.strictEqual(
         event.timeSource,
         expectedSource,

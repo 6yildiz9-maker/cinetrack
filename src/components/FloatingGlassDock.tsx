@@ -48,7 +48,7 @@ const DOCK_ITEMS: readonly DockItemConfig[] = [
   },
   {
     id: 'taste-map',
-    label: 'Kimliğim',
+    label: 'Zevkim',
     shortcut: '3',
     Icon: Fingerprint,
     activeTextClass: 'text-cinema-gold',

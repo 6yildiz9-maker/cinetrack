@@ -29,6 +29,7 @@ import type {
 import type { DataDocument } from "../core/cinetrack-core.ts";
 import {
   coerceItemToTasteMetadata,
+  configureTasteHydration,
   ensureInitialTasteBootstrap,
   triggerTasteProfileRebuild,
   upsertTasteMetadataInputs,
@@ -257,8 +258,12 @@ function enrichEvidenceList(
   });
 }
 
-export function createTasteRouter(dataDir: string = "data"): Router {
+export function createTasteRouter(
+  dataDir: string = "data",
+  options: { tmdbApiKey?: string } = {}
+): Router {
   const router = Router();
+  configureTasteHydration(dataDir, options.tmdbApiKey || process.env.TMDB_API_KEY);
 
   // GET /api/taste/profile
   router.get("/profile", async (_req, res) => {

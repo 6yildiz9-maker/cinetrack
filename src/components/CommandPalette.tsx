@@ -141,9 +141,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'tab-taste-map',
-        label: 'Zevk Haritası',
+        label: 'Zevkim',
         group: 'Sayfalar',
-        keywords: ['kimliğim', 'istatistik', 'tat', 'dna'],
+        keywords: ['zevkim', 'kimliğim', 'istatistik', 'tat', 'dna'],
         icon: '#icon-dna',
         shortcut: '3',
         run: () => onSelectTab('taste-map'),
