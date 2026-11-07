@@ -138,7 +138,10 @@ export function getPosterHydrationQuotaState(
 }
 
 /** Kayıtta basılabilecek bir poster var mı? (getPoster/MediaCard ile aynı koşul) */
-export function hasPosterData(item: SavedItem): boolean {
+export function hasPosterData(item: {
+  poster_path?: string | null;
+  poster_url?: string | null;
+}): boolean {
   return Boolean(item.poster_path || item.poster_url);
 }
 

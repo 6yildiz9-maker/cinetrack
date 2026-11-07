@@ -552,13 +552,14 @@ export async function applyStockImport(
       poster_url = incomingPoster;
     }
 
-    const mergedGenresMap = new Map<string, TmdbGenre>();
-    for (const g of existing.genres || []) {
-      if (g && (g.name || g.id)) mergedGenresMap.set(String(g.name || g.id).toLowerCase(), g);
-    }
-    for (const g of incoming.genres || []) {
-      if (g && (g.name || g.id)) mergedGenresMap.set(String(g.name || g.id).toLowerCase(), g);
-    }
+    const mergedGenresMap = new Map<string, TmdbGenre | string>();
+    const addGenre = (g: TmdbGenre | string) => {
+      if (!g) return;
+      const key = typeof g === 'string' ? g.trim().toLowerCase() : String(g.name || g.id).toLowerCase();
+      if (key) mergedGenresMap.set(key, g);
+    };
+    for (const g of existing.genres || []) addGenre(g);
+    for (const g of incoming.genres || []) addGenre(g);
     const genres = Array.from(mergedGenresMap.values());
 
     return {
@@ -569,8 +570,10 @@ export async function applyStockImport(
       poster_path: poster_path || existing.poster_path || null,
       poster_url: poster_url || existing.poster_url,
       backdrop_path: incoming.backdrop_path || existing.backdrop_path || null,
-      genres: genres.length > 0 ? genres : existing.genres,
-      genre_ids: genres.map((g) => g.id),
+      genres: genres.length > 0 ? (genres as TmdbGenre[]) : existing.genres,
+      genre_ids: genres
+        .filter((g): g is TmdbGenre => typeof g === 'object' && g !== null)
+        .map((g) => g.id),
       overview: incoming.overview || existing.overview || '',
       tvdb_id: incoming.tvdb_id || existing.tvdb_id,
       vote_average: incoming.vote_average ?? existing.vote_average ?? 7.0,
