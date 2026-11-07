@@ -412,6 +412,318 @@ export function startSavedPosterHydration(params: {
   };
 }
 
+export interface StockPosterCandidate {
+  key: string;
+  mediaType: 'movie' | 'tv';
+  id: string | number;
+  numericId?: number;
+  tvdbId?: number | string;
+  source: string;
+  title: string;
+  year: string;
+}
+
+export function collectStockPosterCandidates(
+  depot?: { movies?: any[]; tv?: any[] } | null,
+  skipKeys?: Set<string>
+): StockPosterCandidate[] {
+  if (!depot) return [];
+  const candidates: StockPosterCandidate[] = [];
+  const seen = new Set<string>();
+
+  const processList = (list: any[], defaultType: 'movie' | 'tv') => {
+    for (const item of list) {
+      if (!item || hasPosterData(item)) continue;
+      const mediaType: 'movie' | 'tv' = item.media_type === 'tv' ? 'tv' : item.media_type === 'movie' ? 'movie' : defaultType;
+      const rawId = item.id != null ? item.id : '';
+      if (!rawId) continue;
+      const key = makeMediaKey(mediaType, rawId);
+      if (seen.has(key) || skipKeys?.has(key)) continue;
+      seen.add(key);
+
+      const numId = typeof rawId === 'number' ? rawId : /^\d+$/.test(String(rawId)) ? Number(rawId) : undefined;
+      const tvdbId = item.tvdb_id || (String(rawId).startsWith('tvdb-') ? String(rawId).slice(5) : undefined);
+      const title = item.title || item.name || '';
+      const year = (item.release_date || item.first_air_date || '').slice(0, 4);
+
+      candidates.push({
+        key,
+        mediaType,
+        id: rawId,
+        numericId: numId,
+        tvdbId,
+        source: item.source || (tvdbId ? 'tvdb' : 'tmdb'),
+        title,
+        year,
+      });
+    }
+  };
+
+  if (Array.isArray(depot.tv)) processList(depot.tv, 'tv');
+  if (Array.isArray(depot.movies)) processList(depot.movies, 'movie');
+
+  candidates.sort((a, b) => {
+    if (a.mediaType !== b.mediaType) return a.mediaType === 'tv' ? -1 : 1;
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  return candidates;
+}
+
+export function applyPosterPatchesToStockDepot<T extends { movies?: any[]; tv?: any[]; updatedAt?: string }>(
+  depot: T,
+  patches: PosterPatchMap
+): { depot: T; changedCount: number } {
+  const patchKeys = Object.keys(patches || {});
+  if (patchKeys.length === 0 || !depot) return { depot, changedCount: 0 };
+
+  let changedCount = 0;
+  const patchItem = (item: any, defaultType: 'movie' | 'tv') => {
+    if (!item || hasPosterData(item)) return item;
+    const mediaType = item.media_type || defaultType;
+    const key = makeMediaKey(mediaType, item.id);
+    const patch = patches[key] || patches[`${mediaType}:${item.id}`] || (item.tvdb_id ? patches[`${mediaType}:tvdb-${item.tvdb_id}`] : undefined);
+    if (!patch) return item;
+    changedCount += 1;
+    return {
+      ...item,
+      poster_path: patch.poster_path,
+      ...(item.backdrop_path ? {} : patch.backdrop_path ? { backdrop_path: patch.backdrop_path } : {}),
+    };
+  };
+
+  const nextMovies = Array.isArray(depot.movies) ? depot.movies.map((m) => patchItem(m, 'movie')) : [];
+  const nextTv = Array.isArray(depot.tv) ? depot.tv.map((t) => patchItem(t, 'tv')) : [];
+
+  if (changedCount === 0) return { depot, changedCount: 0 };
+
+  return {
+    depot: {
+      ...depot,
+      movies: nextMovies,
+      tv: nextTv,
+      updatedAt: new Date().toISOString(),
+    },
+    changedCount,
+  };
+}
+
+export async function runStockPosterHydrationPass(options?: {
+  depot?: { movies?: any[]; tv?: any[] };
+  fetcher?: PosterHydrationFetcher;
+  itemsPerPass?: number;
+  concurrency?: number;
+  dailyLimit?: number;
+  nowMs?: number;
+  extraSkipKeys?: Set<string>;
+}): Promise<PosterHydrationPassResult> {
+  const nowMs = options?.nowMs ?? Date.now();
+  const dailyLimit = Math.max(1, Math.floor(options?.dailyLimit ?? DAILY_POSTER_HYDRATION_ITEM_LIMIT));
+  const fetcher = options?.fetcher ?? fetchTmdbCached;
+  const depot = options?.depot ?? { movies: [], tv: [] };
+
+  if (isPassRunning) {
+    const state = getPosterHydrationQuotaState(dailyLimit, nowMs);
+    return {
+      attemptedCount: 0,
+      hydratedCount: 0,
+      failedCount: 0,
+      patches: {},
+      remainingCount: 0,
+      quotaState: state,
+    };
+  }
+
+  isPassRunning = true;
+  try {
+    const state = readState(nowMs);
+    const skip = new Set(state.missingPosterKeys);
+    if (options?.extraSkipKeys) {
+      for (const key of options.extraSkipKeys) skip.add(key);
+    }
+    const candidates = collectStockPosterCandidates(depot, skip);
+    const budget = Math.min(
+      Math.max(1, Math.floor(options?.itemsPerPass ?? POSTER_HYDRATION_ITEMS_PER_PASS)),
+      Math.max(0, dailyLimit - state.usedCount)
+    );
+    const batch = candidates.slice(0, budget);
+
+    const patches: PosterPatchMap = {};
+    const missingKeys: string[] = [];
+    let failedCount = 0;
+
+    if (batch.length > 0) {
+      const outcomes = await mapWithConcurrency(
+        batch,
+        Math.max(1, Math.floor(options?.concurrency ?? POSTER_HYDRATION_CONCURRENCY)),
+        async (candidate) => {
+          try {
+            if (candidate.numericId) {
+              const res = await fetcher(`/${candidate.mediaType}/${candidate.numericId}`);
+              if (res && Number(res.id) === candidate.numericId) {
+                const patch = readPosterPatch(res);
+                if (patch) return patch;
+              }
+            }
+            // TVDB / Search fallback via title and year
+            if (candidate.title) {
+              const searchParams: Record<string, string> = { query: candidate.title };
+              if (candidate.year) {
+                if (candidate.mediaType === 'tv') searchParams.first_air_date_year = candidate.year;
+                else searchParams.year = candidate.year;
+              }
+              const searchRes = await fetcher(`/search/${candidate.mediaType}`, searchParams);
+              const first = Array.isArray(searchRes?.results) ? searchRes.results[0] : null;
+              if (first) {
+                return readPosterPatch(first);
+              }
+            }
+            return null;
+          } catch {
+            failedCount += 1;
+            return null;
+          }
+        }
+      );
+
+      for (let i = 0; i < batch.length; i += 1) {
+        const candidate = batch[i];
+        const patch = outcomes[i];
+        if (patch) {
+          patches[candidate.key] = patch;
+        } else if (failedCount === 0) {
+          missingKeys.push(candidate.key);
+        }
+      }
+    }
+
+    const hydratedCount = Object.keys(patches).length;
+    const attemptedCount = batch.length - failedCount;
+    if (attemptedCount > 0 || hydratedCount > 0) {
+      const next = readState(nowMs);
+      const merged = [...new Set([...next.missingPosterKeys, ...missingKeys])];
+      writeState({
+        dayKey: next.dayKey,
+        usedCount: Math.min(dailyLimit, next.usedCount + attemptedCount),
+        lastHydratedAt: hydratedCount > 0 ? new Date(nowMs).toISOString() : next.lastHydratedAt,
+        missingPosterKeys:
+          merged.length > MAX_MISSING_POSTER_KEYS
+            ? merged.slice(merged.length - MAX_MISSING_POSTER_KEYS)
+            : merged,
+      });
+    }
+
+    const afterState = getPosterHydrationQuotaState(dailyLimit, nowMs);
+    return {
+      attemptedCount,
+      hydratedCount,
+      failedCount,
+      patches,
+      remainingCount: Math.max(0, candidates.length - hydratedCount - missingKeys.length),
+      quotaState: afterState,
+    };
+  } finally {
+    isPassRunning = false;
+  }
+}
+
+export function startStockPosterHydration(params: {
+  getDepot: () => Promise<{ movies: any[]; tv: any[]; updatedAt?: string }>;
+  saveDepot: (depot: any) => Promise<any>;
+  onPatches?: (patches: PosterPatchMap) => void;
+  itemsPerPass?: number;
+  flushEveryMs?: number;
+  flushMinItems?: number;
+  pauseMs?: number;
+  firstDelayMs?: number;
+  fetcher?: PosterHydrationFetcher;
+}): () => void {
+  const pauseMs = params.pauseMs ?? 3500;
+  const idlePauseMs = 25000;
+  const flushEveryMs = params.flushEveryMs ?? 20000;
+  const flushMinItems = params.flushMinItems ?? 50;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let pending: PosterPatchMap = {};
+  let pendingCount = 0;
+  let lastFlushAt = Date.now();
+
+  const isHidden = (): boolean =>
+    typeof document !== 'undefined' && document.visibilityState === 'hidden';
+
+  const flush = async () => {
+    if (pendingCount === 0) return;
+    const ready = pending;
+    pending = {};
+    pendingCount = 0;
+    lastFlushAt = Date.now();
+    try {
+      const current = await params.getDepot();
+      const { depot: updatedDepot, changedCount } = applyPosterPatchesToStockDepot(current, ready);
+      if (changedCount > 0) {
+        await params.saveDepot(updatedDepot);
+        params.onPatches?.(ready);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('cinetrack:stock-hydrated', { detail: { patches: ready } })
+          );
+        }
+      }
+    } catch {
+      // Ignore write errors
+    }
+  };
+
+  const queueNext = (delayMs: number) => {
+    if (disposed) return;
+    timer = setTimeout(() => {
+      if (disposed) return;
+      timer = null;
+      void params
+        .getDepot()
+        .then((depot) =>
+          runStockPosterHydrationPass({
+            depot,
+            itemsPerPass: params.itemsPerPass ?? POSTER_HYDRATION_ITEMS_PER_PASS,
+            extraSkipKeys: new Set(Object.keys(pending)),
+            fetcher: params.fetcher,
+          })
+        )
+        .then((res) => {
+          if (disposed) return;
+          for (const [key, patch] of Object.entries(res.patches)) {
+            if (!pending[key]) pendingCount += 1;
+            pending[key] = patch;
+          }
+          if (
+            pendingCount >= flushMinItems ||
+            (pendingCount > 0 && Date.now() - lastFlushAt >= flushEveryMs)
+          ) {
+            void flush();
+          }
+          const outstanding = res.remainingCount + pendingCount;
+          const keepRunning =
+            outstanding > 0 && res.quotaState.remainingCount > 0 && res.failedCount === 0;
+          if (keepRunning) queueNext(isHidden() ? idlePauseMs : pauseMs);
+        })
+        .catch(() => {
+          if (!disposed) queueNext(idlePauseMs);
+        });
+    }, delayMs);
+  };
+
+  queueNext(params.firstDelayMs ?? 8000);
+
+  return () => {
+    disposed = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    void flush();
+  };
+}
+
 export function resetPosterHydrationForTests(): void {
   memoryState = null;
   isPassRunning = false;

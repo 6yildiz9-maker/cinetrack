@@ -1,5 +1,6 @@
 import type { SavedItem } from '../core/cinetrack-core.ts';
 import type { TmdbItem } from '../types/tmdb.ts';
+import { repairTvdbPosterUrl } from '../core/sources/tvdb-normalize.ts';
 
 export const IMAGE_BASE = 'https://image.tmdb.org/t/p/';
 
@@ -176,22 +177,38 @@ export function tmdbProxyUrl(pathOrUrl: string, size = 'w500'): string {
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
     return `/api/tmdb-image?url=${encodeURIComponent(pathOrUrl)}&size=${size}`;
   }
+  const trimmed = pathOrUrl.trim();
+  if (trimmed.startsWith('/banners/') || trimmed.startsWith('banners/')) {
+    const clean = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    return `/api/tmdb-image?url=${encodeURIComponent(`https://artworks.thetvdb.com${clean}`)}&size=${size}`;
+  }
   const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
   return `/api/tmdb-image?path=${encodeURIComponent(cleanPath)}&size=${size}`;
 }
 
 export function imageUrl(path?: string | null, size = 'w500'): string {
   if (!path) return '';
-  if (path.startsWith('http://') || path.startsWith('https://')) {
-    if (preferImageProxy && (path.includes('image.tmdb.org') || path.includes('img.tmdb.org'))) {
-      return tmdbProxyUrl(path, size);
+  const trimmed = path.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    if (trimmed.includes('artworks.thetvdb.com')) {
+      return preferImageProxy ? tmdbProxyUrl(trimmed, size) : trimmed;
     }
-    return path;
+    if (preferImageProxy && (trimmed.includes('image.tmdb.org') || trimmed.includes('img.tmdb.org'))) {
+      return tmdbProxyUrl(trimmed, size);
+    }
+    return trimmed;
+  }
+  // TVDB /banners/ relative paths
+  if (trimmed.startsWith('/banners/') || trimmed.startsWith('banners/')) {
+    const clean = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    const fullTvdb = `https://artworks.thetvdb.com${clean}`;
+    return preferImageProxy ? tmdbProxyUrl(fullTvdb, size) : fullTvdb;
   }
   if (preferImageProxy) {
-    return tmdbProxyUrl(path, size);
+    return tmdbProxyUrl(trimmed, size);
   }
-  return `${IMAGE_BASE}${size}${path}`;
+  const cleanTmdb = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return `${IMAGE_BASE}${size}${cleanTmdb}`;
 }
 
 export function handleImageError(
@@ -270,20 +287,32 @@ export function formatMediaDates(
 export function getPoster(item?: Partial<TmdbItem> | SavedItem | null, size = 'w500'): string {
   if (!item) return '';
   if (item.poster_url) {
+    const rep = repairTvdbPosterUrl(item.poster_url) || item.poster_url;
     try {
-      const url = new URL(item.poster_url);
-      if (url.protocol === 'https:') {
-        if (preferImageProxy && (url.hostname === 'image.tmdb.org' || url.hostname === 'img.tmdb.org')) {
+      const url = new URL(rep);
+      if (url.protocol === 'https:' || url.protocol === 'http:') {
+        if (
+          preferImageProxy &&
+          (url.hostname === 'image.tmdb.org' ||
+            url.hostname === 'img.tmdb.org' ||
+            url.hostname === 'artworks.thetvdb.com')
+        ) {
           return tmdbProxyUrl(url.href, size);
         }
         return url.href;
       }
-      return '';
     } catch {
-      return '';
+      // ignore
     }
   }
-  return imageUrl(item.poster_path, size);
+  if (item.poster_path) {
+    if (item.poster_path.includes('/banners/') || item.poster_path.startsWith('banners/')) {
+      const rep = repairTvdbPosterUrl(item.poster_path);
+      if (rep) return imageUrl(rep, size);
+    }
+    return imageUrl(item.poster_path, size);
+  }
+  return '';
 }
 
 export function dateYearsAgo(years: number): string {

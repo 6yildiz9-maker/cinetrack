@@ -1731,12 +1731,16 @@ export class PersistentDataStore {
           result.skippedInvalid++;
           continue;
         }
-        const id = Number((candidate as any).id);
-        if (!Number.isSafeInteger(id) || id <= 0) {
+        const idRaw = (candidate as any).id;
+        const idNum = Number(idRaw);
+        const validId =
+          (Number.isSafeInteger(idNum) && idNum > 0) ||
+          (typeof idRaw === 'string' && idRaw.trim().length > 0);
+        if (!validId) {
           result.skippedInvalid++;
           continue;
         }
-        const key = `${namespace}:${id}`;
+        const key = `${namespace}:${idRaw}`;
         if (seen.has(key)) {
           result.duplicatesRemoved++;
           continue;

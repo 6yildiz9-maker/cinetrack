@@ -868,7 +868,11 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
       } else if (rawPath) {
         const cleanPath = rawPath.replace(/^\/+/, '');
         if (/^[a-zA-Z0-9_./-]+$/.test(cleanPath) && !cleanPath.includes('..')) {
-          targetUrl = `https://image.tmdb.org/t/p/${safeSize}/${cleanPath}`;
+          if (cleanPath.startsWith('banners/')) {
+            targetUrl = `https://artworks.thetvdb.com/${cleanPath}`;
+          } else {
+            targetUrl = `https://image.tmdb.org/t/p/${safeSize}/${cleanPath}`;
+          }
         }
       }
 

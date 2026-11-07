@@ -1,5 +1,6 @@
 import type { TmdbGenre, TmdbItem } from '../types/tmdb.ts';
 import { loadStockIdb, saveStockIdb, type StockDepot } from './storage-idb.ts';
+import { hasPosterData } from './poster-hydration-service.ts';
 
 export type StockSourceFilter = 'all' | 'tvdb' | 'tmdb';
 export type StockExportFormat = 'json' | 'csv';
@@ -139,10 +140,18 @@ function convertItemsToCsv(items: TmdbItem[]): string {
     'genres',
     'overview',
     'poster_url',
+    'poster_path',
+    'backdrop_path',
+    'tvdb_id',
     'status',
   ];
 
-  const lines = [headers.join(',')];
+  const lines = [
+    '#CINETRACK-STOCK',
+    `#ExportDate,${new Date().toISOString()}`,
+    `#TotalItems,${items.length}`,
+    headers.join(','),
+  ];
 
   for (const item of items) {
     const genresStr = Array.isArray(item.genres)
@@ -164,6 +173,9 @@ function convertItemsToCsv(items: TmdbItem[]): string {
       escapeCsvField(genresStr),
       escapeCsvField(item.overview || ''),
       escapeCsvField(item.poster_url || item.poster_path || ''),
+      escapeCsvField(item.poster_path || ''),
+      escapeCsvField(item.backdrop_path || ''),
+      escapeCsvField(item.tvdb_id ?? ''),
       escapeCsvField(item.status || ''),
     ];
 
@@ -320,7 +332,8 @@ function parseJsonImport(content: string, existingKeys: Set<string>): StockImpor
 
 function parseCsvImport(content: string, existingKeys: Set<string>): StockImportPreview {
   const errors: Array<{ line: number; message: string }> = [];
-  const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const rawLines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const lines = rawLines.filter((l) => !l.startsWith('#'));
 
   if (lines.length <= 1) {
     return {
@@ -337,18 +350,22 @@ function parseCsvImport(content: string, existingKeys: Set<string>): StockImport
 
   // Parse header
   const headerTokens = parseCsvLine(lines[0]);
-  const colIndex = (name: string) => headerTokens.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+  const colIndex = (...candidates: string[]) =>
+    headerTokens.findIndex((h) => candidates.some((c) => c.toLowerCase() === h.toLowerCase().trim()));
 
-  const idxId = colIndex('id');
-  const idxMediaType = colIndex('media_type');
-  const idxSource = colIndex('source');
-  const idxTitle = colIndex('title');
-  const idxName = colIndex('name');
-  const idxYear = colIndex('year');
-  const idxVoteAverage = colIndex('vote_average');
-  const idxGenres = colIndex('genres');
-  const idxOverview = colIndex('overview');
-  const idxPoster = colIndex('poster_url') >= 0 ? colIndex('poster_url') : colIndex('poster_path');
+  const idxId = colIndex('id', 'contentid', 'content_id', 'tmdbid', 'tmdb_id');
+  const idxMediaType = colIndex('media_type', 'mediatype', 'type', 'tür');
+  const idxSource = colIndex('source', 'kaynak');
+  const idxTitle = colIndex('title', 'başlık', 'film');
+  const idxName = colIndex('name', 'dizi');
+  const idxYear = colIndex('year', 'yıl', 'release_year');
+  const idxVoteAverage = colIndex('vote_average', 'rating', 'rating10', 'puan');
+  const idxGenres = colIndex('genres', 'türler', 'turler');
+  const idxOverview = colIndex('overview', 'özet', 'ozet');
+  const idxPoster = colIndex('poster_url', 'poster_path', 'posterpath', 'poster', 'resim');
+  const idxBackdrop = colIndex('backdrop_path', 'backdroppath', 'backdrop');
+  const idxTvdbId = colIndex('tvdb_id', 'tvdbid', 'tvdb');
+  const idxStatus = colIndex('status', 'durum');
 
   const validItems: TmdbItem[] = [];
   const duplicates: TmdbItem[] = [];
@@ -364,18 +381,33 @@ function parseCsvImport(content: string, existingKeys: Set<string>): StockImport
       continue;
     }
 
-    const rawId = idxId >= 0 && tokens[idxId] ? tokens[idxId] : `csv-${Date.now()}-${i}`;
-    const mediaType = (idxMediaType >= 0 ? tokens[idxMediaType] : '') === 'tv' ? 'tv' : 'movie';
-    const source = (idxSource >= 0 && tokens[idxSource] ? tokens[idxSource] : 'tvdb');
-    const year = idxYear >= 0 ? tokens[idxYear] : '';
+    const rawId = idxId >= 0 && tokens[idxId] ? tokens[idxId].trim() : `csv-${Date.now()}-${i}`;
+    const rawMediaType = (idxMediaType >= 0 ? tokens[idxMediaType] : '').toLowerCase().trim();
+    const mediaType = rawMediaType === 'tv' || rawMediaType === 'dizi' || rawMediaType === 'series' ? 'tv' : 'movie';
+    const source = idxSource >= 0 && tokens[idxSource] ? tokens[idxSource].trim() : (String(rawId).startsWith('tvdb') ? 'tvdb' : 'tmdb');
+    const year = idxYear >= 0 ? tokens[idxYear].trim() : '';
     const voteAvg = idxVoteAverage >= 0 && !isNaN(Number(tokens[idxVoteAverage])) ? Number(tokens[idxVoteAverage]) : 7.0;
-    const overview = idxOverview >= 0 ? tokens[idxOverview] : '';
-    const poster = idxPoster >= 0 ? tokens[idxPoster] : '';
+    const overview = idxOverview >= 0 ? tokens[idxOverview].trim() : '';
+    const poster = idxPoster >= 0 ? tokens[idxPoster].trim() : '';
+    const backdrop = idxBackdrop >= 0 ? tokens[idxBackdrop].trim() : '';
+    const tvdbId = idxTvdbId >= 0 && tokens[idxTvdbId] ? tokens[idxTvdbId].trim() : undefined;
+    const status = idxStatus >= 0 ? tokens[idxStatus].trim() : '';
 
     const genresRaw = idxGenres >= 0 ? tokens[idxGenres] : '';
     const genres: TmdbGenre[] = genresRaw
       ? genresRaw.split('|').map((gName, gIdx) => ({ id: 1000 + gIdx, name: gName.trim() }))
       : [{ id: 18, name: 'Dram' }];
+
+    let poster_path: string | null = null;
+    let poster_url: string | undefined = undefined;
+    if (poster) {
+      if (/^https?:\/\//i.test(poster)) {
+        poster_url = poster;
+        poster_path = poster;
+      } else {
+        poster_path = poster.startsWith('/') ? poster : `/${poster}`;
+      }
+    }
 
     const item: TmdbItem = {
       id: rawId,
@@ -385,8 +417,11 @@ function parseCsvImport(content: string, existingKeys: Set<string>): StockImport
       original_title: title,
       original_name: title,
       overview,
-      poster_path: poster || null,
-      poster_url: poster || undefined,
+      poster_path,
+      poster_url,
+      backdrop_path: backdrop || null,
+      tvdb_id: tvdbId,
+      status,
       release_date: year ? `${year}-01-01` : '',
       first_air_date: year ? `${year}-01-01` : '',
       vote_average: voteAvg,
@@ -504,10 +539,49 @@ export async function applyStockImport(
   let updated = 0;
   let skipped = 0;
 
+  const mergeStockItemLossless = (existing: TmdbItem, incoming: TmdbItem): TmdbItem => {
+    const existingPoster = existing.poster_path || existing.poster_url;
+    const incomingPoster = incoming.poster_path || incoming.poster_url;
+
+    let poster_path = incoming.poster_path || existing.poster_path || null;
+    let poster_url = incoming.poster_url || existing.poster_url;
+    if (!poster_path && existingPoster && !existingPoster.startsWith('http')) {
+      poster_path = existingPoster;
+    }
+    if (!poster_url && incomingPoster && incomingPoster.startsWith('http')) {
+      poster_url = incomingPoster;
+    }
+
+    const mergedGenresMap = new Map<string, TmdbGenre>();
+    for (const g of existing.genres || []) {
+      if (g && (g.name || g.id)) mergedGenresMap.set(String(g.name || g.id).toLowerCase(), g);
+    }
+    for (const g of incoming.genres || []) {
+      if (g && (g.name || g.id)) mergedGenresMap.set(String(g.name || g.id).toLowerCase(), g);
+    }
+    const genres = Array.from(mergedGenresMap.values());
+
+    return {
+      ...existing,
+      ...incoming,
+      title: incoming.title || existing.title || incoming.name || existing.name,
+      name: incoming.name || existing.name || incoming.title || existing.title,
+      poster_path: poster_path || existing.poster_path || null,
+      poster_url: poster_url || existing.poster_url,
+      backdrop_path: incoming.backdrop_path || existing.backdrop_path || null,
+      genres: genres.length > 0 ? genres : existing.genres,
+      genre_ids: genres.map((g) => g.id),
+      overview: incoming.overview || existing.overview || '',
+      tvdb_id: incoming.tvdb_id || existing.tvdb_id,
+      vote_average: incoming.vote_average ?? existing.vote_average ?? 7.0,
+      vote_count: incoming.vote_count ?? existing.vote_count ?? 100,
+    };
+  };
+
   if (strategy === 'restore') {
     const isOnlyTvdb = eligibleItems.length > 0 && eligibleItems.every((i) => i.source === 'tvdb');
     if (isOnlyTvdb) {
-      // TMDB stoğuna dokunmadan TVDB stoğunu yedekten tam geri yükle
+      // TMDB stoğuna dokunmadan TVDB stoğunu yedekten geri yükle
       movies = movies.filter((m) => m.source !== 'tvdb');
       tv = tv.filter((t) => t.source !== 'tvdb');
       const newTvdbMovies = eligibleItems.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
@@ -537,10 +611,16 @@ export async function applyStockImport(
 
       if (existingIdx >= 0) {
         if (strategy === 'overwrite') {
-          targetList[existingIdx] = { ...targetList[existingIdx], ...item };
+          targetList[existingIdx] = mergeStockItemLossless(targetList[existingIdx], item);
           updated++;
         } else {
-          skipped++;
+          // 'skip' modunda mevcudun posteri eksik ve gelende varsa kayıpsız tamamla
+          if (!hasPosterData(targetList[existingIdx]) && hasPosterData(item)) {
+            targetList[existingIdx] = mergeStockItemLossless(targetList[existingIdx], item);
+            updated++;
+          } else {
+            skipped++;
+          }
         }
       } else {
         targetList.push(item);
@@ -557,6 +637,13 @@ export async function applyStockImport(
   };
 
   await saveStockIdb(updatedDepot);
+
+  // Arka plan stok poster hidrasyonunu tetikle
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('cinetrack:stock-hydrated', { detail: { checkNeeded: true } })
+    );
+  }
 
   // Sync to server storage
   try {

@@ -160,8 +160,8 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   const isActorsListMode = tab === 'list' && listStatus === 'actors';
   const isForYouSeriesMode = tab === 'discover' && category === 'for-you' && !query.trim() && forYouSubTab === 'series';
 
-  // Keşfet sayfalama ile zaten sınırlı; Listem'de tüm liste birden DOM'a basılıyordu
-  const isWindowedList = tab === 'list' && !isActorsListMode && !isLoading;
+  // Keşfet sayfalama ile sınırlı; Listem ve Stok (1000+ yapım) pencereleme ile DOM yükü hafifletilir
+  const isWindowedList = (tab === 'list' || category === 'stock') && !isActorsListMode && !isLoading;
   const visibleItems = isWindowedList && windowSize < items.length ? items.slice(0, windowSize) : items;
 
   return (
