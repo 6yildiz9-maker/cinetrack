@@ -195,17 +195,6 @@ export function computeNormalizedTitleSimilarity(titleA: string, titleB: string)
   return (2 * intersection) / (bigramsA.length + bigramsB.length);
 }
 
-function collectCandidateTitles(item: SavedItem): string[] {
-  const raw = [item.title, item.name, item.original_title, item.original_name];
-  const unique = new Set<string>();
-  for (const t of raw) {
-    if (typeof t === 'string' && t.trim()) {
-      unique.add(t.trim());
-    }
-  }
-  return Array.from(unique);
-}
-
 function extractReleaseYear(item: SavedItem): number | null {
   const dateStr = item.release_date || item.first_air_date || '';
   const yr = Number(dateStr.slice(0, 4));
@@ -242,83 +231,215 @@ function hasInformativeEncoding(enc: ItemFeatureEncoding, item: SavedItem): bool
   return false;
 }
 
+type TitleSimilarityProfile = {
+  raw: string;
+  norm: string;
+  tokenIds: Uint32Array;
+};
+
+function multisetIntersectionSize(a: Uint32Array, b: Uint32Array): number {
+  let i = 0;
+  let j = 0;
+  let hits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] < b[j]) {
+      i += 1;
+      continue;
+    }
+    if (b[j] < a[i]) {
+      j += 1;
+      continue;
+    }
+    const token = a[i];
+    let iEnd = i;
+    while (iEnd < a.length && a[iEnd] === token) iEnd += 1;
+    let jEnd = j;
+    while (jEnd < b.length && b[jEnd] === token) jEnd += 1;
+    hits += Math.min(iEnd - i, jEnd - j);
+    i = iEnd;
+    j = jEnd;
+  }
+  return hits;
+}
+
+/**
+ * Başlık normalize etme (toLocaleLowerCase + NFKD + birkaç regex) pahalıdır ve aynı metin
+ * yüz binlerce çift için tekrar tekrar işlenmemelidir. Ham başlık başına bir kez profil
+ * çıkarılır; Dice benzerliği iki çoklu-kümenin sıralı birleşiminden okunur.
+ * Sonuç computeNormalizedTitleSimilarity ile birebir aynıdır.
+ */
+function createTitleProfileFactory() {
+  const byRawTitle = new Map<string, TitleSimilarityProfile>();
+  const tokenIdByBigram = new Map<string, number>();
+
+  return function titleProfile(raw: string): TitleSimilarityProfile {
+    const cached = byRawTitle.get(raw);
+    if (cached) return cached;
+
+    const norm = normalizeWorkTitle(raw);
+    const compact = norm.replace(/\s+/g, '');
+    const tokens: number[] = [];
+    if (compact.length < 2) {
+      if (compact) {
+        let id = tokenIdByBigram.get(compact);
+        if (id === undefined) {
+          id = tokenIdByBigram.size;
+          tokenIdByBigram.set(compact, id);
+        }
+        tokens.push(id);
+      }
+    } else {
+      for (let i = 0; i < compact.length - 1; i += 1) {
+        const bg = compact.slice(i, i + 2);
+        let id = tokenIdByBigram.get(bg);
+        if (id === undefined) {
+          id = tokenIdByBigram.size;
+          tokenIdByBigram.set(bg, id);
+        }
+        tokens.push(id);
+      }
+    }
+
+    const profile: TitleSimilarityProfile = { raw, norm, tokenIds: Uint32Array.from(tokens).sort() };
+    byRawTitle.set(raw, profile);
+    return profile;
+  };
+}
+
+function titleSimilarityFromProfiles(a: TitleSimilarityProfile, b: TitleSimilarityProfile): number {
+  if (!a.norm || !b.norm) return 0;
+  if (a.norm === b.norm) return 1;
+  return (2 * multisetIntersectionSize(a.tokenIds, b.tokenIds)) / (a.tokenIds.length + b.tokenIds.length);
+}
+
+function collectTitleProfiles(
+  item: SavedItem,
+  titleProfile: (raw: string) => TitleSimilarityProfile
+): TitleSimilarityProfile[] {
+  const unique = new Set<string>();
+  for (const t of [item.title, item.name, item.original_title, item.original_name]) {
+    if (typeof t === 'string' && t.trim()) unique.add(t.trim());
+  }
+  return Array.from(unique, (t) => titleProfile(t));
+}
+
 /**
  * Detects duplicate variants of the same movie or TV show (e.g. custom entry + TMDB entry,
  * localized vs original title duplicate IDs) using normalized title similarity + encoding cosine similarity (IMP-15).
+ *
+ * Tüm i×j taraması yerine önce (medya türü, yıl) engelleme yapılır: yıl filtresi zaten
+ * |Δyıl| > 2 olan çifti eliyor, yılı olmayan kayıtlar ise tek başına ayrı bir grup tutar.
+ * Böylece başlığı hiç karşılaştırılmayan milyonlarca çift erken düşer.
  */
 export function detectDuplicateSavedItems(items: SavedItem[]): DuplicatePairCandidate[] {
   if (!Array.isArray(items) || items.length < 2) return [];
 
-  const encodings = items.map((it) => encodeItemContent(it));
-  const titlesPerItem = items.map((it) => collectCandidateTitles(it));
+  const titleProfile = createTitleProfileFactory();
+  const titlesPerItem = items.map((it) => collectTitleProfiles(it, titleProfile));
   const yearsPerItem = items.map((it) => extractReleaseYear(it));
-  const richEncodingPerItem = items.map((it, idx) => hasInformativeEncoding(encodings[idx], it));
 
-  const pairs: DuplicatePairCandidate[] = [];
+  // Özellik vektörleri yalnızca başlık eşiğini geçen birkaç çift için gereken cosine
+  // benzerliğinde kullanılır. Hepsini önden kodlamak, vektörün kendisinden değil
+  // içerik imzasının (overview dahil) JSON hash'inden kaynaklanan ciddi bir maliyettir.
+  const encodingByIndex = new Map<number, ItemFeatureEncoding>();
+  function encodingOf(index: number): ItemFeatureEncoding {
+    let cached = encodingByIndex.get(index);
+    if (!cached) {
+      cached = encodeItemContent(items[index]);
+      encodingByIndex.set(index, cached);
+    }
+    return cached;
+  }
+  function isRichEncoding(index: number): boolean {
+    return hasInformativeEncoding(encodingOf(index), items[index]);
+  }
 
-  for (let i = 0; i < items.length; i += 1) {
-    for (let j = i + 1; j < items.length; j += 1) {
-      const a = items[i];
-      const b = items[j];
-      if (a.media_type !== b.media_type) continue;
-      if (String(a.id) === String(b.id)) continue;
+  const collected: Array<{ lo: number; hi: number; candidate: DuplicatePairCandidate }> = [];
+  const idKeys = items.map((it) => String(it.id));
 
-      const yearA = yearsPerItem[i];
-      const yearB = yearsPerItem[j];
-      if (yearA !== null && yearB !== null && Math.abs(yearA - yearB) > 2) {
-        continue;
-      }
+  function consider(i: number, j: number) {
+    considerPair(i < j ? i : j, i < j ? j : i);
+  }
 
-      let bestTitleSim = 0;
-      let bestTitlePair: [string, string] | null = null;
-      for (const tA of titlesPerItem[i]) {
-        for (const tB of titlesPerItem[j]) {
-          const sim = computeNormalizedTitleSimilarity(tA, tB);
-          if (sim > bestTitleSim) {
-            bestTitleSim = sim;
-            bestTitlePair = [tA, tB];
-          }
+  function considerPair(i: number, j: number) {
+    const a = items[i];
+    const b = items[j];
+    if (a.media_type !== b.media_type) return;
+    if (idKeys[i] === idKeys[j]) return;
+
+    const yearA = yearsPerItem[i];
+    const yearB = yearsPerItem[j];
+    if (yearA !== null && yearB !== null && Math.abs(yearA - yearB) > 2) {
+      return;
+    }
+
+    const profilesA = titlesPerItem[i];
+    const profilesB = titlesPerItem[j];
+    let bestTitleSim = 0;
+    let bestRawA = '';
+    let bestRawB = '';
+    for (let x = 0; x < profilesA.length; x += 1) {
+      const pA = profilesA[x];
+      for (let y = 0; y < profilesB.length; y += 1) {
+        const pB = profilesB[y];
+        // Dice ≥ 0.65 için gereken kesişim |A∩B| ≥ 0.325·(|A|+|B|)'dir ve |A∩B| kısa
+        // tarafı aşamaz; dolayısıyla kısa taraf < 0.325/0.675 · uzun taraf olan başlık
+        // çifti eşiği geçemez. Bu çiftlerde çoklu-küme birleşimine hiç girilmez.
+        const lenA = pA.tokenIds.length;
+        const lenB = pB.tokenIds.length;
+        const shorter = lenA < lenB ? lenA : lenB;
+        const longer = lenA + lenB - shorter;
+        if (shorter * 0.675 < 0.325 * longer) continue;
+        const sim = titleSimilarityFromProfiles(pA, pB);
+        if (sim > bestTitleSim) {
+          bestTitleSim = sim;
+          bestRawA = pA.raw;
+          bestRawB = pB.raw;
         }
       }
+    }
 
-      if (bestTitleSim < 0.65) continue;
+    if (bestTitleSim < 0.65) return;
 
-      // Bir serinin farklı filmleri (2/3, II/III, Bölüm 1/2) aynı yapım değildir
-      if (bestTitlePair && areDistinctSeriesParts(bestTitlePair[0], bestTitlePair[1])) {
-        continue;
-      }
+    // Bir serinin farklı filmleri (2/3, II/III, Bölüm 1/2) aynı yapım değildir
+    if (areDistinctSeriesParts(bestRawA, bestRawB)) {
+      return;
+    }
 
-      const bothRich = richEncodingPerItem[i] && richEncodingPerItem[j];
-      const encSim = bothRich
-        ? cosineSimilarity(encodings[i].denseVector, encodings[j].denseVector)
-        : 0;
-      const sameYear = yearA !== null && yearB !== null && yearA === yearB;
+    const bothRich = isRichEncoding(i) && isRichEncoding(j);
+    const encSim = bothRich
+      ? cosineSimilarity(encodingOf(i).denseVector, encodingOf(j).denseVector)
+      : 0;
+    const sameYear = yearA !== null && yearB !== null && yearA === yearB;
 
-      const isDuplicate =
-        bestTitleSim >= 0.94 ||
-        (bestTitleSim >= 0.82 && encSim >= 0.65) ||
-        (sameYear && bestTitleSim >= 0.72 && encSim >= 0.84);
+    const isDuplicate =
+      bestTitleSim >= 0.94 ||
+      (bestTitleSim >= 0.82 && encSim >= 0.65) ||
+      (sameYear && bestTitleSim >= 0.72 && encSim >= 0.84);
 
-      if (!isDuplicate) continue;
+    if (!isDuplicate) return;
 
-      const aPrimary = itemCompletenessScore(a) >= itemCompletenessScore(b);
-      const primaryItem = aPrimary ? a : b;
-      const secondaryItem = aPrimary ? b : a;
-      const combinedScore = Math.round((bestTitleSim * 0.6 + encSim * 0.4) * 100);
+    const aPrimary = itemCompletenessScore(a) >= itemCompletenessScore(b);
+    const primaryItem = aPrimary ? a : b;
+    const secondaryItem = aPrimary ? b : a;
+    const combinedScore = Math.round((bestTitleSim * 0.6 + encSim * 0.4) * 100);
 
-      const reasonParts: string[] = [
-        `Başlık benzerliği %${Math.round(bestTitleSim * 100)}`,
-      ];
-      if (bothRich) {
-        reasonParts.push(`özellik vektörü %${Math.round(encSim * 100)}`);
-      } else {
-        reasonParts.push('özellik vektörü yetersiz (metadata eksik)');
-      }
-      if (sameYear && yearA) {
-        reasonParts.push(`aynı yıl (${yearA})`);
-      }
+    const reasonParts: string[] = [
+      `Başlık benzerliği %${Math.round(bestTitleSim * 100)}`,
+    ];
+    if (bothRich) {
+      reasonParts.push(`özellik vektörü %${Math.round(encSim * 100)}`);
+    } else {
+      reasonParts.push('özellik vektörü yetersiz (metadata eksik)');
+    }
+    if (sameYear && yearA) {
+      reasonParts.push(`aynı yıl (${yearA})`);
+    }
 
-      pairs.push({
+    collected.push({
+      lo: Math.min(i, j),
+      hi: Math.max(i, j),
+      candidate: {
         pairId: `${a.media_type}:${primaryItem.id}__${secondaryItem.id}`,
         primaryItem,
         secondaryItem,
@@ -327,11 +448,62 @@ export function detectDuplicateSavedItems(items: SavedItem[]): DuplicatePairCand
         encodingSimilarity: Math.round(encSim * 100) / 100,
         combinedScore,
         reason: reasonParts.join(' · '),
-      });
+      },
+    });
+  }
+
+  const yearfulBuckets = new Map<SavedItem['media_type'], Map<number, number[]>>();
+  const indicesByMediaType = new Map<SavedItem['media_type'], number[]>();
+  const unknownYearIndices: number[] = [];
+
+  for (let idx = 0; idx < items.length; idx += 1) {
+    const mediaType = items[idx].media_type;
+    const sameType = indicesByMediaType.get(mediaType);
+    if (sameType) sameType.push(idx);
+    else indicesByMediaType.set(mediaType, [idx]);
+
+    const year = yearsPerItem[idx];
+    if (year === null) {
+      unknownYearIndices.push(idx);
+      continue;
+    }
+    const byYear = yearfulBuckets.get(mediaType) || new Map<number, number[]>();
+    if (!yearfulBuckets.has(mediaType)) yearfulBuckets.set(mediaType, byYear);
+    const bucket = byYear.get(year);
+    if (bucket) bucket.push(idx);
+    else byYear.set(year, [idx]);
+  }
+
+  // Yılı bilinen kayıtlar: aynı medya türünde ±2 yıllık pencere içindekilerle görüşür.
+  for (const byYear of yearfulBuckets.values()) {
+    const years = Array.from(byYear.keys()).sort((a, b) => a - b);
+    for (let a = 0; a < years.length; a += 1) {
+      const bucketA = byYear.get(years[a])!;
+      for (let i = 0; i < bucketA.length; i += 1) {
+        for (let j = i + 1; j < bucketA.length; j += 1) consider(bucketA[i], bucketA[j]);
+      }
+      for (let b = a + 1; b < years.length && years[b] - years[a] <= 2; b += 1) {
+        const bucketB = byYear.get(years[b])!;
+        for (const i of bucketA) for (const j of bucketB) consider(i, j);
+      }
     }
   }
 
-  return pairs.sort((a, b) => b.combinedScore - a.combinedScore);
+  // Yılı olmayan azınlık: hangi yılla kıyaslanacağı bellisiz olduğundan eski davranışta
+  // yıl filtresi bu gruba hiç uygulanmaz, o yüzden aynı türdeki bütün kayıtlarla görüşür.
+  for (const i of unknownYearIndices) {
+    const sameType = indicesByMediaType.get(items[i].media_type) || [];
+    for (const j of sameType) {
+      if (j === i) continue;
+      // iki yılı-bilinmez çifti yalnızca küçük indeks tarafından bir kez ele alınsın
+      if (yearsPerItem[j] === null && j < i) continue;
+      consider(i, j);
+    }
+  }
+
+  return collected
+    .sort((a, b) => b.candidate.combinedScore - a.candidate.combinedScore || a.lo - b.lo || a.hi - b.hi)
+    .map((entry) => entry.candidate);
 }
 
 /**

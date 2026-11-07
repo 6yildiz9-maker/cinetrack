@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import type { Preferences, Profile, SavedItem } from '../core/cinetrack-core.ts';
 import type { CinemaKunyeDocument } from '../core/cinema-kunye.ts';
-import { exportItemsToCsv, importItemsFromCsv } from '../core/exporters.ts';
+import { exportItemsToCsv, importItemsFromCsv, type CsvProfileBlock } from '../core/exporters.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
 import {
   createProfileBackupExport,
@@ -26,7 +26,11 @@ interface ProfileBackupTabProps {
   backupMessage: string;
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
-  onImportCsvItems?: (items: SavedItem[], cinemaKunye?: CinemaKunyeDocument) => void;
+  onImportCsvItems?: (
+    items: SavedItem[],
+    cinemaKunye?: CinemaKunyeDocument,
+    profileBlock?: CsvProfileBlock | null
+  ) => void;
   onCreateInstantBackup: () => Promise<void>;
   onLoadServerBackups: () => Promise<void>;
   onRestoreSnapshot: (id: string) => Promise<void>;
@@ -112,7 +116,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
         const result = importItemsFromCsv(text);
         const kunyeCount = Object.keys(result.cinemaKunye.entries).length;
         if ((result.importedItems.length > 0 || kunyeCount > 0) && onImportCsvItems) {
-          onImportCsvItems(result.importedItems, result.cinemaKunye);
+          onImportCsvItems(result.importedItems, result.cinemaKunye, result.profileBlock);
           setCsvStatus(
             `${result.importedItems.length} yapım${
               kunyeCount > 0 ? ` ve ${kunyeCount} sinema künyesi kaydı` : ''

@@ -240,6 +240,15 @@ export async function maintainEncodingsDepot(maxEntries: number = ENCODINGS_DEPO
     const prunedStaleSignatures = keysToDelete.length;
     const survivingEntries = all.filter(([k]) => !keysToDelete.includes(k));
 
+    // Depot'ta duran geçerli vektörler bellek önbelleğine alınır. Aksi hâlde açılışta
+    // getItemEncodingSync hiçbir kaydı bulamaz ve Listem'in tamamını yeniden kodlar
+    // (bindlerce encode + IDB yazması = donma).
+    for (const [key, enc] of survivingEntries) {
+      if (!memoryEncodingCache.has(key)) {
+        memoryEncodingCache.set(key, enc);
+      }
+    }
+
     let prunedLru = 0;
     if (survivingEntries.length > maxEntries) {
       survivingEntries.sort((a, b) => {

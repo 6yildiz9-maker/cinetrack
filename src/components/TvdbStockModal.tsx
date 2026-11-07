@@ -4,7 +4,6 @@ import {
   getStoredTvdbApiKey,
   saveStoredTvdbApiKey,
   syncTvdbStockBatch,
-  DEFAULT_TVDB_API_KEY,
   MAX_TVDB_STOCK_LIMIT,
   MIN_TVDB_STOCK_LIMIT,
   getStoredTvdbStockLimit,
@@ -154,9 +153,10 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
   };
 
   const handleResetDefaultKey = () => {
-    setApiKey(DEFAULT_TVDB_API_KEY);
-    saveStoredTvdbApiKey(DEFAULT_TVDB_API_KEY);
-    void handleTestConnection(DEFAULT_TVDB_API_KEY);
+    // Boş anahtar = sunucudaki TVDB_API_KEY kullanılır (istemcide anahtar tutulmaz)
+    setApiKey('');
+    saveStoredTvdbApiKey('');
+    void handleTestConnection('');
   };
 
   const handleStockLimitChange = (newLimit: number) => {
@@ -471,12 +471,12 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] text-[#676c75]">
-                    <span>Varsayılan Anahtar: {DEFAULT_TVDB_API_KEY.slice(0, 8)}...</span>
+                    <span>Boş bırakılırsa sunucudaki TVDB_API_KEY kullanılır</span>
                     <button
                       onClick={handleResetDefaultKey}
                       className="text-[#63b8ab] hover:underline"
                     >
-                      Varsayılana Dön
+                      Sunucu Anahtarına Dön
                     </button>
                   </div>
                 </div>

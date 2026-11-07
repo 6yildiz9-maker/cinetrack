@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { SavedItem } from '../core/cinetrack-core.ts';
 import {
   buildCinemaKunyeCanonicalPayload,
+  buildKunyeSourceSignature,
   createEmptyCinemaKunyeDocument,
   extractCinemaKunyeEntryFromSavedItem,
   extractCinemaKunyeFromItems,
@@ -42,8 +43,16 @@ function persistCachedCinemaKunye(doc: CinemaKunyeDocument): void {
   }
 }
 
+// Belge nesnesi her değişimde üretilir (merge/normalize taze nesne döndürür), bu yüzden imza
+// referansla önbelleğe alınabilir: aynı belge için 2 MB'lık stringify bir kez yapılır.
+const canonicalSignatureCache = new WeakMap<object, string>();
+
 function computeCanonicalSignature(doc: CinemaKunyeDocument): string {
-  return JSON.stringify(buildCinemaKunyeCanonicalPayload(doc));
+  const cached = canonicalSignatureCache.get(doc);
+  if (typeof cached === 'string') return cached;
+  const signature = JSON.stringify(buildCinemaKunyeCanonicalPayload(doc));
+  canonicalSignatureCache.set(doc, signature);
+  return signature;
 }
 
 function parseNumericTmdbId(id: SavedItem['id']): number | null {
@@ -92,6 +101,7 @@ export function useCinemaKunye({
 
   const serverHydratedRef = useRef<boolean>(false);
   const lastServerCanonicalRef = useRef<string>('');
+  const kunyeSourceSignatureRef = useRef<string>('');
   const attemptedTmdbKeysRef = useRef<Set<string>>(new Set());
   const enrichInFlightRef = useRef<boolean>(false);
   const [enrichTick, setEnrichTick] = useState<number>(0);
@@ -141,6 +151,12 @@ export function useCinemaKunye({
   // 2. Extract watched items metadata (genre / year / cast) whenever savedItems or genresMap updates
   useEffect(() => {
     if (isDemo) return;
+    // Künye çıktısı yalnızca aşağıdaki imzanın okuduğu alanlardan türer; damga gibi diğer
+    // alanlar değiştiğinde extract + merge + kanonik imza zinciri baştan kurulmaz.
+    const sourceSignature = buildKunyeSourceSignature(savedItems, genresMap);
+    if (sourceSignature === kunyeSourceSignatureRef.current) return;
+    kunyeSourceSignatureRef.current = sourceSignature;
+
     const extracted = extractCinemaKunyeFromItems(savedItems, genresMap);
     if (Object.keys(extracted.entries).length === 0) return;
     const merged = mergeCinemaKunyeDocumentsLossless(cinemaKunyeRef.current, extracted);

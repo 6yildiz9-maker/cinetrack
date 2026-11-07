@@ -860,10 +860,8 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
       if (rawUrl) {
         try {
           const parsed = new URL(rawUrl);
-          if (
-            parsed.protocol === 'https:' &&
-            (parsed.hostname === 'image.tmdb.org' || parsed.hostname === 'img.tmdb.org')
-          ) {
+          const allowedImageHosts = new Set(['image.tmdb.org', 'img.tmdb.org', 'artworks.thetvdb.com']);
+          if (parsed.protocol === 'https:' && allowedImageHosts.has(parsed.hostname)) {
             targetUrl = parsed.href;
           }
         } catch {}

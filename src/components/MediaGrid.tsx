@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MediaCard } from './MediaCard.tsx';
 import { ActorRecommendationsSection } from './ActorRecommendationsSection.tsx';
 import { SeriesRecommendationsSection } from './SeriesRecommendationsSection.tsx';
@@ -7,12 +7,16 @@ import { ErrorBoundary } from './ErrorBoundary.tsx';
 import {
   SavedItem,
   FavoriteActorInfo,
-  findSavedItem,
+  buildSavedItemsIndex,
+  findSavedIndexed,
   makeMediaKey,
   normalizeFavoriteActors,
 } from '../core/cinetrack-core.ts';
 import { imageUrl, handleImageError } from '../utils/helpers.ts';
 import { TmdbItem } from '../types/tmdb.ts';
+
+/** Listem sekmesinde tek seferde çizilen kart sayısı; "Daha fazla" ile büyür. */
+const LIST_WINDOW_SIZE = 60;
 
 interface MediaGridProps {
   title: string;
@@ -122,13 +126,43 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onOpenAddCustom,
 }) => {
   const [actorsSubTab, setActorsSubTab] = useState<'actors' | 'recommendations'>('actors');
-  const getSaved = (item: TmdbItem) => findSavedItem(savedItems, item);
+  // 2.000+ kayıtlı listelerde kart başına lineer arama ve tek seferde DOM'a basım donma yaratıyordu:
+  // kayıtlar bir kez indekslenir, Listem sekmesi pencere pencere çizilir.
+  const savedIndex = useMemo(() => buildSavedItemsIndex(savedItems), [savedItems]);
+  const getSaved = (item: TmdbItem) => findSavedIndexed(savedIndex, item, savedItems);
+  const dislikedKeySet = useMemo(() => new Set(dislikedKeys), [dislikedKeys]);
+  // React.memo'nun işe yaraması için kart callback'leri render arasında kararlı kalmalı.
+  // Güncel işlevler ref'ten okunduğu için bayat kapanış (stale closure) oluşmaz.
+  const cardCallbackRefs = useRef({ onOpenDetails, onQuickAdd, onSetStatus, onQuickSave, onToggleDislike, onOpenEvidence });
+  useEffect(() => {
+    cardCallbackRefs.current = { onOpenDetails, onQuickAdd, onSetStatus, onQuickSave, onToggleDislike, onOpenEvidence };
+  }, [onOpenDetails, onQuickAdd, onSetStatus, onQuickSave, onToggleDislike, onOpenEvidence]);
+  const cardHandlers = useMemo(
+    () => ({
+      onOpenDetails: (item: TmdbItem) => cardCallbackRefs.current.onOpenDetails(item),
+      onQuickAdd: (item: TmdbItem) => cardCallbackRefs.current.onQuickAdd(item),
+      onSetStatus: (item: TmdbItem, status: 'watching' | 'watchlist' | 'completed') =>
+        cardCallbackRefs.current.onSetStatus(item, status),
+      onQuickSave: (item: TmdbItem) => cardCallbackRefs.current.onQuickSave(item),
+      onToggleDislike: (key: string) => cardCallbackRefs.current.onToggleDislike(key),
+      onOpenEvidence: (item: any, reason?: string) => cardCallbackRefs.current.onOpenEvidence?.(item, reason),
+    }),
+    []
+  );
+  const [windowSize, setWindowSize] = useState(LIST_WINDOW_SIZE);
+  useEffect(() => {
+    setWindowSize(LIST_WINDOW_SIZE);
+  }, [tab, listStatus, category, query]);
   const safeFavoriteActors = useMemo(
     () => normalizeFavoriteActors(favoriteActors),
     [favoriteActors]
   );
   const isActorsListMode = tab === 'list' && listStatus === 'actors';
   const isForYouSeriesMode = tab === 'discover' && category === 'for-you' && !query.trim() && forYouSubTab === 'series';
+
+  // Keşfet sayfalama ile zaten sınırlı; Listem'de tüm liste birden DOM'a basılıyordu
+  const isWindowedList = tab === 'list' && !isActorsListMode && !isLoading;
+  const visibleItems = isWindowedList && windowSize < items.length ? items.slice(0, windowSize) : items;
 
   return (
     <section aria-labelledby="catalogTitle">
@@ -696,11 +730,16 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             )}
           </div>
         ) : (
-          items.map((item) => {
+          visibleItems.map((item) => {
             const itemKey = makeMediaKey(item.media_type, item.id);
             const legacyKey = `${item.media_type}-${item.id}`;
-            const reason = recommendationReasons.get(itemKey) || recommendationReasons.get(legacyKey);
-            const isDisliked = dislikedKeys.includes(itemKey) || dislikedKeys.includes(legacyKey);
+            // Listem'de neden artık kaydın üstündeki kalıcı damgadan okunur; yeniden skorlanmaz.
+            const reason =
+              recommendationReasons.get(itemKey) ||
+              recommendationReasons.get(legacyKey) ||
+              item.tasteReason ||
+              '';
+            const isDisliked = dislikedKeySet.has(itemKey) || dislikedKeySet.has(legacyKey);
             const saved = getSaved(item);
 
             return (
@@ -712,21 +751,37 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
                 recommendationReason={reason}
                 isDisliked={isDisliked}
                 tab={tab}
-                showMatch={tab === 'discover' && Boolean(item.tasteScore ?? item.matchScore)}
-                matchScore={item.tasteScore ?? item.matchScore}
+                showMatch={Boolean(item.tasteScore ?? item.matchScore ?? item.tasteFit)}
+                matchScore={item.tasteScore ?? item.matchScore ?? item.tasteFit}
                 showRing={tab === 'discover' && category === 'for-you' && !isForYouSeriesMode}
                 selectionRing={item.lifecycleRing || item.ring}
-                onOpenDetails={onOpenDetails}
-                onQuickAdd={onQuickAdd}
-                onSetStatus={onSetStatus}
-                onQuickSave={onQuickSave}
-                onToggleDislike={onToggleDislike}
-                onOpenEvidence={onOpenEvidence}
+                onOpenDetails={cardHandlers.onOpenDetails}
+                onQuickAdd={cardHandlers.onQuickAdd}
+                onSetStatus={cardHandlers.onSetStatus}
+                onQuickSave={cardHandlers.onQuickSave}
+                onToggleDislike={cardHandlers.onToggleDislike}
+                onOpenEvidence={onOpenEvidence ? cardHandlers.onOpenEvidence : undefined}
               />
             );
           })
         )}
       </div>
+      )}
+
+      {isWindowedList && visibleItems.length < items.length && (
+        <div id="listWindowWrap">
+          <span id="listWindowStatus" aria-live="polite">
+            {visibleItems.length} / {items.length} kayıt gösteriliyor
+          </span>
+          <button
+            id="listWindowButton"
+            className="btn"
+            type="button"
+            onClick={() => setWindowSize((size) => size + LIST_WINDOW_SIZE)}
+          >
+            Daha fazla göster
+          </button>
+        </div>
       )}
 
       {tab === 'discover' && category === 'for-you' && !isForYouSeriesMode && items.length > 0 && onRefreshForYou && (

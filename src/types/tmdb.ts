@@ -136,6 +136,14 @@ export interface TmdbItem {
   tvdb_slug?: string;
   tvdb_status?: string;
   tvdb_score?: number;
+  /** TVDB /extended kaydındaki remoteIds[] üzerinden türetilen çapraz kimlikler (kullanıcı listesi elemesi için). */
+  tvdb_remote_ids?: { tmdb?: string; imdb?: string };
+  /** Liste kaydına kalıcı yazılmış "Sana Özel" damgası (SavedItem ile aynı alanlar). */
+  tasteFit?: number;
+  tasteReason?: string;
+  tasteTags?: string[];
+  tasteConfidence?: 'standard' | 'high';
+  tasteComputedAt?: string;
   _source?: 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
   _cacheStatus?: 'hit' | 'miss' | 'stale' | 'none';
 }

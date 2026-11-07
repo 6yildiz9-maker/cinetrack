@@ -58,6 +58,15 @@ import {
 } from '../src/services/stock-engine.ts';
 import { renderRelationshipCanvasNode } from '../src/components/RelationshipCanvas.ts';
 import { ErrorBoundary } from '../src/components/ErrorBoundary.tsx';
+import {
+  runPosterHydrationPass,
+  applyPosterPatchesToSavedItems,
+  collectPosterHydrationCandidates,
+  getPosterHydrationQuotaState,
+  resetPosterHydrationForTests,
+} from '../src/services/poster-hydration-service.ts';
+import { exportItemsToCsv, importItemsFromCsv } from '../src/core/exporters.ts';
+import { mergeSavedItemListsLossless } from '../src/core/user-data-merge.ts';
 
 function createFakeIndexedDB() {
   const databases = new Map();
@@ -698,4 +707,300 @@ test('Manual Stock Pull: works above 250/500 threshold and never re-saves items 
   assert.equal(secondPull.addedTv, 0);
   assert.equal(secondPull.moviesCount, 303);
   assert.equal(secondPull.tvCount, 502);
+});
+
+function makePosterlessSavedItem(id, mediaType = 'movie', extra = {}) {
+  return {
+    id,
+    media_type: mediaType,
+    title: `İçerik ${id}`,
+    vote_average: 0,
+    vote_count: 0,
+    popularity: 0,
+    genre_ids: [],
+    status: 'watchlist',
+    personal_rating: '',
+    poster_path: '',
+    poster_url: '',
+    tasteFit: 71,
+    tasteReason: 'Kalıcı zevk damgası',
+    ...extra,
+  };
+}
+
+
+test('POSTER-01: Poster hidrasyonu poster_path boş liste kayıtlarını TMDB detayından doldurur', async () => {
+  setupCleanTestEnv();
+  resetPosterHydrationForTests();
+
+  const items = [
+    makePosterlessSavedItem(60574, 'tv'),
+    makePosterlessSavedItem(4922),
+    makePosterlessSavedItem(165),
+    makePosterlessSavedItem(777),
+    makePosterlessSavedItem(999, 'movie', { poster_path: '/zaten-var.jpg' }),
+    makePosterlessSavedItem('custom-1', 'movie', { custom: true }),
+  ];
+
+  assert.deepEqual(
+    collectPosterHydrationCandidates(items).map((c) => c.key),
+    ['tv:60574', 'movie:165', 'movie:777', 'movie:4922'],
+    'custom, posteri olan ve sayısal olmayan kimlikler aday olmaz; TV havuzu önce dolar'
+  );
+
+  const calls = [];
+  const fetcher = async (endpoint) => {
+    calls.push(endpoint);
+    const numericId = Number(endpoint.split('/').pop());
+    // 777: TMDB kaydı var ama posteri yok
+    if (numericId === 777) return { id: 777, title: 'Postersiz Yapım' };
+    return {
+      id: numericId,
+      poster_path: `/poster-${numericId}.jpg`,
+      backdrop_path: `/backdrop-${numericId}.jpg`,
+    };
+  };
+
+  const first = await runPosterHydrationPass({ items, fetcher, itemsPerPass: 4 });
+  assert.equal(first.attemptedCount, 4);
+  assert.equal(first.hydratedCount, 3);
+  assert.equal(first.failedCount, 0);
+  assert.deepEqual(
+    calls.slice().sort(),
+    ['/movie/165', '/movie/4922', '/movie/777', '/tv/60574'],
+    'her içerik kendi türünün detay ucundan sorulur'
+  );
+  assert.equal(first.patches['movie:4922'].poster_path, '/poster-4922.jpg');
+  assert.equal(first.patches['tv:60574'].poster_path, '/poster-60574.jpg');
+  assert.equal(first.patches['movie:777'], undefined);
+
+  const applied = applyPosterPatchesToSavedItems(items, first.patches);
+  assert.equal(applied.changedCount, 3);
+  assert.equal(applied.items[0].poster_path, '/poster-60574.jpg');
+  assert.equal(applied.items[0].backdrop_path, '/backdrop-60574.jpg');
+  assert.equal(
+    applied.items[0].tasteReason,
+    'Kalıcı zevk damgası',
+    'poster yazımı zevk damgasını bozmaz'
+  );
+  assert.equal(applied.items[3].poster_path, '', 'postersiz kayıt boş kalır');
+  assert.equal(applied.items[4], items[4], 'posteri olan kayıt aynı nesne olarak kalır');
+  assert.equal(applied.items[5], items[5], 'custom kayıt hidrasyona girmez');
+
+  const nothing = applyPosterPatchesToSavedItems(items, {});
+  assert.equal(nothing.changedCount, 0);
+  assert.equal(nothing.items, items, 'yama yoksa dizi referansı korunur');
+
+  // 777 postersiz: sonraki geçişlerde tekrar sorulmaz
+  calls.length = 0;
+  const second = await runPosterHydrationPass({ items, fetcher, itemsPerPass: 4 });
+  assert.equal(second.attemptedCount, 3);
+  assert.deepEqual(calls.slice().sort(), ['/movie/165', '/movie/4922', '/tv/60574']);
+  assert.equal(getPosterHydrationQuotaState().missingPosterCount, 1);
+});
+
+test('POSTER-02: Poster hidrasyonu geçiş başına sınıra, günlük kotaya ve hata halinde tekrar denemeye uyar', async () => {
+  setupCleanTestEnv();
+  resetPosterHydrationForTests();
+
+  const many = Array.from({ length: 30 }, (_, i) => makePosterlessSavedItem(1000 + i));
+  const calls = [];
+  let offline = false;
+  const fetcher = async (endpoint) => {
+    calls.push(endpoint);
+    if (offline) throw new Error('Yerel TMDB servisine ulaşılamadı.');
+    const numericId = Number(endpoint.split('/').pop());
+    return { id: numericId, poster_path: `/poster-${numericId}.jpg` };
+  };
+
+  const pass = await runPosterHydrationPass({ items: many, fetcher, itemsPerPass: 12 });
+  assert.equal(pass.attemptedCount, 12);
+  assert.equal(pass.hydratedCount, 12);
+  assert.equal(pass.remainingCount, 18);
+  assert.equal(calls.length, 12);
+
+  offline = true;
+  const failed = await runPosterHydrationPass({ items: many, fetcher, itemsPerPass: 10 });
+  assert.equal(failed.failedCount, 10);
+  assert.equal(failed.attemptedCount, 0);
+  assert.equal(failed.hydratedCount, 0);
+  assert.equal(
+    getPosterHydrationQuotaState(12).remainingCount,
+    0,
+    'başarısız istekler kotayı tüketmez'
+  );
+
+  calls.length = 0;
+  offline = false;
+  const blocked = await runPosterHydrationPass({ items: many, fetcher, dailyLimit: 12 });
+  assert.equal(blocked.attemptedCount, 0);
+  assert.equal(calls.length, 0, 'kota dolarken yeni istek çıkmaz');
+
+  const nextDay = await runPosterHydrationPass({
+    items: many,
+    fetcher,
+    dailyLimit: 12,
+    itemsPerPass: 5,
+    nowMs: Date.now() + 26 * 60 * 60 * 1000,
+  });
+  assert.equal(nextDay.attemptedCount, 5, 'gün değişince kota tazelenir');
+});
+
+test('POSTER-03: Vekilden gelen yanlış kimlikli yanıt posteri başka yapıma yazmaz', async () => {
+  setupCleanTestEnv();
+  resetPosterHydrationForTests();
+
+  const items = [makePosterlessSavedItem(165), makePosterlessSavedItem(4922)];
+  const fetcher = async (endpoint) => {
+    const numericId = Number(endpoint.split('/').pop());
+    // Vekil önbelleği 165 yerine başka bir yapımı döndürse de poster yazılmaz
+    if (numericId === 165) return { id: 999999, poster_path: '/yanlis.jpg' };
+    // Göreli yol öneki olmayan yanıt poster sayılmaz
+    if (numericId === 4922) return { id: 4922, poster_path: 'postgresiz.jpg' };
+    return null;
+  };
+
+  const pass = await runPosterHydrationPass({ items, fetcher, itemsPerPass: 2 });
+  assert.equal(pass.attemptedCount, 2);
+  assert.equal(pass.hydratedCount, 0);
+  assert.deepEqual(Object.keys(pass.patches), []);
+  assert.equal(
+    getPosterHydrationQuotaState().missingPosterCount,
+    1,
+    'kimliği tutmayan yanıt tekrar denenir, olumsuz önbelleğe alınmaz'
+  );
+});
+
+test('POSTER-04: Profil CSV turu poster/backdrop yollarını taşır; sütunsuz eski CSV posterleri silmez', () => {
+  const items = [
+    makePosterlessSavedItem(4922, 'tv', {
+      poster_path: '/poster-4922.jpg',
+      backdrop_path: '/backdrop-4922.jpg',
+    }),
+    makePosterlessSavedItem(165, 'movie', {
+      poster_path: '',
+      poster_url: 'https://artworks.thetvdb.com/banners/poster-165.jpg',
+    }),
+    makePosterlessSavedItem(777, 'movie'),
+  ];
+
+  const csv = exportItemsToCsv(items, null);
+  const header = csv.split('\r\n')[0];
+  assert.ok(header.includes('PosterPath') && header.includes('BackdropPath'), 'CSV başlığında poster sütunları');
+
+  const { importedItems } = importItemsFromCsv(csv);
+  assert.equal(importedItems.length, 3);
+  const office = importedItems.find((it) => it.id === 4922);
+  assert.equal(office.poster_path, '/poster-4922.jpg');
+  assert.equal(office.backdrop_path, '/backdrop-4922.jpg');
+  const tvdbOnly = importedItems.find((it) => it.id === 165);
+  assert.equal(tvdbOnly.poster_url, 'https://artworks.thetvdb.com/banners/poster-165.jpg');
+  assert.equal(tvdbOnly.poster_path, undefined, 'tam URL poster_path gibi yazılmaz');
+  const withoutPoster = importedItems.find((it) => it.id === 777);
+  assert.equal(withoutPoster.poster_path, undefined);
+
+  const legacyHeader = [
+    'Title',
+    'Year',
+    'Rating10',
+    'WatchedDate',
+    'Status',
+    'MediaType',
+    'tmdbID',
+    'AddedDate',
+    'Custom',
+  ].join(',');
+  const legacyCsv = [
+    legacyHeader,
+    '"İçerik 4922","2005","","","watching","tv","4922","",""',
+    '"İçerik 5000","2010","","","watching","tv","5000","",""',
+  ].join('\r\n');
+
+  const legacy = importItemsFromCsv(legacyCsv);
+  assert.equal(legacy.importedItems.find((it) => it.id === 4922).poster_path, undefined);
+
+  const merged = mergeSavedItemListsLossless(items, legacy.importedItems, 'profile-default');
+  const mergedOffice = merged.find((it) => String(it.id) === '4922');
+  assert.equal(mergedOffice.poster_path, '/poster-4922.jpg', 'eski CSV posterleri temizlemez');
+  assert.equal(merged.length, 4, 'postersiz yeni kayıt listeye eklenir');
+});
+
+test('POSTER-05: Başlığı # ile başlayan içerik profil bloğu sanılmaz, CSV turundan sağlam çıkar', () => {
+  const items = [
+    makePosterlessSavedItem(614696, 'movie', {
+      title: '#Alive',
+      poster_path: '/zb06eXz3Pg5JzytPnMFb3cIDV7B.jpg',
+    }),
+  ];
+
+  const csv = exportItemsToCsv(items, null);
+  const { importedItems, detectedFormat } = importItemsFromCsv(csv);
+
+  assert.equal(detectedFormat, 'cinetrack');
+  assert.equal(importedItems.length, 1, '# ile başlayan başlık veri satırıdır');
+  assert.equal(importedItems[0].title, '#Alive');
+  assert.equal(importedItems[0].poster_path, '/zb06eXz3Pg5JzytPnMFb3cIDV7B.jpg');
+
+  const withProfileBlock = exportItemsToCsv(items, {
+    profile: {
+      id: 'profile-default',
+      name: 'Ben',
+      items: [],
+      preferences: { disliked: ['#Alive'], providers: [], mood: '', reminders: false, notified: [] },
+    },
+    activeProfileId: 'profile-default',
+  });
+  const reparsed = importItemsFromCsv(withProfileBlock);
+  assert.equal(reparsed.importedItems.length, 1, 'profil bloğu satırları kayıp yaratmaz');
+  assert.equal(reparsed.importedItems[0].poster_path, '/zb06eXz3Pg5JzytPnMFb3cIDV7B.jpg');
+});
+
+test('BACKUP-CSV-01: #CINETRACK-PROFILE bölümü dışa aktarımda yazılır ve importta geri okunur', () => {
+  const items = [
+    makePosterlessSavedItem(4922, 'tv', { poster_path: '/poster-4922.jpg' }),
+    makePosterlessSavedItem(614696, 'movie', { title: '#Alive', poster_path: '/zb06eXz.jpg' }),
+  ];
+
+  const csv = exportItemsToCsv(items, {
+    profile: {
+      id: 'profile-default',
+      name: 'Benim Profilim',
+      items: [],
+      preferences: {
+        disliked: ['#Alive', 'Breaking Bad'],
+        hidden: ['The Office'],
+        providers: ['netflix', 'BluTV'],
+        mood: 'gerilim',
+        reminders: false,
+        notified: ['4922'],
+      },
+      favoriteActors: [{ id: 287, name: 'Brad Pitt', character: '', profile_path: '/brad.jpg' }],
+    },
+    activeProfileId: 'profile-default',
+  });
+
+  assert.ok(csv.includes('#CINETRACK-PROFILE'), 'profil bölümü dosyada yazılı');
+
+  const result = importItemsFromCsv(csv);
+  assert.equal(result.importedItems.length, 2, '# ile başlayan başlık veri satırı olarak okunur');
+
+  const block = result.profileBlock;
+  assert.ok(block, 'profil bölümü geri çözümlendi');
+  assert.equal(block.profileName, 'Benim Profilim');
+  assert.equal(block.profileId, 'profile-default');
+  assert.equal(block.activeProfileId, 'profile-default');
+  assert.equal(block.mood, 'gerilim');
+  assert.deepEqual(block.providers, ['netflix', 'BluTV']);
+  assert.deepEqual(block.disliked, ['#Alive', 'Breaking Bad']);
+  assert.deepEqual(block.hidden, ['The Office']);
+  assert.deepEqual(block.notified, ['4922']);
+  assert.equal(block.reminders, false);
+  assert.deepEqual(block.favoriteActors, [
+    { id: 287, name: 'Brad Pitt', profile_path: '/brad.jpg' },
+  ]);
+
+  const plain = importItemsFromCsv(
+    ['Title,Year,Rating10,WatchedDate,Status,MediaType,tmdbID', '"Film","2001","","","watching","movie","1"'].join('\r\n')
+  );
+  assert.equal(plain.profileBlock, null, 'profil bölümü olmayan CSV blok üretmez');
 });

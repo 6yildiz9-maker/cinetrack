@@ -14,6 +14,7 @@ import {
   normalizeCinemaKunyeDocument,
   type CinemaKunyeDocument,
 } from './cinema-kunye.ts';
+import { buildSavedIndex, findSaved, type SavedIndex } from './saved-index.ts';
 
 let discoveryHistoryIdbStore: UseStore | undefined;
 let candidatePoolIdbStore: UseStore | undefined;
@@ -107,6 +108,15 @@ export interface SavedItem {
   poolSource?: string;
   poolReason?: string;
   poolSources?: number;
+  /**
+   * "Sana Özel" hesabının listeye yazılmış kalıcı damgası.
+   * Render'da yeniden hesaplanmaz; silinen/yeni eklenen kayıtlarda tazelenir.
+   */
+  tasteFit?: number;
+  tasteReason?: string;
+  tasteTags?: string[];
+  tasteConfidence?: 'standard' | 'high';
+  tasteComputedAt?: string;
   belongs_to_collection?: {
     id: number;
     name: string;
@@ -448,8 +458,32 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     custom: Boolean(item.custom || String(item.id).startsWith('custom-')),
     ...(normalizedCast.length > 0 ? { cast: normalizedCast } : {}),
     ...(normalizedCrew.length > 0 ? { crew: normalizedCrew } : {}),
+    ...(sanitizeTasteStamp(item) || {}),
     isDemo: item.isDemo === true,
   };
+}
+
+/** Liste kaydına yazılmış "Sana Özel" damgasını sınırları içinde geri taşır. */
+function sanitizeTasteStamp(item: any): Partial<SavedItem> | null {
+  const fit = Number(item?.tasteFit);
+  if (!Number.isFinite(fit) || fit < 0 || fit > 100) return null;
+  const stamp: Partial<SavedItem> = { tasteFit: Math.round(fit) };
+  if (typeof item.tasteReason === 'string' && item.tasteReason.trim()) {
+    stamp.tasteReason = item.tasteReason.trim().slice(0, 180);
+  }
+  if (Array.isArray(item.tasteTags) && item.tasteTags.length > 0) {
+    stamp.tasteTags = item.tasteTags
+      .filter((tag: any) => typeof tag === 'string' && tag.trim())
+      .map((tag: string) => tag.trim().slice(0, 40))
+      .slice(0, 6);
+  }
+  if (item.tasteConfidence === 'high' || item.tasteConfidence === 'standard') {
+    stamp.tasteConfidence = item.tasteConfidence;
+  }
+  if (typeof item.tasteComputedAt === 'string') {
+    stamp.tasteComputedAt = item.tasteComputedAt.slice(0, 32);
+  }
+  return stamp;
 }
 
 /**
@@ -460,39 +494,23 @@ export function findSavedItem(
   savedItems: SavedItem[] | undefined | null,
   item: any
 ): SavedItem | undefined {
-  if (!Array.isArray(savedItems) || !item || item.id == null) return undefined;
-  const targetId = String(item.id);
-  const targetType =
-    item.media_type || (item.title ? 'movie' : (item.name ? 'tv' : undefined));
+  return findSaved(savedItems, item) as SavedItem | undefined;
+}
 
-  // 1. Exact match by ID and media_type if type is known
-  if (targetType) {
-    const exact = savedItems.find(
-      (entry) => String(entry.id) === targetId && entry.media_type === targetType
-    );
-    if (exact) return exact;
-  }
+/**
+ * Kart başına lineer taramayı kaldırmak için: indeks bir kez kurulur,
+ * `findSavedIndexed(index, item)` her kartta O(1) çalışır.
+ */
+export function buildSavedItemsIndex(savedItems: SavedItem[] | undefined | null): SavedIndex {
+  return buildSavedIndex(savedItems);
+}
 
-  // 2. Fallback: match by ID alone ONLY when targetType was not specified at all
-  if (!targetType) {
-    const byId = savedItems.filter((entry) => String(entry.id) === targetId);
-    if (byId.length > 0) return byId[0];
-  }
-
-  // 3. Fallback: match by title/name if available, respecting media_type if specified
-  const rawTitle = (item.title || item.name || '').trim().toLowerCase();
-  if (rawTitle) {
-    const byTitle = savedItems.filter(
-      (entry) =>
-        (entry.title || '').trim().toLowerCase() === rawTitle &&
-        (!targetType || entry.media_type === targetType)
-    );
-    if (byTitle.length > 0) {
-      return byTitle[0];
-    }
-  }
-
-  return undefined;
+export function findSavedIndexed(
+  index: SavedIndex,
+  item: any,
+  savedItems?: SavedItem[] | undefined | null
+): SavedItem | undefined {
+  return findSaved(savedItems, item, index) as SavedItem | undefined;
 }
 
 /**

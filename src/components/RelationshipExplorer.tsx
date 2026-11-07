@@ -32,7 +32,7 @@ import {
   type RelationshipGraphSnapshot,
 } from '../services/relationship-cache.ts';
 import { loadStockIdb } from '../services/storage-idb.ts';
-import { computeProfileCentroid, cosineSimilarity } from '../core/encoding.ts';
+import { buildProfileCentroid, profileSimilarityScore } from '../core/scoring.ts';
 import { getItemEncodingSync } from '../services/encoding-service.ts';
 import { RelationshipDetailsPanel } from './RelationshipDetailsPanel.tsx';
 import { renderRelationshipCanvasNode } from './RelationshipCanvas.ts';
@@ -124,18 +124,12 @@ export const RelationshipExplorer: React.FC<RelationshipExplorerProps> = ({
             isCandidateEligibleInPool(item, savedItems, preferences),
         );
 
-        const centroid = computeProfileCentroid(
-          savedItems.map((item) => ({
-            encoding: getItemEncodingSync(item),
-            personal_rating: item.personal_rating,
-          })),
-        );
+        const centroid = buildProfileCentroid(savedItems, getItemEncodingSync);
 
-        const ranked = filtered.map((item) => {
-          const enc = getItemEncodingSync(item);
-          const sim = centroid.length > 0 ? cosineSimilarity(centroid, enc.vector) : 0;
-          return { item, sim };
-        });
+        const ranked = filtered.map((item) => ({
+          item,
+          sim: profileSimilarityScore(item, centroid, getItemEncodingSync),
+        }));
         ranked.sort((a, b) => b.sim - a.sim);
         const top24 = ranked.slice(0, 24).map((r) => r.item as PoolCandidateItem);
         if (!isCancelled) {

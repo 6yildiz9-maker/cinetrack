@@ -1,9 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { SavedItem } from '../core/cinetrack-core.ts';
 import {
   detectDuplicateSavedItems,
   type DuplicatePairCandidate,
 } from '../core/duplicate-detector.ts';
+
+const NO_CANDIDATES: DuplicatePairCandidate[] = [];
 
 interface DuplicateMergePanelProps {
   items: SavedItem[];
@@ -25,8 +27,20 @@ export const DuplicateMergePanel: React.FC<DuplicateMergePanelProps> = ({
   onMergePair,
 }) => {
   const [dismissedIds, setDismissedIds] = useState<Record<string, boolean>>({});
+  const [candidates, setCandidates] = useState<DuplicatePairCandidate[]>(NO_CANDIDATES);
 
-  const candidates = useMemo(() => detectDuplicateSavedItems(items), [items]);
+  // Tarama binlerce kaydı karşılaştırır; render sırasında yapılırsa listenin açılışını
+  // bloklar. Liste boyandıktan ve kullanıcı listeyi değiştirmeyi bırakıp sonra hesaplanır.
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) setCandidates(items.length > 1 ? detectDuplicateSavedItems(items) : NO_CANDIDATES);
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [items]);
   const visibleCandidates = useMemo(
     () => candidates.filter((pair) => !dismissedIds[pair.pairId]),
     [candidates, dismissedIds]

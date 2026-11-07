@@ -414,23 +414,104 @@ export function mergeCinemaKunyeEntriesLossless(
   };
 }
 
+const tmdbSlotOf = (entry: CinemaKunyeEntry): string | null =>
+  entry.tmdbId ? `${entry.mediaType}:${entry.tmdbId}` : null;
+
+const titleSlugOf = (entry: CinemaKunyeEntry): string => slugifyCinemaKunyeTitle(entry.title);
+
+const yearfulSlugSlotOf = (entry: CinemaKunyeEntry): string | null =>
+  entry.year === null ? null : `${entry.mediaType}:${titleSlugOf(entry)}`;
+
+/**
+ * Birleştirme sırasında yapılan (mediaType+tmdbId) ve (mediaType+slug) taramaları endeksden okunur.
+ * Map'in insertion order'ı korunur; yıl gerçek birden fazla aday çıkarsa sıra doğrudan map'ten alınır.
+ */
+class KunyeEntryIndex {
+  readonly map = new Map<string, CinemaKunyeEntry>();
+  private readonly byTmdbId = new Map<string, string>();
+  private readonly yearfulBySlug = new Map<string, string[]>();
+
+  set(key: string, entry: CinemaKunyeEntry): void {
+    const prev = this.map.get(key);
+    if (prev) this.detach(key, prev);
+    this.map.set(key, entry);
+
+    const tmdb = tmdbSlotOf(entry);
+    if (tmdb) this.byTmdbId.set(tmdb, key);
+    const slug = yearfulSlugSlotOf(entry);
+    if (slug) {
+      const bucket = this.yearfulBySlug.get(slug);
+      if (bucket) bucket.push(key);
+      else this.yearfulBySlug.set(slug, [key]);
+    }
+  }
+
+  delete(key: string): void {
+    const prev = this.map.get(key);
+    if (!prev) return;
+    this.detach(key, prev);
+    this.map.delete(key);
+  }
+
+  get(key: string): CinemaKunyeEntry | undefined {
+    return this.map.get(key);
+  }
+
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
+
+  /** (mediaType + tmdbId) birleştirme sayesinde tekil olduğundan taramanın ilk eşiyle aynıyı döndürür. */
+  findTmdbKey(entry: CinemaKunyeEntry): string | undefined {
+    const slot = tmdbSlotOf(entry);
+    return slot ? this.byTmdbId.get(slot) : undefined;
+  }
+
+  findYearfulSlugKey(entry: CinemaKunyeEntry, slug: string): string | undefined {
+    const bucket = this.yearfulBySlug.get(`${entry.mediaType}:${slug}`);
+    if (!bucket || bucket.length === 0) return undefined;
+    if (bucket.length > 1) {
+      for (const [key, prev] of this.map) {
+        if (prev.year !== null && prev.mediaType === entry.mediaType && titleSlugOf(prev) === slug) {
+          return key;
+        }
+      }
+      return undefined;
+    }
+    return this.map.has(bucket[0]) ? bucket[0] : undefined;
+  }
+
+  private detach(key: string, entry: CinemaKunyeEntry): void {
+    const tmdb = tmdbSlotOf(entry);
+    if (tmdb && this.byTmdbId.get(tmdb) === key) this.byTmdbId.delete(tmdb);
+
+    const slug = yearfulSlugSlotOf(entry);
+    if (!slug) return;
+    const bucket = this.yearfulBySlug.get(slug);
+    if (!bucket) return;
+    const at = bucket.indexOf(key);
+    if (at >= 0) bucket.splice(at, 1);
+    if (bucket.length === 0) this.yearfulBySlug.delete(slug);
+  }
+}
+
 function insertKunyeEntryIntoMap(
-  target: Map<string, CinemaKunyeEntry>,
+  target: KunyeEntryIndex,
   entry: CinemaKunyeEntry,
   genreMap: Record<number, string> = {}
 ): void {
   // 1) Aynı mediaType + tmdbId ile eşleşen kayıt varsa birleştir (örn. belirsiz yıl -> bilinen yıl terfisi)
   if (entry.tmdbId) {
-    for (const [key, prev] of target.entries()) {
-      if (prev.mediaType === entry.mediaType && prev.tmdbId === entry.tmdbId) {
-        const merged = mergeCinemaKunyeEntriesLossless(prev, entry, genreMap);
-        if (key !== merged.contentId) {
-          target.delete(key);
-        }
-        const destKey = resolveKeyForMediaTypeCollision(target, merged);
-        target.set(destKey, { ...merged, contentId: destKey });
-        return;
+    const key = target.findTmdbKey(entry);
+    if (key !== undefined) {
+      const prev = target.get(key)!;
+      const merged = mergeCinemaKunyeEntriesLossless(prev, entry, genreMap);
+      if (key !== merged.contentId) {
+        target.delete(key);
       }
+      const destKey = resolveKeyForMediaTypeCollision(target, merged);
+      target.set(destKey, { ...merged, contentId: destKey });
+      return;
     }
   }
 
@@ -448,16 +529,11 @@ function insertKunyeEntryIntoMap(
     }
   }
   if (entry.year === null) {
-    for (const [key, prev] of target.entries()) {
-      if (
-        prev.mediaType === entry.mediaType &&
-        prev.year !== null &&
-        slugifyCinemaKunyeTitle(prev.title) === slug
-      ) {
-        const merged = mergeCinemaKunyeEntriesLossless(prev, entry, genreMap);
-        target.set(key, { ...merged, contentId: key });
-        return;
-      }
+    const key = target.findYearfulSlugKey(entry, slug);
+    if (key !== undefined) {
+      const merged = mergeCinemaKunyeEntriesLossless(target.get(key)!, entry, genreMap);
+      target.set(key, { ...merged, contentId: key });
+      return;
     }
   }
 
@@ -473,7 +549,7 @@ function insertKunyeEntryIntoMap(
 }
 
 function resolveKeyForMediaTypeCollision(
-  target: Map<string, CinemaKunyeEntry>,
+  target: KunyeEntryIndex,
   entry: CinemaKunyeEntry
 ): string {
   const baseId = buildCinemaKunyeContentId(entry.title, entry.year);
@@ -493,7 +569,7 @@ export function normalizeCinemaKunyeDocument(
   }
   const obj = raw as Record<string, unknown>;
   const rawEntries = obj.entries;
-  const map = new Map<string, CinemaKunyeEntry>();
+  const store = new KunyeEntryIndex();
   let latestEntryTs = typeof obj.updatedAt === 'string' ? obj.updatedAt.trim() : '';
 
   if (Array.isArray(rawEntries)) {
@@ -501,7 +577,7 @@ export function normalizeCinemaKunyeDocument(
       const normalized = normalizeCinemaKunyeEntry(item, undefined, genreMap);
       if (normalized) {
         latestEntryTs = pickLatestIsoString(latestEntryTs, normalized.updatedAt);
-        insertKunyeEntryIntoMap(map, normalized, genreMap);
+        insertKunyeEntryIntoMap(store, normalized, genreMap);
       }
     }
   } else if (rawEntries && typeof rawEntries === 'object') {
@@ -509,14 +585,14 @@ export function normalizeCinemaKunyeDocument(
       const normalized = normalizeCinemaKunyeEntry(val, key, genreMap);
       if (normalized) {
         latestEntryTs = pickLatestIsoString(latestEntryTs, normalized.updatedAt);
-        insertKunyeEntryIntoMap(map, normalized, genreMap);
+        insertKunyeEntryIntoMap(store, normalized, genreMap);
       }
     }
   }
 
   const sortedEntries: Record<string, CinemaKunyeEntry> = {};
-  for (const key of Array.from(map.keys()).sort()) {
-    sortedEntries[key] = map.get(key)!;
+  for (const key of Array.from(store.map.keys()).sort()) {
+    sortedEntries[key] = store.map.get(key)!;
   }
 
   return {
@@ -533,19 +609,19 @@ export function mergeCinemaKunyeDocumentsLossless(
 ): CinemaKunyeDocument {
   const normLocal = normalizeCinemaKunyeDocument(localDoc, genreMap);
   const normIncoming = normalizeCinemaKunyeDocument(incomingDoc, genreMap);
-  const map = new Map<string, CinemaKunyeEntry>();
+  const store = new KunyeEntryIndex();
 
   for (const entry of Object.values(normLocal.entries)) {
-    insertKunyeEntryIntoMap(map, entry, genreMap);
+    insertKunyeEntryIntoMap(store, entry, genreMap);
   }
   for (const entry of Object.values(normIncoming.entries)) {
-    insertKunyeEntryIntoMap(map, entry, genreMap);
+    insertKunyeEntryIntoMap(store, entry, genreMap);
   }
 
   let latestTs = pickLatestIsoString(normLocal.updatedAt, normIncoming.updatedAt);
   const sortedEntries: Record<string, CinemaKunyeEntry> = {};
-  for (const key of Array.from(map.keys()).sort()) {
-    const entry = map.get(key)!;
+  for (const key of Array.from(store.map.keys()).sort()) {
+    const entry = store.map.get(key)!;
     latestTs = pickLatestIsoString(latestTs, entry.updatedAt);
     sortedEntries[key] = entry;
   }
@@ -599,7 +675,7 @@ export function extractCinemaKunyeFromItems(
   genreMap: Record<number, string> = {},
   options: { includeUnwatchedWithMetadata?: boolean } = {}
 ): CinemaKunyeDocument {
-  const map = new Map<string, CinemaKunyeEntry>();
+  const store = new KunyeEntryIndex();
   let latestTs = '';
 
   for (const item of Array.isArray(items) ? items : []) {
@@ -613,12 +689,12 @@ export function extractCinemaKunyeFromItems(
     const entry = extractCinemaKunyeEntryFromSavedItem(item, genreMap);
     if (!entry) continue;
     latestTs = pickLatestIsoString(latestTs, entry.updatedAt);
-    insertKunyeEntryIntoMap(map, entry, genreMap);
+    insertKunyeEntryIntoMap(store, entry, genreMap);
   }
 
   const sortedEntries: Record<string, CinemaKunyeEntry> = {};
-  for (const key of Array.from(map.keys()).sort()) {
-    sortedEntries[key] = map.get(key)!;
+  for (const key of Array.from(store.map.keys()).sort()) {
+    sortedEntries[key] = store.map.get(key)!;
   }
 
   return {
@@ -626,6 +702,95 @@ export function extractCinemaKunyeFromItems(
     updatedAt: latestTs,
     entries: sortedEntries,
   };
+}
+
+export type KunyeLookupSourceSignature = string;
+
+/**
+ * extractCinemaKunyeFromItems'ın girdi imzası: yalnızca aşağıdaki alanlar künye çıktısını etkiler
+ * ("Sana Özel" damgaları gibi alanlar çıktıyı değiştirmez). İmza aynıysa künye belgesi de aynıdır,
+ * böylece liste her yeniden üretildiğinde tüm extract + merge + kanonik imza zinciri tekrarlanmaz.
+ */
+export function buildKunyeSourceSignature(
+  items: SavedItem[] | null | undefined,
+  genreMap: Record<number, string> = {}
+): KunyeLookupSourceSignature {
+  let a = 2166136261;
+  let b = 5381;
+  const mix = (value: string) => {
+    for (let i = 0; i < value.length; i += 1) {
+      const code = value.charCodeAt(i);
+      a = Math.imul(a ^ code, 16777619);
+      b = Math.imul(b + code, 2654435761) ^ (b << 5);
+    }
+    a = Math.imul(a ^ 31, 16777619);
+    b = (b + 17) | 0;
+  };
+
+  for (const id of Object.keys(genreMap).sort((x, y) => Number(x) - Number(y))) {
+    mix(`${id}=${genreMap[Number(id)] ?? ''}`);
+  }
+
+  const list = Array.isArray(items) ? items : [];
+  mix(`n=${list.length}`);
+  for (const item of list) {
+    if (!item) continue;
+    mix(isWatchedForCinemaKunye(item) ? 'w1' : 'w0');
+    mix(item.media_type === 'tv' ? 'tv' : 'mo');
+    mix(`i${String(item.id ?? '')}c${item.custom ? 1 : 0}`);
+    mix(`t${item.title ?? ''}|${item.name ?? ''}`);
+    mix(`d${item.release_date ?? ''}|${item.first_air_date ?? ''}`);
+    mix(`g${(item.genre_ids || []).join(',')}`);
+    mix(
+      `G${(item.genres || [])
+        .map((g) =>
+          g && typeof g === 'object'
+            ? `${(g as { id?: number }).id ?? ''}:${(g as { name?: string }).name ?? ''}`
+            : String(g ?? '')
+        )
+        .join(',')}`
+    );
+    mix(
+      `c${(item.cast || [])
+        .map((c) => `${c?.id ?? ''}:${c?.name ?? ''}:${c?.character ?? ''}:${c?.profile_path ?? ''}`)
+        .join(',')}`
+    );
+    mix(`u${item.updatedAt ?? ''}|${item.completedAt ?? ''}|${item.ratedAt ?? ''}|${item.addedAt ?? ''}|${item.firstAddedAt ?? ''}`);
+  }
+
+  return `${(a >>> 0).toString(36)}-${(b >>> 0).toString(36)}`;
+}
+
+type CinemaKunyeLookupIndex = {
+  byMediaTypeTmdbId: Map<string, CinemaKunyeEntry[]>;
+  byMediaTypeSlug: Map<string, CinemaKunyeEntry[]>;
+};
+
+// entries nesnesi referansıyla tutulur: merge/normalize her seferinde taze bir records objesi üretir,
+// böylece endeks bir kez kurulur ve doğrusal tarama (öğe × kayıt × slugify) render yolundan kalkar.
+const cinemaKunyeLookupIndexCache = new WeakMap<object, CinemaKunyeLookupIndex>();
+
+function getCinemaKunyeLookupIndex(doc: CinemaKunyeDocument): CinemaKunyeLookupIndex {
+  const cached = cinemaKunyeLookupIndexCache.get(doc.entries);
+  if (cached) return cached;
+
+  const byMediaTypeTmdbId = new Map<string, CinemaKunyeEntry[]>();
+  const byMediaTypeSlug = new Map<string, CinemaKunyeEntry[]>();
+  const bucket = (map: Map<string, CinemaKunyeEntry[]>, key: string, entry: CinemaKunyeEntry) => {
+    const list = map.get(key);
+    if (list) list.push(entry);
+    else map.set(key, [entry]);
+  };
+
+  for (const entry of Object.values(doc.entries)) {
+    if (!entry || !entry.mediaType) continue;
+    if (entry.tmdbId) bucket(byMediaTypeTmdbId, `${entry.mediaType}:${entry.tmdbId}`, entry);
+    bucket(byMediaTypeSlug, `${entry.mediaType}:${slugifyCinemaKunyeTitle(entry.title)}`, entry);
+  }
+
+  const index: CinemaKunyeLookupIndex = { byMediaTypeTmdbId, byMediaTypeSlug };
+  cinemaKunyeLookupIndexCache.set(doc.entries, index);
+  return index;
 }
 
 export function findCinemaKunyeEntryForItem(
@@ -655,18 +820,24 @@ export function findCinemaKunyeEntryForItem(
       : /^\d+$/.test(String(item.id || ''))
       ? Number(item.id)
       : 0;
+  const index = getCinemaKunyeLookupIndex(doc);
+
   if (numId > 0) {
-    for (const entry of Object.values(entries)) {
-      if (entry.mediaType === mediaType && entry.tmdbId === numId) {
-        return entry;
+    const candidates = index.byMediaTypeTmdbId.get(`${mediaType}:${numId}`);
+    if (candidates) {
+      for (const entry of candidates) {
+        if (entry.tmdbId === numId) {
+          return entry;
+        }
       }
     }
   }
 
   if (title) {
     const slug = slugifyCinemaKunyeTitle(title);
-    for (const entry of Object.values(entries)) {
-      if (entry.mediaType === mediaType && slugifyCinemaKunyeTitle(entry.title) === slug) {
+    const candidates = index.byMediaTypeSlug.get(`${mediaType}:${slug}`);
+    if (candidates) {
+      for (const entry of candidates) {
         if (year === null || entry.year === null || entry.year === year) {
           return entry;
         }

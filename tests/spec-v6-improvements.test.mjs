@@ -771,6 +771,31 @@ test('Spec v6 (Set I & Set J): Yeni Nesil İyileştirmeler & Doğrulamalar', asy
     assert.equal(detectDuplicateSavedItems(identicalPoor).length, 1);
   });
 
+  await t.test('IMP-15c · Yıl engellemesi sonuçları değiştirmez: ±2 sınırı, yılı belirsiz kayıt, tür ayrımı', () => {
+    const items = [
+      // Yılları 2 apart, başlıkları birebir aynı → çift kayıt
+      { id: 101, media_type: 'movie', title: 'Başlangıç', release_date: '2010-07-15', genre_ids: [28], status: 'completed' },
+      { id: 102, media_type: 'movie', title: 'Başlangıç', release_date: '2010-07-17', genre_ids: [28], status: 'watchlist' },
+      // Tam aynı başlık ama 3 yıl fark → eski davranışta da elenir
+      { id: 103, media_type: 'movie', title: 'Başlangıç', release_date: '2013-07-16', genre_ids: [28], status: 'completed' },
+      // Yılı hiç yok: hangi yılla kıyaslanacağı bellisiz, o yüzden dated kayıtlarla görüşür
+      { id: 'custom-104', media_type: 'movie', title: 'Yıldızlararası', original_title: 'Interstellar', genre_ids: [12], status: 'completed' },
+      { id: 105, media_type: 'movie', title: 'Interstellar', release_date: '2014-11-05', genre_ids: [12], status: 'completed' },
+      // Aynı başlık + aynı yıl ama farklı medya türü → çift değil
+      { id: 106, media_type: 'tv', title: 'Başlangıç', release_date: '2010-07-16', genre_ids: [28], status: 'completed' },
+    ];
+
+    const duplicates = detectDuplicateSavedItems(items);
+    const keys = duplicates.map((p) => `${p.mediaType}:${p.primaryItem.id}__${p.secondaryItem.id}`).sort();
+    assert.deepEqual(keys, ['movie:101__102', 'movie:105__custom-104']);
+    // Yılı belirsiz iki kayıt birbirleriyle yalnızca bir kez görüşür (aynı çift iki kere raporlanmaz)
+    const twoUnknown = [
+      { id: 'custom-1', media_type: 'movie', title: 'Üçüncü Adam', genre_ids: [18], status: 'completed' },
+      { id: 'custom-2', media_type: 'movie', title: 'Üçüncü Adam', genre_ids: [18], status: 'completed' },
+    ];
+    assert.equal(detectDuplicateSavedItems(twoUnknown).length, 1);
+  });
+
   await t.test('2.5 · BUG-11 Modülerleştirme: tüm yeni ve bölünen v6 modülleri 1.000 satır tavanının altındadır', () => {
     const v6Modules = [
       'src/services/auto-backup-service.ts',

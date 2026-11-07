@@ -9,6 +9,7 @@ import {
   createEmptyCinemaKunyeDocument,
   enrichSavedItemsFromCinemaKunye,
   extractCinemaKunyeFromItems,
+  findCinemaKunyeEntryForItem,
   mergeCinemaKunyeDocumentsLossless,
 } from '../src/core/cinema-kunye.ts';
 import {
@@ -620,4 +621,72 @@ test('4. GitHub çift yönlü senkronizasyonda data/sinema-kunyesi.json kayıps�
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('5. Künye arama endeksi doğrusal taramanın sonucunu birebir korur', () => {
+  const entry = (contentId, title, year, mediaType, tmdbId, genreIds) => ({
+    contentId,
+    title,
+    year,
+    mediaType,
+    tmdbId,
+    genreIds,
+    genres: genreIds.map((id) => ({ id, name: `tur-${id}` })),
+    actors: [],
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  });
+
+  const doc = {
+    schemaVersion: 1,
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    entries: {
+      'eski-ad-2001': entry('eski-ad-2001', 'Eski Ad', 2001, 'movie', 111, [18]),
+      'eski-ad-2015': entry('eski-ad-2015', 'Eski Ad', 2015, 'movie', 222, [35]),
+      'ucuz-ask-belirsiz': entry('ucuz-ask-belirsiz', 'Ucuz Aşk', null, 'movie', 333, [10749]),
+      'yeni-dizi-2020': entry('yeni-dizi-2020', 'Yeni Dizi', 2020, 'tv', 444, [16]),
+    },
+  };
+
+  // tmdbId + mediaType eşleşmesi
+  assert.equal(
+    findCinemaKunyeEntryForItem({ id: 444, media_type: 'tv', title: 'Başka Bir Şey' }, doc)?.contentId,
+    'yeni-dizi-2020'
+  );
+  // aynı başlık birden fazla kayıtta: yıl uyumu olan aday seçilir
+  assert.equal(
+    findCinemaKunyeEntryForItem({ id: 900, media_type: 'movie', title: 'Eski Ad', release_date: '2015-05-01' }, doc)?.contentId,
+    'eski-ad-2015'
+  );
+  // yıl yoksa insertion order'daki ilk aday kazanır (eski davranışla aynı)
+  assert.equal(
+    findCinemaKunyeEntryForItem({ id: 900, media_type: 'movie', title: 'Eski Ad' }, doc)?.contentId,
+    'eski-ad-2001'
+  );
+  // yıl çakışması eşleşme üretmez
+  assert.equal(findCinemaKunyeEntryForItem({ id: 900, media_type: 'movie', title: 'Eski Ad', release_date: '1990' }, doc), null);
+  // kaydı yıl belirsizse her yıl kabul edilir
+  assert.equal(
+    findCinemaKunyeEntryForItem({ id: 901, media_type: 'movie', title: 'Ucuz Aşk', release_date: '1985' }, doc)?.contentId,
+    'ucuz-ask-belirsiz'
+  );
+  // mediaType karışmaz
+  assert.equal(findCinemaKunyeEntryForItem({ id: 111, media_type: 'tv', title: 'Eski Ad', release_date: '1999' }, doc), null);
+
+  // Endeks entries nesnesi referansıyle tutulur: taze nesne (merge/normalize çıktısı) eski sonucu taşımaz
+  const nextDoc = {
+    ...doc,
+    entries: { ...doc.entries, 'eski-ad-1990': entry('eski-ad-1990', 'Eski Ad', 1990, 'movie', 909, [53]) },
+  };
+  assert.equal(
+    findCinemaKunyeEntryForItem({ id: 900, media_type: 'movie', title: 'Eski Ad', release_date: '1990' }, nextDoc)?.contentId,
+    'eski-ad-1990'
+  );
+  assert.equal(findCinemaKunyeEntryForItem({ id: 900, media_type: 'movie', title: 'Eski Ad', release_date: '1990' }, doc), null);
+
+  // zenginleştirme endeks üzerinden aynı eşleşmeyi kullanır
+  const enriched = enrichSavedItemsFromCinemaKunye(
+    [{ id: 900, media_type: 'movie', title: 'Eski Ad', release_date: '2001-01-01', genre_ids: [], cast: [] }],
+    doc
+  );
+  assert.deepEqual(enriched[0].genre_ids, [18]);
 });

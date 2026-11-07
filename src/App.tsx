@@ -113,6 +113,7 @@ import {
   mergeCinemaKunyeDocumentsLossless,
 } from './core/cinema-kunye.ts';
 import { computeSourceCatalogSignature } from './core/derived-profile-cache.ts';
+import type { CsvProfileBlock } from './core/exporters.ts';
 import {
   buildDerivedProfilePayloadFromTasteMap,
   enforceStrictMediaTypePool,
@@ -162,7 +163,13 @@ import {
 } from './services/poster-cache-manager.ts';
 import { getItemEncodingSync, maintainEncodingsDepot } from './services/encoding-service.ts';
 import { runIdbSchemaMigrationsOnce } from './services/idb-schema-version.ts';
-import { computeProfileCentroid, cosineSimilarity } from './core/encoding.ts';
+import {
+  buildProfileCentroid,
+  profileScoreKey,
+  profileSimilarityScores,
+  sortByProfileSimilarity,
+  stampSavedItemsWithTaste,
+} from './core/scoring.ts';
 import { advanceTvEpisodeProgress } from './core/tv-progress.ts';
 import { mergeDuplicateSavedPair } from './core/duplicate-detector.ts';
 import {
@@ -170,6 +177,10 @@ import {
   recordProfileChangeAndMaybeBackup,
 } from './services/auto-backup-service.ts';
 import { startIdleStockEnrichment } from './services/idle-enrichment-service.ts';
+import {
+  applyPosterPatchesToSavedItems,
+  startSavedPosterHydration,
+} from './services/poster-hydration-service.ts';
 import { computeActivityStreak, dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
 import {
   compareMediaDatesAscending,
@@ -183,6 +194,12 @@ const PROFILE_STORAGE = 'cinetrack.profile.v1';
 const DIRTY_KEY = 'cinetrack.dirty.v2';
 const HIDE_LISTED_STORAGE_KEY = 'cinetrack_hide_listed_items';
 const EMPTY_REASONS_MAP = new Map<string, string>();
+
+/** Arka plan zenginleştirmesi: tek seferde çekilecek kayıt ve eşzamanlılık sınırları. */
+const DISLIKED_HYDRATION_PAGE = 40;
+const DISLIKED_HYDRATION_CONCURRENCY = 4;
+const TV_HYDRATION_PAGE = 12;
+const TV_HYDRATION_CONCURRENCY = 4;
 
 function listStorageKey(profileId: string) {
   return `cinetrack.profile.${profileId}.watchlist.v1`;
@@ -511,6 +528,25 @@ export function App() {
       stopIdleEnrichment();
     };
   }, []);
+
+  // CSV'den gelen kayıtlar poster_path boş geliyor; kartlar yalnızca yedek ikon basıyor.
+  // Arka planda kayıt bazlı TMDB detay sorgularıyla posterler bulunur; yamalar
+  // biriktirilip seyrek olarak listeye yazılır (her yazımda profil hesapları tazelenir).
+  useEffect(
+    () =>
+      startSavedPosterHydration({
+        getItems: () => savedItemsRef.current,
+        onPatches: (patches) => {
+          setSavedItems((current) => {
+            const { items, changedCount } = applyPosterPatchesToSavedItems(current, patches);
+            if (changedCount === 0) return current;
+            savedItemsRef.current = items;
+            return items;
+          });
+        },
+      }),
+    []
+  );
 
   useEffect(() => {
     try {
@@ -1453,22 +1489,12 @@ export function App() {
 
             const activeSort = selectedSortRef.current;
             if (activeSort === 'similarity') {
-              const savedEncodings = savedItemsRef.current.map((it) => ({
-                encoding: getItemEncodingSync(it),
-                personal_rating: it.personal_rating,
-              }));
-              const profileCentroid = computeProfileCentroid(savedEncodings);
-              if (profileCentroid.length > 0) {
-                const simMap = new Map<string, number>();
-                for (const it of filtered) {
-                  const enc = getItemEncodingSync(it);
-                  const sim = cosineSimilarity(profileCentroid, enc.denseVector);
-                  simMap.set(`${it.media_type}:${it.id}`, sim);
-                }
-                filtered.sort((a, b) => (simMap.get(`${b.media_type}:${b.id}`) ?? 0) - (simMap.get(`${a.media_type}:${a.id}`) ?? 0));
-              } else {
-                filtered.sort((a, b) => (Number(b.popularity) || 0) - (Number(a.popularity) || 0));
-              }
+              filtered = sortByProfileSimilarity(
+                filtered,
+                savedItemsRef.current,
+                getItemEncodingSync,
+                { fallback: 'popularity' }
+              ).items;
             } else if (activeSort === 'rating' || activeSort === 'rating.desc' || activeSort === 'vote_average.desc') {
               filtered.sort((a, b) => (Number(b.vote_average) || 0) - (Number(a.vote_average) || 0));
             } else if (activeSort === 'recent' || activeSort === 'date.desc' || activeSort === 'primary_release_date.desc') {
@@ -3031,72 +3057,97 @@ export function App() {
   };
 
   // Background fetch for any missing disliked items when entering disliked tab
+  const dislikedHydrationTried = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (tab === 'list' && listStatus === 'disliked') {
-      const missingKeys = preferences.disliked.filter(
-        (key) => !dislikedItems.some((item) => `${item.media_type}:${item.id}` === key)
-      );
-      if (missingKeys.length > 0) {
-        Promise.allSettled(
-          missingKeys.map((key) => {
-            const [type, id] = key.split(':');
-            return fetchTmdb(`/${type}/${id}`).then((res) => ({ ...res, media_type: type }));
-          })
-        ).then((results) => {
-          const newItems = results
-            .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && Boolean(r.value))
-            .map((r) => r.value);
-          if (newItems.length > 0) {
-            setDislikedItems((prev) => {
-              const combined = [...prev, ...newItems].filter(
-                (item, idx, arr) =>
-                  arr.findIndex((x) => `${x.media_type}:${x.id}` === `${item.media_type}:${item.id}`) === idx
-              );
-              try {
-                const cache: Record<string, any> = {};
-                combined.forEach((item) => {
-                  cache[`${item.media_type}:${item.id}`] = item;
-                });
-                localStorage.setItem('cinetrack_disliked_cache', JSON.stringify(cache));
-              } catch {}
-              return combined;
-            });
-          }
-        });
+    if (tab !== 'list' || listStatus !== 'disliked') return;
+    const known = new Set(dislikedItems.map((item) => `${item.media_type}:${item.id}`));
+    const missingKeys = preferences.disliked.filter(
+      (key) => !known.has(key) && !dislikedHydrationTried.current.has(key)
+    );
+    if (missingKeys.length === 0) return;
+    // Sayfa sayfa: 500 anahtar birden TMDB'ye fırlatılmaz, başarısız anahtar tekrar denenmez.
+    const page = missingKeys.slice(0, DISLIKED_HYDRATION_PAGE);
+    page.forEach((key) => dislikedHydrationTried.current.add(key));
+    void mapLimit(page, DISLIKED_HYDRATION_CONCURRENCY, async (key) => {
+      const [type, id] = key.split(':');
+      try {
+        const res = await fetchTmdb(`/${type}/${id}`);
+        return res ? { ...res, media_type: type } : null;
+      } catch {
+        return null;
       }
-    }
+    }).then((fetched) => {
+      const newItems = fetched.filter(Boolean) as any[];
+      if (newItems.length === 0) return;
+      setDislikedItems((prev) => {
+        const seen = new Set(prev.map((item) => `${item.media_type}:${item.id}`));
+        const combined = [...prev];
+        for (const item of newItems) {
+          const key = `${item.media_type}:${item.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          combined.push(item);
+        }
+        try {
+          const cache: Record<string, any> = {};
+          combined.forEach((item) => {
+            cache[`${item.media_type}:${item.id}`] = item;
+          });
+          localStorage.setItem('cinetrack_disliked_cache', JSON.stringify(cache));
+        } catch {}
+        return combined;
+      });
+    });
   }, [tab, listStatus, preferences.disliked, dislikedItems]);
 
   // Background enrich TV shows with missing episode count
+  const tvHydrationTried = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const unhydratedTvShows = savedItems.filter(
-      (i) => i.media_type === 'tv' && !i.custom && !i.number_of_episodes
+    const pendingTv = savedItems.filter(
+      (i) =>
+        i.media_type === 'tv' &&
+        !i.custom &&
+        !i.number_of_episodes &&
+        !tvHydrationTried.current.has(String(i.id))
     );
-    if (unhydratedTvShows.length > 0) {
-      unhydratedTvShows.slice(0, 5).forEach((tv) => {
-        fetchTmdb(`/tv/${tv.id}`)
-          .then((details) => {
-            if (details) {
-              setSavedItems((currentList) =>
-                currentList.map((entry) => {
-                  if (entry.id === tv.id && entry.media_type === 'tv') {
-                    return {
-                      ...entry,
-                      number_of_episodes: Number(details.number_of_episodes) || 10,
-                      number_of_seasons: Number(details.number_of_seasons) || 1,
-                      episode_run_time: details.episode_run_time || [45],
-                      runtime: details.episode_run_time?.[0] || 45,
-                    };
-                  }
-                  return entry;
-                })
-              );
-            }
-          })
-          .catch(() => {});
+    if (pendingTv.length === 0) return;
+    const page = pendingTv.slice(0, TV_HYDRATION_PAGE);
+    page.forEach((tv) => tvHydrationTried.current.add(String(tv.id)));
+    const detailsByKey = new Map<string, any>();
+    void mapLimit(page, TV_HYDRATION_CONCURRENCY, async (tv) => {
+      try {
+        const details = await fetchTmdb(`/tv/${tv.id}`);
+        if (details) detailsByKey.set(`tv:${tv.id}`, details);
+      } catch {}
+      return null;
+    }).then(() => {
+      if (detailsByKey.size === 0) return;
+      // Tek state yazması: her kayıt için ayrı setSavedItems, 2.000+ kaydı defalarca diske yazdırıyordu.
+      setSavedItems((currentList) => {
+        const next = currentList.map((entry) => {
+          if (entry.media_type !== 'tv') return entry;
+          const details = detailsByKey.get(`tv:${entry.id}`);
+          if (!details) return entry;
+          return {
+            ...entry,
+            number_of_episodes: Number(details.number_of_episodes) || 10,
+            number_of_seasons: Number(details.number_of_seasons) || 1,
+            episode_run_time: details.episode_run_time || [45],
+            runtime: details.episode_run_time?.[0] || 45,
+          };
+        });
+        savedItemsRef.current = next;
+        return next;
       });
-    }
-  }, [savedItems.length]);
+    });
+  }, [savedItems]);
+
+  // Zevk merkezi liste her değiştiğinde bir kez üretilir; eskiden her render'da
+  // 2.000+ içerik yeniden kodlanıyordu (Listem sekmesindeki donmanın ana nedeni).
+  const tasteCentroid = React.useMemo(
+    () => buildProfileCentroid(savedItems, getItemEncodingSync),
+    [savedItems]
+  );
 
   // Filter & sort displayed items
   const filterAndSortItems = (items: any[]) => {
@@ -3112,22 +3163,14 @@ export function App() {
     }
 
     if (selectedSort === 'similarity') {
-      const savedEncodings = savedItemsRef.current.map((it) => ({
-        encoding: getItemEncodingSync(it),
-        personal_rating: it.personal_rating,
-      }));
-      const profileCentroid = computeProfileCentroid(savedEncodings);
-      if (profileCentroid.length > 0) {
-        const simMap = new Map<string, number>();
-        for (const it of filtered) {
-          const enc = getItemEncodingSync(it);
-          const sim = cosineSimilarity(profileCentroid, enc.denseVector);
-          simMap.set(`${it.media_type}:${it.id}`, sim);
-        }
+      // Listem'de puan artık kaydın üstünde durur: damga varsa render'da hiç skorlanmaz.
+      if (tab === 'list' && filtered.every((item) => typeof item.tasteFit === 'number')) {
+        filtered = [...filtered].sort((a, b) => (b.tasteFit || 0) - (a.tasteFit || 0));
+      } else if (tasteCentroid.length > 0) {
+        const simMap = profileSimilarityScores(filtered, tasteCentroid, getItemEncodingSync);
         filtered = [...filtered].sort(
           (a, b) =>
-            (simMap.get(`${b.media_type}:${b.id}`) ?? 0) -
-            (simMap.get(`${a.media_type}:${a.id}`) ?? 0)
+            (simMap.get(profileScoreKey(b)) ?? 0) - (simMap.get(profileScoreKey(a)) ?? 0)
         );
       }
     } else if (selectedSort === 'rating') {
@@ -3322,6 +3365,24 @@ export function App() {
     const profile = buildTasteProfileV3(currentSaved, { dislikedKeys: preferences.disliked });
     return buildTasteProfileSummary(profile, tasteMap, genresMap);
   }, [tasteMap, savedItems, preferences.disliked, genresMap]);
+
+  // "Sana Özel" hesabı artık liste kaydının üstünde durur: zevk haritası her yenilendiğinde
+  // damgalar yazılır, böylece kartlar açılışta yeniden skorlanmaz ve puanlar yedeğe de girer.
+  useEffect(() => {
+    if (savedItems.length === 0) return;
+    const { items, changedCount } = stampSavedItemsWithTaste(savedItems, {
+      tasteEntries: tasteMap.entries,
+      centroid: tasteCentroid,
+      resolveEncoding: getItemEncodingSync,
+      topGenres: tasteSummary.topGenres,
+      computedAt: tasteMap.updatedAt,
+    });
+    if (changedCount === 0) return;
+    setSavedItems(() => {
+      savedItemsRef.current = items;
+      return items;
+    });
+  }, [savedItems, tasteMap, tasteCentroid, tasteSummary]);
 
   // FEAT-02 #4: Persist isolated ct:profile (Theme, DNA, Preferences) and compact ct:user-lists (IDs & statuses only)
   useEffect(() => {
@@ -3683,6 +3744,29 @@ export function App() {
     setPendingBackup(null);
     setProfileOpen(false);
     showToast(`Yedek başarıyla içe aktarıldı (${importedItems.length} içerik)!`);
+  };
+
+  /** CSV'deki #CINETRACK-PROFILE bölümünü mevcut verilerin üzerine birleştirir. */
+  const applyCsvProfileBlock = (block: CsvProfileBlock) => {
+    const union = (current: string[] | undefined, incoming: string[]) =>
+      Array.from(new Set([...(current || []), ...incoming]));
+    setPreferences((prev) => ({
+      ...prev,
+      ...(block.mood ? { mood: block.mood } : {}),
+      ...(block.providers ? { providers: union(prev.providers, block.providers) } : {}),
+      ...(block.disliked ? { disliked: union(prev.disliked, block.disliked) } : {}),
+      ...(block.hidden ? { hidden: union(prev.hidden, block.hidden) } : {}),
+      ...(block.notified ? { notified: union(prev.notified, block.notified) } : {}),
+      ...(block.reminders !== undefined ? { reminders: block.reminders } : {}),
+    }));
+    if (block.favoriteActors && block.favoriteActors.length > 0) {
+      const restored = normalizeFavoriteActors([...favoriteActors, ...block.favoriteActors]);
+      setFavoriteActors(restored);
+      try {
+        localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(restored));
+      } catch {}
+    }
+    if (block.profileName) handleSaveProfileName(block.profileName);
   };
 
   const handleEmptyAction = (act: string) => {
@@ -4149,7 +4233,7 @@ export function App() {
         onToggleReminders={handleToggleReminders}
         onExportBackup={handleExportBackup}
         onImportBackupFile={handleImportBackupFile}
-        onImportCsvItems={(items, importedKunye) => {
+        onImportCsvItems={(items, importedKunye, profileBlock) => {
           const effectiveKunye = importedKunye
             ? mergeIncomingCinemaKunye(importedKunye)
             : cinemaKunye;
@@ -4159,6 +4243,7 @@ export function App() {
           );
           savedItemsRef.current = merged;
           setSavedItems(merged);
+          if (profileBlock) applyCsvProfileBlock(profileBlock);
           void recordProfileChangeAndMaybeBackup();
           showToast(`${items.length} yapım CSV'den listenize kayıpsız birleştirildi.`);
         }}

@@ -102,11 +102,113 @@ test('TVDB Data Mapping: Maps TVDB entity to TmdbItem schema with source: tvdb',
   assert.equal(mapped.tvdb_id, 98765);
   assert.equal(mapped.title, 'Shōgun (TVDB)');
   assert.equal(mapped.name, 'Shōgun (TVDB)');
-  assert.equal(mapped.vote_average, 8.8);
+  // TVDB `score` alanı ağırlıklı oy sayısıdır, gösterge puanı değil: puan uydurulmaz
+  assert.equal(mapped.vote_average, undefined);
   assert.equal(mapped.poster_url, 'https://artworks.thetvdb.com/banners/v4/series/98765/posters/test.jpg');
   assert.equal(mapped.release_date, '2024-02-27');
   assert.equal(mapped.genres.length, 2);
   assert.equal(mapped.genres[0].name, 'Dram');
+});
+
+test('TVDB Normalization: göreli banner yolu, önekli id ve çapraz kimlikler', async () => {
+  const n = await import('../src/core/sources/tvdb-normalize.ts');
+  const { mapTvdbItemToTmdbItem } = await import('../src/services/tvdb-service.ts');
+
+  // /movies/filter akış kaydı: `image` göreli gelir, TMDB tabanına yapışmadan artworks tabanıyla mutlaklaşmalı
+  const feedMovie = mapTvdbItemToTmdbItem(
+    { id: 132352, name: '7. Koğuştaki Mucize', image: '/banners/v4/movie/132352/posters/x.jpg', year: '2020', score: 464230 },
+    'movie'
+  );
+  assert.equal(feedMovie.poster_url, 'https://artworks.thetvdb.com/banners/v4/movie/132352/posters/x.jpg');
+  assert.equal(feedMovie.poster_path, feedMovie.poster_url);
+  assert.equal(feedMovie.vote_average, undefined);
+
+  // /search kaydı: `image_url` ve "series-371980" biçimli önekli id
+  const searchSeries = mapTvdbItemToTmdbItem(
+    {
+      id: 'series-371980',
+      name: 'Severance',
+      image_url: 'https://artworks.thetvdb.com/banners/v4/series/371980/posters/y.jpg',
+      first_air_time: '2022-02-18',
+      status: 'Continuing',
+    },
+    'tv'
+  );
+  assert.equal(searchSeries.id, 'tvdb-371980');
+  assert.equal(searchSeries.tvdb_id, 371980);
+  assert.equal(searchSeries.release_date, '2022-02-18');
+  assert.equal(searchSeries.status, 'Continuing');
+
+  // /extended remoteIds[] → TMDB + IMDB çapraz kimlikleri (kullanıcı listesi elemesi bunları kullanır)
+  const cross = n.extractTvdbCrossIds([
+    { id: '95396', sourceName: 'TheMovieDB.com' },
+    { id: 'tt11280740', sourceName: 'IMDB' },
+    { id: '10.5240/3E33', sourceName: 'EIDR' },
+  ]);
+  assert.equal(cross.tmdb, '95396');
+  assert.equal(cross.imdb, 'tt11280740');
+
+  // Türkçe karakter katlaması: başlık eşleşmesi aksan farkından kırılmasın
+  assert.equal(n.foldTitleKey('Şahsiyet'), n.foldTitleKey('sahsiyet'));
+  assert.equal(n.buildTitleYearKey('Kuru Otlar Üstüne', '2023-06-01'), 'kuru otlar ustune|2023');
+});
+
+test('Kaynak Motoru Registry: her kaynak anahtar ve poster dilini kendisi üretir', async () => {
+  const r = await import('../src/core/sources/index.ts');
+
+  const ids = r.listContentSources().map((e) => e.id);
+  assert.ok(ids.includes('tmdb'));
+  assert.ok(ids.includes('tvdb'));
+
+  // Etiketli yönlendirme
+  assert.equal(r.contentSourceFor({ source: 'tvdb' })?.id, 'tvdb');
+  assert.equal(r.contentSourceFor({ source: 'tmdb' })?.id, 'tmdb');
+  // Etiketsiz: ipuçlarından karar verilir, `source === 'tvdb'` dallanmasına gerek kalmaz
+  assert.equal(r.contentSourceFor({ id: 'tvdb-354316', tvdb_id: 354316 })?.id, 'tvdb');
+  assert.equal(r.contentSourceFor({ id: 550, media_type: 'movie' })?.id, 'tmdb');
+  assert.equal(r.contentSourceFor(null), undefined);
+
+  const tvdbMovie = {
+    id: 'tvdb-132352',
+    tvdb_id: 132352,
+    media_type: 'movie',
+    source: 'tvdb',
+    title: '7. Koğuştaki Mucize',
+    year: '2020',
+    image: '/banners/v4/movie/132352/posters/x.jpg',
+    tvdb_remote_ids: { tmdb: '596179', imdb: 'tt11721678' },
+  };
+  const tvdb = r.getContentSource('tvdb');
+  assert.equal(
+    tvdb.posterUrl(tvdbMovie),
+    'https://artworks.thetvdb.com/banners/v4/movie/132352/posters/x.jpg'
+  );
+  const tvdbExclude = tvdb.exclusionKeys(tvdbMovie);
+  assert.ok(tvdbExclude.includes('movie:tvdb-132352'), 'tvdb- öneki korunur: id havuz karışmasına yol açmaz');
+  assert.ok(tvdbExclude.includes('movie:132352'));
+  assert.ok(!tvdbExclude.includes('tv:132352'));
+  assert.ok(tvdbExclude.includes('raw:596179'), 'çapraz TMDB kimliği eleme anahtarı olmalı');
+  assert.ok(tvdbExclude.includes('imdb:tt11721678'), 'çapraz IMDB kimliği eleme anahtarı olmalı');
+  assert.ok(tvdbExclude.includes('7 kogustaki mucize|2020'), 'başlık+yıl katlanmış anahtar olmalı');
+
+  const tmdb = r.getContentSource('tmdb');
+  const tmdbMovie = { id: 550, media_type: 'movie', title: 'Fight Club', release_date: '1999-10-15' };
+  assert.equal(
+    tmdb.posterUrl({ ...tmdbMovie, poster_path: '/q52ZAmwZFAeeThmuVG65Xy9vxQ5.jpg' }),
+    'https://image.tmdb.org/t/p/w500/q52ZAmwZFAeeThmuVG65Xy9vxQ5.jpg'
+  );
+  assert.equal(tmdb.posterUrl(tmdbMovie), null);
+  assert.deepEqual(tmdb.dedupeKeys(tmdbMovie), ['movie:550', 'raw:550', 'fight club']);
+  assert.equal(tmdb.dedupeKeys({ id: 'tvdb-550', media_type: 'movie' }).includes('movie:550'), false);
+  assert.ok(tmdb.exclusionKeys(tmdbMovie).includes('fight club|1999'));
+
+  // Motor sözleşmesi: kullanıcıdaki TMDB kaydı, TVDB adayının çapraz kimliğiyle tanınır
+  const userListKeys = new Set(tmdb.exclusionKeys(tmdbMovie));
+  assert.equal(
+    tvdb.exclusionKeys({ id: 'tvdb-1', tvdb_id: 1, media_type: 'movie', tvdb_remote_ids: { tmdb: '550' } })
+      .some((k) => userListKeys.has(k)),
+    true
+  );
 });
 
 test('Stock Import & Validation: Validates JSON schema, detects duplicates and reports errors', async () => {
@@ -189,32 +291,114 @@ test('Stock Import & Restore: Strategy restore replaces stock and preserves TMDB
   assert.ok(finalDepot.tv.some((t) => t.id === 'tvdb-new-3'));
 });
 
-test('TVDB Sync Batch: Strictly excludes user-listed items and enforces minimum 20 items', async () => {
+test('TVDB Sync Batch: kullanıcı listesindekiler taranmaz, stoğa yazılmaz ve uydurma katalog devreye girmez', async () => {
   const { syncTvdbStockBatch } = await import('../src/services/tvdb-service.ts');
-  const { saveStockIdb } = await import('../src/services/storage-idb.ts');
+  const { loadStockIdb, saveStockIdb } = await import('../src/services/storage-idb.ts');
 
-  // Empty out stock first
-  await saveStockIdb({ movies: [], tv: [], updatedAt: new Date().toISOString() });
+  const json = (body) => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    json: async () => body,
+  });
 
-  // User has "Şahsiyet" and "Kuru Otlar Üstüne" in user lists
+  // Kullanıcısı listelerinde olanlar: id, başlık ve TMDB çapraz kimliği üzerinden elenmeli
   const userListItems = [
     { id: 'tvdb-354316', title: 'Şahsiyet', name: 'Şahsiyet', media_type: 'tv' },
     { id: 'tvdb-893214', title: 'Kuru Otlar Üstüne', media_type: 'movie' },
+    { id: 'tvdb-777001', name: 'Stoktaki Liste Eşleşmesi', media_type: 'tv' },
+    { id: '550', title: 'Fight Club', media_type: 'movie' },
   ];
-  const preferences = {
-    disliked: ['tv:tvdb-300100', 'movie:tvdb-500100'],
+
+  const listMatchedSeriesIds = new Set(['700003', '700004']);
+  const seriesFeed = [
+    { id: 'series-354316', name: 'Şahsiyet', score: 464230, year: 2018, image: '/banners/series/354316/posters/a.jpg' },
+    { id: 777001, name: 'Stoktaki Liste Eşleşmesi', score: 12000, year: 2019, image: '/banners/series/777001/posters/b.jpg' },
+    ...Array.from({ length: 24 }, (_, i) => ({
+      id: 700001 + i,
+      name: `Test Dizi ${700001 + i}`,
+      score: 50000 - i,
+      year: 2021,
+      // TVDB akış kayıtları posteri göreli verir; stoğa mutlak artworks adresi yazılmalı
+      image: `/banners/v4/series/${700001 + i}/posters/p${700001 + i}.jpg`,
+    })),
+  ];
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/api/stock/upload') return json({ ok: true });
+    if (url.pathname !== '/api/tvdb') return json({ status: 'not_found', data: null });
+
+    const endpoint = url.searchParams.get('endpoint') || '';
+    const extended = endpoint.match(/^\/(series|movies)\/(\d+)\/extended$/);
+    if (extended) {
+      const id = extended[2];
+      return json({
+        status: 'success',
+        data: {
+          id,
+          name: `Test Dizi ${id}`,
+          year: 2021,
+          genres: ['Dram'],
+          poster: `/banners/v4/series/${id}/posters/p${id}.jpg`,
+          remoteIds: listMatchedSeriesIds.has(id)
+            ? [{ id: '550', sourceName: 'TheMovieDB.com' }]
+            : [{ id: `9${id}`, sourceName: 'TheMovieDB.com' }],
+        },
+      });
+    }
+    if (endpoint === '/series/filter') {
+      return json({ status: 'success', data: Number(url.searchParams.get('page') || 0) === 0 ? seriesFeed : [] });
+    }
+    return json({ status: 'success', data: [] });
   };
 
-  const result = await syncTvdbStockBatch({
-    targetCount: 20,
-    userListItems,
-    preferences,
-  });
+  try {
+    // Havuz: biri kullanıcı listesiyle eşleşen (düşürülmeli), biri korunan (kalmalı) TVDB kaydı
+    await saveStockIdb({
+      movies: [
+        { id: 'tvdb-990001', tvdb_id: 990001, title: 'Korunan TVDB Filmi', media_type: 'movie', source: 'tvdb', poster_path: 'https://artworks.thetvdb.com/banners/v4/movie/990001/posters/keep.jpg' },
+      ],
+      tv: [
+        { id: 'tvdb-777001', tvdb_id: 777001, name: 'Stoktaki Liste Eşleşmesi', media_type: 'tv', source: 'tvdb', poster_path: '/banners/series/777001/posters/b.jpg' },
+      ],
+      updatedAt: new Date().toISOString(),
+    });
 
-  assert.equal(result.ok, true);
-  // Total added must be at least 20
-  const totalAdded = result.addedMovies + result.addedTv;
-  assert.ok(totalAdded >= 20, `Total added should be >= 20, got ${totalAdded}`);
-  // User list items must have been skipped
-  assert.ok(result.skippedUserListed >= 2, `Should have skipped at least 2 user-listed items, got ${result.skippedUserListed}`);
+    const result = await syncTvdbStockBatch({
+      targetCount: 20,
+      userListItems,
+      preferences: { disliked: ['tv:tvdb-300100', 'movie:tvdb-500100'] },
+    });
+
+    assert.equal(result.ok, true);
+    assert.ok(
+      result.addedMovies + result.addedTv >= 20,
+      `Canlı tarama hedefi karşılamalı, got ${result.addedMovies + result.addedTv}`
+    );
+    assert.ok(result.skippedUserListed >= 2, `Liste eşleşmeleri taranmalı, got ${result.skippedUserListed}`);
+    assert.ok(result.removedUserListed >= 1, `Listeye taşınan stok kaydı düşürülmeli, got ${result.removedUserListed}`);
+
+    const depot = await loadStockIdb();
+    assert.ok(!depot.tv.some((t) => String(t.id) === 'tvdb-777001'), 'Kullanıcı listesindeki stok kaydı havuzda kalamaz');
+    assert.ok(
+      !depot.tv.some((t) => listMatchedSeriesIds.has(String(t.tvdb_id))),
+      'TMDB çapraz kimliği listede olan TVDB kaydı stoğa giremez'
+    );
+    assert.ok(depot.movies.some((m) => m.id === 'tvdb-990001'), 'Listede olmayan TVDB kaydı korunmalı');
+    assert.equal(
+      [...depot.movies, ...depot.tv].some((it) => it._source === 'demo'),
+      false,
+      'Canlı tarama varken uydurma küre katalog stoğa karışmamalı'
+    );
+
+    const tvdbItems = [...depot.movies, ...depot.tv].filter((it) => it.source === 'tvdb');
+    assert.ok(tvdbItems.length > 0);
+    for (const item of tvdbItems) {
+      assert.match(String(item.poster_path || ''), /^https:\/\/artworks\.thetvdb\.com\//, 'TVDB posteri mutlak artworks adresi olmalı');
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

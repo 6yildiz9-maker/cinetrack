@@ -39,7 +39,7 @@ export interface MediaCardProps {
   eager?: boolean;
 }
 
-export const MediaCard: React.FC<MediaCardProps> = ({
+const MediaCardView: React.FC<MediaCardProps> = ({
   item,
   savedItem,
   genres = {},
@@ -539,3 +539,6 @@ export const MediaCard: React.FC<MediaCardProps> = ({
     </article>
   );
 };
+
+// Kartların veri öznitelikleri değişmediyse çizim atlanır; callback kararlılığı MediaGrid'den gelir.
+export const MediaCard = React.memo(MediaCardView);

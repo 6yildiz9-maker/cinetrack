@@ -11,10 +11,10 @@ import {
 } from './cinetrack-core.ts';
 import {
   cosineSimilarity,
-  computeProfileCentroid,
   ENCODING_LAYOUT_VERSION,
   type ItemFeatureEncoding,
 } from './encoding.ts';
+import { buildProfileCentroid, profileSimilarityScore } from './scoring.ts';
 import { getItemEncodingSync } from '../services/encoding-service.ts';
 import {
   getSeriesForMediaSync,
@@ -834,12 +834,7 @@ export function buildRelationshipGraph(
       nodesContent.push(item);
     }
 
-    const profileCentroid = computeProfileCentroid(
-      savedItems.map((item) => ({
-        encoding: getItemEncodingSync(item),
-        personal_rating: item.personal_rating,
-      })),
-    );
+    const profileCentroid = buildProfileCentroid(savedItems, getItemEncodingSync);
 
     const nodes: RelationshipGraphNode[] = [
       {
@@ -861,8 +856,10 @@ export function buildRelationshipGraph(
           personalScoreFor(item, scores),
           preferences,
         );
-        const enc = getItemEncodingSync(item);
-        const sim = profileCentroid.length > 0 ? cosineSimilarity(profileCentroid, enc.vector) : base.personalScore / 100;
+        const sim =
+          profileCentroid.length > 0
+            ? profileSimilarityScore(item, profileCentroid, getItemEncodingSync)
+            : base.personalScore / 100;
         const angle = (idx / Math.max(1, nodesContent.length)) * 2 * Math.PI;
         const r = 80 + (1 - Math.max(0, Math.min(1, sim))) * 220;
         base.x = Math.round(Math.cos(angle) * r);

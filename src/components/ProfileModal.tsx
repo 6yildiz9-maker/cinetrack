@@ -7,6 +7,7 @@ import type {
   SavedItem,
 } from '../core/cinetrack-core.ts';
 import type { CinemaKunyeDocument } from '../core/cinema-kunye.ts';
+import type { CsvProfileBlock } from '../core/exporters.ts';
 import {
   fetchServerBackups,
   fetchSyncStatus,
@@ -50,7 +51,11 @@ interface ProfileModalProps {
   onToggleReminders: () => void;
   onExportBackup: () => void;
   onImportBackupFile: (file: File) => void;
-  onImportCsvItems?: (items: SavedItem[], cinemaKunye?: CinemaKunyeDocument) => void;
+  onImportCsvItems?: (
+    items: SavedItem[],
+    cinemaKunye?: CinemaKunyeDocument,
+    profileBlock?: CsvProfileBlock | null
+  ) => void;
   onBeforeSyncFlush?: () => Promise<void>;
   onMergeSyncedDocument?: (doc: DataDocument) => void;
   onApplyRestoredDocument?: (doc: DataDocument) => void;

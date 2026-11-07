@@ -386,3 +386,56 @@ test('FEAT-03 Acceptance Tests: İlişki Motoru, Kodlama Katmanı & Stok Sekmesi
   });
 });
 
+
+test('IMP-06: "Sana Özel" damgası liste kaydının üstünde kalıcı durur', async () => {
+  const { stampSavedItemsWithTaste } = await import('../src/core/scoring.ts');
+
+  const vec = (a, b) => ({ denseVector: [a, b, 0, 0] });
+  const resolve = (item) => (item?.media_type === 'tv' ? vec(1, 0) : vec(0, 1));
+  const centroid = [1, 0, 0, 0];
+
+  const items = [
+    { id: 101, media_type: 'movie', title: 'Zevk Haritasindaki', genres: ['Dram', 'Suç'] },
+    { id: 102, media_type: 'tv', title: 'Sadece Merkez', name: 'Sadece Merkez', genres: ['Komedi'] },
+    { id: 103, media_type: 'movie', title: 'Damgasiz', genres: [] },
+  ];
+  const entries = {
+    'movie:101': { tasteScore: 87.4, tags: ['Dram', 'Suç', ''], confidenceLevel: 'high', lastScoredAt: '2026-11-01T10:00:00.000Z' },
+  };
+
+  const first = stampSavedItemsWithTaste(items, {
+    tasteEntries: entries,
+    centroid,
+    resolveEncoding: resolve,
+    topGenres: ['dram'],
+    computedAt: '2026-11-02T09:00:00.000Z',
+  });
+  assert.equal(first.changedCount, 2, 'Hesaplanabilen iki kayıt damgalanmalı');
+
+  const stamped101 = first.items[0];
+  assert.equal(stamped101.tasteFit, 87, 'Zevk haritası puanı yuvarlanarak yazılır');
+  assert.equal(stamped101.tasteConfidence, 'high');
+  assert.equal(stamped101.tasteComputedAt, '2026-11-01T10:00:00.000Z', 'Entry son skorlama zamanı korunur');
+  assert.deepEqual(stamped101.tasteTags, ['Dram', 'Suç'], 'Boş etiketler damgaya giremez');
+  assert.equal(stamped101.tasteReason, 'Dram zevkinle örtüşüyor');
+
+  const stamped102 = first.items[1];
+  assert.equal(stamped102.tasteFit, 100, 'Merkeze tam uyumlu aday 100 verir');
+  assert.equal(stamped102.tasteConfidence, 'standard');
+  assert.equal(stamped102.tasteComputedAt, '2026-11-02T09:00:00.000Z');
+
+  assert.equal(first.items[2], items[2], 'Ne entry ne de merkezi olan aday damgalanmaz');
+
+  const second = stampSavedItemsWithTaste(first.items, {
+    tasteEntries: entries,
+    centroid,
+    resolveEncoding: resolve,
+    topGenres: ['dram'],
+    computedAt: '2026-11-02T09:00:00.000Z',
+  });
+  assert.equal(second.changedCount, 0, 'Aynı hesap tekrar yazmamalı (döngü yok)');
+
+  const noScore = stampSavedItemsWithTaste(items, { tasteEntries: null });
+  assert.equal(noScore.changedCount, 0);
+  assert.deepEqual(noScore.items, items);
+});
