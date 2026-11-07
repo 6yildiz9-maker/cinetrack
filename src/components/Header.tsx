@@ -26,6 +26,7 @@ interface HeaderProps {
   getSaved: (item: TmdbItem) => SavedItem | undefined;
   tmdbSource?: string;
   tmdbStaleReason?: string;
+  onOpenCommandPalette?: () => void;
   onOpenTvdbStock?: () => void;
   tvdbCount?: number;
 }
@@ -46,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
   getSaved,
   tmdbSource = 'live',
   tmdbStaleReason,
+  onOpenCommandPalette,
   onOpenTvdbStock,
   tvdbCount,
 }) => {
@@ -261,18 +263,18 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             role="tab"
-            aria-selected={tab === 'taste-map' || tab === 'identity'}
-            className={`nav-tab-btn ${tab === 'taste-map' || tab === 'identity' ? 'is-active' : ''}`}
-            onClick={() => onTabChange('identity')}
+            aria-selected={tab === 'taste-map'}
+            className={`nav-tab-btn ${tab === 'taste-map' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('taste-map')}
           >
             <span>Kimliğim</span>
           </button>
           <button
             type="button"
             role="tab"
-            aria-selected={tab === 'relationships' || tab === 'universes'}
-            className={`nav-tab-btn ${tab === 'relationships' || tab === 'universes' ? 'is-active' : ''}`}
-            onClick={() => onTabChange('universes')}
+            aria-selected={tab === 'relationships'}
+            className={`nav-tab-btn ${tab === 'relationships' ? 'is-active' : ''}`}
+            onClick={() => onTabChange('relationships')}
           >
             <span>Evrenler</span>
           </button>
@@ -312,6 +314,18 @@ export const Header: React.FC<HeaderProps> = ({
               <svg className="icon" aria-hidden="true">
                 <use href="#icon-close"></use>
               </svg>
+            </button>
+          )}
+          {onOpenCommandPalette && (
+            <button
+              id="commandPaletteTrigger"
+              className="search-palette-trigger"
+              type="button"
+              onClick={onOpenCommandPalette}
+              aria-label="Komut paletini aç (Kısayol: Cmd/Ctrl + K)"
+              title="Komut paleti (Cmd/Ctrl + K)"
+            >
+              ⌘K
             </button>
           )}
 

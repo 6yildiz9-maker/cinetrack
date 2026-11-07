@@ -6,6 +6,7 @@ export interface KeyboardShortcutsHandlers {
   onOpenSettings?: () => void;
   onQuickSaveOrSync?: () => void;
   onOpenAddCustom?: () => void;
+  onOpenCommandPalette?: () => void;
   onEscape?: () => void;
 }
 
@@ -15,6 +16,13 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutsHandlers): void 
       // Don't intercept shortcut modifiers (Ctrl, Meta, Alt) except Escape
       if (e.key === 'Escape') {
         handlers.onEscape?.();
+        return;
+      }
+
+      // Cmd+K / Ctrl+K opens the command palette from anywhere, inputs included
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        handlers.onOpenCommandPalette?.();
         return;
       }
 

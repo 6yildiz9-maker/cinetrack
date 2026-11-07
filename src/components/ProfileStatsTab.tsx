@@ -11,6 +11,11 @@ import {
 } from '../core/exporters.ts';
 import { calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers.ts';
 import { TasteProfileDashboard } from './taste/TasteProfileDashboard.tsx';
+import { ColumnChart } from './charts/ColumnChart.tsx';
+import {
+  buildRatingHistogramColumns,
+  buildReleaseDecadeColumns,
+} from './charts/profile-chart-data.ts';
 
 interface ProfileStatsTabProps {
   effectiveActiveProfile: Profile;
@@ -165,6 +170,9 @@ export const ProfileStatsTab: React.FC<ProfileStatsTabProps> = ({
       ).toFixed(1)
     : null;
 
+  const ratingColumns = useMemo(() => buildRatingHistogramColumns(savedItems), [savedItems]);
+  const decadeColumns = useMemo(() => buildReleaseDecadeColumns(savedItems), [savedItems]);
+
   const completedCount = completedMovies.length + completedTvs.length;
   const watchlistCount = watchlistMovies.length + watchlistTvs.length;
   const targetTotal = watchlistCount + completedCount;
@@ -282,6 +290,49 @@ export const ProfileStatsTab: React.FC<ProfileStatsTabProps> = ({
               : 'Henüz izleme listesi oluşturulmadı'}
           </div>
           <div className="profile-stat-footnote">Yalnızca İzlenecekler ve İzlenenler oranı</div>
+        </div>
+      </div>
+
+      {/* Puan Histogramı + Yayın Onyılı Dağılımı */}
+      <div className="profile-stats-grid">
+        <div className="profile-stat-box">
+          <div className="stat-icon-wrap stat-tone-amber">
+            <svg className="icon" aria-hidden="true">
+              <use href="#icon-star"></use>
+            </svg>
+            <span>Kişisel Puan Dağılımı</span>
+          </div>
+          {ratedItems.length > 0 ? (
+            <ColumnChart
+              points={ratingColumns}
+              tone="gold"
+              ariaLabel="Kişisel puan dağılımı (1-10)"
+            />
+          ) : (
+            <p className="profile-stat-footnote">
+              Puan verdikçe 1-10 aralığındaki dağılımınız burada oluşur.
+            </p>
+          )}
+        </div>
+
+        <div className="profile-stat-box">
+          <div className="stat-icon-wrap">
+            <svg className="icon" aria-hidden="true">
+              <use href="#icon-calendar"></use>
+            </svg>
+            <span>Yayın Onyılı Dağılımı</span>
+          </div>
+          {decadeColumns.length > 0 ? (
+            <ColumnChart
+              points={decadeColumns}
+              tone="accent"
+              ariaLabel="Kütüphanenin yayın onyıllarına göre dağılımı"
+            />
+          ) : (
+            <p className="profile-stat-footnote">
+              Yayın yılı olan en az üç onyıl birikince dağılım görünür.
+            </p>
+          )}
         </div>
       </div>
 

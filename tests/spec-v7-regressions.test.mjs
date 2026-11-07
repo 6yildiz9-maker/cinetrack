@@ -65,6 +65,31 @@ import {
   getPosterHydrationQuotaState,
   resetPosterHydrationForTests,
 } from '../src/services/poster-hydration-service.ts';
+import {
+  runStockPosterHydrationPass,
+  applyStockPosterPatchesToDepot,
+  getStockPosterHydrationQuotaState,
+  resetStockPosterHydrationForTests,
+} from '../src/services/stock-poster-hydration-service.ts';
+import {
+  buildStockPosterCandidates,
+  sanitizeStockPosterDepot,
+  hasUsableStockPoster,
+  applyStockPosterPatchesToItems,
+  pickStockSearchMatch,
+} from '../src/services/stock-poster-utils.ts';
+import {
+  ALLOWED_TMDB_PATH,
+  ALLOWED_TMDB_QUERY_KEYS,
+  validateTmdbParam,
+} from '../src/server/tmdb-proxy.ts';
+import {
+  filterHiddenUserRegisteredItems,
+  isMediaRegisteredInUserProfile,
+} from '../src/core/cinetrack-core.ts';
+import {
+  updateStockItemsMetadata,
+} from '../src/services/stock-engine.ts';
 import { exportItemsToCsv, importItemsFromCsv } from '../src/core/exporters.ts';
 import { mergeSavedItemListsLossless } from '../src/core/user-data-merge.ts';
 
@@ -1003,4 +1028,484 @@ test('BACKUP-CSV-01: #CINETRACK-PROFILE bölümü dışa aktarımda yazılır ve
     ['Title,Year,Rating10,WatchedDate,Status,MediaType,tmdbID', '"Film","2001","","","watching","movie","1"'].join('\r\n')
   );
   assert.equal(plain.profileBlock, null, 'profil bölümü olmayan CSV blok üretmez');
+});
+
+import React from 'react';
+import {
+  buildRatingHistogramColumns,
+  buildReleaseDecadeColumns,
+} from '../src/components/charts/profile-chart-data.ts';
+
+test('CHART-01: puan histogramı 1-10 kovalarını eksiksiz üretir', () => {
+  const items = [
+    { id: 1, media_type: 'movie', title: 'A', personal_rating: 9, status: 'completed' },
+    { id: 2, media_type: 'movie', title: 'B', personal_rating: 8.2, status: 'completed' },
+    { id: 3, media_type: 'movie', title: 'C', personal_rating: 5, status: 'completed' },
+    { id: 4, media_type: 'movie', title: 'D', personal_rating: '', status: 'watchlist' },
+    { id: 5, media_type: 'movie', title: 'E', personal_rating: 0, status: 'watchlist' },
+    { id: 6, media_type: 'movie', title: 'F', personal_rating: 5, status: 'completed' },
+  ];
+
+  const columns = buildRatingHistogramColumns(items);
+  assert.equal(columns.length, 10, '10 puan kovası');
+  assert.deepEqual(
+    columns.map((c) => c.label),
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']
+  );
+  assert.deepEqual(
+    columns.map((c) => c.value),
+    [0, 0, 0, 0, 2, 0, 0, 1, 1, 0],
+    '8.2 → 8 kovasına yuvarlanır, boş/0 puan sayılmaz'
+  );
+  assert.equal(columns[8].hint, '9 puan: 1 yapım (%25)');
+  assert.deepEqual(buildRatingHistogramColumns([]).map((c) => c.value), new Array(10).fill(0));
+});
+
+test('CHART-02: yayın onyılı dağılımı aralığı doldurur ve filtresiz boş üretir', () => {
+  const items = [
+    { id: 1, media_type: 'movie', title: 'a', release_date: '2023-05-01' },
+    { id: 2, media_type: 'movie', title: 'b', release_date: '2011-01-01' },
+    { id: 3, media_type: 'tv', title: 'c', first_air_date: '1998-01-01' },
+    { id: 4, media_type: 'movie', title: 'd' },
+  ];
+
+  const columns = buildReleaseDecadeColumns(items);
+  assert.deepEqual(
+    columns.map((c) => c.label),
+    ['1990', '2000', '2010', '2020'],
+    'boş onyıllar sıfır ile yer tutar'
+  );
+  assert.deepEqual(columns.map((c) => c.value), [1, 0, 1, 1]);
+  assert.equal(columns[3].hint, '2020-2029: 1 yapım (%33)');
+  assert.deepEqual(buildReleaseDecadeColumns([]), []);
+
+  const singleDecade = buildReleaseDecadeColumns([
+    { id: 1, media_type: 'movie', title: 'a', release_date: '2021-01-01' },
+    { id: 2, media_type: 'movie', title: 'b', release_date: '2024-01-01' },
+  ]);
+  assert.deepEqual(singleDecade, [], 'tek onyıl grafik üretmez');
+});
+
+test('CHART-03: ColumnChart SVG + HTML etiket satırı olarak render edilir', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { ColumnChart } = await import('../src/components/charts/ColumnChart.tsx');
+
+  const markup = renderToStaticMarkup(
+    React.createElement(ColumnChart, {
+      ariaLabel: 'Kişisel puan dağılımı',
+      tone: 'gold',
+      points: [
+        { label: '8', value: 4 },
+        { label: '9', value: 12 },
+      ],
+    })
+  );
+
+  assert.ok(markup.includes('ct-chart ct-chart-gold'), 'ton sınıfı container üzerinde');
+  assert.ok(markup.includes('preserveAspectRatio="none"'), 'barlar genişliğe yayılır');
+  assert.equal((markup.match(/class="ct-chart-bar"/g) || []).length, 2);
+  assert.equal((markup.match(/class="ct-chart-labels"/g) || []).length, 1);
+  assert.ok(markup.includes('grid-template-columns'), 'etiketler ızgara ile hizalanır');
+  assert.ok(markup.includes('aria-label="Kişisel puan dağılımı. 8: 4, 9: 12"'));
+  assert.ok(markup.indexOf('class="ct-chart-bar"') < markup.indexOf('ct-chart-labels'));
+
+  const empty = renderToStaticMarkup(
+    React.createElement(ColumnChart, { ariaLabel: 'bos', points: [] })
+  );
+  assert.equal(empty, '', 'boş veri render edilmez');
+});
+
+test('CHART-04: grafik/oran bar sınıflarının CSS karşılığı var', () => {
+  const css = fs.readFileSync(path.join(process.cwd(), 'style.css'), 'utf8');
+  for (const selector of [
+    '.ct-chart-svg',
+    '.ct-chart-accent .ct-chart-bar',
+    '.ct-chart-gold .ct-chart-bar',
+    '.ct-chart-labels',
+    '.profile-ratio-svg',
+    '.profile-ratio-movie',
+    '.profile-ratio-tv',
+    '.genre-bar-svg-track',
+    '.genre-bar-svg-fill.rank-1',
+    '.profile-stat-footnote',
+    '.profile-genre-filter-btn',
+  ]) {
+    assert.ok(css.includes(selector), `${selector} stil tanımlı olmalı`);
+  }
+  assert.match(css, /\.ct-chart-gold \.ct-chart-bar\s*\{\s*fill:\s*var\(--gold\)/);
+  assert.match(css, /\.profile-ratio-movie\s*\{\s*fill:\s*var\(--turquoise\)/);
+});
+
+test('PAL-01: komut paleti açıkken komut gruplarını ve arama alanını render eder', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { CommandPalette } = await import('../src/components/CommandPalette.tsx');
+
+  const markup = renderToStaticMarkup(
+    React.createElement(CommandPalette, {
+      isOpen: true,
+      onClose: () => {},
+      savedItems: [],
+      onSelectTab: () => {},
+      onOpenProfile: () => {},
+      onOpenAddCustom: () => {},
+      onQuickSave: () => {},
+      onFocusSearch: () => {},
+      onOpenItem: () => {},
+    })
+  );
+
+  assert.ok(markup.includes('command-palette'), 'palet modal kabuğunu kullanır');
+  assert.ok(markup.includes('role="dialog"') && markup.includes('aria-modal="true"'));
+  assert.ok(markup.includes('Komutlar'), 'komut grubu başlığı');
+  for (const label of ['Keşfet', 'Listem', 'Kaydet ve eşitle', 'Özel içerik ekle']) {
+    assert.ok(markup.includes(label), `${label} komutu listelenir`);
+  }
+  assert.ok(
+    !markup.includes('command-item-media'),
+    'boş sorguda içerik sonucu listelenmez'
+  );
+  assert.ok(markup.includes('en az 2 harf'), 'TMDB bölümü yönlendirme metni gösterir');
+});
+
+test('PAL-02: kapalı palet render edilmez ve ⌘K bağlaması modifier önceliğini korur', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { CommandPalette } = await import('../src/components/CommandPalette.tsx');
+
+  const closed = renderToStaticMarkup(
+    React.createElement(CommandPalette, {
+      isOpen: false,
+      onClose: () => {},
+      savedItems: [],
+      onSelectTab: () => {},
+      onOpenProfile: () => {},
+      onOpenAddCustom: () => {},
+      onQuickSave: () => {},
+      onFocusSearch: () => {},
+      onOpenItem: () => {},
+    })
+  );
+  assert.equal(closed, '', 'kapalı palet DOM üretmez');
+
+  const hookSource = fs.readFileSync(
+    path.join(process.cwd(), 'src/hooks/useKeyboardShortcuts.ts'),
+    'utf8'
+  );
+  const paletteIndex = hookSource.indexOf("e.key.toLowerCase() === 'k'");
+  const bailIndex = hookSource.indexOf('if (e.ctrlKey || e.metaKey || e.altKey) return;');
+  assert.ok(paletteIndex > -1, '⌘K/Ctrl+K dalı var');
+  assert.ok(bailIndex > paletteIndex, '⌘K, modifier erken-çıkışından önce yakalanır');
+  assert.ok(hookSource.includes('onOpenCommandPalette?.()'));
+
+  const appSource = fs.readFileSync(path.join(process.cwd(), 'src/App.tsx'), 'utf8');
+  assert.ok(appSource.includes('onOpenCommandPalette: () => {'), 'App paleti açar');
+  assert.ok(
+    appSource.includes("document.querySelector<HTMLInputElement>('#searchInput')"),
+    'aramaya odaklanma gerçek input id sini kullanır'
+  );
+  assert.ok(
+    !appSource.includes("'.search-input'"),
+    'var olmayan .search-input seçici bırakılmaz'
+  );
+
+  const headerSource = fs.readFileSync(
+    path.join(process.cwd(), 'src/components/Header.tsx'),
+    'utf8'
+  );
+  assert.ok(headerSource.includes('commandPaletteTrigger'), 'Header tetikleyicisi var');
+});
+
+function makeStockItem(id, mediaType, extra = {}) {
+  return {
+    id,
+    media_type: mediaType,
+    title: mediaType === 'movie' ? `Film ${id}` : undefined,
+    name: mediaType === 'tv' ? `Dizi ${id}` : undefined,
+    ...extra,
+  };
+}
+
+test('STOCK-POSTER-01: Kırık TVDB posterleri aday sayılır, sağlam posterlere dokunulmaz', () => {
+  const brokenTvdb = makeStockItem('tvdb-2801', 'movie', {
+    title: 'Dune: Part Two (TVDB Edition)',
+    release_date: '2024-01-01',
+    poster_path: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
+    poster_url: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
+    source: 'tvdb',
+    _source: 'demo',
+  });
+  const numericMissing = makeStockItem(165, 'movie', { release_date: '2020-05-01' });
+  const numericWithPoster = makeStockItem(603, 'movie', { poster_path: '/matrix.jpg' });
+  const validUrlPoster = makeStockItem(604, 'movie', {
+    poster_url: 'https://image.tmdb.org/t/p/original/x.jpg',
+  });
+  const tvBroken = makeStockItem('tvdb-3901', 'tv', {
+    title: 'Shōgun (TVDB Edition)',
+    first_air_date: '2024-02-27',
+    poster_path: 'https://artworks.thetvdb.com/banners/v4/series/3919/posters/b.jpg',
+    poster_url: 'https://artworks.thetvdb.com/banners/v4/series/3919/posters/b.jpg',
+    source: 'tvdb',
+    _source: 'demo',
+  });
+
+  assert.equal(hasUsableStockPoster(brokenTvdb), false);
+  assert.equal(hasUsableStockPoster(numericWithPoster), true);
+  assert.equal(hasUsableStockPoster(validUrlPoster), true);
+
+  const candidates = buildStockPosterCandidates(
+    [brokenTvdb, numericMissing, numericWithPoster, validUrlPoster],
+    [tvBroken]
+  );
+  assert.deepEqual(
+    candidates.map((c) => [c.key, c.numericId, c.query, c.year]),
+    [
+      ['tv:tvdb-3901', null, 'Shōgun', '2024'],
+      ['movie:tvdb-2801', null, 'Dune: Part Two', '2024'],
+      ['movie:165', 165, 'Film 165', '2020'],
+    ],
+    'TV önce gelir; TVDB kimlikleri başlıkla aranır, sayısallar detay ucundan'
+  );
+
+  const sanitized = sanitizeStockPosterDepot({
+    movies: [brokenTvdb, numericWithPoster],
+    tv: [tvBroken],
+  });
+  assert.equal(sanitized.changedCount, 2, 'iki kırık kayıt ayıklanır');
+  assert.equal(sanitized.depot.movies[0].poster_path, null);
+  assert.equal('poster_url' in sanitized.depot.movies[0], false);
+  assert.equal(sanitized.depot.movies[1], numericWithPoster, 'sağlam kayıt aynı nesne kalır');
+
+  const untouched = sanitizeStockPosterDepot({ movies: [numericWithPoster], tv: [] });
+  assert.equal(untouched.changedCount, 0);
+  assert.equal(untouched.depot.movies[0].id, 603);
+
+  const match = pickStockSearchMatch(
+    [
+      { id: 1, title: 'Shogun Assassin', release_date: '1980-01-01', poster_path: '/wrong.jpg' },
+      { id: 2, name: 'Shōgun', first_air_date: '2024-02-27', poster_path: '/right.jpg' },
+    ],
+    { query: 'Shōgun', year: '2024', mediaType: 'tv' }
+  );
+  assert.equal(match.poster_path, '/right.jpg', 'yıl ve başlık eşleşmesi en yakın sonucu seçer');
+});
+
+test('STOCK-POSTER-02: Stok poster hidrasyonu detay ve başlık aramasıyla doldurur, kotaya uyar', async () => {
+  setupCleanTestEnv();
+  resetStockPosterHydrationForTests();
+
+  const stock = {
+    movies: [
+      makeStockItem(165, 'movie', {}),
+      makeStockItem('tvdb-2801', 'movie', {
+        title: 'Dune: Part Two',
+        release_date: '2024-01-01',
+        poster_path: 'https://artworks.thetvdb.com/banners/x.jpg',
+        poster_url: 'https://artworks.thetvdb.com/banners/x.jpg',
+        source: 'tvdb',
+        _source: 'demo',
+      }),
+      makeStockItem('tvdb-3999', 'movie', {
+        title: 'Bilinmeyen Yapım',
+        release_date: '1999-01-01',
+        source: 'tvdb',
+      }),
+      makeStockItem(777, 'movie', {}),
+    ],
+    tv: [
+      makeStockItem('tvdb-3901', 'tv', {
+        title: 'Shōgun (TVDB Edition)',
+        first_air_date: '2024-01-01',
+        poster_path: 'https://artworks.thetvdb.com/banners/y.jpg',
+        poster_url: 'https://artworks.thetvdb.com/banners/y.jpg',
+        source: 'tvdb',
+        _source: 'demo',
+      }),
+    ],
+  };
+
+  const calls = [];
+  const fetcher = async (endpoint, params = {}) => {
+    calls.push([endpoint, params]);
+    if (endpoint === '/movie/165') {
+      return { id: 165, poster_path: '/p165.jpg', backdrop_path: '/b165.jpg' };
+    }
+    if (endpoint === '/movie/777') return { id: 777 };
+    if (endpoint === '/search/movie' && params.query === 'Dune: Part Two') {
+      return {
+        results: [
+          { id: 693134, title: 'Dune: Part Two', release_date: '2024-03-01', poster_path: '/dune2.jpg' },
+        ],
+      };
+    }
+    if (endpoint === '/search/movie') return { results: [] };
+    if (endpoint === '/search/tv') {
+      return {
+        results: [
+          { id: 126308, name: 'Shōgun', first_air_date: '2024-02-27', poster_path: '/shogun.jpg' },
+        ],
+      };
+    }
+    return null;
+  };
+
+  const pass = await runStockPosterHydrationPass({ stock, fetcher, itemsPerPass: 6 });
+  assert.equal(pass.attemptedCount, 5);
+  assert.equal(pass.hydratedCount, 3);
+  assert.equal(pass.failedCount, 0);
+  assert.equal(pass.patches['movie:165'].poster_path, '/p165.jpg');
+  assert.equal(pass.patches['movie:165'].poster_url, null);
+  assert.equal(pass.patches['movie:165'].backdrop_path, '/b165.jpg');
+  assert.equal(pass.patches['movie:tvdb-2801'].poster_path, '/dune2.jpg');
+  assert.equal(pass.patches['tv:tvdb-3901'].poster_path, '/shogun.jpg');
+  assert.equal(pass.patches['movie:tvdb-3999'], undefined);
+
+  const searchCall = calls.find(([ep]) => ep === '/search/tv');
+  assert.equal(searchCall[1].query, 'Shōgun', 'TVDB soneki arama metnine girmez');
+  assert.equal(searchCall[1].first_air_date_year, undefined, 'uydurma yıl doğru sonucu elemesin');
+  assert.equal(searchCall[1].language, 'en-US', 'İngilizce başlıklarla eşleştirilir');
+  assert.equal(
+    getStockPosterHydrationQuotaState().missingPosterCount,
+    2,
+    'TMDB posteri olmayan ve eşleşmeyen kayıtlar olumsuz önbelleğe alınır'
+  );
+
+  const applied = applyStockPosterPatchesToItems(stock.movies, pass.patches);
+  assert.equal(applied[0].poster_path, '/p165.jpg');
+  assert.equal('poster_url' in applied[0], false);
+  assert.equal(applied[1].poster_path, '/dune2.jpg');
+
+  calls.length = 0;
+  const second = await runStockPosterHydrationPass({
+    stock: {
+      movies: [
+        makeStockItem(165, 'movie', { poster_path: '/p165.jpg' }),
+        applied[1],
+        stock.movies[2],
+      ],
+      tv: [],
+    },
+    fetcher,
+  });
+  assert.equal(second.attemptedCount, 0);
+  assert.equal(calls.length, 0);
+
+  const blocked = await runStockPosterHydrationPass({ stock, fetcher, dailyLimit: 5 });
+  assert.equal(blocked.attemptedCount, 0, 'kota dolunca yeni istek çıkmaz');
+});
+
+test('STOCK-POSTER-03: Yamalar ct:stock deposuna yazılır (yedekleme yolu aynı kalır)', async () => {
+  setupCleanTestEnv();
+  resetStockPosterHydrationForTests();
+
+  const broken = makeStockItem('tvdb-2801', 'movie', {
+    title: 'Dune: Part Two',
+    poster_path: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
+    poster_url: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
+    source: 'tvdb',
+    _source: 'demo',
+  });
+  const plain = makeStockItem(165, 'movie', { poster_path: '/mevcut.jpg' });
+  await saveStockIdb({
+    movies: [broken, plain],
+    tv: [],
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    cursors: {},
+  });
+
+  const loaded = await loadStockIdb();
+  assert.equal(loaded.movies[0].poster_path, null, 'okuma anında kırık adres ayıklanır');
+  assert.equal('poster_url' in loaded.movies[0], false);
+
+  const updated = await applyStockPosterPatchesToDepot({
+    'movie:tvdb-2801': {
+      poster_path: '/dune2.jpg',
+      poster_url: null,
+      backdrop_path: '/dune2-b.jpg',
+    },
+  });
+  assert.equal(updated, 1);
+
+  const persisted = await loadStockIdb();
+  assert.equal(persisted.movies[0].poster_path, '/dune2.jpg');
+  assert.equal(persisted.movies[0].backdrop_path, '/dune2-b.jpg');
+  assert.equal('poster_url' in persisted.movies[0], false);
+  assert.equal(persisted.movies[1].poster_path, '/mevcut.jpg', 'diğer kayıt değişmez');
+
+  const noop = await updateStockItemsMetadata({
+    'movie:tvdb-2801': { poster_path: '/dune2.jpg', poster_url: null },
+  });
+  assert.equal(noop, 0);
+});
+
+test('STOCK-PERF-01: Listemdekileri gizle filtresi indeksli yolla aynı sonucu üretir', () => {
+  const savedItems = [
+    { id: 603, media_type: 'movie', title: 'The Matrix', status: 'completed' },
+    { id: 1399, media_type: 'tv', title: 'Game of Thrones', status: 'watching' },
+  ];
+  const preferences = {
+    disliked: ['movie:550'],
+    hidden: ['tv:1396'],
+    liked: [],
+    watchProviders: [],
+    topGenres: [],
+  };
+  const tasteMap = {
+    entries: {
+      'movie:27205': { status: 'saved' },
+    },
+  };
+  const items = [
+    { id: 603, media_type: 'movie', title: 'The Matrix' },
+    { id: 603, media_type: 'tv', title: 'The Matrix' },
+    { id: 1399, media_type: 'tv', title: 'Game of Thrones' },
+    { id: 550, media_type: 'movie', title: 'Fight Club' },
+    { id: 1396, media_type: 'tv', title: 'Breaking Bad' },
+    { id: 27205, media_type: 'movie', title: 'Inception' },
+    { id: 999, media_type: 'movie', title: 'The Matrix' },
+    { id: 1234, media_type: 'movie', title: 'Serbest Yapım' },
+  ];
+
+  const expected = items.filter(
+    (item) => !isMediaRegisteredInUserProfile(item, { savedItems, preferences, tasteMap })
+  );
+  const actual = filterHiddenUserRegisteredItems(items, {
+    savedItems,
+    preferences,
+    tasteMap,
+    hideListedItems: true,
+  });
+  assert.deepEqual(
+    actual.map((i) => `${i.media_type}:${i.id}`),
+    expected.map((i) => `${i.media_type}:${i.id}`)
+  );
+  assert.deepEqual(
+    actual.map((i) => `${i.media_type}:${i.id}`),
+    ['tv:603', 'movie:1234'],
+    'başlık eşleşmesi türle sınırlı kalır'
+  );
+});
+
+test('STOCK-POSTER-04: TVDB türevi kayıtlar için tür araması proxy izin listesinde', () => {
+  assert.ok(ALLOWED_TMDB_PATH.test('/search/movie'), 'film araması izinli olmalı');
+  assert.ok(ALLOWED_TMDB_PATH.test('/search/tv'), 'dizi araması izinli olmalı');
+  assert.ok(!ALLOWED_TMDB_PATH.test('/search/person'), 'person araması izinli olmamalı');
+  assert.ok(ALLOWED_TMDB_QUERY_KEYS.has('year'));
+  assert.ok(ALLOWED_TMDB_QUERY_KEYS.has('first_air_date_year'));
+  assert.ok(!validateTmdbParam('year', '2024'));
+  assert.ok(!validateTmdbParam('first_air_date_year', '1999'));
+  assert.ok(validateTmdbParam('year', '20x4'));
+  assert.ok(validateTmdbParam('first_air_date_year', '2024-01-01'));
+
+  const localized = pickStockSearchMatch(
+    [
+      {
+        id: 693134,
+        title: 'Dune: Bölüm İki',
+        original_title: 'Dune: Part Two',
+        release_date: '2024-03-01',
+        poster_path: '/dune2.jpg',
+      },
+    ],
+    { query: 'Dune: Part Two', year: '2024', mediaType: 'movie' }
+  );
+  assert.equal(localized.poster_path, '/dune2.jpg', 'yerelleşmiş başlık orijinal adla eşleşir');
 });

@@ -17,6 +17,7 @@
     "test:taste": "tsx --test --test-concurrency=1 tests/taste/taxonomy.test.mjs tests/taste/migration.test.mjs tests/taste/feature-extractor.test.mjs tests/taste/feature-normalizer.test.mjs tests/taste/taste-index-builder.test.mjs tests/taste/behavior-signals.test.mjs tests/taste/evidence-ledger.test.mjs tests/taste/preference-calculator.test.mjs tests/taste/temporal-analyzer.test.mjs tests/taste/confidence-calculator.test.mjs tests/taste/taste-event-projector.test.mjs tests/taste/profile-aggregator.test.mjs tests/taste/behavioral-patterns.test.mjs tests/taste/faz5-migration.test.mjs tests/taste/profile-explainer.test.mjs tests/taste/taste-store.test.mjs tests/taste/taste-archaeology.test.mjs tests/taste/recommendation-adapter.test.mjs tests/taste/taste-store-integration.test.mjs tests/taste/stock-and-live-profile.test.mjs"
   },
   "dependencies": {
+    "cmdk": "^1.1.1",
     "exceljs": "^4.4.0",
     "express": "^5.3.0",
     "framer-motion": "^14.9.0",

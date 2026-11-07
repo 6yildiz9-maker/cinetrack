@@ -208,6 +208,11 @@ export interface EnrichedStockItemPatch {
   cast?: TmdbCastMember[];
   crew?: Array<{ id: number; name: string; job: string; department?: string }>;
   keywords?: Array<{ id: number; name: string }>;
+  /** Poster hidrasyonu: TMDB göreli yolu. `null` poster alanını temizler. */
+  poster_path?: string | null;
+  /** `null` kırık TVDB adresini kaldırır; göreli yola geçilir. */
+  poster_url?: string | null;
+  backdrop_path?: string | null;
 }
 
 /**
@@ -254,6 +259,41 @@ export async function updateStockItemsMetadata(
       if (Array.isArray(patch.keywords) && patch.keywords.length > 0) {
         nextItem.keywords = patch.keywords;
         changed = true;
+      }
+      if (patch.poster_path !== undefined) {
+        const nextPosterPath =
+          typeof patch.poster_path === 'string' && patch.poster_path.length > 0
+            ? patch.poster_path
+            : null;
+        if ((nextItem.poster_path || null) !== nextPosterPath) {
+          nextItem.poster_path = nextPosterPath;
+          changed = true;
+        }
+      }
+      if (patch.poster_url !== undefined) {
+        const nextPosterUrl =
+          typeof patch.poster_url === 'string' && patch.poster_url.length > 0
+            ? patch.poster_url
+            : null;
+        if (nextPosterUrl === null) {
+          if (nextItem.poster_url !== undefined) {
+            delete nextItem.poster_url;
+            changed = true;
+          }
+        } else if (nextItem.poster_url !== nextPosterUrl) {
+          nextItem.poster_url = nextPosterUrl;
+          changed = true;
+        }
+      }
+      if (patch.backdrop_path !== undefined) {
+        const nextBackdrop =
+          typeof patch.backdrop_path === 'string' && patch.backdrop_path.length > 0
+            ? patch.backdrop_path
+            : null;
+        if ((nextItem.backdrop_path || null) !== nextBackdrop) {
+          nextItem.backdrop_path = nextBackdrop;
+          changed = true;
+        }
       }
 
       if (changed) {

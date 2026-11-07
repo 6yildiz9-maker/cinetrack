@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
 export const ALLOWED_TMDB_PATH =
-  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/multi|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords|external_ids|credits))?))$/;
+  /^\/(?:trending\/(?:all|movie|tv)\/(?:day|week)|genre\/(?:movie|tv)\/list|search\/(?:multi|movie|tv)|discover\/(?:movie|tv)|collection\/\d+|person\/\d+(?:\/combined_credits)?|tv\/\d+\/season\/\d+|(?:movie|tv)\/(?:popular|top_rated|upcoming|now_playing|on_the_air|\d+(?:\/(?:recommendations|similar|watch\/providers|keywords|external_ids|credits))?))$/;
 
 export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'language',
@@ -23,6 +23,8 @@ export const ALLOWED_TMDB_QUERY_KEYS = new Set([
   'with_cast',
   'with_watch_providers',
   'watch_region',
+  'year',
+  'first_air_date_year',
 ]);
 
 export const MAX_TMDB_UPSTREAM_BYTES = 10 * 1024 * 1024;
@@ -62,6 +64,8 @@ export function validateTmdbParam(key: string, value: string): string {
   if (key === 'with_watch_providers' && !/^\d+(?:\|\d+)*$/.test(value))
     return 'Yayın platformu kimlikleri geçersiz.';
   if (key === 'watch_region' && !/^[A-Z]{2}$/.test(value)) return 'Bölge kodu geçersiz.';
+  if ((key === 'year' || key === 'first_air_date_year') && !/^\d{4}$/.test(value))
+    return 'Yıl filtresi geçersiz.';
   if (key === 'page' && (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 500))
     return 'Sayfa numarası geçersiz.';
   if (

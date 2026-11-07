@@ -1,6 +1,7 @@
 import { get, set, del, createStore, type UseStore } from 'idb-keyval';
 import type { TmdbItem } from '../types/tmdb.ts';
 import type { SavedItem, Preferences, FavoriteActorInfo } from '../core/cinetrack-core.ts';
+import { sanitizeStockPosterDepot } from './stock-poster-utils.ts';
 import {
   type IdbWriteResult,
   recordDepotWriteOutcome,
@@ -266,7 +267,9 @@ export interface StockDepot {
 export async function loadStockIdb(): Promise<StockDepot> {
   const data = await safeIdbGet<StockDepot>('ct_stock', 'stock_main');
   if (data && Array.isArray(data.movies) && Array.isArray(data.tv)) {
-    return data;
+    // Kırık TVDB adresleri kartlarda 403'e düşüp yer tutucuya geçiyor; ağ isteğini
+    // kesmek için okuma anında ayıklanır (poster hidrasyonu TMDB'den yeniden doldurur).
+    return sanitizeStockPosterDepot(data).depot;
   }
   return { movies: [], tv: [], updatedAt: '', cursors: {} };
 }

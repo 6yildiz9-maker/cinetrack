@@ -4413,6 +4413,11 @@ export interface UserRegisteredFilterContext {
   savedItems?: SavedItem[] | null;
   preferences?: Preferences | null;
   tasteMap?: PersistentTasteMapData | null;
+  /** Yüzlerce kartı filtrelerken tekrar tekrar kurulmasın diye hazır arama yapıları. */
+  savedIndex?: SavedIndex;
+  savedKeys?: ReadonlySet<string>;
+  dislikedKeySet?: ReadonlySet<string>;
+  hiddenKeySet?: ReadonlySet<string>;
 }
 
 /**
@@ -4423,7 +4428,7 @@ export interface UserRegisteredFilterContext {
  */
 export function isMediaRegisteredInUserProfile(
   item: any,
-  { savedItems, preferences, tasteMap }: UserRegisteredFilterContext
+  { savedItems, preferences, tasteMap, savedIndex, savedKeys, dislikedKeySet, hiddenKeySet }: UserRegisteredFilterContext
 ): boolean {
   const cand = item?.candidate && typeof item.candidate === 'object' ? item.candidate : item;
   if (!cand || cand.id == null) return false;
@@ -4440,15 +4445,20 @@ export function isMediaRegisteredInUserProfile(
   const legacyKey = `${mediaType}-${cand.id}`;
 
   // 1, 2, 3: İzlendi (completed), İzlenecek (watchlist), İzliyorum (watching)
+  if (savedKeys?.has(key)) return true;
   if (Array.isArray(savedItems) && savedItems.length > 0) {
-    if (isItemSaved(savedItems, cand, mediaType)) {
+    if (savedIndex) {
+      if (findSavedIndexed(savedIndex, cand, savedItems)) return true;
+    } else if (isItemSaved(savedItems, cand, mediaType)) {
       return true;
     }
   }
 
   // 4: İlgilenmiyorum (disliked)
   if (Array.isArray(preferences?.disliked) && preferences.disliked.length > 0) {
-    if (
+    if (dislikedKeySet) {
+      if (dislikedKeySet.has(key) || dislikedKeySet.has(legacyKey)) return true;
+    } else if (
       preferences.disliked.some(
         (d) => d === key || d === legacyKey || canonicalizeMediaKey(d) === key
       )
@@ -4459,7 +4469,9 @@ export function isMediaRegisteredInUserProfile(
 
   // 5: Gizle (hidden)
   if (Array.isArray(preferences?.hidden) && preferences.hidden.length > 0) {
-    if (
+    if (hiddenKeySet) {
+      if (hiddenKeySet.has(key) || hiddenKeySet.has(legacyKey)) return true;
+    } else if (
       preferences.hidden.some(
         (h) => h === key || h === legacyKey || canonicalizeMediaKey(h) === key
       )
@@ -4490,7 +4502,39 @@ export function filterHiddenUserRegisteredItems<T>(
 ): T[] {
   if (!Array.isArray(items)) return [];
   if (!context.hideListedItems) return items;
-  return items.filter((item) => !isMediaRegisteredInUserProfile(item, context));
+  const savedList = Array.isArray(context.savedItems) ? context.savedItems : [];
+  const indexedContext: UserRegisteredFilterContext = {
+    ...context,
+    ...(savedList.length > 0
+      ? {
+          savedIndex: context.savedIndex ?? buildSavedItemsIndex(savedList),
+          savedKeys: context.savedKeys ?? buildCanonicalSavedKeySet(savedList),
+        }
+      : {}),
+    dislikedKeySet:
+      context.dislikedKeySet ?? buildCanonicalKeySet(context.preferences?.disliked),
+    hiddenKeySet: context.hiddenKeySet ?? buildCanonicalKeySet(context.preferences?.hidden),
+  };
+  return items.filter((item) => !isMediaRegisteredInUserProfile(item, indexedContext));
+}
+
+function buildCanonicalKeySet(entries: ReadonlyArray<string> | null | undefined): ReadonlySet<string> {
+  const set = new Set<string>();
+  for (const entry of entries || []) {
+    if (!entry) continue;
+    set.add(entry);
+    set.add(canonicalizeMediaKey(entry));
+  }
+  return set;
+}
+
+function buildCanonicalSavedKeySet(items: ReadonlyArray<SavedItem>): ReadonlySet<string> {
+  const set = new Set<string>();
+  for (const item of items) {
+    if (!item || item.id == null) continue;
+    set.add(canonicalizeMediaKey(makeMediaKey(item)));
+  }
+  return set;
 }
 
 /**

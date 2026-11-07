@@ -8,6 +8,7 @@ import { DetailModal } from './components/DetailModal.tsx';
 import { QuickSaveModal } from './components/QuickSaveModal.tsx';
 import { PersonDrawer } from './components/PersonDrawer.tsx';
 import { AddCustomModal } from './components/AddCustomModal.tsx';
+import { CommandPalette } from './components/CommandPalette.tsx';
 import { ProfileModal } from './components/ProfileModal.tsx';
 import { ImportChoiceModal } from './components/ImportChoiceModal.tsx';
 import { TvdbStockModal } from './components/TvdbStockModal.tsx';
@@ -145,9 +146,11 @@ import {
   computeUserSeriesUniverses,
 } from './services/series-service.ts';
 import {
+  buildStockExclusionSets,
   consumeStockItem,
   enrichStockItemsTopCast,
   executeStockReplenishment,
+  getCurrentStock,
   getStockMovies,
   getStockSeries,
   isCandidateEligibleForStock,
@@ -156,6 +159,7 @@ import {
   seedCandidatePoolFromStock,
   subscribeStockState,
   syncStockWithUserExclusions,
+  updateStockItemsMetadata,
 } from './services/stock-engine.ts';
 import {
   enforcePosterCacheQuota,
@@ -181,6 +185,10 @@ import {
   applyPosterPatchesToSavedItems,
   startSavedPosterHydration,
 } from './services/poster-hydration-service.ts';
+import {
+  startStockPosterHydration,
+} from './services/stock-poster-hydration-service.ts';
+import { applyStockPosterPatchesToItems } from './services/stock-poster-utils.ts';
 import { computeActivityStreak, dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
 import {
   compareMediaDatesAscending,
@@ -389,6 +397,7 @@ export function App() {
   const [addCustomOpen, setAddCustomOpen] = useState<boolean>(false);
   const [profileOpen, setProfileOpen] = useState<boolean>(false);
   const [tvdbModalOpen, setTvdbModalOpen] = useState<boolean>(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [pendingBackup, setPendingBackup] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -453,18 +462,24 @@ export function App() {
     void loadStockIdb().then((stock) => {
       const allM = stock.movies || [];
       const allT = stock.tv || [];
+      // Setler bir kez kurulur; aksi halde 867 kayıt × 248 liste elemanı taranır.
+      const stockSets = buildStockExclusionSets(savedItemsRef.current, preferencesRef.current);
       const cleanMovies = allM.filter((m) =>
         isCandidateEligibleForStock(
           { ...m, media_type: 'movie' },
           savedItemsRef.current,
-          preferencesRef.current
+          preferencesRef.current,
+          undefined,
+          stockSets
         )
       );
       const cleanTv = allT.filter((t) =>
         isCandidateEligibleForStock(
           { ...t, media_type: 'tv' },
           savedItemsRef.current,
-          preferencesRef.current
+          preferencesRef.current,
+          undefined,
+          stockSets
         )
       );
       const tvdbM = allM.filter((m) => m.source === 'tvdb').length;
@@ -548,6 +563,20 @@ export function App() {
     []
   );
 
+  // Aynı yöntem stok havuzu için: kırık TVDB poster adresleri ve postersiz
+  // kayıtlar TMDB'den çözülür, yamalar ct:stock'a (ve stok yedeğine) yazılır.
+  useEffect(
+    () =>
+      startStockPosterHydration({
+        getStock: () => getCurrentStock(),
+        onPatches: (patches) => {
+          setCatalogItems((current) => applyStockPosterPatchesToItems(current, patches));
+          void updateStockItemsMetadata(patches);
+        },
+      }),
+    []
+  );
+
   useEffect(() => {
     try {
       localStorage.setItem(HIDE_LISTED_STORAGE_KEY, hideListedItems ? '1' : '0');
@@ -609,7 +638,7 @@ export function App() {
   // Global Keyboard Shortcuts (IMP-08 & Section 6.5)
   useKeyboardShortcuts({
     onFocusSearch: () => {
-      const searchInput = document.querySelector<HTMLInputElement>('.search-input');
+      const searchInput = document.querySelector<HTMLInputElement>('#searchInput');
       if (searchInput) {
         searchInput.focus();
         searchInput.select();
@@ -625,12 +654,19 @@ export function App() {
     onOpenAddCustom: () => {
       setAddCustomOpen(true);
     },
+    onOpenCommandPalette: () => {
+      setCommandPaletteOpen(true);
+    },
+    onOpenSettings: () => {
+      setProfileOpen(true);
+    },
     onEscape: () => {
       setDetailItem(null);
       setQuickSaveItem(null);
       setPersonId(null);
       setAddCustomOpen(false);
       setProfileOpen(false);
+      setCommandPaletteOpen(false);
       setPendingBackup(null);
     },
   });
@@ -1418,15 +1454,31 @@ export function App() {
         const fetchDiscoverPageByCategory = async (pageNum: number): Promise<{ rawItems: any[]; totalPages: number }> => {
           if (cat === 'stock') {
             const stock = await loadStockIdb();
+            const stockSets = buildStockExclusionSets(
+              savedItemsRef.current,
+              preferencesRef.current
+            );
             const stockMovies = (stock.movies || [])
               .map((m: any) => ({ ...m, media_type: 'movie' }))
               .filter((m: any) =>
-                isCandidateEligibleForStock(m, savedItemsRef.current, preferencesRef.current)
+                isCandidateEligibleForStock(
+                  m,
+                  savedItemsRef.current,
+                  preferencesRef.current,
+                  undefined,
+                  stockSets
+                )
               );
             const stockSeries = (stock.tv || [])
               .map((t: any) => ({ ...t, media_type: 'tv' }))
               .filter((t: any) =>
-                isCandidateEligibleForStock(t, savedItemsRef.current, preferencesRef.current)
+                isCandidateEligibleForStock(
+                  t,
+                  savedItemsRef.current,
+                  preferencesRef.current,
+                  undefined,
+                  stockSets
+                )
               );
 
             setStockStats({
@@ -3811,6 +3863,7 @@ export function App() {
         onSearchClear={handleSearchClear}
         onOpenProfile={() => setProfileOpen(true)}
         onOpenAdd={() => setAddCustomOpen(true)}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onSelectItem={(item) => setDetailItem(item)}
         getSaved={(item) => findSavedItem(savedItems, item)}
         tmdbSource={tmdbSourceMeta.source}
@@ -4209,6 +4262,27 @@ export function App() {
           handleSaveItem(item, status, '');
           showToast(`✓ "${item.title}" listenize eklendi!`);
         }}
+      />
+
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        savedItems={savedItems}
+        onSelectTab={(targetTab) => setTab(targetTab)}
+        onOpenProfile={() => setProfileOpen(true)}
+        onOpenAddCustom={() => setAddCustomOpen(true)}
+        onQuickSave={() => {
+          void pushToServer();
+          showToast('Değişiklikler kaydedildi ve yerel sunucuyla eşitlendi.');
+        }}
+        onFocusSearch={() => {
+          const searchInput = document.querySelector<HTMLInputElement>('#searchInput');
+          if (searchInput) {
+            searchInput.focus();
+            searchInput.select();
+          }
+        }}
+        onOpenItem={(item) => setDetailItem(item)}
       />
 
       <ProfileModal
