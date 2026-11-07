@@ -380,7 +380,7 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
       )}
 
       {isObservedOrConfiguredPublic && (
-        <div className="my-2 rounded border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs">
+        <div className="my-2 rounded border border-cinema-gold/30 bg-cinema-gold/10 p-2.5 text-xs text-cinema-text">
           <label className="flex cursor-pointer items-start gap-2">
             <input
               type="checkbox"
@@ -402,8 +402,8 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
         <div
           className={`my-2 rounded border p-2.5 text-xs tabular-nums ${
             connectionProbeResult.ok
-              ? 'border-emerald-500/30 bg-emerald-500/10'
-              : 'border-rose-500/30 bg-rose-500/10'
+              ? 'border-cinema-success/30 bg-cinema-successDim text-cinema-text'
+              : 'border-cinema-danger/30 bg-cinema-dangerDim text-cinema-text'
           }`}
           role="status"
         >
@@ -549,8 +549,8 @@ export const ProfileGitHubSyncSection: React.FC<ProfileGitHubSyncSectionProps> =
           <div
             className={`my-2 rounded border p-2.5 text-xs tabular-nums ${
               csvMergeResult.ok
-                ? 'border-emerald-500/30 bg-emerald-500/10'
-                : 'border-rose-500/30 bg-rose-500/10'
+                ? 'border-cinema-success/30 bg-cinema-successDim text-cinema-text'
+                : 'border-cinema-danger/30 bg-cinema-dangerDim text-cinema-text'
             }`}
             role="status"
           >

@@ -574,28 +574,28 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
   ];
 
   return (
-    <div className="identity-view w-full max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-8 animate-fade-in text-slate-100">
+    <div className="identity-view w-full max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-8 animate-fade-in text-cinema-text">
       {/* Sub-view Switcher: Kimlik & Kanıtlar vs. Halka Yaşam Döngüsü */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-white/10">
         <div>
-          <span className="text-[11px] font-semibold uppercase tracking-widest text-amber-400">
+          <span className="text-[11px] font-semibold uppercase tracking-widest text-cinema-gold">
             Kişisel DNA & Zevk Analizi
           </span>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white flex items-center gap-2">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white flex items-center gap-2 font-display">
             <span>🧬 Kimliğim</span>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 font-medium">
+            <span className="text-xs px-2.5 py-1 rounded-full bg-cinema-gold/10 text-cinema-gold border border-cinema-gold/30 font-medium">
               Bunu Nasıl Bildin?
             </span>
           </h1>
         </div>
 
-        <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-slate-900/80 border border-white/10 backdrop-blur-md">
+        <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-cinema-solid/80 border border-white/10 backdrop-blur-md">
           <button
             type="button"
             className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
               subView === 'constellation'
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-[0_0_15px_rgba(255,179,0,0.15)]'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-cinema-gold/20 text-cinema-gold border border-cinema-gold/30 shadow-[0_0_15px_rgba(211,181,121,0.2)]'
+                : 'text-cinema-textMuted hover:text-white'
             }`}
             onClick={() => setSubView('constellation')}
           >
@@ -605,8 +605,8 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
             type="button"
             className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
               subView === 'rings'
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-[0_0_15px_rgba(255,179,0,0.15)]'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-cinema-gold/20 text-cinema-gold border border-cinema-gold/30 shadow-[0_0_15px_rgba(211,181,121,0.2)]'
+                : 'text-cinema-textMuted hover:text-white'
             }`}
             onClick={() => setSubView('rings')}
           >
@@ -618,14 +618,14 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
       {subView === 'rings' ? (
         /* Ring Wall sub-view: keeps existing deep poster wall functionality */
         <div className="rings-container space-y-4">
-          <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/20 text-xs text-amber-200/90 flex items-center justify-between">
+          <div className="p-4 rounded-2xl bg-cinema-solid/80 border border-cinema-gold/25 text-xs text-cinema-text flex items-center justify-between">
             <span>
               <strong>Halka Yaşam Döngüsü:</strong> Ring 0 (Çekirdek Zevk), Ring 1 (Güçlü Adaylar) ve Ring 2 (Keşif & Uç Noktalar)
               posterlerini inceleyip manuel olarak yeniden düzenleyebilirsiniz.
             </span>
             <button
               type="button"
-              className="text-amber-400 hover:underline font-semibold shrink-0 ml-4 cursor-pointer"
+              className="text-cinema-gold hover:underline font-semibold shrink-0 ml-4 cursor-pointer"
               onClick={() => setSubView('constellation')}
             >
               ← Kimliğime Dön
@@ -651,17 +651,17 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
         /* Primary Identity Constellation & Evidence View */
         <>
           {/* 1. HERO OVERVIEW SECTION */}
-          <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900/90 via-slate-950/90 to-amber-950/20 border border-white/10 p-6 sm:p-8 backdrop-blur-xl shadow-2xl">
-            <div className="absolute top-0 right-0 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
+          <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#13151a]/95 via-[#0a0b0e]/95 to-[#13151a]/90 border border-white/10 p-6 sm:p-8 backdrop-blur-xl shadow-2xl">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-cinema-gold/10 rounded-full blur-3xl pointer-events-none" />
 
             <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
               {/* Left: Dominant Traits Dev Tipografi */}
               <div className="lg:col-span-8 space-y-4">
                 <div className="flex items-center gap-3">
-                  <span className="text-xs uppercase tracking-widest text-amber-400/90 font-mono font-medium">
+                  <span className="text-xs uppercase tracking-widest text-cinema-gold font-mono font-medium">
                     En Baskın Sinematik Karakteristikler
                   </span>
-                  <span className="w-8 h-[1px] bg-amber-500/30" />
+                  <span className="w-8 h-[1px] bg-cinema-gold/30" />
                 </div>
 
                 <div className="space-y-1">
@@ -672,28 +672,28 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
                       onClick={() => setSelectedEvidence(t.evidence)}
                       title="Kanıtlarını gör"
                     >
-                      <span className="text-xs font-mono text-amber-500/60 tabular-nums">
+                      <span className="text-xs font-mono text-cinema-gold/60 tabular-nums">
                         0{idx + 1}.
                       </span>
-                      <span className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tight text-white group-hover:text-amber-300 transition-colors">
+                      <span className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tight text-white group-hover:text-cinema-gold transition-colors font-display">
                         {t.title}
                       </span>
-                      <span className="text-xs font-mono text-slate-400 px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                      <span className="text-xs font-mono text-cinema-textMuted px-2 py-0.5 rounded bg-white/5 border border-white/10">
                         %{t.score}
                       </span>
                     </div>
                   ))}
                 </div>
 
-                <p className="text-sm text-slate-400 max-w-2xl leading-relaxed pt-2">
+                <p className="text-sm text-cinema-textMuted max-w-2xl leading-relaxed pt-2">
                   İzleme geçmişiniz, puan tercihleriniz ve atlanan sahneler analiz edildiğinde, algoritmik kimliğiniz bu üç temel eksen etrafında yoğunlaşıyor.
                 </p>
               </div>
 
               {/* Right: Confidence Badge & Stats */}
-              <div className="lg:col-span-4 flex flex-col gap-4 bg-slate-950/60 border border-white/10 rounded-2xl p-5 backdrop-blur-md">
+              <div className="lg:col-span-4 flex flex-col gap-4 bg-cinema-solid/70 border border-white/10 rounded-2xl p-5 backdrop-blur-md">
                 <div className="flex items-center justify-between pb-3 border-b border-white/10">
-                  <span className="text-xs text-slate-400">Profil Güveni</span>
+                  <span className="text-xs text-cinema-textMuted">Profil Güveni</span>
                   <div className="flex items-center gap-1.5">
                     <span
                       className={`w-2 h-2 rounded-full ${
@@ -716,22 +716,22 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
 
                 <div className="grid grid-cols-2 gap-3 py-1">
                   <div>
-                    <div className="text-xs text-slate-400">Analiz Edilen İçerik</div>
+                    <div className="text-xs text-cinema-textMuted">Analiz Edilen İçerik</div>
                     <div className="text-xl font-bold text-white tabular-nums">
                       {stats.movies} Film · {stats.tv} Dizi
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-slate-400">Tamamlanan</div>
-                    <div className="text-xl font-bold text-amber-300 tabular-nums">
+                    <div className="text-xs text-cinema-textMuted">Tamamlanan</div>
+                    <div className="text-xl font-bold text-cinema-gold tabular-nums">
                       {stats.completed} Yapım
                     </div>
                   </div>
                 </div>
 
-                <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
+                <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-cinema-textMuted">
                   <span>Hesaplama Motoru: v6 (Derin Sinema)</span>
-                  <span className="text-amber-400/80">Canlı Senkronize</span>
+                  <span className="text-cinema-gold/90">Canlı Senkronize</span>
                 </div>
               </div>
             </div>
@@ -740,10 +740,10 @@ export const IdentityView: React.FC<IdentityViewProps> = ({
           {/* 2. 9-KATEGORİ SEKME ÇUBUĞU */}
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <span className="text-xs font-semibold tracking-wider uppercase text-slate-400">
+              <span className="text-xs font-semibold tracking-wider uppercase text-cinema-textMuted">
                 9 Boyutlu Zevk Spektrumu
               </span>
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-cinema-textMuted">
                 Kartlara tıklayarak &ldquo;Bunu Nasıl Bildik?&rdquo; kanıt modalını açın.
               </span>
             </div>

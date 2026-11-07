@@ -174,7 +174,7 @@ export const UniversesView: React.FC<UniversesViewProps> = ({
   ], []);
 
   return (
-    <div className="universes-view w-full max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-8 animate-fade-in text-slate-100">
+    <div className="universes-view w-full max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-8 animate-fade-in text-cinema-text">
       {/* Universes Header & Sub-Nav */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-white/10">
         <div>

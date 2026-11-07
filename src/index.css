@@ -6,16 +6,32 @@
 
 @theme {
   --color-cinema-bg: #0a0b0e;
-  --color-cinema-surface: #13151a;
-  --color-cinema-surfaceHover: #1a1c22;
+  --color-cinema-surface: rgba(22, 24, 29, 0.62);
+  --color-cinema-surfaceHover: rgba(22, 24, 29, 0.85);
+  --color-cinema-solid: #13151a;
+  --color-cinema-elevated: rgba(22, 24, 29, 0.85);
   --color-cinema-gold: #d3b579;
+  --color-cinema-goldHover: #e2c68f;
+  --color-cinema-goldDeep: #b58c4f;
   --color-cinema-goldDim: rgba(211, 181, 121, 0.15);
+  --color-cinema-goldSoft: rgba(211, 181, 121, 0.12);
   --color-cinema-cyan: #63b8ab;
+  --color-cinema-cyanHover: #7fcbc0;
+  --color-cinema-cyanDeep: #4f9a8e;
   --color-cinema-cyanDim: rgba(99, 184, 171, 0.15);
   --color-cinema-danger: #e0645e;
   --color-cinema-dangerDim: rgba(224, 100, 94, 0.15);
+  --color-cinema-success: #6fbf8a;
+  --color-cinema-successDim: rgba(111, 191, 138, 0.15);
+  --color-cinema-purple: #a58fd0;
+  --color-cinema-purpleDim: rgba(165, 143, 208, 0.15);
   --color-cinema-text: #eef0f2;
+  --color-cinema-textPrimary: #eef0f2;
   --color-cinema-textMuted: #8b9099;
+  --color-cinema-textTertiary: #676c75;
+  --color-cinema-ink: #10120f;
+  --color-cinema-borderSubtle: rgba(255, 255, 255, 0.07);
+  --color-cinema-borderStrong: rgba(255, 255, 255, 0.14);
 
   --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
   --font-body: "Plus Jakarta Sans", "Inter", "Segoe UI", system-ui, sans-serif;
