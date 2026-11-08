@@ -19,6 +19,7 @@ import {
   POOL_TARGET_CAPACITY,
 } from '../core/cinetrack-core.ts';
 import { migratePersistentTasteMapData } from '../core/keys.ts';
+import { registerCandidatePoolStorePort } from '../core/candidate-pool-store-port.ts';
 
 let discoveryHistoryIdbStore: UseStore | undefined;
 let candidatePoolIdbStore: UseStore | undefined;
@@ -412,3 +413,10 @@ export function savePersistentPoolData(
     }
   }
 }
+
+registerCandidatePoolStorePort({
+  hydrateDiscoveryHistory: hydrateDiscoveryHistoryIdb,
+  hydrateCandidatePools: hydrateCandidatePoolsIdb,
+  loadPool: loadPersistentPoolData,
+  savePool: savePersistentPoolData,
+});

@@ -2,6 +2,7 @@ import {
   RECOMMENDATION_WEIGHTS_V3,
   buildTasteProfileSummary,
   buildTasteProfileV3,
+  canonicalizeMediaKey,
   computeTasteProfileSignature,
   computeWeightsSignature,
   isCandidateEligibleInPool,
@@ -37,6 +38,19 @@ export interface RecommendationEvaluationReport {
   genreEntropy: number;
   /** Accuracy of movie/tv balance relative to 50/50 target when targetType === 'all' (1.0 = exact 50/50). */
   typeBalanceAccuracy: number;
+  /** Cutoff used for Save@K and NDCG@K. */
+  k: number;
+  /**
+   * Fraction of the top-K recommendations that appear in `groundTruthKeys` (temporal hold-out).
+   * null when no ground truth is supplied, since the harness cannot invent labels.
+   */
+  saveAtK: number | null;
+  /** Binary-gain NDCG@K against `groundTruthKeys`, averaged across batches. null without labels. */
+  ndcgAtK: number | null;
+  /** Mean self-information novelty in [0, 1] (1.0 = uniformly niche, 0.0 = uniformly popular). */
+  novelty: number;
+  /** Intra-list genre diversity in [0, 1] (1.0 = disjoint genre sets, 0.0 = identical). */
+  diversity: number;
   batches: EvaluationBatchMetrics[];
 }
 
@@ -47,6 +61,82 @@ export interface EvaluateEngineInput {
   batchSize?: number;
   targetType?: 'all' | 'movie' | 'tv';
   initialTasteMap?: PersistentTasteMapData;
+  /**
+   * Keys of items the user actually saved after the evaluation window (temporal hold-out).
+   * Both canonical (`movie:123`) and legacy (`movie-123`) forms are accepted.
+   */
+  groundTruthKeys?: string[];
+  /** Cutoff for Save@K / NDCG@K; defaults to batchSize. */
+  k?: number;
+  /** Reference time forwarded to scoring; defaults to now. */
+  now?: Date | number | string;
+}
+
+function resolveReferenceDate(now?: Date | number | string): Date {
+  if (now instanceof Date && Number.isFinite(now.getTime())) return new Date(now.getTime());
+  if (typeof now === 'number' || typeof now === 'string') {
+    const parsed = new Date(now);
+    if (Number.isFinite(parsed.getTime())) return parsed;
+  }
+  return new Date();
+}
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function computeNovelty(pickedCandidates: any[], pool: any[]): number {
+  if (pickedCandidates.length === 0 || pool.length === 0) return 0;
+  let totalPopularity = 0;
+  for (const item of pool) {
+    totalPopularity += Math.max(0, Number(item?.popularity) || 0);
+  }
+  const smoothingDenominator = totalPopularity + pool.length;
+  const maxSelfInformation = Math.log2(smoothingDenominator);
+  if (!(maxSelfInformation > 0)) return 0;
+
+  let sum = 0;
+  for (const item of pickedCandidates) {
+    const popularity = Math.max(0, Number(item?.popularity) || 0);
+    const probability = (popularity + 1) / smoothingDenominator;
+    const selfInformation = -Math.log2(probability);
+    sum += Math.min(1, Math.max(0, selfInformation / maxSelfInformation));
+  }
+  return round3(sum / pickedCandidates.length);
+}
+
+function computeGenreDiversity(genreSets: number[][]): number {
+  const sets = genreSets.filter((ids) => ids.length > 0);
+  if (sets.length < 2) return 0;
+  let total = 0;
+  let pairs = 0;
+  for (let i = 0; i < sets.length; i += 1) {
+    for (let j = i + 1; j < sets.length; j += 1) {
+      const left = new Set(sets[i]);
+      const right = new Set(sets[j]);
+      let intersection = 0;
+      for (const id of left) {
+        if (right.has(id)) intersection += 1;
+      }
+      const union = left.size + right.size - intersection;
+      if (union > 0) total += 1 - intersection / union;
+      pairs += 1;
+    }
+  }
+  return pairs > 0 ? round3(total / pairs) : 0;
+}
+
+function computeNdcgAtK(keys: string[], groundTruth: ReadonlySet<string>, k: number): number {
+  const idealRelevant = Math.min(groundTruth.size, k);
+  if (idealRelevant <= 0) return 0;
+  let dcg = 0;
+  const top = keys.slice(0, k);
+  for (let i = 0; i < top.length; i += 1) {
+    if (groundTruth.has(top[i])) dcg += 1 / Math.log2(i + 2);
+  }
+  let idcg = 0;
+  for (let i = 0; i < idealRelevant; i += 1) idcg += 1 / Math.log2(i + 2);
+  return idcg > 0 ? round3(dcg / idcg) : 0;
 }
 
 function computeNormalizedShannonEntropy(counts: Map<number, number>): number {
@@ -72,6 +162,8 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
   const batchesCount = Math.max(1, input.batchesCount ?? 3);
   const batchSize = Math.max(2, input.batchSize ?? 12);
   const targetType = input.targetType ?? 'all';
+  const referenceDate = resolveReferenceDate(input.now);
+  const k = Math.max(1, input.k ?? batchSize);
   const profile = input.profile;
   const savedItems = profile.items || [];
   const preferences = profile.preferences || {
@@ -83,12 +175,15 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
     notified: [],
   };
   const favoriteActors = profile.favoriteActors || [];
+  const groundTruth = new Set<string>(
+    (input.groundTruthKeys || []).map((key) => canonicalizeMediaKey(key))
+  );
 
   let currentMap: PersistentTasteMapData = input.initialTasteMap
     ? JSON.parse(JSON.stringify(input.initialTasteMap))
     : {
         profileId: profile.id,
-        updatedAt: new Date().toISOString(),
+        updatedAt: referenceDate.toISOString(),
         entries: {},
         archivedEntries: {},
         lastRecommendedKeys: [],
@@ -115,6 +210,11 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
   let subsequentRing1Repeats = 0;
   let totalMovies = 0;
   let totalTvs = 0;
+  const pickedCandidates: any[] = [];
+  const batchDiversities: number[] = [];
+  let saveAtKSum = 0;
+  let ndcgAtKSum = 0;
+  let rankedBatches = 0;
 
   for (let b = 0; b < batchesCount; b += 1) {
     const prevBatchKeys = new Set(currentMap.lastRecommendedKeys || []);
@@ -123,12 +223,14 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
       weights: RECOMMENDATION_WEIGHTS_V3,
       mood: preferences.mood,
       tasteMap: currentMap,
+      now: referenceDate,
     }).sort((a, z) => z.score - a.score);
 
     const scoredTvAll = scoreCandidatesV3(tvPool, tasteProfile, {
       weights: RECOMMENDATION_WEIGHTS_V3,
       mood: preferences.mood,
       tasteMap: currentMap,
+      now: referenceDate,
     }).sort((a, z) => z.score - a.score);
 
     const nonRing1Movies = scoredMoviesAll.filter((e) => e.ring !== 'ring1');
@@ -153,13 +255,22 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
     let ring1Count = 0;
     let ring2Count = 0;
     const batchGenres = new Set<number>();
+    const batchGenreSets: number[][] = [];
+    const batchKeys: string[] = [];
 
     for (const entry of picked) {
       const cand = entry.candidate || entry;
-      const key = makeMediaKey(cand);
+      const key = canonicalizeMediaKey(makeMediaKey(cand));
       const isTv = cand.media_type === 'tv';
       if (isTv) tvCount += 1;
       else movieCount += 1;
+
+      pickedCandidates.push(cand);
+      batchKeys.push(key);
+      const genreIds = (cand.genre_ids || []).filter(
+        (gid: unknown): gid is number => typeof gid === 'number' && gid > 0
+      );
+      batchGenreSets.push(genreIds);
 
       const wasInPrevBatch = prevBatchKeys.has(key);
       const existingEntry = currentMap.entries?.[key];
@@ -180,11 +291,9 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
         subsequentSlots += 1;
       }
 
-      for (const gid of cand.genre_ids || []) {
-        if (typeof gid === 'number' && gid > 0) {
-          batchGenres.add(gid);
-          genreHistogram.set(gid, (genreHistogram.get(gid) || 0) + 1);
-        }
+      for (const gid of genreIds) {
+        batchGenres.add(gid);
+        genreHistogram.set(gid, (genreHistogram.get(gid) || 0) + 1);
       }
     }
 
@@ -192,6 +301,18 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
     totalRing0 += ring0Count;
     totalMovies += movieCount;
     totalTvs += tvCount;
+    batchDiversities.push(computeGenreDiversity(batchGenreSets));
+
+    if (groundTruth.size > 0 && batchKeys.length > 0) {
+      const topK = batchKeys.slice(0, k);
+      let hits = 0;
+      for (const key of topK) {
+        if (groundTruth.has(key)) hits += 1;
+      }
+      saveAtKSum += hits / k;
+      ndcgAtKSum += computeNdcgAtK(batchKeys, groundTruth, k);
+      rankedBatches += 1;
+    }
 
     batchReports.push({
       batchIndex: b + 1,
@@ -212,6 +333,7 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
       savedItems,
       preferences,
       favoriteActors,
+      now: referenceDate.toISOString(),
       profileSignature: profileSig,
       targetType,
       explanation: balanced.explanation,
@@ -225,6 +347,13 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
     subsequentSlots > 0 ? Math.round((subsequentRing1Repeats / subsequentSlots) * 1000) / 1000 : 0;
   const ring0Utilization = totalSlots > 0 ? Math.round((totalRing0 / totalSlots) * 1000) / 1000 : 0;
   const genreEntropy = computeNormalizedShannonEntropy(genreHistogram);
+  const novelty = computeNovelty(pickedCandidates, eligiblePool);
+  const diversity =
+    batchDiversities.length > 0
+      ? round3(batchDiversities.reduce((sum, value) => sum + value, 0) / batchDiversities.length)
+      : 0;
+  const saveAtK = rankedBatches > 0 ? round3(saveAtKSum / rankedBatches) : null;
+  const ndcgAtK = rankedBatches > 0 ? round3(ndcgAtKSum / rankedBatches) : null;
 
   let typeBalanceAccuracy = 1;
   if (targetType === 'all' && totalSlots > 0) {
@@ -245,6 +374,11 @@ export function evaluateRecommendationEngine(input: EvaluateEngineInput): Recomm
     ring0Utilization,
     genreEntropy,
     typeBalanceAccuracy,
+    k,
+    saveAtK,
+    ndcgAtK,
+    novelty,
+    diversity,
     batches: batchReports,
   };
 }

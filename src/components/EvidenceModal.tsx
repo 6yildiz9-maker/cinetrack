@@ -192,7 +192,7 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({
                         className="w-8 h-12 object-cover rounded-md shrink-0 border border-white/7"
                       />
                     ) : (
-                      <div className="w-8 h-12 rounded-md bg-[#13151a] flex items-center justify-center text-xs text-[#676c75]">
+                      <div className="w-8 h-12 rounded-md bg-[#13151a] flex items-center justify-center text-xs text-cinema-textTertiary">
                         🎬
                       </div>
                     )}

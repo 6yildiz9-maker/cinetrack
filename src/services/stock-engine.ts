@@ -14,11 +14,13 @@ import {
 import { indexItemsForSeriesBatch } from './series-service.ts';
 import {
   hydratePoolFromCatalog,
-  loadPersistentPoolData,
-  savePersistentPoolData,
   type Preferences,
   type SavedItem,
 } from '../core/cinetrack-core.ts';
+import {
+  loadPersistentPoolData,
+  savePersistentPoolData,
+} from './discovery-storage.ts';
 import type { TmdbCastMember, TmdbItem } from '../types/tmdb.ts';
 import {
   buildStockExclusionSets,

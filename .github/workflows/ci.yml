@@ -32,6 +32,9 @@ jobs:
       - name: Unit Tests
         run: npm test
 
+      - name: Taste Engine Tests
+        run: npm run test:taste
+
       - name: Production Build
         run: npm run build
 

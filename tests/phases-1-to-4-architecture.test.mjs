@@ -56,15 +56,17 @@ import {
   resetStockEngineForTests,
 } from '../src/services/stock-engine.ts';
 import {
+  createDefaultTasteMapData,
+  createDefaultPoolData,
+} from '../src/core/cinetrack-core.ts';
+import {
   savePersistentTasteMap,
   hydrateDiscoveryHistoryIdb,
   savePersistentPoolData,
   hydrateCandidatePoolsIdb,
-  createDefaultTasteMapData,
-  createDefaultPoolData,
   flushCoreIdbWrites,
   resetCoreIdbMirrorsForTests,
-} from '../src/core/cinetrack-core.ts';
+} from '../src/services/discovery-storage.ts';
 
 /**
  * Lightweight W3C-compatible fake IndexedDB factory so idb-keyval exercises real IDB transactions in Node tests.
@@ -475,7 +477,9 @@ test('Aşama 2 (FEAT-02 & EXT-03): Yalıtılmış ct:profile, kompakt ct:user-li
   assert.equal(compactLoaded[0].id, 157336);
   assert.equal(compactLoaded[0].status, 'completed');
   assert.equal('overview' in compactLoaded[0], false);
-  assert.equal('poster_path' in compactLoaded[0], false);
+  assert.equal(compactLoaded[0].title, 'Interstellar');
+  assert.equal(compactLoaded[0].poster_path, '/interstellar.jpg');
+  assert.equal(compactLoaded[0].addedAt, '2026-02-01T00:00:00.000Z');
 
   // Adım 6: ct:surfaced FIFO eviction
   await recordSurfacedKeys(['movie:1', 'movie:2', 'movie:3', 'movie:4'], 5);

@@ -18,13 +18,13 @@ import {
 } from '../core/relationship-explorer.ts';
 import {
   isCandidateEligibleInPool,
-  loadPersistentPoolData,
   makeMediaKey,
   type FavoriteActorInfo,
   type PoolCandidateItem,
   type Preferences,
   type SavedItem,
 } from '../core/cinetrack-core.ts';
+import { loadPersistentPoolData } from '../services/discovery-storage.ts';
 import {
   latestGraphCacheKey,
   readRelationshipCache,

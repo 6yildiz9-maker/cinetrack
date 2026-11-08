@@ -17,11 +17,11 @@ import {
   determineItemEra, determineItemPopularityTier, normalizePoolCandidate,
   isCandidateEligibleInPool, filterEligiblePoolItems, balanceCandidatePool,
   multiDimensionalDiversify, PoolReplenishmentLock, poolReplenishmentLock,
-  loadPersistentPoolData, savePersistentPoolData, createDefaultPoolCursors, createDefaultPoolData,
+  createDefaultPoolCursors, createDefaultPoolData,
   replenishCandidatePool, selectBalancedRecommendations,
   assignTasteRing, demoteTasteRing, getTasteRingLabel, inferLifecycleRing, normalizeTasteRing,
   normalizeTasteMapEntries, normalizeTasteMapRings,
-  loadPersistentTasteMap, savePersistentTasteMap, updateTasteMapWithBatch,
+  updateTasteMapWithBatch,
   recordTasteMapPoolScores, isTasteMapCacheValid,
   markTasteMapItemStatus, syncPoolCandidatesWithTasteMap,
   createDefaultTasteMapData, getTasteMapStorageKey,
@@ -33,6 +33,12 @@ import {
   sanitizeTasteMapEntryImpressions, getImpressionSummary,
   ENGINE_VERSION, ALGORITHM_VERSION, computeWeightsSignature
 } from "../src/core/cinetrack-core.ts";
+import {
+  loadPersistentPoolData,
+  loadPersistentTasteMap,
+  savePersistentPoolData,
+  savePersistentTasteMap,
+} from "../src/services/discovery-storage.ts";
 import { PROVIDER_OPTIONS, DISCOVER_PROVIDER_CHIPS } from "../src/utils/helpers.ts";
 import {
   TMDB_CACHE_TTLS,

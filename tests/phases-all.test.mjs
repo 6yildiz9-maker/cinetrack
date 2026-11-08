@@ -25,22 +25,24 @@ import {
   hydratePoolFromCatalog,
   isMediaRegisteredInUserProfile,
   isTasteMapCacheValid,
-  loadPersistentPoolData,
-  loadPersistentTasteMap,
   matchesSelectedGenre,
   normalizeDataDocument,
   parseBackupText,
   recordDisplayedRecommendations,
   recordTasteMapPoolScores,
   resolveDiscoverGenreParam,
-  savePersistentPoolData,
-  savePersistentTasteMap,
   scoreActorRecommendations,
   scoreCandidatesV3,
   selectBalancedRecommendations,
   topUpFilteredCandidates,
   updateTasteMapWithBatch,
 } from '../src/core/cinetrack-core.ts';
+import {
+  loadPersistentPoolData,
+  loadPersistentTasteMap,
+  savePersistentPoolData,
+  savePersistentTasteMap,
+} from '../src/services/discovery-storage.ts';
 import {
   RELATIONSHIP_MODEL_VERSION,
   buildRelationshipGraph,
@@ -764,17 +766,38 @@ test('Faz 10: evaluateRecommendationEngine, Zevk DNA, CSV (Letterboxd/IMDb), ICS
   ]);
 
   // 1. Offline öneri değerlendirme motoru
-  const evalReport = evaluateRecommendationEngine({
+  const evalInput = {
     profile: profileA,
     candidatePool: [...moviePool, ...tvPool],
     batchesCount: 3,
     batchSize: 8,
     targetType: 'all',
-  });
+    now: new Date('2026-11-09T00:00:00.000Z'),
+  };
+  const evalReport = evaluateRecommendationEngine(evalInput);
   assert.equal(evalReport.ring1RepeatRate, 0);
   assert.equal(evalReport.ring0Utilization, 1);
   assert.equal(evalReport.typeBalanceAccuracy, 1);
   assert.ok(evalReport.genreEntropy > 0);
+  assert.equal(evalReport.k, 8);
+  assert.equal(evalReport.saveAtK, null);
+  assert.equal(evalReport.ndcgAtK, null);
+  assert.ok(evalReport.novelty >= 0 && evalReport.novelty <= 1);
+  assert.ok(evalReport.diversity >= 0 && evalReport.diversity <= 1);
+
+  // Deterministik now: aynı girdi aynı raporu üretmeli
+  const evalRepeat = evaluateRecommendationEngine(evalInput);
+  assert.deepEqual(evalRepeat, evalReport);
+
+  // Etiketli değerlendirme: tüm havuz "kaydedildi" varsayılırsa Save@K ve NDCG@K 1.0 olur
+  const evalLabeled = evaluateRecommendationEngine({
+    ...evalInput,
+    groundTruthKeys: [...moviePool, ...tvPool].map((c) =>
+      c.media_type === 'tv' ? `tv:${c.id}` : `movie:${c.id}`
+    ),
+  });
+  assert.equal(evalLabeled.saveAtK, 1);
+  assert.equal(evalLabeled.ndcgAtK, 1);
 
   // 2. Zevk DNA Özeti
   const dna = buildTasteDnaProfile(profileA, { 878: 'Bilim Kurgu', 18: 'Dram', 10765: 'Bilim Kurgu & Fantazi', 9648: 'Gizem' });

@@ -18,7 +18,7 @@ export default tseslint.config(
     rules: {
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
-      'jsx-a11y/alt-text': 'warn',
+      'jsx-a11y/alt-text': 'error',
       'jsx-a11y/aria-props': 'error',
       'jsx-a11y/aria-proptypes': 'error',
       'jsx-a11y/aria-unsupported-elements': 'error',

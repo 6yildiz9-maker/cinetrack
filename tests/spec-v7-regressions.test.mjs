@@ -1116,7 +1116,7 @@ test('CHART-03: ColumnChart SVG + HTML etiket satırı olarak render edilir', as
 });
 
 test('CHART-04: grafik/oran bar sınıflarının CSS karşılığı var', () => {
-  const css = fs.readFileSync(path.join(process.cwd(), 'style.css'), 'utf8');
+  const css = fs.readFileSync(path.join(process.cwd(), 'src/styles/app.css'), 'utf8');
   for (const selector of [
     '.ct-chart-svg',
     '.ct-chart-accent .ct-chart-bar',

@@ -58,6 +58,32 @@ export function timingSafeTokenMatches(provided: string, expected: string): bool
   return crypto.timingSafeEqual(digestProvided, digestExpected);
 }
 
+/**
+ * Katı CSP üretir. Geliştirme modunda Vite'ın HMR/refresh preamble'ı satır içi
+ * script enjekte ettiği için yalnızca o ortamda 'unsafe-inline' eklenir; üretimde
+ * script kaynağı yalnızca aynı origin'den yüklenir.
+ */
+export function createContentSecurityPolicy(options: { allowInlineScripts?: boolean } = {}): string {
+  const scriptSrc = options.allowInlineScripts
+    ? "script-src 'self' 'unsafe-inline'"
+    : "script-src 'self'";
+  return [
+    "default-src 'self'",
+    scriptSrc,
+    "script-src-attr 'none'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org https://artworks.thetvdb.com https://*.thetvdb.com",
+    "connect-src 'self' https://api.themoviedb.org https://api4.thetvdb.com",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+}
+
 function normalizeHostValue(raw: string | undefined): string {
   if (!raw) return '';
   return raw.split(',')[0].trim().toLowerCase();

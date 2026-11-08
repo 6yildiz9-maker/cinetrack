@@ -4,9 +4,9 @@ import {
   type FavoriteActorInfo,
   type SavedItem,
   findSavedItem,
-  loadPersistentPoolData,
   makeMediaKey,
 } from '../core/cinetrack-core.ts';
+import { loadPersistentPoolData } from '../services/discovery-storage.ts';
 import { fetchTmdb } from '../services/api.ts';
 import { loadStockIdb } from '../services/storage-idb.ts';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';

@@ -33,6 +33,7 @@ for (const warnMsg of resolved.warnings) {
 const envFilePath = path.join(root, '.env');
 let githubTokenLive = resolved.githubToken;
 let schedulePostMutationSync: ((reason: string) => void) | null = null;
+const isDevMode = process.env.NODE_ENV !== 'production' && process.argv.includes('--dev');
 
 const { app, storage, persistentStore } = createCineTrackApp({
   dataDir,
@@ -40,6 +41,7 @@ const { app, storage, persistentStore } = createCineTrackApp({
   maxProfiles,
   maxItemsPerProfile,
   bindHost,
+  devMode: isDevMode,
   trustProxy: resolved.trustProxy,
   ...(resolved.tmdbRateLimit !== undefined ? { rateLimitMaxRequests: resolved.tmdbRateLimit } : {}),
   ...(resolved.tmdbRateWindowMs !== undefined ? { rateLimitWindowMs: resolved.tmdbRateWindowMs } : {}),
@@ -119,7 +121,6 @@ async function startServer() {
     console.warn('[Catalog] Başlangıç indeksleme uyarısı:', e?.message || e);
   }
 
-  const isDevMode = process.env.NODE_ENV !== 'production' && process.argv.includes('--dev');
   const httpServer = createHttpServer(app);
 
   if (!isDevMode) {

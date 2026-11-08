@@ -470,7 +470,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-[#676c75]">
+                  <div className="flex items-center justify-between text-[11px] text-cinema-textTertiary">
                     <span>Boş bırakılırsa sunucudaki TVDB_API_KEY kullanılır</span>
                     <button
                       onClick={handleResetDefaultKey}
@@ -510,19 +510,19 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
                     <div className="text-[11px] text-[#8b9099]">TVDB Filmleri</div>
                     <div className="text-xl font-bold text-[#63b8ab] mt-1 tabular-nums">{stockStats.tvdbMovies}</div>
-                    <div className="text-[10px] text-[#676c75]">kaynak: tvdb</div>
+                    <div className="text-[10px] text-cinema-textTertiary">kaynak: tvdb</div>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
                     <div className="text-[11px] text-[#8b9099]">TVDB Dizileri</div>
                     <div className="text-xl font-bold text-[#63b8ab] mt-1 tabular-nums">{stockStats.tvdbTv}</div>
-                    <div className="text-[10px] text-[#676c75]">kaynak: tvdb</div>
+                    <div className="text-[10px] text-cinema-textTertiary">kaynak: tvdb</div>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
                     <div className="text-[11px] text-[#8b9099]">Toplam TVDB Stoğu</div>
                     <div className="text-xl font-bold text-[#d3b579] mt-1 tabular-nums">{tvdbTotalCount}</div>
-                    <div className="text-[10px] text-[#676c75]">film + dizi toplamı</div>
+                    <div className="text-[10px] text-cinema-textTertiary">film + dizi toplamı</div>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-[#0a0b0e] border border-white/5">
@@ -530,7 +530,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                     <div className="text-xl font-bold text-[#8b9099] mt-1 tabular-nums">
                       {stockStats.tmdbMovies + stockStats.tmdbTv}
                     </div>
-                    <div className="text-[10px] text-[#676c75]">kaynak: tmdb</div>
+                    <div className="text-[10px] text-cinema-textTertiary">kaynak: tmdb</div>
                   </div>
                 </div>
 
@@ -842,7 +842,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
                   <div className="text-xs text-[#eef0f2] font-medium">
                     {importFile ? importFile.name : 'Dosya Seçin veya Buraya Sürükleyin (.json, .csv)'}
                   </div>
-                  <div className="text-[11px] text-[#676c75] mt-1">
+                  <div className="text-[11px] text-cinema-textTertiary mt-1">
                     {importFile ? `${(importFile.size / 1024).toFixed(1)} KB` : 'JSON ve CSV dosyaları desteklenir'}
                   </div>
                 </div>

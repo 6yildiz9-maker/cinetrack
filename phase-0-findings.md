@@ -10,17 +10,15 @@
 
 FAZ 0 kapsamında CineTrack kod tabanının istemci, çekirdek öneri motoru, yerel sunucu depolama katmanı, çift yönlü GitHub eşitleme motoru ve disk üzerindeki canlı `data/cinetrack-data.json` verisi salt okunur olarak denetlenmiştir.
 
-### Canlı `data/cinetrack-data.json` Metrikleri
-| Metrik | Değer | Kaynak / Doğrulama |
+### Canlı `data/cinetrack-data.json` Şema Doğrulaması
+> Gizlilik gereği bu raporda kullanıcıya ait profil adı, kütüphane büyüklüğü, puan/tercih sayıları ve dosya boyutu gibi kişisel veriler **kaldırılmıştır**. Aşağıdaki bulgular yalnızca şema ve davranış doğrulaması içerir.
+
+| Doğrulama | Sonuç | Kaynak |
 | :--- | :--- | :--- |
-| Dosya Boyutu | `2.944.846 bayt` (~`2,81 MiB` / `78.250` satır) | Üst sınır: `DEFAULT_MAX_DATA_BYTES = 25 MiB` (`src/core/limits.ts`) |
-| Şema / Revizyon | `version: 3`, `schemaVersion: 3`, `engineVersion: "v3.2.0"`, `revision: 1` | `data/cinetrack-data.json` kök nesnesi |
-| Aktif Profil | `id: "profile-default"`, `name: "ibrahim"`, `isDemo: false` | `createdAt: "2026-10-19T10:35:53.061Z"` |
-| Toplam Kayıtlı İçerik (`items`) | **2.085** kayıt | `watchlist`: **1.059** · `completed`: **1.025** · `watching`: **1** |
-| Kişisel Puanlı Kayıt Sayısı | **47** kayıt (`2.038` kayıtta `personal_rating === ""`) | Dağılım: `[5, 6, 7, 8, 9, 10]`, ondalık puan sayısı: `0` |
-| Negatif Tercih (`preferences.disliked`) | **22** kanonik anahtar (`movie:<id>` / `tv:<id>`) | `preferences.hidden`: tanımlı değil (`0` kayıt) |
-| Favori Oyuncular (`favoriteActors`) | **100** oyuncu kaydı | Silme mezar taşı (`deleted_keys`): tanımlı değil (`0` kayıt) |
-| Aktif Sezon İlerlemesi Olan Dizi | **4** dizi kaydında dolu `season_progress` haritası | Sezon bazlı bölüm sayacı modeli |
+| Kök belge şeması | `version: 3`, `schemaVersion: 3`, `engineVersion: "v3.2.0"` | `data/cinetrack-data.json` kök nesnesi |
+| Profil yapısı | `profiles[]` + `activeProfileId` + `preferences` alanları mevcut | `ensureDataShape` |
+| Kayıt üst sınırı | `DEFAULT_MAX_DATA_BYTES = 25 MiB` | `src/core/limits.ts` |
+| Bölüm ilerleme modeli | Sezon bazlı bölüm sayacı (`season_progress`) | `src/core/tv-progress.ts` |
 
 ### Temel Bulguların Özeti
 1. **Puan Ölçeği:** Kullanıcı puanı `SavedItem.personal_rating` alanında `number | ''` tipindedir; geçerli aralık **`1..10`** olup puansız durum `null` veya `0` değil **boş dizge (`""`)** ile temsil edilir. UI yalnızca `1..10` tam sayı girişine izin verir; CSV içe aktarmada `0.5–5.0` yıldızlı Letterboxd puanları `Math.round(p * 2)` ile `1..10` tam sayıya çevrilir. Öneri motoru bu puanı `normalizeUserRating` ile `[-1, +1]` aralığına (`5 -> 0` nötr) dönüştürür.
@@ -30,7 +28,7 @@ FAZ 0 kapsamında CineTrack kod tabanının istemci, çekirdek öneri motoru, ye
    - `preferences.hidden` (**"Tekil İçerik Gizle"**): Şemada, GitHub birleştirmede ve aday havuzu filtrelerinde tanımlıdır; zevk profiline negatif ceza **uygulamaz** (nötr bastırma), **ancak UI'da bu diziye yazan hiçbir buton/işleyici yoktur**.
    - `hideListedItems` (**"Listemdekileri Gizle"**): `cinetrack-data.json` dışındaki tarayıcı görünüm filtresidir (`localStorage` + IndexedDB `ct:ui-prefs`); yalnızca Keşfet (`trending`, `top-rated`, `gems`) ve `stock` sekmelerinde kayıtlı 5 durumu gizler.
 4. **Dizi Bölüm İlerleme Modeli:** Bölüm ID listesi **kullanılmaz**; `season_progress: Record<seasonNumber, watchedEpisodeCount>` şeklinde **1-indeksli sezon bazlı sayaç** modeli kullanılır (`Season 0 / Specials` kapsam dışıdır).
-5. **GitHub Dosya Tanıma:** `SYNC_STATIC_INVENTORY` altındaki **4 statik JSON yolu** (`data/catalog/{movies,tv,manifest}.json` ve `data/cinetrack-data.json`) ile `data/profiles/*.json` altındaki **`/^[a-zA-Z0-9_-]+\.json$/` kalıbına uyan dinamik türetilmiş profil dosyaları** tanınır. `>1 MB` dosyalar (ör. `2,94 MB` büyüklüğündeki canlı `cinetrack-data.json`) GitHub Contents API sınırına takıldığında otomatik olarak **Git Blob API (`/git/blobs/{sha}`)** üzerinden okunur.
+5. **GitHub Dosya Tanıma:** `SYNC_STATIC_INVENTORY` altındaki **4 statik JSON yolu** (`data/catalog/{movies,tv,manifest}.json` ve `data/cinetrack-data.json`) ile `data/profiles/*.json` altındaki **`/^[a-zA-Z0-9_-]+\.json$/` kalıbına uyan dinamik türetilmiş profil dosyaları** tanınır. `>1 MB` dosyalar GitHub Contents API sınırına takıldığında otomatik olarak **Git Blob API (`/git/blobs/{sha}`)** üzerinden okunur.
 
 ---
 
@@ -132,10 +130,10 @@ Canlı `data/cinetrack-data.json` içindeki kayıtlar üzerinde **33 aktif alan*
 | İstemci IDB Depoları | `surfacedAt`, `skippedAt`, `cachedAt`, `updatedAt` | `number` (epoch ms) / ISO `string` | `ct:surfaced`, `ct:skip-log`, `ct:actor-credits`, `ct:stock`, `ct:series-index`, `ct:ui-prefs` | Cihaz-yerel TTL / FIFO soğuma süresi kontrolünde kullanılır |
 
 ### 2.2. Kritik Eksik Alan Tespiti: `ratedAt`, `watchedAt` ve `completedAt` YOKTUR
-Tüm kaynak dosyalar (`src/**/*.ts`, `src/**/*.tsx`, `server.ts`) ve canlı `data/cinetrack-data.json` üzerindeki `2.085` öğe taranmıştır:
-- `SavedItem` üzerinde **`ratedAt` alanı yoktur** (`0/2.085` kayıt).
-- `SavedItem` üzerinde **`watchedAt` alanı yoktur** (`0/2.085` kayıt).
-- `SavedItem` üzerinde **`completedAt` alanı yoktur** (`0/2.085` kayıt; `completedAt` ismi yalnızca `BidirectionalSyncReport` ve `idb-schema-version.ts` içinde işlem bitiş zamanı için kullanılmaktadır).
+Tüm kaynak dosyalar (`src/**/*.ts`, `src/**/*.tsx`, `server.ts`) ve canlı veri belgesi taranmıştır:
+- `SavedItem` üzerinde **`ratedAt` alanı yoktur**.
+- `SavedItem` üzerinde **`watchedAt` alanı yoktur**.
+- `SavedItem` üzerinde **`completedAt` alanı yoktur**; `completedAt` ismi yalnızca `BidirectionalSyncReport` ve `idb-schema-version.ts` içinde işlem bitiş zamanı için kullanılmaktadır.
 
 **Mevcut Kod Üzerindeki Somut Etkileri:**
 1. **Zevk Sinyali Sönümlemesi (`cinetrack-core.ts:926, 935, 944`):** `getUserSignalV3` fonksiyonu `signalDecay(item.updatedAt || item.addedAt, halfLifeDays)` çağrısı yapar. Eski bir filme yıllar sonra yalnız metin notu eklenmesi `updatedAt` tarihini yenilediği için sinyalin yaşlanma ağırlığını sıfırlar.
@@ -215,7 +213,7 @@ Kaynaklar: `src/server/github-bidirectional-sync.ts` (`SYNC_STATIC_INVENTORY` sa
 - Tarayıcıdaki 13 IndexedDB deposu (`ct:*`) doğrudan GitHub'a yazılmaz; yalnızca kalıcı karşılıkları olan `cinetrack-data.json`, `data/catalog/*.json` ve `data/profiles/*.json` üzerinden senkronize edilir.
 
 ### 5.3. Büyük Dosya (`>1 MB`) Okuma, Semantik Özet ve Geri Okuma Doğrulaması
-1. **`>1 MB` Git Blob API Yedek Yolu (`fetchRemoteFileRaw`):** GitHub Contents API `1 MB` üstü dosyalarda (örneğin şu an `2,94 MB` olan canlı `data/cinetrack-data.json`) `403 too_large` veya `encoding: "none", content: ""` döndürür. Sistem bu durumu yakalayıp üst dizini (`GET /contents/data`) listeleyerek dosyanın Git `sha` değerini bulur ve `GET /repos/{owner}/{repo}/git/blobs/{sha}` (**Git Blob API**, `25 MiB` üst sınırına kadar) üzerinden base64 içeriği eksiksiz indirir.
+1. **`>1 MB` Git Blob API Yedek Yolu (`fetchRemoteFileRaw`):** GitHub Contents API `1 MB` üstü dosyalarda `403 too_large` veya `encoding: "none", content: ""` döndürür. Sistem bu durumu yakalayıp üst dizini (`GET /contents/data`) listeleyerek dosyanın Git `sha` değerini bulur ve `GET /repos/{owner}/{repo}/git/blobs/{sha}` (**Git Blob API**, `25 MiB` üst sınırına kadar) üzerinden base64 içeriği eksiksiz indirir.
 2. **İki Katmanlı Hash (`rawFileHash` vs `semanticHash`):**
    - `rawFileHash`: Dosyanın ham UTF-8 baytlarının SHA-256 özetidir (yazma sonrası geri okuma doğrulaması için kullanılır).
    - `semanticHash`: Uçucu zaman damgaları (`DataDocument.updatedAt`, `CatalogRecord.firstStoredAt/lastUpdatedAt`, `CatalogManifest.updatedAt`, `DerivedProfile.generatedAt/calculatedAt`) soyulduktan sonra deterministik anahtar sıralı JSON üzerinden hesaplanan SHA-256 özetidir. Yerel ve uzak `semanticHash` eşitse gereksiz commit atılmaz (`skippedNoop`).
@@ -268,12 +266,12 @@ FAZ 0 envanter bulguları doğrultusunda mevcut mimariyi güvence altına alan v
 | :--- | :--- | :--- | :--- | :--- |
 | **ADR-01** | **Yerel-Öncelikli (Local-First) Tek Kaynak JSON + İsteğe Bağlı Özel GitHub Eşitlemesi** | Birincil doğruluk kaynağı yerel `data/cinetrack-data.json` dosyasıdır (`127.0.0.1` dinleme + uzaktan erişimde `CINETRACK_TOKEN`). Harici bulut veritabanı (Supabase, Firebase, PostgreSQL vb.) eklenmez; cihazlar arası eşitleme yalnızca kullanıcının kendi GitHub deposu üzerinden yapılır. | Çevrimdışı tam çalışabilirlik, sıfır üçüncü taraf hesap bağımlılığı, `25 MiB` atomik `.tmp + fsync + rename` ve `7` döner yedek güvencesi (`storage.ts`, `config.ts`). | **ONAYLANDI** |
 | **ADR-02** | **Kanonik Medya Anahtarı (`movie:<id>` / `tv:<id>`)** | Tüm listeler, kataloglar, `disliked`, `hidden`, `deleted_keys`, türetilmiş profil skorları ve IndexedDB depoları içerikleri `<media_type>:<id>` kanonik anahtarıyla indeksler. | TMDB film ve dizi ID uzayları çakışabildiğinden (`movie:100` !== `tv:100`), yalın sayısal ID kullanımı veri ezilmesine yol açar (`mediaKeyOf`, `cinetrack-core.ts:242`). | **ONAYLANDI** |
-| **ADR-03** | **Kişisel Puan Ölçeği (`1..10 \| ''`) ve `personal_rating_cleared` Koruması** | Kullanıcı puanı şemada `1..10` aralığında sayısal değer (UI ve CSV içe aktarmada `1..10` tam sayı), puansız durumda ise kesinlikle `''` (boş dizge) olarak tutulur; puan silindiğinde `personal_rating_cleared: true` işaretlenir. Öneri motoru iç dönüşümde `5` puanı `0.0` nötr kabul eden `[-1, +1]` ölçeğini kullanır. | Canlı verideki `47/47` puanlı kayıt `1..10` tam sayıdır; `personal_rating_cleared` bayrağı çift yönlü eşitlemede silinen puanın eski kopyadan geri gelmesini engeller (`github-bidirectional-sync.ts:540–571`). | **ONAYLANDI** |
+| **ADR-03** | **Kişisel Puan Ölçeği (`1..10 \| ''`) ve `personal_rating_cleared` Koruması** | Kullanıcı puanı şemada `1..10` aralığında sayısal değer (UI ve CSV içe aktarmada `1..10` tam sayı), puansız durumda ise kesinlikle `''` (boş dizge) olarak tutulur; puan silindiğinde `personal_rating_cleared: true` işaretlenir. Öneri motoru iç dönüşümde `5` puanı `0.0` nötr kabul eden `[-1, +1]` ölçeğini kullanır. | Canlı verideki puanlı kayıtların tamamı `1..10` tam sayıdır; `personal_rating_cleared` bayrağı çift yönlü eşitlemede silinen puanın eski kopyadan geri gelmesini engeller (`github-bidirectional-sync.ts:540–571`). | **ONAYLANDI** |
 | **ADR-04** | **Zaman Damgası Semantiği (`addedAt` / `updatedAt` Korunması ve İleriki Fazda `ratedAt` / `completedAt` Ayrımı)** | FAZ 0'da şemaya dokunulmaz; `addedAt` ilk eklenme tarihini, `updatedAt` son mutasyon tarihini temsil eder. Sonraki fazda geriye dönük uyumlu (opsiyonel) `ratedAt?: string` ve `completedAt?: string` alanları eklenerek sinyal sönümlemesi, CSV `WatchedDate` ve Wrapped hesaplamaları `updatedAt` yan etkisinden arındırılacaktır. | Mevcut şemada `ratedAt`/`watchedAt`/`completedAt` bulunmadığı için eski bir kayda not eklenmesi `updatedAt` üzerinden izlenme yılını ve sinyal yaşını değiştirmektedir (`wrapped-summary.ts:116`, `exporters.ts:262`). | **ONAYLANDI** |
 | **ADR-05** | **Üçlü Görünürlük ve Negatif Sinyal Ayrımı (`disliked` vs `hidden` vs `hideListedItems`)** | `preferences.disliked` hem aday havuzundan dışlayan hem de zevk vektörüne `-0.8` ceza veren açık negatif sinyaldir. `preferences.hidden` zevk vektörünü etkilemeyen nötr bastırma alanıdır (ileriki fazda UI aksiyonu bağlanabilir). `hideListedItems` ise yalnızca tarayıcıda yaşayan görünüm filtresidir. | "Bu içeriği görmek istemiyorum ama türünü seviyorum" (`hidden`) ile "Bu tarz içerikleri sevmiyorum" (`disliked`) sinyallerinin öneri kalitesini bozmaması için matematiksel ayrım zorunludur (`cinetrack-core.ts:1037, 4283–4297`). | **ONAYLANDI** |
 | **ADR-06** | **Sezon Bazlı Bölüm Sayacı (`season_progress`) İlerleme Modeli** | Dizilerde bölüm ilerlemesi `1..N` sezonları için `Record<seasonNumber, watchedCount>` haritasıyla tutulur (`Season 0` hariç); eşitlemede sezon bazında `Math.max` uygulanır ve son sezon tamamlandığında `status` otomatik `'completed'` olur. | Binlerce bölümlük dizilerde JSON boyutunu şişirmeden çevrimdışı `+1 Bölüm` akışını ve sezon geçişlerini deterministik olarak çözer (`tv-progress.ts`). Bilinçli sayaç düşürme durumu ileriki fazda `updatedAt` önceliğiyle iyileştirilebilir. | **ONAYLANDI** |
 | **ADR-07** | **Sürüm İmzalı Türetilmiş Önbellekler ve 13 Yalıtılmış İstemci Deposu** | Büyük ve sık değişen keşif verileri (`ct:stock`, `ct:surfaced`, `ct:series-index`, `ct:encodings`, `cinetrack-discovery-history-db` vb.) `localStorage` yerine IndexedDB depolarında tutulur; `data/profiles/<profileId>.json` ve `ct:encodings` (`ENCODING_LAYOUT_VERSION`) parmak izi / şema sürümü uyuşmadığında otomatik geçersiz kılınır. | `5 MB` `localStorage` kotası aşımını engeller ve algoritma güncellemelerinde bayat (stale) skor/vektör kullanımını sıfırlar (`idb-schema-version.ts`, `derived-profile-cache.ts`). | **ONAYLANDI** |
-| **ADR-08** | **Çok Dosyalı GitHub Eşitlemesinde Semantik Hash, Blob API (`>1 MB`) ve `deleted_keys` Mezar Taşı** | GitHub eşitlemesi 4 statik JSON + dinamik `data/profiles/*.json` envanterini kapsar; `>1 MB` dosyalarda Git Blob API devreye girer, uçucu zaman damgaları `semanticHash` dışına çıkarılır, silinen kayıtlar `30` günlük `deleted_keys` mezar taşıyla korunur ve her `PUT` sonrasında SHA-256 geri okuma doğrulaması yapılır. | Canlı `data/cinetrack-data.json` dosyası `2,94 MB` olduğu için standart Contents API (`1 MB` sınırı) tek başına yetersizdir; Blob API + kayıpsız birleştirme veri bütünlüğünü garanti eder (`github-bidirectional-sync.ts:2243–2407`). | **ONAYLANDI** |
+| **ADR-08** | **Çok Dosyalı GitHub Eşitlemesinde Semantik Hash, Blob API (`>1 MB`) ve `deleted_keys` Mezar Taşı** | GitHub eşitlemesi 4 statik JSON + dinamik `data/profiles/*.json` envanterini kapsar; `>1 MB` dosyalarda Git Blob API devreye girer, uçucu zaman damgaları `semanticHash` dışına çıkarılır, silinen kayıtlar `30` günlük `deleted_keys` mezar taşıyla korunur ve her `PUT` sonrasında SHA-256 geri okuma doğrulaması yapılır. | Canlı `data/cinetrack-data.json` dosyası `1 MB` Contents API sınırını aşabildiği için Blob API + kayıpsız birleştirme veri bütünlüğünü garanti eder (`github-bidirectional-sync.ts:2243–2407`). | **ONAYLANDI** |
 
 ---
 

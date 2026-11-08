@@ -15,9 +15,11 @@ import {
 } from '../core/cinetrack-core.ts';
 import { createDataStorage, countTotalItems, type StorageOptions } from './storage.ts';
 import {
+  createContentSecurityPolicy,
   createOriginMiddleware,
   createTmdbRateLimitMiddleware,
   createTokenAuthMiddleware,
+  isLoopbackHostname,
   type SecurityOptions,
 } from './security.ts';
 import { createTmdbProxyService, type TmdbProxyServiceOptions } from './tmdb-proxy.ts';
@@ -44,6 +46,7 @@ export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, Tm
   dataDir?: string;
   persistentStore?: PersistentDataStore;
   security?: SecurityOptions;
+  devMode?: boolean;
   maxDataBytes?: number;
   githubToken?: string;
   githubTokenSource?: TokenSourceKind;
@@ -346,6 +349,12 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   const originGuard = createOriginMiddleware(sec);
   const tokenGuard = createTokenAuthMiddleware(sec);
   const syncStatusGuard = createTokenAuthMiddleware({ ...sec, requireTokenForReads: true });
+  // Yerel masaüstü kullanımında okumalar açık kalır; sunucu loopback dışına
+  // bağlandığında kişisel veri GET'leri de token ister.
+  const personalReadGuard = createTokenAuthMiddleware({
+    ...sec,
+    requireTokenForReads: !isLoopbackHostname((sec.bindHost ?? '127.0.0.1').trim() || '127.0.0.1'),
+  });
   const tmdbRateLimiter = createTmdbRateLimitMiddleware(sec);
 
   const app = express();
@@ -355,13 +364,13 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   }
 
   // Temel güvenlik başlıkları (BUG-12.1)
+  const contentSecurityPolicy = createContentSecurityPolicy({
+    allowInlineScripts: Boolean(options.devMode),
+  });
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://image.tmdb.org https://img.tmdb.org https://*.tmdb.org https://*.themoviedb.org https://artworks.thetvdb.com https://*.thetvdb.com; connect-src 'self' https://api.themoviedb.org https://api4.thetvdb.com; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'"
-    );
+    res.setHeader('Content-Security-Policy', contentSecurityPolicy);
     if (!process.env.APP_URL) {
       res.setHeader('X-Frame-Options', 'DENY');
     }
@@ -419,7 +428,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app.get('/api/tvdb', tmdbRateLimiter, tvdbProxy.handleTvdb);
   app.post('/api/tvdb-login', originGuard, tokenGuard, tvdbProxy.handleLogin);
 
-  app.get('/api/data', tokenGuard, async (_req: Request, res: Response) => {
+  app.get('/api/data', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const doc = await storage.readDataAsync();
     if (storage.hasUnrecoverableCorruption()) {
@@ -493,17 +502,17 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/isolated/profile', tokenGuard, async (_req: Request, res: Response) => {
+  app.get('/api/isolated/profile', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(await storage.readIsolatedProfileAsync());
   });
 
-  app.get('/api/isolated/user-lists', tokenGuard, async (_req: Request, res: Response) => {
+  app.get('/api/isolated/user-lists', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json(await storage.readIsolatedUserListsAsync());
   });
 
-  app.get('/api/data/backups', tokenGuard, async (_req: Request, res: Response) => {
+  app.get('/api/data/backups', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ backups: await storage.listBackupsAsync() });
   });
@@ -591,7 +600,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/cinema-kunye', tokenGuard, async (_req: Request, res: Response) => {
+  app.get('/api/cinema-kunye', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const doc = await persistentStore.readCinemaKunyeAsync();
@@ -989,7 +998,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/profiles/derived/:profileId', tokenGuard, async (req: Request, res: Response) => {
+  app.get('/api/profiles/derived/:profileId', personalReadGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const profileId = String(req.params.profileId || '');
@@ -1339,7 +1348,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
-  app.get('/api/backup/exports/:fileName', tokenGuard, async (req: Request, res: Response) => {
+  app.get('/api/backup/exports/:fileName', personalReadGuard, async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const rawName = String(req.params.fileName || '').trim();
     if (!EXPORT_FILE_NAME_PATTERN.test(rawName)) {
@@ -1372,6 +1381,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   // Faz 6: Taste Engine HTTP uçları
   app.use(
     '/api/taste',
+    personalReadGuard,
     createTasteRouter(resolvedDataDir, { tmdbApiKey: options.tmdbApiKey })
   );
 

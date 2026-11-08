@@ -66,8 +66,6 @@ import {
   selectBalancedRecommendations,
   CURRENT_SCHEMA_VERSION,
   ENGINE_VERSION,
-  loadPersistentTasteMap,
-  savePersistentTasteMap,
   updateTasteMapWithBatch,
   markTasteMapItemStatus,
   PersistentTasteMapData,
@@ -77,8 +75,6 @@ import {
   isTasteMapCacheValid,
   recordDisplayedRecommendations,
   filterOutLastRecommendedCandidates,
-  loadPersistentPoolData,
-  savePersistentPoolData,
   hydratePoolFromCatalog,
   topUpFilteredCandidates,
   matchesSelectedGenre,
@@ -88,9 +84,15 @@ import {
   HIDE_LISTED_CATEGORIES,
   filterHiddenUserRegisteredItems,
   normalizeDeletedKeys,
-  hydrateDiscoveryHistoryIdb,
-  hydrateCandidatePoolsIdb,
 } from './core/cinetrack-core.ts';
+import {
+  hydrateCandidatePoolsIdb,
+  hydrateDiscoveryHistoryIdb,
+  loadPersistentPoolData,
+  loadPersistentTasteMap,
+  savePersistentPoolData,
+  savePersistentTasteMap,
+} from './services/discovery-storage.ts';
 import {
   fetchTmdb,
   fetchTmdbCached,
@@ -1278,21 +1280,29 @@ export function App() {
 
         // Sunucuya ulaşılamadıysa ve localStorage kotadan dolayı boş kaldıysa IndexedDB yedeğinden kurtar
         if (savedItemsRef.current.length === 0) {
-          const idbCompact = await loadUserListsIdb(activeProfileIdRef.current);
-          if (idbCompact.length > 0 && savedItemsRef.current.length === 0) {
-            const recovered = idbCompact
-              .map((it) =>
-                normalizeSavedItem({
-                  ...it,
-                  title: `${it.media_type === 'tv' ? 'Dizi' : 'Film'} #${it.id}`,
-                })
-              )
-              .filter(Boolean) as SavedItem[];
-            if (recovered.length > 0) {
-              applyingRemoteSnapshotRef.current = true;
-              savedItemsRef.current = recovered;
-              setSavedItems(recovered);
-            }
+          const requestedProfileId = activeProfileIdRef.current;
+          const idbCompact = await loadUserListsIdb(requestedProfileId);
+          if (
+            requestedProfileId !== activeProfileIdRef.current ||
+            savedItemsRef.current.length > 0 ||
+            idbCompact.length === 0
+          ) {
+            return;
+          }
+          const recovered = idbCompact
+            .map((it) =>
+              normalizeSavedItem({
+                ...it,
+                title:
+                  it.title ||
+                  `${it.media_type === 'tv' ? 'Dizi' : 'Film'} #${it.id}`,
+              })
+            )
+            .filter(Boolean) as SavedItem[];
+          if (recovered.length > 0) {
+            applyingRemoteSnapshotRef.current = true;
+            savedItemsRef.current = recovered;
+            setSavedItems(recovered);
           }
         }
       })

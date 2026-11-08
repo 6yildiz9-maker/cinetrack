@@ -65,6 +65,6 @@ export function getRelationshipLinkColor(type: RelationshipType): string {
     case 'contrast':
       return '#e0a064';
     case 'personal':
-      return '#676c75';
+      return '#7b808b';
   }
 }
