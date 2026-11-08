@@ -5,5 +5,5 @@
     "checkJs": false,
     "noEmit": true
   },
-  "include": ["src", "server.ts", "tests/**/*.mjs"]
+  "include": ["src", "server.ts", "tests/**/*.mjs", "e2e/**/*.ts", "playwright.config.ts"]
 }

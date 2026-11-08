@@ -31,6 +31,7 @@ import type {
   SyncComparisonSummary,
   SyncSideSummary,
 } from '../core/sync-display.ts';
+import { BRAND_SYNC_USER_AGENT } from '../shared/brand.ts';
 import { GitHubBidirectionalSyncManager } from './github-bidirectional-sync.ts';
 import type { createDataStorage } from './storage.ts';
 
@@ -1268,7 +1269,7 @@ export class PersistentDataStore {
           headers: {
             Authorization: `Bearer ${activeTok}`,
             Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'Cinethos-Sync-Agent',
+            'User-Agent': BRAND_SYNC_USER_AGENT,
           },
         });
         if (getRes.status === 401) {
@@ -1279,7 +1280,7 @@ export class PersistentDataStore {
               headers: {
                 Authorization: `Bearer ${activeTok}`,
                 Accept: 'application/vnd.github.v3+json',
-                'User-Agent': 'Cinethos-Sync-Agent',
+                'User-Agent': BRAND_SYNC_USER_AGENT,
               },
             });
           }
@@ -2328,7 +2329,7 @@ export class PersistentDataStore {
       const baseHeaders = {
         Authorization: `Bearer ${activeToken}`,
         Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'Cinethos-Sync-Agent',
+        'User-Agent': BRAND_SYNC_USER_AGENT,
       };
 
       // 1. Repo varlık ve erişim kontrolü
@@ -2684,7 +2685,7 @@ export class PersistentDataStore {
         headers: {
           Authorization: `Bearer ${this.githubToken}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Cinethos-Sync-Agent',
+          'User-Agent': BRAND_SYNC_USER_AGENT,
         },
       });
       if (res.status !== 200) return null;
@@ -2728,7 +2729,7 @@ export class PersistentDataStore {
     const makeAuthHeaders = (tok: string) => ({
       Authorization: `Bearer ${tok}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'Cinethos-Sync-Agent',
+      'User-Agent': BRAND_SYNC_USER_AGENT,
     });
     const targetBranch = options?.branchToUse || this.githubBranch;
     const isEmptyRepo = Boolean(options?.isEmptyRepo);
@@ -3834,7 +3835,7 @@ export class PersistentDataStore {
         headers: {
           Authorization: `Bearer ${this.githubToken}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Cinethos-Sync-Agent',
+          'User-Agent': BRAND_SYNC_USER_AGENT,
         },
       });
       if (res.status !== 200) return null;
@@ -3930,7 +3931,7 @@ export class PersistentDataStore {
     const baseHeaders = {
       Authorization: `Bearer ${this.githubToken}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'Cinethos-Sync-Agent',
+      'User-Agent': BRAND_SYNC_USER_AGENT,
     };
     const targetBranch = this.githubBranch;
 

@@ -9,6 +9,7 @@ import {
 import { fetchTmdb } from '../services/api.ts';
 import { TmdbItem } from '../types/tmdb.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
+import { BRAND_NAME } from '../shared/brand.ts';
 
 interface HeaderProps {
   profileName: string;
@@ -229,8 +230,8 @@ export const Header: React.FC<HeaderProps> = ({
             </svg>
           </span>
           <span className="brand-title">
-            <span className="brand-title-lead">Cine</span>
-            <span className="brand-title-accent">thos</span>
+            <span className="brand-title-lead">{BRAND_NAME.slice(0, 4)}</span>
+            <span className="brand-title-accent">{BRAND_NAME.slice(4)}</span>
           </span>
         </div>
 
@@ -462,7 +463,7 @@ export const Header: React.FC<HeaderProps> = ({
           {onOpenTvdbStock && (
             <button
               type="button"
-              className="btn profile-btn"
+              className="btn profile-btn tvdb-stock-btn"
               onClick={onOpenTvdbStock}
               title={`TheTVDB v4 Stoğu: ${tvdbCount ?? 0} Yapım • İçe/Dışa Aktar`}
               aria-label={`TVDB Stok (${tvdbCount ?? 0}) ve İçe Dışa Aktar`}

@@ -9,6 +9,7 @@ import {
   type Preferences,
   type SavedItem,
 } from './cinetrack-core.ts';
+import { BRAND_NAME } from '../shared/brand.ts';
 import {
   cosineSimilarity,
   ENCODING_LAYOUT_VERSION,
@@ -826,7 +827,7 @@ export function buildRelationshipGraph(
         confidence: scores.has(relationshipNodeKey(item)) ? 82 : item.personal_rating ? 70 : 45,
         evidence: [
           scores.has(relationshipNodeKey(item))
-            ? 'Mevcut Cinethos kişisel puanlama sinyalleri kullanıldı.'
+            ? `Mevcut ${BRAND_NAME} kişisel puanlama sinyalleri kullanıldı.`
             : item.personal_rating
               ? `Kullanıcının kişisel puanı: ${item.personal_rating}/10.`
               : 'Kişisel puan bulunmadığı için nötr konum kullanıldı.',

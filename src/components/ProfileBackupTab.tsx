@@ -10,6 +10,7 @@ import {
   type ServerBackupMetadata,
 } from '../services/api.ts';
 import { recordManualBackupSuccess } from '../services/auto-backup-service.ts';
+import { BRAND_NAME, brandProfileFileName } from '../shared/brand.ts';
 import type { RemoteSyncStatusPayload } from './ProfileGitHubSyncSection.tsx';
 
 interface ProfileBackupTabProps {
@@ -204,7 +205,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
       if (report.excelBackup.ok && report.excelBackup.downloadUrl) {
         await triggerVerifiedBlobDownload({
           downloadUrl: report.excelBackup.downloadUrl,
-          fileName: report.excelBackup.fileName || 'Cinethos_Profile.xlsx',
+          fileName: report.excelBackup.fileName || brandProfileFileName('xlsx'),
           kind: 'xlsx',
           expectedSizeBytes: report.excelBackup.sizeBytes,
           expectedSha256: report.excelBackup.sha256,
@@ -226,7 +227,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
       <div className="profile-tools-section">
         <strong className="profile-tools-heading">JSON Profil Yedeği</strong>
         <p className="provider-message">
-          Cinethos profilinizi, izleme listenizi ve ayarlarınızı standart JSON formatında dışa aktarın veya geri yükleyin.
+          {BRAND_NAME} profilinizi, izleme listenizi ve ayarlarınızı standart JSON formatında dışa aktarın veya geri yükleyin.
         </p>
         <div className="csv-actions-row">
           <button
@@ -407,7 +408,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
                     void triggerVerifiedBlobDownload({
                       downloadUrl: excelExportReport.excelBackup.downloadUrl!,
                       fileName:
-                        excelExportReport.excelBackup.fileName || 'Cinethos_Profile.xlsx',
+                        excelExportReport.excelBackup.fileName || brandProfileFileName('xlsx'),
                       kind: 'xlsx',
                       expectedSizeBytes: excelExportReport.excelBackup.sizeBytes,
                       expectedSha256: excelExportReport.excelBackup.sha256,
@@ -428,7 +429,7 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
                     void triggerVerifiedBlobDownload({
                       downloadUrl: excelExportReport.jsonBackup.downloadUrl!,
                       fileName:
-                        excelExportReport.jsonBackup.fileName || 'Cinethos_Profile.json',
+                        excelExportReport.jsonBackup.fileName || brandProfileFileName('json'),
                       kind: 'json',
                       expectedSizeBytes: excelExportReport.jsonBackup.sizeBytes,
                       expectedSha256: excelExportReport.jsonBackup.sha256,

@@ -14,6 +14,7 @@ import {
   type CinemaKunyeDocument,
 } from './cinema-kunye.ts';
 import { buildSavedIndex, findSaved, type SavedIndex } from './saved-index.ts';
+import { BRAND_NAME } from '../shared/brand.ts';
 import {
   getCandidatePoolStorePort,
 } from './candidate-pool-store-port.ts';
@@ -649,10 +650,10 @@ export function parseBackupText(
   }
   const backup = JSON.parse(text);
   if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
-    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
+    throw new Error(`Bu dosya geçerli bir ${BRAND_NAME} yedeği değil.`);
   }
   if (![1, 2, 3].includes(backup.version)) {
-    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
+    throw new Error(`Bu dosya geçerli bir ${BRAND_NAME} yedeği değil.`);
   }
 
   let rawItems: any[] = [];
@@ -680,7 +681,7 @@ export function parseBackupText(
     rawFavoriteActors = Array.isArray(backup.favoriteActors) ? backup.favoriteActors : [];
     isDemo = backup.isDemo === true;
   } else {
-    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
+    throw new Error(`Bu dosya geçerli bir ${BRAND_NAME} yedeği değil.`);
   }
 
   if (

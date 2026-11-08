@@ -16,6 +16,7 @@ import { Toast } from './components/Toast.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
 import { ConflictBanner } from './components/ConflictBanner.tsx';
+import { BRAND_NAME } from './shared/brand.ts';
 import { useAppModals } from './hooks/useAppModals.ts';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -1306,7 +1307,7 @@ export function App() {
           }
         }
       })
-      .catch((error) => console.error('Cinethos: başlangıç verisi eşitlenemedi.', error))
+      .catch((error) => console.error(`${BRAND_NAME}: başlangıç verisi eşitlenemedi.`, error))
       .finally(() => setServerSyncReady(true));
 
     // Load genres
@@ -1355,7 +1356,7 @@ export function App() {
           : '';
       const when = days === 0 ? 'bugün' : `${days} gün içinde`;
 
-      const notification = new Notification('Cinethos yayın hatırlatıcısı', {
+      const notification = new Notification(`${BRAND_NAME} yayın hatırlatıcısı`, {
         body: `${displayTitle(item)} ${when} yayınlanıyor${episodeTag}.`,
       });
       notification.onclick = () => {
@@ -1512,7 +1513,7 @@ export function App() {
               tvCount: stockSeries.length,
             });
 
-            console.info('[Cinethos Stock] loadStockIdb (arındırılmış):', {
+            console.info(`[${BRAND_NAME} Stock] loadStockIdb (arındırılmış):`, {
               movies: stockMovies.length,
               tv: stockSeries.length,
               updatedAt: stock.updatedAt || null,
@@ -4110,7 +4111,7 @@ export function App() {
       <footer>
         <div className="shell footer-shell">
           <div>
-            Cinethos | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
+            {BRAND_NAME} | Kişisel listen bu tarayıcıda saklanır. Katalog kaynağı:{' '}
             <a
               href="https://www.themoviedb.org/"
               target="_blank"

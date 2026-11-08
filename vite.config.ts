@@ -2,9 +2,20 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { BRAND_APP_TITLE, BRAND_NAME, BRAND_TAGLINE } from './src/shared/brand.ts';
+
+const brandHtmlPlugin = {
+  name: 'brand-html',
+  transformIndexHtml(html: string) {
+    return html
+      .replaceAll('%BRAND_NAME%', BRAND_NAME)
+      .replaceAll('%BRAND_TAGLINE%', BRAND_TAGLINE);
+  },
+};
 
 export default defineConfig({
   plugins: [
+    brandHtmlPlugin,
     tailwindcss(),
     react(),
     VitePWA({
@@ -12,9 +23,9 @@ export default defineConfig({
       includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png', 'sw-poster-lru.js'],
       manifest: {
         id: '/',
-        name: 'Cinethos — Kişisel Film & Dizi Kataloğu',
-        short_name: 'Cinethos',
-        description: 'TMDB destekli kişisel film ve dizi izleme kataloğu, deterministik zevk haritası ve ilişki keşif motoru.',
+        name: BRAND_APP_TITLE,
+        short_name: BRAND_NAME,
+        description: `${BRAND_TAGLINE}, deterministik zevk haritası ve ilişki keşif motoru.`,
         theme_color: '#0a0b0e',
         background_color: '#0a0b0e',
         display: 'standalone',

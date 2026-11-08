@@ -90,6 +90,29 @@
     align-items: center;
     gap: 10px;
     flex-shrink: 0;
+    min-width: 0;
+  }
+
+  /* Dar ekranlarda üst çubuk eylemleri taşmasın: metin etiketleri yerine ikon/avatar. */
+  @media (max-width: 480px) {
+    .topbar-actions {
+      gap: 6px;
+    }
+
+    .topbar-source-badge,
+    .tvdb-stock-btn {
+      display: none !important;
+    }
+
+    .profile-name-text,
+    .add-btn-text {
+      display: none;
+    }
+
+    .topbar-actions .profile-btn,
+    .topbar-actions .add-custom-btn {
+      padding: 7px 8px;
+    }
   }
 
   .pwa-install-btn {

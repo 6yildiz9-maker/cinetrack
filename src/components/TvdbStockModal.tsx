@@ -24,6 +24,7 @@ import {
 } from '../services/stock-import-export.ts';
 import { loadStockIdb, type StockDepot } from '../services/storage-idb.ts';
 import type { TmdbItem } from '../types/tmdb.ts';
+import { BRAND_NAME } from '../shared/brand.ts';
 
 export interface TvdbStockModalProps {
   isOpen: boolean;
@@ -938,7 +939,7 @@ export const TvdbStockModal: React.FC<TvdbStockModalProps> = ({
 
         {/* Modal Footer */}
         <div className="flex items-center justify-between px-6 py-3.5 border-t border-white/10 bg-[#16181d]/85 shrink-0 text-xs text-[#8b9099]">
-          <span>Cinethos • Bağımsız TVDB v4 & TMDB Çoklu Kaynak Kataloğu</span>
+          <span>{BRAND_NAME} • Bağımsız TVDB v4 & TMDB Çoklu Kaynak Kataloğu</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg border border-white/10 text-[#eef0f2] hover:bg-white/5 transition-colors font-medium"

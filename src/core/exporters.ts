@@ -21,6 +21,7 @@ import {
   type CinemaKunyeDocument,
   type CinemaKunyeEntry,
 } from './cinema-kunye.ts';
+import { BRAND_CALENDAR_NAME, BRAND_NAME } from '../shared/brand.ts';
 
 export interface TasteDnaTrait {
   label: string;
@@ -874,12 +875,12 @@ function addDaysCompact(yyyyMmDd: string, days: number): string {
 /**
  * Generates an RFC 5545 compliant .ics iCalendar feed for upcoming episodes and movies.
  */
-export function generateIcsCalendar(events: CalendarReleaseEvent[], calendarName = 'Cinethos Yayın Takvimi'): string {
+export function generateIcsCalendar(events: CalendarReleaseEvent[], calendarName = BRAND_CALENDAR_NAME): string {
   const dtStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Cinethos//Release Calendar TR//TR',
+    `PRODID:-//${BRAND_NAME}//Release Calendar TR//TR`,
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     `X-WR-CALNAME:${escapeIcsText(calendarName)}`,

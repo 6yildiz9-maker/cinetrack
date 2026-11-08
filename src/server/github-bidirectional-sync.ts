@@ -17,6 +17,7 @@ import {
   type DataDocument,
   type Profile,
 } from '../core/cinetrack-core.ts';
+import { BRAND_NAME, BRAND_SYNC_USER_AGENT } from '../shared/brand.ts';
 import {
   mergeTwoSavedItemsLossless,
   reconcileUserDataDocumentsLossless,
@@ -772,7 +773,7 @@ function inspectUserDataRawContent(
         recordCount: 0,
         uniqueKeyCount: 0,
         sha,
-        error: 'cinetrack-data.json beklenen Cinethos veri şemasına uymuyor.',
+        error: `cinetrack-data.json beklenen ${BRAND_NAME} veri şemasına uymuyor.`,
         errorCategory: 'schema_mismatch',
       },
     };
@@ -1868,7 +1869,7 @@ export class GitHubBidirectionalSyncManager {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Cinethos-Sync-Agent',
+          'User-Agent': BRAND_SYNC_USER_AGENT,
         },
       });
       if (res.status !== 200) {
@@ -1945,7 +1946,7 @@ export class GitHubBidirectionalSyncManager {
     const makeHeaders = (tok: string) => ({
       Authorization: `Bearer ${tok}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'Cinethos-Sync-Agent',
+      'User-Agent': BRAND_SYNC_USER_AGENT,
     });
 
     try {
@@ -2115,7 +2116,7 @@ export class GitHubBidirectionalSyncManager {
           const dlRes = await fetch(fileData.download_url, {
             headers: {
               Authorization: `Bearer ${cfg.token}`,
-              'User-Agent': 'Cinethos-Sync-Agent',
+              'User-Agent': BRAND_SYNC_USER_AGENT,
             },
           });
           if (dlRes.status === 200) {
@@ -2180,7 +2181,7 @@ export class GitHubBidirectionalSyncManager {
         headers: {
           Authorization: `Bearer ${cfg.token}`,
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Cinethos-Sync-Agent',
+          'User-Agent': BRAND_SYNC_USER_AGENT,
         },
       });
       if (res.status === 401 && typeof this.deps.store.recoverGitHubTokenOn401 === 'function') {
@@ -2191,7 +2192,7 @@ export class GitHubBidirectionalSyncManager {
             headers: {
               Authorization: `Bearer ${cfg.token}`,
               Accept: 'application/vnd.github.v3+json',
-              'User-Agent': 'Cinethos-Sync-Agent',
+              'User-Agent': BRAND_SYNC_USER_AGENT,
             },
           });
         }

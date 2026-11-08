@@ -1,6 +1,7 @@
 import type ExcelJS from 'exceljs';
 import type { Profile, SavedItem } from '../core/cinetrack-core.ts';
 import { buildTasteDnaProfile, type TasteDnaProfile } from '../core/exporters.ts';
+import { BRAND_NAME } from '../shared/brand.ts';
 import {
   computeProfileCentroid,
   cosineSimilarity,
@@ -265,7 +266,7 @@ export function populateTasteDnaWorksheet(
   // Title banner
   ws.mergeCells('A1:E1');
   const titleCell = ws.getCell('A1');
-  titleCell.value = `Cinethos Zevk İmzası (Taste DNA) & Zevk Kayması — ${analysis.dna.profileName}`;
+  titleCell.value = `${BRAND_NAME} Zevk İmzası (Taste DNA) & Zevk Kayması — ${analysis.dna.profileName}`;
   titleCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.fill = {
     type: 'pattern',

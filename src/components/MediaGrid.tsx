@@ -4,6 +4,7 @@ import { ActorRecommendationsSection } from './ActorRecommendationsSection.tsx';
 import { SeriesRecommendationsSection } from './SeriesRecommendationsSection.tsx';
 import { SeasonCalendarSection } from './SeasonCalendarSection.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
+import { BRAND_NAME } from '../shared/brand.ts';
 import {
   SavedItem,
   FavoriteActorInfo,
@@ -225,7 +226,7 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
         <div className="catalog-source-banner banner-demo" role="status">
           <span className="catalog-source-banner-icon">🟡</span>
           <div>
-            <strong>Örnek Katalog Modu:</strong> TMDB_API_KEY tanımlanmadığından içerikler Cinethos örnek katalog verisiyle sunulmaktadır.
+            <strong>Örnek Katalog Modu:</strong> TMDB_API_KEY tanımlanmadığından içerikler {BRAND_NAME} örnek katalog verisiyle sunulmaktadır.
           </div>
         </div>
       )}
