@@ -541,3 +541,252 @@ test('buildRelationshipGraph bozuk ve eksik metaverili yapımlarla güvenle çal
     assert.ok(Number.isFinite(node.personalScore));
   }
 });
+
+test('Kriter 1: Saf tür benzerliği tek başına anlamsal (semantic) ilişki üretmez', () => {
+  // Aday A ve B sadece tür paylaşır (Komedi + Dram: 35, 18), ama özetleri tamamen farklıdır ve ortak konsept / anahtar kelime içermez
+  const itemA = {
+    id: 101,
+    media_type: 'movie',
+    title: 'Kahkaha Dolu Günler',
+    overview: 'Gülümsemeler eşliğinde bir kasaba hikayesi anlatılır.',
+    genre_ids: [35, 18],
+  };
+  const itemB = {
+    id: 102,
+    media_type: 'movie',
+    title: 'Kayıp Balıkçı Kulübesi',
+    overview: 'Sahilde tek başına yaşayan bir ihtiyarın sessiz bekleyişi.',
+    genre_ids: [35, 18],
+  };
+
+  const graph = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'semantic-test',
+    candidates: [itemA, itemB],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:101',
+    relationshipFilter: 'semantic',
+  });
+
+  const semanticLink = graph.links.find(
+    (l) => l.type === 'semantic' && (l.target === 'movie:102' || (typeof l.target === 'object' && l.target.id === 'movie:102')),
+  );
+  assert.equal(semanticLink, undefined, 'Sadece tür benzerliği olan iki yapım arasında semantic link kurulmamalıdır');
+});
+
+test('Kriter 2: Türkçe ve İngilizce konsept eşleşmesi (bilingual normalization) güçlü anlamsal bağ kurar', () => {
+  // Item TR: "zaman yolculuğu", "kıyamet sonrası"
+  const itemTR = {
+    id: 201,
+    media_type: 'movie',
+    title: 'Karanlık Döngü',
+    overview: 'Geleceği kurtarmak için geçmişe yapılan bir zaman yolculuğu ve kıyamet sonrası tehlikeler.',
+    genre_ids: [878],
+  };
+  // Item EN: "time travel", "post-apocalyptic"
+  const itemEN = {
+    id: 202,
+    media_type: 'movie',
+    title: 'Chrono Rift',
+    overview: 'A daring time travel mission in a post-apocalyptic wasteland to restore humanity.',
+    genre_ids: [878],
+  };
+
+  const graph = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'bilingual-test',
+    candidates: [itemTR, itemEN],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:201',
+    relationshipFilter: 'semantic',
+  });
+
+  const semanticLink = graph.links.find(
+    (l) => l.type === 'semantic' && (l.target === 'movie:202' || (typeof l.target === 'object' && l.target.id === 'movie:202')),
+  );
+  assert.ok(semanticLink, 'Bilingual tematik konseptler semantic link oluşturmalıdır');
+  assert.ok(semanticLink.score >= 50, 'Ortak konseptler yüksek semantic puanı sağlamalıdır');
+  assert.ok(semanticLink.evidenceTypes?.includes('concept'), 'evidenceTypes içinde concept bulunmalıdır');
+  assert.ok(
+    semanticLink.features?.matchedConcepts?.some((c) => c.includes('Zaman Yolculuğu') || c.includes('Kıyamet')),
+    'matchedConcepts içinde Türkçe etiket bulunmalıdır',
+  );
+  assert.ok(
+    (semanticLink.breakdown?.conceptContribution || 0) > 0,
+    'breakdown.conceptContribution pozitif olmalıdır',
+  );
+});
+
+test('Kriter 3: TMDB anahtar kelimeleri (keywords) anlamsal ilişkide doğru kullanılır ve atfedilir', () => {
+  const itemWithKw1 = {
+    id: 301,
+    media_type: 'movie',
+    title: 'Siber Tehdit',
+    overview: 'Dijital dünyada geçen bir siber saldırı.',
+    genre_ids: [878, 53],
+    keywords: [
+      { id: 4565, name: 'dystopia' },
+      { id: 9999, name: 'cyberpunk' },
+    ],
+  };
+  const itemWithKw2 = {
+    id: 302,
+    media_type: 'movie',
+    title: 'Neon Şehir',
+    overview: 'Fütüristik bir metropolde karanlık olaylar.',
+    genre_ids: [878, 53],
+    keywords: [
+      { id: 4565, name: 'dystopia' },
+      { id: 9999, name: 'cyberpunk' },
+    ],
+  };
+
+  const graph = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'keyword-test',
+    candidates: [itemWithKw1, itemWithKw2],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:301',
+    relationshipFilter: 'semantic',
+  });
+
+  const link = graph.links.find(
+    (l) => l.type === 'semantic' && (l.target === 'movie:302' || (typeof l.target === 'object' && l.target.id === 'movie:302')),
+  );
+  assert.ok(link, 'Ortak anahtar kelimeler semantic ilişki sağlamalıdır');
+  assert.ok(link.evidenceTypes?.includes('keyword'), 'evidenceTypes içinde keyword bulunmalıdır');
+  assert.ok(
+    link.features?.matchedKeywords?.some((kw) => kw.toLowerCase().includes('dystopia') || kw.toLowerCase().includes('cyberpunk')),
+    'matchedKeywords içinde TMDB anahtar kelimeleri yer almalıdır',
+  );
+});
+
+test('Kriter 4: Yönetmen ve Senarist ayrı kanıt türleri (evidenceTypes) olarak ayrıştırılır', () => {
+  const movieA = {
+    id: 401,
+    media_type: 'movie',
+    title: 'Rüya Başlangıcı',
+    overview: 'Zihin hırsızlığı üzerine bir hikaye.',
+    genre_ids: [878, 28],
+    crew: [
+      { id: 525, name: 'Christopher Nolan', job: 'Director' },
+      { id: 625, name: 'Jonathan Nolan', job: 'Screenplay' },
+    ],
+    cast: [{ id: 6193, name: 'Leonardo DiCaprio', character: 'Cobb' }],
+  };
+  const movieB = {
+    id: 402,
+    media_type: 'movie',
+    title: 'Yıldızlararası Yolculuk',
+    overview: 'İnsanlığın yeni yuva arayışı.',
+    genre_ids: [878, 18],
+    crew: [
+      { id: 525, name: 'Christopher Nolan', job: 'Director' },
+      { id: 625, name: 'Jonathan Nolan', job: 'Screenplay' },
+    ],
+    cast: [{ id: 10297, name: 'Matthew McConaughey', character: 'Cooper' }],
+  };
+
+  const graph = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'crew-test',
+    candidates: [movieA, movieB],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:401',
+    relationshipFilter: 'person',
+  });
+
+  const personLink = graph.links.find(
+    (l) => l.type === 'person' && (l.target === 'movie:402' || (typeof l.target === 'object' && l.target.id === 'movie:402')),
+  );
+  assert.ok(personLink, 'Ortak yönetmen ve senarist person bağı kurmalıdır');
+  assert.ok(personLink.evidenceTypes?.includes('director'), 'evidenceTypes içinde director bulunmalıdır');
+  assert.ok(personLink.evidenceTypes?.includes('writer'), 'evidenceTypes içinde writer bulunmalıdır');
+  assert.ok(
+    personLink.features?.matchedDirectors?.includes('Christopher Nolan'),
+    'features.matchedDirectors Christopher Nolan içermelidir',
+  );
+  assert.ok(
+    personLink.features?.matchedWriters?.includes('Jonathan Nolan'),
+    'features.matchedWriters Jonathan Nolan içermelidir',
+  );
+  assert.ok((personLink.breakdown?.directorContribution || 0) > 0, 'directorContribution pozitif olmalıdır');
+  assert.ok((personLink.breakdown?.writerContribution || 0) > 0, 'writerContribution pozitif olmalıdır');
+});
+
+test('Kriter 5: Atmosferik bağ tek bir kelime ile yetinmez; bağlamsal küme arar ve zıt ton çatışmasını reddeder', () => {
+  // A: Karanlık psikolojik gerilim / cinayet
+  const darkThriller = {
+    id: 501,
+    media_type: 'movie',
+    title: 'Gece Cinayeti',
+    overview: 'Karanlık sokaklarda işlenen bir cinayet sonrasında gerilimli ve kasvetli bir kovalamaca başlar.',
+    genre_ids: [27, 53, 9648], // Korku, Gerilim, Gizem
+  };
+  // B: Çocuklar için renkli neşeli animasyon komedisi, ama özetinde tesadüfen "gece" kelimesi geçiyor
+  const lightAnimation = {
+    id: 502,
+    media_type: 'movie',
+    title: 'Mutlu Hayvanlar',
+    overview: 'Neşeli çiftlikte sevimli hayvanlar gece şarkı söyleyip eğlenirler.',
+    genre_ids: [16, 35, 10751], // Animasyon, Komedi, Aile
+  };
+
+  const graph = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'atmosphere-test',
+    candidates: [darkThriller, lightAnimation],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:501',
+    relationshipFilter: 'atmosphere',
+  });
+
+  const atmoLink = graph.links.find(
+    (l) => l.type === 'atmosphere' && (l.target === 'movie:502' || (typeof l.target === 'object' && l.target.id === 'movie:502')),
+  );
+  assert.equal(atmoLink, undefined, 'Zıt ton ve tür çatışması olan yapımlar arasında atmosferik bağ kurulmamalıdır');
+});
+
+test('Kriter 6: Her ilişkide güven puanı (confidenceScore ∈ [0, 1]) ve özellik atıfı bulunur', () => {
+  const itemA = {
+    id: 601,
+    media_type: 'movie',
+    title: 'Mars Görevi',
+    overview: 'Yapay zeka sistemleri kontrolündeki uzay gemisi kızıl gezegene iner.',
+    genre_ids: [878],
+  };
+  const itemB = {
+    id: 602,
+    media_type: 'movie',
+    title: 'Yapay Akıl',
+    overview: 'Yapay zeka ve robotik sistemlerin insanlıkla olan mücadelesi.',
+    genre_ids: [878],
+  };
+
+  const graph = buildRelationshipGraph({
+    mode: 'relationships',
+    profileId: 'confidence-test',
+    candidates: [itemA, itemB],
+    savedItems: [],
+    preferences,
+    mediaFilter: 'movie',
+    sourceKey: 'movie:601',
+  });
+
+  assert.ok(graph.links.length > 0, 'En az 1 bağlantı bulunmalıdır');
+  const link = graph.links[0];
+  assert.ok(typeof link.confidence === 'number' && link.confidence >= 0 && link.confidence <= 100);
+  assert.ok(typeof link.confidenceScore === 'number' && link.confidenceScore >= 0 && link.confidenceScore <= 1.0);
+  assert.ok(link.features != null, 'link.features mevcut olmalıdır');
+  assert.ok(Array.isArray(link.evidenceTypes), 'link.evidenceTypes dizi olmalıdır');
+});

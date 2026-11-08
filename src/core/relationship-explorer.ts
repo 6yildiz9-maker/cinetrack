@@ -35,211 +35,71 @@ import {
   getRelationshipNodeColor,
   getRelationshipLinkColor,
 } from './relationship-wordlists.ts';
+import {
+  RELATIONSHIP_MODEL_VERSION,
+  RELATIONSHIP_GRAPH_SCHEMA_VERSION,
+  computeRelationshipProfileSignature,
+  computeRelationshipPoolSignature,
+  deriveMetadataCoverage,
+  personEvidenceConfidence,
+  tokenize,
+  overlap,
+  jaccard,
+  getCollectionId,
+  extractKeywordData,
+  extractSemanticConcepts,
+  classifyCrewAndCast,
+  evaluateAtmosphereCoOccurrence,
+  type MediaFilter,
+  type RelationshipStatusSignal,
+  type RelationshipMetadataCoverage,
+  type RelationshipContent,
+  type ClassifiedCrewCast,
+  type KeywordData,
+  type RelationshipMode,
+  type RelationshipType,
+  type RelationshipGraphNode,
+  type RelationshipEvidenceDetail,
+  type RelationshipGraphLink,
+  type RelationshipGraphData,
+  type BuildRelationshipGraphOptions,
+} from './relationship-semantics.ts';
 
-export { getRelationshipTypeLabel, getRelationshipNodeColor, getRelationshipLinkColor };
+export {
+  RELATIONSHIP_MODEL_VERSION,
+  RELATIONSHIP_GRAPH_SCHEMA_VERSION,
+  computeRelationshipProfileSignature,
+  computeRelationshipPoolSignature,
+  deriveMetadataCoverage,
+  personEvidenceConfidence,
+  tokenize,
+  getRelationshipTypeLabel,
+  getRelationshipNodeColor,
+  getRelationshipLinkColor,
+  type MediaFilter,
+  type RelationshipStatusSignal,
+  type RelationshipMetadataCoverage,
+  type RelationshipContent,
+  type RelationshipMode,
+  type RelationshipType,
+  type RelationshipGraphNode,
+  type RelationshipEvidenceDetail,
+  type RelationshipGraphLink,
+  type RelationshipGraphData,
+  type BuildRelationshipGraphOptions,
+};
 
-export type RelationshipMode = 'taste-map' | 'relationships';
-export type MediaFilter = 'all' | 'movie' | 'tv';
-export type RelationshipType = 'semantic' | 'person' | 'universe' | 'atmosphere' | 'contrast' | 'personal';
-export type RelationshipStatusSignal = 'completed-history' | 'interest' | 'neutral' | 'disliked' | 'hidden';
 
-export interface RelationshipMetadataCoverage {
-  overview: boolean;
-  genres: boolean;
-  cast: 'unknown' | 'partial' | 'complete';
-  crew: 'unknown' | 'partial' | 'complete';
-  collection: 'unknown' | 'present' | 'not-applicable' | 'not-found';
-}
-
-export interface RelationshipContent {
-  id: string | number;
-  media_type: 'movie' | 'tv';
-  title?: string;
-  name?: string;
-  overview?: string;
-  genre_ids?: number[];
-  poster_path?: string | null;
-  release_date?: string;
-  first_air_date?: string;
-  status?: 'watching' | 'watchlist' | 'completed';
-  personal_rating?: number | '';
-  addedAt?: string;
-  updatedAt?: string;
-  cast?: Array<{ id: number; name: string; character?: string }>;
-  crew?: Array<{ id: number; name: string; job?: string; department?: string }>;
-  belongs_to_collection?: { id?: number; name?: string } | null;
-  metadataCoverage?: RelationshipMetadataCoverage;
-}
-
-export interface RelationshipGraphNode {
-  id: string;
-  label: string;
-  title: string;
-  mediaType: 'profile' | 'movie' | 'tv';
-  kind: 'profile' | 'saved' | 'candidate' | 'source';
-  status?: string;
-  statusWeight?: number;
-  statusSignal?: RelationshipStatusSignal;
-  personalScore: number;
-  posterPath?: string | null;
-  fx?: number;
-  fy?: number;
-  x?: number;
-  y?: number;
-}
-
-export interface RelationshipEvidenceDetail {
-  type: Exclude<RelationshipType, 'personal'>;
-  score: number;
-  confidence: number;
-  evidence: string[];
-  breakdown?: {
-    vectorContribution?: number;
-    genreContribution?: number;
-    personContribution?: number;
-    toneContribution?: number;
-    seriesContribution?: number;
-    contrastContribution?: number;
-  };
-}
-
-export interface RelationshipGraphLink {
-  source: string | RelationshipGraphNode;
-  target: string | RelationshipGraphNode;
-  type: RelationshipType;
-  alsoRelatedBy: RelationshipType[];
-  score: number;
-  confidence: number;
-  evidence: string[];
-  relationshipDetails?: RelationshipEvidenceDetail[];
-  distance: number;
-}
-
-export interface RelationshipGraphData {
-  nodes: RelationshipGraphNode[];
-  links: RelationshipGraphLink[];
-  profileSignature: string;
-  createdAt: string;
-}
-
-export interface BuildRelationshipGraphOptions {
-  mode: RelationshipMode;
-  profileId: string;
-  candidates: PoolCandidateItem[];
-  savedItems: SavedItem[];
-  preferences: Preferences;
-  mediaFilter: MediaFilter;
-  sourceKey?: string;
-  maxNodes?: number;
-  maxLinks?: number;
-  relationshipFilter?: RelationshipType | 'all';
-  favoriteActorIds?: number[];
-  genreNames?: Record<number, string>;
-}
-
-export const RELATIONSHIP_MODEL_VERSION = 'relationship-v3';
-export const RELATIONSHIP_GRAPH_SCHEMA_VERSION = 2;
-
-function stableHash(input: unknown): string {
-  const text = JSON.stringify(input);
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-function sortedStrings(values: unknown): string[] {
-  if (!Array.isArray(values)) return [];
-  return values.map(String).sort((a, b) => a.localeCompare(b));
-}
-
-export function computeRelationshipProfileSignature(args: {
-  profileId: string;
-  mediaFilter: MediaFilter;
-  savedItems: SavedItem[];
-  preferences: Preferences;
-  favoriteActorIds?: number[];
-}): string {
-  const { profileId, mediaFilter, savedItems, preferences, favoriteActorIds = [] } = args;
-
-  const history = savedItems
-    .filter((item) => mediaFilter === 'all' || item.media_type === mediaFilter)
-    .map((item) => ({
-      key: makeMediaKey(item),
-      status: item.status || '',
-      rating:
-        item.personal_rating === '' || item.personal_rating == null
-          ? null
-          : Number(item.personal_rating),
-      updatedAt: item.updatedAt || item.addedAt || '',
-      title: String(item.title || item.name || ''),
-      overview: String(item.overview || '').trim(),
-      genres: [...(item.genre_ids || [])].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
-      castIds: (item.cast || []).map((person) => Number(person.id)).filter(Number.isFinite).sort((a, b) => a - b),
-      crewIds: (item.crew || []).map((person) => Number(person.id)).filter(Number.isFinite).sort((a, b) => a - b),
-      collectionId:
-        (item as any).belongs_to_collection?.id == null
-          ? null
-          : String((item as any).belongs_to_collection.id),
-    }))
-    .sort((a, b) => a.key.localeCompare(b.key));
-
-  const signatureSource = {
-    profileId,
-    mediaFilter,
-    relationshipModelVersion: RELATIONSHIP_MODEL_VERSION,
-    graphSchemaVersion: RELATIONSHIP_GRAPH_SCHEMA_VERSION,
-    encodingLayoutVersion: ENCODING_LAYOUT_VERSION,
-    history,
-    preferences: {
-      disliked: sortedStrings(preferences.disliked).filter(
-        (key) => mediaFilter === 'all' || key.startsWith(`${mediaFilter}:`),
-      ),
-      hidden: sortedStrings(preferences.hidden).filter(
-        (key) => mediaFilter === 'all' || key.startsWith(`${mediaFilter}:`),
-      ),
-      providers: sortedStrings(preferences.providers),
-      mood: preferences.mood || '',
-      favoriteActorIds: [...favoriteActorIds]
-        .map(Number)
-        .filter(Number.isFinite)
-        .sort((a, b) => a - b),
-    },
-  };
-
-  return `${profileId}:${mediaFilter}:${stableHash(signatureSource)}`;
-}
-
-export function computeRelationshipPoolSignature(candidates: PoolCandidateItem[]): string {
-  const features = candidates
-    .map((item) => ({
-      key: makeMediaKey(item),
-      title: String(item.title || item.name || ''),
-      overview: String(item.overview || '').trim(),
-      genres: [...(item.genre_ids || [])].map(Number).filter(Number.isFinite).sort((a, b) => a - b),
-      releaseDate: item.release_date || item.first_air_date || '',
-      voteAverage: Number(item.vote_average || 0),
-      voteCount: Number(item.vote_count || 0),
-      updatedAt: item.addedToPoolAt || '',
-      castIds: (item.cast || []).map((person) => Number(person.id)).filter(Number.isFinite).sort((a, b) => a - b),
-      crewIds: (item.crew || []).map((person) => Number(person.id)).filter(Number.isFinite).sort((a, b) => a - b),
-      collectionId:
-        item.belongs_to_collection?.id == null
-          ? null
-          : String(item.belongs_to_collection.id),
-    }))
-    .sort((a, b) => a.key.localeCompare(b.key));
-
-  return stableHash(features);
-}
 
 interface PairRelationship {
   type: Exclude<RelationshipType, 'personal'>;
   score: number;
   confidence: number;
+  confidenceScore?: number;
   evidence: string[];
+  evidenceTypes?: string[];
+  features?: RelationshipEvidenceDetail['features'];
+  breakdown?: RelationshipEvidenceDetail['breakdown'];
 }
 
 export function relationshipNodeKey(item: any): string {
@@ -256,41 +116,7 @@ function titleOf(item: RelationshipContent): string {
   return String(item.title || item.name || 'Başlıksız yapım');
 }
 
-export function tokenize(text: string): Set<string> {
-  const normalized = String(text || '')
-    .toLocaleLowerCase('tr-TR')
-    .normalize('NFKC')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ');
 
-  return new Set(
-    normalized
-      .split(/\s+/u)
-      .map((word) => word.trim())
-      .filter(
-        (word) =>
-          word.length >= 4 &&
-          !STOP_WORDS.has(word) &&
-          !GENERIC_PLOT_WORDS.has(word) &&
-          !/^\d+$/.test(word),
-      ),
-  );
-}
-
-function overlap<T>(a: Set<T>, b: Set<T>): T[] {
-  return [...a].filter((value) => b.has(value));
-}
-
-function jaccard<T>(a: Set<T>, b: Set<T>): number {
-  if (!a.size || !b.size) return 0;
-  const common = overlap(a, b).length;
-  return common / (a.size + b.size - common);
-}
-
-function getCollectionId(item: RelationshipContent): string | null {
-  const collection = item.belongs_to_collection;
-  if (!collection || typeof collection !== 'object' || collection.id == null) return null;
-  return String(collection.id);
-}
 
 export interface RelationshipContentPrecomputed {
   item: RelationshipContent;
@@ -302,6 +128,11 @@ export interface RelationshipContentPrecomputed {
   collectionId: string | null;
   seriesKey: string | null;
   keywordIds: Set<number>;
+  keywordNames: Set<string>;
+  displayKeywords: string[];
+  concepts: Set<string>;
+  conceptLabels: string[];
+  classifiedCrew: ClassifiedCrewCast;
   year: number;
   encoding: ItemFeatureEncoding;
 }
@@ -329,11 +160,9 @@ export function precomputeRelationshipContent(item: RelationshipContent): Relati
   }
   const seriesKey = seriesCol ? `collection:${seriesCol.media_type}:${seriesCol.id}` : null;
 
-  const rawKw = (item as any).keywords || (item as any).keyword_ids || [];
-  const kwList = Array.isArray(rawKw)
-    ? rawKw.map((k: any) => (typeof k === 'object' && k ? Number(k.id) : Number(k))).filter(Number.isFinite)
-    : [];
-  const keywordIds = new Set<number>(kwList);
+  const kwData = extractKeywordData(item);
+  const conceptData = extractSemanticConcepts(text, kwData);
+  const classifiedCrew = classifyCrewAndCast(item.cast, item.crew);
 
   const dateStr = item.release_date || item.first_air_date || '';
   const year = Number(dateStr.slice(0, 4));
@@ -349,52 +178,17 @@ export function precomputeRelationshipContent(item: RelationshipContent): Relati
     crewMap,
     collectionId,
     seriesKey,
-    keywordIds,
+    keywordIds: kwData.ids,
+    keywordNames: kwData.names,
+    displayKeywords: kwData.displayKeywords,
+    concepts: conceptData.conceptIds,
+    conceptLabels: conceptData.matchedLabels,
+    classifiedCrew,
     year: Number.isFinite(year) ? year : 0,
     encoding,
   };
 }
 
-function deriveMetadataCoverage(
-  item: RelationshipContent,
-  existing?: RelationshipMetadataCoverage,
-): RelationshipMetadataCoverage {
-  return {
-    overview: Boolean(item.overview?.trim()),
-    genres: Boolean(item.genre_ids?.length),
-    cast: existing?.cast === 'complete' ? 'complete' : item.cast?.length ? 'partial' : 'unknown',
-    crew: existing?.crew === 'complete' ? 'complete' : item.crew?.length ? 'partial' : 'unknown',
-    collection:
-      item.belongs_to_collection?.id != null
-        ? 'present'
-        : existing?.collection === 'not-applicable' || existing?.collection === 'not-found'
-          ? existing.collection
-          : item.media_type === 'tv'
-            ? 'not-applicable'
-            : 'unknown',
-  };
-}
-
-export function personEvidenceConfidence(a: RelationshipContent, b: RelationshipContent): number {
-  const aKnown = Boolean(a.cast?.length || a.crew?.length);
-  const bKnown = Boolean(b.cast?.length || b.crew?.length);
-  if (!aKnown || !bKnown) return 45;
-
-  const aCoverage = a.metadataCoverage ?? deriveMetadataCoverage(a);
-  const bCoverage = b.metadataCoverage ?? deriveMetadataCoverage(b);
-  const aComplete = aCoverage.cast === 'complete' && aCoverage.crew === 'complete';
-  const bComplete = bCoverage.cast === 'complete' && bCoverage.crew === 'complete';
-  if (aComplete && bComplete) return 96;
-
-  // Sürekli kapsama oranı (coverage ratio ∈ [0, 1]) ile [72..94] bandında ölçekleme (Bölüm 2.2 W5)
-  const castRatioA = aCoverage.cast === 'complete' ? 1 : Math.min(1, Math.max(0, ((a.cast?.length || 0) - 1) / 9));
-  const castRatioB = bCoverage.cast === 'complete' ? 1 : Math.min(1, Math.max(0, ((b.cast?.length || 0) - 1) / 9));
-  const crewRatioA = aCoverage.crew === 'complete' ? 1 : Math.min(1, Math.max(0, (a.crew?.length || 0) / 4));
-  const crewRatioB = bCoverage.crew === 'complete' ? 1 : Math.min(1, Math.max(0, (b.crew?.length || 0) / 4));
-  const coverageRatio = castRatioA * 0.3 + castRatioB * 0.3 + crewRatioA * 0.2 + crewRatioB * 0.2;
-
-  return clamp(Math.round(72 + coverageRatio * 22), 72, 94);
-}
 
 export function pairRelationships(
   a: RelationshipContent | RelationshipContentPrecomputed,
@@ -421,133 +215,264 @@ export function pairRelationships(
   if ((colA && colB && colA === colB) || (serA && serB && serA === serB)) {
     const seriesCol = serA ? getSeriesCollectionByKeySync(serA) : null;
     const collectionName =
-      seriesCol?.name || aPre.item.belongs_to_collection?.name || bPre.item.belongs_to_collection?.name;
+      seriesCol?.name || aPre.item.belongs_to_collection?.name || bPre.item.belongs_to_collection?.name || 'Aynı Evren';
     relationships.push({
       type: 'universe',
       score: 96,
       confidence: 98,
-      evidence: [`Aynı seri / evren bağlantısı${collectionName ? `: ${collectionName}` : ''}.`],
+      confidenceScore: 0.98,
+      evidence: [`Aynı seri / evren bağlantısı: ${collectionName}.`],
+      evidenceTypes: ['universe'],
+      features: { universeName: collectionName },
+      breakdown: { universeContribution: 85, seriesContribution: 85, genreContribution: 15 },
     });
   }
 
-  // 2) Ortak oyuncular ve yaratıcı ekip üyeleri
+  // 2) Ortak yönetmen, senarist ve oyuncu kadrosu (ayrı kanıt türleri)
+  const commonDirectors = aPre.classifiedCrew.directors
+    .filter((d) => bPre.classifiedCrew.directors.some((bd) => bd.id === d.id))
+    .map((d) => d.name);
+
+  const commonWriters = aPre.classifiedCrew.writers
+    .filter((w) => bPre.classifiedCrew.writers.some((bw) => bw.id === w.id))
+    .map((w) => w.name);
+
   const commonActors = [...aPre.castMap.keys()]
     .filter((id) => bPre.castMap.has(id))
     .map((id) => aPre.castMap.get(id)!.name)
     .filter(Boolean);
 
-  const commonCrew = [...aPre.crewMap.keys()]
+  const commonCrewAll = [...aPre.crewMap.keys()]
     .filter((id) => bPre.crewMap.has(id))
-    .map((id) => {
-      const left = aPre.crewMap.get(id)!;
-      const right = bPre.crewMap.get(id)!;
-      return `${left.name}${left.job && right.job && left.job !== right.job ? ` (${left.job} / ${right.job})` : ''}`;
-    })
+    .map((id) => aPre.crewMap.get(id)!.name)
     .filter(Boolean);
 
-  if (commonActors.length || commonCrew.length) {
-    const score = clamp(
-      86 + Math.min(10, Math.max(0, commonActors.length - 1) * 4 + Math.max(0, commonCrew.length - 1) * 5),
-      75,
-      96
+  if (commonDirectors.length || commonWriters.length || commonActors.length || commonCrewAll.length) {
+    const evidenceLines: string[] = [];
+    const evidenceTypes: string[] = [];
+
+    if (commonDirectors.length > 0) {
+      evidenceLines.push(`Ortak yönetmen: ${commonDirectors.join(', ')}.`);
+      evidenceTypes.push('director');
+    }
+    if (commonWriters.length > 0) {
+      evidenceLines.push(`Ortak senarist / yazar: ${commonWriters.join(', ')}.`);
+      evidenceTypes.push('writer');
+    }
+    if (commonActors.length > 0) {
+      evidenceLines.push(`Ortak oyuncular: ${commonActors.slice(0, 5).join(', ')}.`);
+      evidenceTypes.push('actor');
+    }
+    const otherCrew = commonCrewAll.filter(
+      (name) => !commonDirectors.includes(name) && !commonWriters.includes(name)
     );
+    if (otherCrew.length > 0 && commonDirectors.length === 0 && commonWriters.length === 0) {
+      evidenceLines.push(`Ortak yaratıcı ekip: ${otherCrew.slice(0, 5).join(', ')}.`);
+      evidenceTypes.push('crew');
+    }
+
+    let baseScore = 86;
+    if (commonDirectors.length > 0) baseScore += 6;
+    if (commonWriters.length > 0) baseScore += 4;
+    if (commonActors.length > 1) baseScore += Math.min(4, (commonActors.length - 1) * 2);
+    const score = clamp(baseScore, 75, 98);
+    const confidence = personEvidenceConfidence(aPre.item, bPre.item);
+
     relationships.push({
       type: 'person',
       score,
-      confidence: personEvidenceConfidence(aPre.item, bPre.item),
-      evidence: [
-        ...(commonActors.length ? [`Ortak oyuncular: ${commonActors.slice(0, 5).join(', ')}.`] : []),
-        ...(commonCrew.length ? [`Ortak yaratıcı ekip: ${commonCrew.slice(0, 5).join(', ')}.`] : []),
-      ],
+      confidence,
+      confidenceScore: Math.round((confidence / 100) * 100) / 100,
+      evidence: evidenceLines,
+      evidenceTypes,
+      features: {
+        matchedDirectors: commonDirectors,
+        matchedWriters: commonWriters,
+        matchedActors: commonActors,
+      },
+      breakdown: {
+        personContribution: 75,
+        directorContribution: commonDirectors.length ? 45 : 0,
+        writerContribution: commonWriters.length ? 30 : 0,
+        actorContribution: commonActors.length ? 25 : 0,
+        genreContribution: 25,
+      },
     });
   }
 
-  // 3) Anlamsal benzerlik: Ön-hesaplı tokenlar + tür jaccard + keyword-ID overlap + vektör benzerliği (W1 & W2)
+  // 3) Anlamsal benzerlik: Kavramlar + TMDB Anahtar Kelimeleri + Özet Terimleri + Vektör Benzerliği
+  // KRİTİK: Tür benzerliği tek başına anlamsal benzerlik kabul edilmez!
+  const commonConcepts = [...aPre.concepts].filter((c) => bPre.concepts.has(c));
+  const commonKeywordIds = [...aPre.keywordIds].filter((k) => bPre.keywordIds.has(k));
+  const commonKeywordNames = [...aPre.keywordNames].filter((k) => bPre.keywordNames.has(k));
   const commonTokens = overlap(aPre.tokens, bPre.tokens);
   const commonGenres = overlap(aPre.genres, bPre.genres);
-  const commonKeywords = overlap(aPre.keywordIds, bPre.keywordIds);
-  const genreEvidence = commonGenres.map(
-    (id) => genreNames[Number(id)] || `Bilinmeyen tür (${id})`,
-  );
-  const tokenSimilarity =
-    aPre.tokens.size && bPre.tokens.size
-      ? commonTokens.length / Math.sqrt(aPre.tokens.size * bPre.tokens.size)
-      : 0;
-  const genreSimilarity = jaccard(aPre.genres, bPre.genres);
+  const genreEvidence = commonGenres.map((id) => genreNames[Number(id)] || `Bilinmeyen tür (${id})`);
+
   const vecSim =
     aPre.encoding && bPre.encoding
       ? cosineSimilarity(aPre.encoding.denseVector, bPre.encoding.denseVector)
       : 0;
 
+  const conceptSimilarity =
+    aPre.concepts.size && bPre.concepts.size
+      ? commonConcepts.length / Math.sqrt(aPre.concepts.size * bPre.concepts.size)
+      : 0;
+
+  const keywordSimilarity =
+    (aPre.keywordIds.size || aPre.keywordNames.size) && (bPre.keywordIds.size || bPre.keywordNames.size)
+      ? (commonKeywordIds.length * 2 + commonKeywordNames.length) /
+        Math.max(1, aPre.keywordIds.size + bPre.keywordIds.size + aPre.keywordNames.size + bPre.keywordNames.size)
+      : 0;
+
+  const tokenSimilarity =
+    aPre.tokens.size && bPre.tokens.size
+      ? commonTokens.length / Math.sqrt(aPre.tokens.size * bPre.tokens.size)
+      : 0;
+
+  const genreSimilarity = jaccard(aPre.genres, bPre.genres);
+
+  // Anlamsal çapa: Tür tek başına asla yetmez! Ortak kavram, anahtar kelime, token veya yüksek vektör uyumu şarttır.
+  const hasSemanticAnchor =
+    commonConcepts.length >= 1 ||
+    commonKeywordIds.length >= 1 ||
+    commonKeywordNames.length >= 1 ||
+    commonTokens.length >= 2 ||
+    (vecSim >= 0.50 && (commonTokens.length >= 1 || commonConcepts.length >= 1 || commonKeywordIds.length >= 1));
+
+  // Ağırlıklar: Kavramlar %35 + Anahtar Kelimeler %25 + Tokenlar %20 + Vektör %15 + Tür %5
   const semanticScore = clamp(
-    Math.round(55 * tokenSimilarity + 30 * genreSimilarity + 15 * vecSim)
+    Math.round(
+      35 * conceptSimilarity +
+      25 * keywordSimilarity +
+      20 * tokenSimilarity +
+      15 * Math.max(0, vecSim) +
+      5 * genreSimilarity
+    )
   );
 
-  if ((commonTokens.length >= 2 || commonGenres.length >= 2 || commonKeywords.length >= 1 || vecSim >= 0.38) && semanticScore >= 18) {
+  if (hasSemanticAnchor && semanticScore >= 18) {
+    const evidenceLines: string[] = [];
+    const evidenceTypes: string[] = [];
+
+    const matchedConceptLabels = commonConcepts.map((c) => {
+      const match = aPre.conceptLabels.find((_, idx) => [...aPre.concepts][idx] === c) || c;
+      return match;
+    });
+
+    if (matchedConceptLabels.length > 0) {
+      evidenceLines.push(`Ortak tematik kavramlar: ${matchedConceptLabels.slice(0, 4).join(', ')}.`);
+      evidenceTypes.push('concept', 'concept_affinity');
+    }
+
+    if (commonKeywordNames.length > 0) {
+      evidenceLines.push(`Ortak anahtar kelimeler: ${commonKeywordNames.slice(0, 5).join(', ')}.`);
+      evidenceTypes.push('keyword', 'keyword_overlap');
+    } else if (commonKeywordIds.length > 0) {
+      evidenceLines.push(`Ortak anahtar kelimeler: ${commonKeywordIds.length} eşleşme.`);
+      evidenceTypes.push('keyword', 'keyword_overlap');
+    }
+
+    if (commonTokens.length > 0) {
+      evidenceLines.push(`Ortak özet/başlık terimleri: ${commonTokens.slice(0, 6).join(', ')}.`);
+    }
+
+    if (genreEvidence.length > 0) {
+      evidenceLines.push(`Ortak türler: ${genreEvidence.join(', ')}.`);
+    }
+
+    const confidence = clamp(
+      Math.round(
+        55 +
+        (commonConcepts.length >= 2 ? 25 : commonConcepts.length >= 1 ? 16 : 0) +
+        (commonKeywordIds.length >= 2 || commonKeywordNames.length >= 2 ? 14 : commonKeywordIds.length >= 1 ? 8 : 0) +
+        (commonTokens.length >= 4 ? 10 : commonTokens.length >= 2 ? 5 : 0)
+      ),
+      55,
+      95
+    );
+
     relationships.push({
       type: 'semantic',
       score: semanticScore,
-      confidence: commonTokens.length >= 4 && commonGenres.length >= 2 ? 82 : commonKeywords.length >= 2 ? 76 : 58,
-      evidence: [
-        ...(commonTokens.length
-          ? [`Ortak özet/başlık terimleri: ${commonTokens.slice(0, 6).join(', ')}.`]
-          : []),
-        ...(commonKeywords.length
-          ? [`Ortak anahtar kelimeler: ${commonKeywords.length} eşleşme.`]
-          : []),
-        ...(genreEvidence.length
-          ? [`Ortak türler: ${genreEvidence.join(', ')}.`]
-          : []),
-      ],
+      confidence,
+      confidenceScore: Math.round((confidence / 100) * 100) / 100,
+      evidence: evidenceLines,
+      evidenceTypes,
+      features: {
+        matchedConcepts: matchedConceptLabels,
+        matchedKeywords: commonKeywordNames.length ? commonKeywordNames : commonKeywordIds.map(String),
+        matchedGenres: genreEvidence,
+      },
+      breakdown: {
+        conceptContribution: commonConcepts.length ? 40 : 10,
+        keywordContribution: (commonKeywordIds.length || commonKeywordNames.length) ? 30 : 10,
+        tokenContribution: commonTokens.length ? 20 : 10,
+        vectorContribution: Math.round(Math.max(0, vecSim) * 15),
+        genreContribution: Math.round(genreSimilarity * 10),
+      },
     });
   }
 
-  // 4) Atmosferik / duygusal yakınlık: ortak atmosferik tür kümesi + ortak ton kelimeleri / yakın dönem
-  const sharedDarkGenres = commonGenres.filter((gid) => DARK_ATMOSPHERE_GENRES.has(Number(gid)));
-  const sharedImaginativeGenres = commonGenres.filter((gid) => IMAGINATIVE_ATMOSPHERE_GENRES.has(Number(gid)));
-  const toneTokens = commonTokens.filter((tok) => ATMOSPHERIC_TONE_WORDS.has(tok));
-  const yearA = aPre.year;
-  const yearB = bPre.year;
-  const yearDelta = yearA >= 1900 && yearB >= 1900 ? Math.abs(yearA - yearB) : null;
+  // 4) Atmosferik / duygusal yakınlık: Bağlam ve kavram birlikteliği (Co-occurrence)
+  const atmosphereEval = evaluateAtmosphereCoOccurrence(
+    aPre.genres,
+    bPre.genres,
+    aPre.tokens,
+    bPre.tokens,
+    aPre.concepts,
+    bPre.concepts,
+    genreNames
+  );
 
-  const hasAtmosphereCluster =
-    sharedDarkGenres.length >= 2 ||
-    sharedImaginativeGenres.length >= 2 ||
-    ((sharedDarkGenres.length >= 1 || sharedImaginativeGenres.length >= 1) && toneTokens.length >= 1);
-
-  if (hasAtmosphereCluster) {
-    const clusterGenres = sharedDarkGenres.length >= sharedImaginativeGenres.length ? sharedDarkGenres : sharedImaginativeGenres;
-    const clusterNames = clusterGenres.map((gid) => genreNames[Number(gid)] || `Tür (${gid})`);
-    const eraBonus = yearDelta !== null && yearDelta <= 6 ? 8 : 0;
-    const atmosphereScore = clamp(
-      Math.min(82, 46 + clusterGenres.length * 10 + Math.min(16, toneTokens.length * 8) + eraBonus),
-    );
-    const evidenceLines: string[] = [
-      `Ortak atmosfer kümesi: ${clusterNames.join(', ')}.`,
-    ];
-    if (toneTokens.length > 0) {
-      evidenceLines.push(`Ortak ton ve duygu izleri: ${toneTokens.slice(0, 4).join(', ')}.`);
-    }
+  if (atmosphereEval.hasCoherentAtmosphere) {
+    const yearA = aPre.year;
+    const yearB = bPre.year;
+    const yearDelta = yearA >= 1900 && yearB >= 1900 ? Math.abs(yearA - yearB) : null;
+    const eraBonus = yearDelta !== null && yearDelta <= 6 ? 6 : 0;
+    const score = clamp(atmosphereEval.score + eraBonus, 50, 92);
+    const evidenceLines = [...atmosphereEval.evidence];
     if (yearDelta !== null && yearDelta <= 6) {
       evidenceLines.push(`Yakın dönem sinematografisi (${yearA} – ${yearB}).`);
     }
+
     relationships.push({
       type: 'atmosphere',
-      score: atmosphereScore,
-      confidence: toneTokens.length >= 1 && clusterGenres.length >= 2 ? 84 : 68,
+      score,
+      confidence: atmosphereEval.confidence,
+      confidenceScore: Math.round((atmosphereEval.confidence / 100) * 100) / 100,
       evidence: evidenceLines,
+      evidenceTypes: ['atmosphere_cluster'],
+      features: {
+        atmosphereCluster: atmosphereEval.clusterLabel,
+        matchedGenres: atmosphereEval.clusterGenres.map((g) => genreNames[g] || `Tür #${g}`),
+        matchedConcepts: atmosphereEval.sharedConcepts,
+      },
+      breakdown: {
+        toneContribution: 45,
+        conceptContribution: 30,
+        genreContribution: 15,
+        vectorContribution: 10,
+      },
     });
   }
 
   // 5) Karşıt ton / tamamlayıcı deneyim
-  const hasSharedAnchor = commonActors.length > 0 || commonCrew.length > 0 || commonTokens.length >= 2;
+  const hasSharedAnchor =
+    commonDirectors.length > 0 ||
+    commonWriters.length > 0 ||
+    commonActors.length > 0 ||
+    commonCrewAll.length > 0 ||
+    commonTokens.length >= 2 ||
+    commonConcepts.length >= 1;
+
   if (hasSharedAnchor) {
     const aHasDark = [...aPre.genres].some((gid) => DARK_ATMOSPHERE_GENRES.has(gid));
     const bHasDark = [...bPre.genres].some((gid) => DARK_ATMOSPHERE_GENRES.has(gid));
     const aHasLight = [...aPre.genres].some((gid) => LIGHT_TONE_GENRES.has(gid));
     const bHasLight = [...bPre.genres].some((gid) => LIGHT_TONE_GENRES.has(gid));
     const tonalContrast = (aHasDark && bHasLight && !aHasLight) || (bHasDark && aHasLight && !bHasLight);
-    const formatContrast = aPre.item.media_type !== bPre.item.media_type && (commonCrew.length > 0 || commonActors.length > 0 || commonGenres.length >= 1);
+    const formatContrast = aPre.item.media_type !== bPre.item.media_type && (commonCrewAll.length > 0 || commonActors.length > 0 || commonGenres.length >= 1);
 
     if (tonalContrast || formatContrast) {
       const contrastEvidence: string[] = [];
@@ -559,8 +484,10 @@ export function pairRelationships(
           `Farklı anlatı temposu (${aPre.item.media_type === 'tv' ? 'Dizi' : 'Film'} ↔ ${bPre.item.media_type === 'tv' ? 'Dizi' : 'Film'}).`,
         );
       }
-      if (commonCrew.length > 0) {
-        contrastEvidence.push(`Ortak yaratıcı imza: ${commonCrew.slice(0, 2).join(', ')}.`);
+      if (commonDirectors.length > 0) {
+        contrastEvidence.push(`Ortak yönetmen imzası: ${commonDirectors.slice(0, 2).join(', ')}.`);
+      } else if (commonWriters.length > 0) {
+        contrastEvidence.push(`Ortak senarist imzası: ${commonWriters.slice(0, 2).join(', ')}.`);
       } else if (commonActors.length > 0) {
         contrastEvidence.push(`Ortak oyuncu köprüsü: ${commonActors.slice(0, 2).join(', ')}.`);
       } else if (commonTokens.length >= 2) {
@@ -568,13 +495,20 @@ export function pairRelationships(
       }
 
       const contrastScore = clamp(
-        Math.min(76, 44 + (tonalContrast ? 14 : 0) + (formatContrast ? 10 : 0) + Math.min(8, commonTokens.length * 3)),
+        Math.min(78, 44 + (tonalContrast ? 14 : 0) + (formatContrast ? 10 : 0) + Math.min(8, commonTokens.length * 3)),
       );
       relationships.push({
         type: 'contrast',
         score: contrastScore,
-        confidence: commonCrew.length > 0 || commonActors.length > 0 ? 80 : 64,
+        confidence: commonCrewAll.length > 0 || commonActors.length > 0 ? 80 : 64,
+        confidenceScore: commonCrewAll.length > 0 || commonActors.length > 0 ? 0.8 : 0.64,
         evidence: contrastEvidence,
+        evidenceTypes: ['tonal_contrast'],
+        breakdown: {
+          contrastContribution: 60,
+          personContribution: 25,
+          genreContribution: 15,
+        },
       });
     }
   }
@@ -582,16 +516,20 @@ export function pairRelationships(
   return relationships.sort((left, right) => right.score - left.score);
 }
 
-function computeRelationshipBreakdown(type: Exclude<RelationshipType, 'personal'>): RelationshipEvidenceDetail['breakdown'] {
+function computeRelationshipBreakdown(
+  type: Exclude<RelationshipType, 'personal'>,
+  pair?: PairRelationship
+): RelationshipEvidenceDetail['breakdown'] {
+  if (pair?.breakdown) return pair.breakdown;
   switch (type) {
     case 'semantic':
-      return { vectorContribution: 45, genreContribution: 35, toneContribution: 20 };
+      return { conceptContribution: 35, keywordContribution: 25, vectorContribution: 20, toneContribution: 15, genreContribution: 5 };
     case 'person':
-      return { personContribution: 75, genreContribution: 25 };
+      return { personContribution: 75, directorContribution: 40, writerContribution: 30, actorContribution: 30, genreContribution: 25 };
     case 'universe':
-      return { seriesContribution: 85, genreContribution: 15 };
+      return { universeContribution: 85, seriesContribution: 85, genreContribution: 15 };
     case 'atmosphere':
-      return { toneContribution: 50, genreContribution: 35, vectorContribution: 15 };
+      return { toneContribution: 45, conceptContribution: 30, genreContribution: 15, vectorContribution: 10 };
     case 'contrast':
       return { contrastContribution: 60, personContribution: 25, genreContribution: 15 };
     default:
@@ -614,6 +552,8 @@ export function strongestRelationship(
 
   const best = relations[0];
   const allTypes = relations.map((relationship) => relationship.type);
+  const confidenceScore = Math.round((best.confidence / 100) * 100) / 100;
+
   return {
     source: relationshipNodeKey(aItem),
     target: relationshipNodeKey(bItem),
@@ -621,13 +561,20 @@ export function strongestRelationship(
     alsoRelatedBy: allTypes,
     score: best.score,
     confidence: best.confidence,
+    confidenceScore,
     evidence: [...new Set(relations.flatMap((relationship) => relationship.evidence))],
+    evidenceTypes: [...new Set(relations.flatMap((relationship) => relationship.evidenceTypes || []))],
+    features: best.features,
+    breakdown: computeRelationshipBreakdown(best.type, best),
     relationshipDetails: relations.map((relationship) => ({
       type: relationship.type,
       score: relationship.score,
       confidence: relationship.confidence,
+      confidenceScore: Math.round((relationship.confidence / 100) * 100) / 100,
       evidence: relationship.evidence,
-      breakdown: computeRelationshipBreakdown(relationship.type),
+      evidenceTypes: relationship.evidenceTypes,
+      features: relationship.features,
+      breakdown: computeRelationshipBreakdown(relationship.type, relationship),
     })),
     distance: 175 - best.score * 0.85,
   };
