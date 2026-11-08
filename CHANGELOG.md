@@ -2,6 +2,14 @@
 
 Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [Semantic Versioning](https://semver.org/) esas alır.
 
+## [Unreleased]
+
+### Güvenlik
+- `body-parser` 2.4.0'a yükseltildi (GHSA-27r3-jxmh-p828, high DoS); CI üretim audit adımı yeniden yeşil.
+
+### Değişen
+- Monolit bölme ikinci dilim: `cinetrack-core.ts` 5539 → 4691 satır; aktör öneri motoru `actor-recommendations.ts`, puan matematiği `rating-math.ts` ve tür eşleştirme `genre-matching.ts` modüllerine taşındı. Çekirdek, geriye dönük uyumluluk için yeniden dışa aktarır.
+
 ## [1.1.0] - 2026-11-09
 
 ### Güvenlik
