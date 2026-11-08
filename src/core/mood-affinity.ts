@@ -328,31 +328,87 @@ export function normalizeMoodKey(rawMood: string): string {
   return normalized;
 }
 
+export const GENRE_NAME_TO_ID: Record<string, number> = {
+  // Movie / TV TMDB genres
+  action: 28, aksiyon: 28,
+  adventure: 12, macera: 12,
+  animation: 16, animasyon: 16,
+  comedy: 35, komedi: 35,
+  crime: 80, suç: 80, suc: 80,
+  documentary: 99, belgesel: 99,
+  drama: 18, dram: 18,
+  family: 10751, aile: 10751,
+  fantasy: 14, fantastik: 14,
+  history: 36, tarih: 36,
+  horror: 27, korku: 27,
+  music: 10402, müzik: 10402, muzik: 10402,
+  mystery: 9648, gizem: 9648,
+  romance: 10749, romantik: 10749,
+  'sci-fi': 878, 'science fiction': 878, 'bilim kurgu': 878, 'bilim-kurgu': 878, scifi: 878,
+  thriller: 53, gerilim: 53,
+  war: 10752, savaş: 10752, savas: 10752,
+  western: 37, 'vahşi batı': 37, 'vahsi bati': 37,
+  // TV specific
+  'action & adventure': 10759, 'aksiyon & macera': 10759,
+  kids: 10762, çocuk: 10762, cocuk: 10762,
+  news: 10763, haber: 10763,
+  reality: 10764,
+  'sci-fi & fantasy': 10765, 'bilim kurgu & fantastik': 10765,
+  soap: 10766, pembe: 10766,
+  talk: 10767,
+  'war & politics': 10768, 'savaş & politik': 10768,
+};
+
 function extractGenreIds(candidate: any): number[] {
   if (!candidate || typeof candidate !== 'object') return [];
   const list: number[] = [];
+
+  const processItem = (item: any) => {
+    if (typeof item === 'number' && Number.isFinite(item) && item > 0) {
+      list.push(item);
+    } else if (typeof item === 'string') {
+      const trimmed = item.trim();
+      const asNum = Number(trimmed);
+      if (Number.isFinite(asNum) && asNum > 0) {
+        list.push(asNum);
+      } else {
+        const norm = trimmed.toLocaleLowerCase('tr-TR');
+        if (GENRE_NAME_TO_ID[norm]) {
+          list.push(GENRE_NAME_TO_ID[norm]);
+        }
+      }
+    } else if (typeof item === 'object' && item !== null) {
+      if ('id' in item) processItem(item.id);
+      if ('name' in item) processItem(item.name);
+    }
+  };
+
   if (Array.isArray(candidate.genre_ids)) {
-    for (const gid of candidate.genre_ids) {
-      const n = Number(gid);
-      if (Number.isFinite(n) && n > 0) list.push(n);
-    }
-  } else if (Array.isArray(candidate.genres)) {
-    for (const g of candidate.genres) {
-      const n = typeof g === 'object' && g !== null ? Number(g.id) : Number(g);
-      if (Number.isFinite(n) && n > 0) list.push(n);
-    }
+    for (const gid of candidate.genre_ids) processItem(gid);
   }
+  if (Array.isArray(candidate.genres)) {
+    for (const g of candidate.genres) processItem(g);
+  }
+
   return [...new Set(list)];
 }
 
 function extractKeywordIds(candidate: any): number[] {
   if (!candidate || typeof candidate !== 'object') return [];
   const list: number[] = [];
-  const rawList = Array.isArray(candidate.keywords)
-    ? candidate.keywords
-    : Array.isArray(candidate.keyword_ids)
-    ? candidate.keyword_ids
-    : [];
+
+  let rawList: any[] = [];
+  if (Array.isArray(candidate.keywords)) {
+    rawList = candidate.keywords;
+  } else if (candidate.keywords && typeof candidate.keywords === 'object') {
+    if (Array.isArray(candidate.keywords.keywords)) {
+      rawList = candidate.keywords.keywords;
+    } else if (Array.isArray(candidate.keywords.results)) {
+      rawList = candidate.keywords.results;
+    }
+  } else if (Array.isArray(candidate.keyword_ids)) {
+    rawList = candidate.keyword_ids;
+  }
 
   for (const item of rawList) {
     if (typeof item === 'object' && item !== null && 'id' in item) {
@@ -373,6 +429,22 @@ function extractKeywordIds(candidate: any): number[] {
 export function calculateMoodAffinity(candidate: any, rawMood: string): MoodAffinityResult {
   const normKey = normalizeMoodKey(rawMood);
   const config = MOOD_CONFIGS[normKey];
+
+  if (typeof candidate?.atmosphereScore === 'number' && Number.isFinite(candidate.atmosphereScore)) {
+    const bounded = Math.round(Math.max(0.05, Math.min(0.98, candidate.atmosphereScore)) * 100) / 100;
+    return {
+      mood: rawMood,
+      normalizedMood: normKey,
+      label: config?.label || rawMood || 'Ruh hâli',
+      atmosphereScore: bounded,
+      genreScore: bounded,
+      textScore: bounded,
+      keywordScore: bounded,
+      matchedFeatures: ['Aday özelliklerinden hesaplanmış atmosfer uyumu'],
+      opposingFeatures: [],
+      isNeutralFallback: false,
+    };
+  }
 
   if (!config) {
     return {
@@ -430,29 +502,29 @@ export function calculateMoodAffinity(candidate: any, rawMood: string): MoodAffi
 
   // 2. TEXT / SYNOPSIS TONE AFFINITY
   let textScore = 0.5;
+  let posTextCount = 0;
+  let negTextCount = 0;
   const hasTextData = candidateTokens.size > 0;
   if (hasTextData) {
-    let posCount = 0;
-    let negCount = 0;
     for (const tok of candidateTokens) {
       if (config.toneWords.has(tok)) {
-        posCount++;
+        posTextCount++;
         matchedFeatures.push(`Ton: "${tok}"`);
       } else if (config.opposingToneWords.has(tok)) {
-        negCount++;
+        negTextCount++;
         opposingFeatures.push(`Zıt ton: "${tok}"`);
       }
     }
 
-    if (posCount > 0 && negCount === 0) {
+    if (posTextCount > 0 && negTextCount === 0) {
       // 1 match -> 0.72, 2 -> 0.85, 3+ -> 0.95
-      textScore = Math.min(0.96, 0.65 + posCount * 0.10);
-    } else if (posCount > 0 && negCount > 0) {
-      textScore = Math.max(0.35, Math.min(0.75, 0.50 + (posCount - negCount) * 0.10));
-    } else if (negCount > 0) {
-      textScore = Math.max(0.15, 0.35 - negCount * 0.08);
+      textScore = Math.min(0.96, 0.65 + posTextCount * 0.10);
+    } else if (posTextCount > 0 && negTextCount > 0) {
+      textScore = Math.max(0.35, Math.min(0.75, 0.50 + (posTextCount - negTextCount) * 0.10));
+    } else if (negTextCount > 0) {
+      textScore = Math.max(0.15, 0.35 - negTextCount * 0.08);
     } else {
-      textScore = 0.48; // No matching or opposing tone words
+      textScore = 0.50; // Neutral baseline when no matching or opposing tone words
     }
   }
 
@@ -486,22 +558,25 @@ export function calculateMoodAffinity(candidate: any, rawMood: string): MoodAffi
   // 4. COMPOSITE ATMOSPHERE SCORE
   // Weight dynamically depending on available feature fields
   let compositeScore = 0.5;
-  const isNeutralFallback = !hasGenreData && !hasTextData && !hasKeywordData;
+  const hasRecognizedTone = posTextCount > 0 || negTextCount > 0;
+  const isNeutralFallback = !hasGenreData && !hasRecognizedTone && !hasKeywordData;
 
   if (isNeutralFallback) {
     compositeScore = 0.5;
-  } else if (hasGenreData && hasTextData && hasKeywordData) {
+  } else if (hasGenreData && hasRecognizedTone && hasKeywordData) {
     compositeScore = 0.45 * genreScore + 0.35 * textScore + 0.20 * keywordScore;
-  } else if (hasGenreData && hasTextData) {
+  } else if (hasGenreData && hasRecognizedTone) {
     compositeScore = 0.55 * genreScore + 0.45 * textScore;
   } else if (hasGenreData && hasKeywordData) {
     compositeScore = 0.60 * genreScore + 0.40 * keywordScore;
   } else if (hasGenreData) {
     compositeScore = genreScore;
-  } else if (hasTextData) {
+  } else if (hasRecognizedTone) {
     compositeScore = textScore;
-  } else {
+  } else if (hasKeywordData) {
     compositeScore = keywordScore;
+  } else {
+    compositeScore = 0.5;
   }
 
   // Bound to 2 decimal places [0.05 .. 0.98]

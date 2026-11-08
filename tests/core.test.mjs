@@ -4715,3 +4715,126 @@ describe("Faz 1: CI ve üretim başlatma zinciri güvenceleri", () => {
     assert.equal(startBat.includes("call npm run dev"), false, "start.bat geliştirme sunucusuna dayanmamalı");
   });
 });
+
+describe("P1 Algoritma Düzeltmesi: Ruh Hâli (Mood) Eşleştirmesi ve Deterministik Zaman (now)", () => {
+  it("scoreCandidatesV3: adayların gerçek özelliklerine göre atmosfer ve bağlam puanı üretir", () => {
+    const profile = buildTasteProfileV3([], { now: new Date("2026-01-01T00:00:00Z").getTime() });
+
+    // Aday A: Gerilim + Korku türü, karanlık/psikolojik özet, karanlık TMDB anahtar kelimesi
+    const candidateA = {
+      id: 101,
+      media_type: "movie",
+      title: "Karanlık Psikolojik Gerilim",
+      overview: "Karanlık cinayet ve gizemli psikolojik gerilim",
+      genre_ids: [53, 27],
+      keywords: [{ id: 259094 }],
+      release_date: "2015-05-10",
+      vote_average: 7.5,
+      vote_count: 800,
+    };
+
+    // Aday B: Nötr tür (Dram 18), karanlık/psikolojik özet
+    const candidateB = {
+      id: 102,
+      media_type: "movie",
+      title: "Karanlık Dram",
+      overview: "Karanlık tekinsiz bir gizem ve psikolojik sorgulama",
+      genre_ids: [18],
+      release_date: "2015-05-10",
+      vote_average: 7.5,
+      vote_count: 800,
+    };
+
+    // Aday C: Zıt tür (Komedi 35, Macera 12), neşeli/komik özet
+    const candidateC = {
+      id: 103,
+      media_type: "movie",
+      title: "Neşeli Komedi",
+      overview: "Komik neşeli eğlenceli bir macera",
+      genre_ids: [35, 12],
+      release_date: "2015-05-10",
+      vote_average: 7.5,
+      vote_count: 800,
+    };
+
+    // Aday D: Özelliksiz boş aday (nötr geri dönüş)
+    const candidateD = {
+      id: 104,
+      media_type: "movie",
+      title: "Unknown Item",
+      release_date: "2015-05-10",
+      vote_average: 7.5,
+      vote_count: 800,
+    };
+
+    const scored = scoreCandidatesV3(
+      [candidateA, candidateB, candidateC, candidateD],
+      profile,
+      { mood: "Karanlık / Psikolojik", now: new Date("2026-01-01T00:00:00Z") }
+    );
+
+    const [resA, resB, resC, resD] = scored;
+
+    // Aday A yüksek atmosfer uyumu sağlamalı (0.94)
+    assert.equal(resA.atmosphereScore, 0.94);
+    assert.equal(resA.parts.context, 0.94);
+    assert.equal(resA.candidate.atmosphereScore, 0.94);
+    assert.equal(resA.tags.some((t) => t.includes("Karanlık / Psikolojik uyumu (%94)")), true);
+
+    // Aday B ılımlı atmosfer uyumu sağlamalı (0.71)
+    assert.equal(resB.atmosphereScore, 0.71);
+    assert.equal(resB.parts.context, 0.71);
+    assert.equal(resB.candidate.atmosphereScore, 0.71);
+
+    // Aday C zıt atmosfer uyumu sağlamalı (0.18)
+    assert.equal(resC.atmosphereScore, 0.18);
+    assert.equal(resC.parts.context, 0.18);
+    assert.equal(resC.candidate.atmosphereScore, 0.18);
+
+    // Aday D nötr fallback puanı sağlamalı (0.50)
+    assert.equal(resD.atmosphereScore, 0.50);
+    assert.equal(resD.parts.context, 0.50);
+    assert.equal(resD.moodAffinity.isNeutralFallback, true);
+
+    // Sıralama A > B > D > C şeklinde olmalı (bütün adaylar artık körü körüne 0.75 almıyor!)
+    assert.ok(resA.score >= resB.score, "Aday A skoru B'den yüksek veya eşit olmalı");
+    assert.ok(resB.score > resC.score, "Aday B skoru zıt içerikli Aday C'den yüksek olmalı");
+  });
+
+  it("scoreCandidatesV3: now parametresi ile deterministik currentYear hesaplaması yapar", () => {
+    const profile = buildTasteProfileV3([], { now: new Date("2026-01-01T00:00:00Z").getTime() });
+    const candidate2024 = {
+      id: 201,
+      media_type: "movie",
+      title: "2024 Yapımı İçerik",
+      release_date: "2024-06-01",
+      vote_average: 7.0,
+      vote_count: 500,
+    };
+
+    // 2026 referansında: 2024 >= 2026 - 2 -> güncel kabul edilir (+0.2 recency bonusu)
+    const [scored2026] = scoreCandidatesV3(
+      [{ ...candidate2024 }],
+      profile,
+      { now: new Date("2026-01-01T00:00:00Z") }
+    );
+    assert.equal(scored2026.parts.context, 0.7); // 0.5 + 0.2
+
+    // 2030 referansında: 2024 < 2030 - 2 -> güncel kabul edilmez (bonus almaz, baz 0.5 kalır)
+    const [scored2030] = scoreCandidatesV3(
+      [{ ...candidate2024 }],
+      profile,
+      { now: new Date("2030-01-01T00:00:00Z") }
+    );
+    assert.equal(scored2030.parts.context, 0.5); // 0.5 baz puan
+
+    // String veya epoch number olarak now parametresi verme testi
+    const [scoredEpoch] = scoreCandidatesV3(
+      [{ ...candidate2024 }],
+      profile,
+      { now: new Date("2026-01-01T00:00:00Z").getTime() }
+    );
+    assert.equal(scoredEpoch.parts.context, 0.7);
+  });
+});
+

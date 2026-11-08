@@ -2942,13 +2942,25 @@ export function scoreCandidatesV3(
     genreNames = null as Record<number | string, string> | null,
     mood = '',
     tasteMap = null as PersistentTasteMapData | null,
+    now = new Date(),
   }: {
     weights?: typeof RECOMMENDATION_WEIGHTS_V3;
     genreNames?: Record<number | string, string> | null;
     mood?: string;
     tasteMap?: PersistentTasteMapData | null;
+    now?: Date | number | string;
   } = {}
 ) {
+  const referenceDate =
+    now instanceof Date
+      ? now
+      : typeof now === 'number' || typeof now === 'string'
+      ? new Date(now)
+      : new Date();
+  const currentYear = Number.isFinite(referenceDate.getTime())
+    ? referenceDate.getFullYear()
+    : new Date().getFullYear();
+
   const actorOf = (id: any) => profile.actors?.[String(id)] || null;
   const directorOf = (id: any) => profile.directors?.[String(id)] || null;
   const topGenreSet = new Set(profile.positiveGenres.slice(0, 4));
@@ -3099,17 +3111,22 @@ export function scoreCandidatesV3(
     const pop = Number(candidate.popularity) || 0;
     const popularityScore = clamp01(Math.log10(pop + 1) / 3.5);
 
-    // 13. Bağlam ve Yayın Zamanı (0.03)
+    // 13. Bağlam ve Yayın Zamanı (0.03) & Ruh Hâli / Atmosfer Uyumu
     let contextScore = 0.5;
-    if (mood) {
-      contextScore = 0.75;
+    let moodAffinity: MoodAffinityResult | null = null;
+    let atmosphereScore = 0.5;
+
+    if (mood && typeof mood === 'string' && mood.trim()) {
+      moodAffinity = calculateMoodAffinity(candidate, mood);
+      atmosphereScore = moodAffinity.atmosphereScore;
+      contextScore = atmosphereScore;
     }
+
     const releaseDate = candidate.release_date || candidate.first_air_date;
     if (releaseDate && typeof releaseDate === 'string') {
       const year = parseInt(releaseDate.slice(0, 4), 10);
-      const currentYear = new Date().getFullYear();
-      if (year >= currentYear - 2) {
-        contextScore = clamp01(contextScore + 0.2);
+      if (Number.isFinite(year) && year >= currentYear - 2) {
+        contextScore = clamp01(contextScore + (mood ? 0.05 : 0.2));
       }
     }
 
@@ -3140,6 +3157,7 @@ export function scoreCandidatesV3(
       exploration: explorationScore,
       popularity: popularityScore,
       context: contextScore,
+      atmosphere: atmosphereScore,
       franchise: franchiseScore,
       sourceSignal: sourceSignalScore,
     };
@@ -3170,6 +3188,10 @@ export function scoreCandidatesV3(
     const genreLabel = topCandidateGenre && genreNames ? genreNames[topCandidateGenre] : '';
     if (genreLabel && genreLabel !== candidate.poolReason && !tags.some((t) => t.includes(genreLabel))) {
       tags.push(`${genreLabel} türünü sevdiğin için`);
+    }
+
+    if (moodAffinity && !moodAffinity.isNeutralFallback && moodAffinity.atmosphereScore >= 0.70) {
+      tags.push(`${moodAffinity.label || 'Ruh hâli'} uyumu (%${Math.round(moodAffinity.atmosphereScore * 100)})`);
     }
 
     if (knownDirector && knownDirector.personal >= 0.25) {
@@ -3236,6 +3258,8 @@ export function scoreCandidatesV3(
     candidate.skippedCount = skippedCount;
     candidate.ringDemotions = ringDemotions;
     candidate.lastShownAt = lastShownAt;
+    candidate.atmosphereScore = atmosphereScore;
+    candidate.moodAffinity = moodAffinity;
     candidate.tags = tags.slice(0, 4);
     candidate.signalBreakdown = parts;
     candidate.lovedSimDetail = lovedSimResult.breakdown;
@@ -3250,6 +3274,8 @@ export function scoreCandidatesV3(
       confidenceLevel,
       rawScore,
       parts,
+      atmosphereScore,
+      moodAffinity,
       tags: tags.slice(0, 4),
       ring,
       demotionPenalty,
