@@ -583,6 +583,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               ? currentItem.tags
               : [];
             const matchVal = Number(entry?.tasteScore ?? currentItem.tasteScore ?? currentItem.matchScore ?? item?.matchScore ?? 0);
+            const lovedSimDetail = currentItem.lovedSimDetail || item?.lovedSimDetail || entry?.lovedSimDetail || null;
 
             const signalLabels: Record<string, string> = {
               genre: 'Tür Uyumu',
@@ -654,6 +655,50 @@ export const DetailModal: React.FC<DetailModalProps> = ({
                         <span className="explain-rec-val tabular-nums">{sig.percent}/100</span>
                       </div>
                     ))}
+                  </div>
+                )}
+                {lovedSimDetail && lovedSimDetail.matchedTitle && (
+                  <div className="mt-3.5 pt-3 border-t border-white/[0.08]" aria-label="Sevilen yapım benzerlik analizi">
+                    <div className="flex items-center justify-between text-xs mb-2">
+                      <span className="font-serif font-medium text-cinema-gold">
+                        Sevilen Yapımlarla Benzerlik: &ldquo;{lovedSimDetail.matchedTitle}&rdquo;
+                      </span>
+                      <span className="font-mono text-cinema-text-primary font-semibold">
+                        %{Math.round(lovedSimDetail.similarity * 100)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-5 gap-1.5 text-center text-[11px]">
+                      <div className="bg-white/[0.04] p-1.5 rounded border border-white/[0.05]">
+                        <div className="text-[10px] text-cinema-text-muted">Tür</div>
+                        <div className="font-mono text-cinema-text-primary mt-0.5 font-medium">
+                          %{Math.round(lovedSimDetail.genreSim * 100)}
+                        </div>
+                      </div>
+                      <div className="bg-white/[0.04] p-1.5 rounded border border-white/[0.05]">
+                        <div className="text-[10px] text-cinema-text-muted">Hikâye</div>
+                        <div className="font-mono text-cinema-text-primary mt-0.5 font-medium">
+                          %{Math.round(lovedSimDetail.storySim * 100)}
+                        </div>
+                      </div>
+                      <div className="bg-white/[0.04] p-1.5 rounded border border-white/[0.05]">
+                        <div className="text-[10px] text-cinema-text-muted">Oyuncu</div>
+                        <div className="font-mono text-cinema-text-primary mt-0.5 font-medium">
+                          %{Math.round(lovedSimDetail.castSim * 100)}
+                        </div>
+                      </div>
+                      <div className="bg-white/[0.04] p-1.5 rounded border border-white/[0.05]">
+                        <div className="text-[10px] text-cinema-text-muted">Atmosfer</div>
+                        <div className="font-mono text-cinema-text-primary mt-0.5 font-medium">
+                          %{Math.round(lovedSimDetail.atmosphereSim * 100)}
+                        </div>
+                      </div>
+                      <div className="bg-white/[0.04] p-1.5 rounded border border-white/[0.05]">
+                        <div className="text-[10px] text-cinema-text-muted">Dönem</div>
+                        <div className="font-mono text-cinema-text-primary mt-0.5 font-medium">
+                          %{Math.round(lovedSimDetail.eraSim * 100)}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
               </section>

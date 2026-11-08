@@ -985,10 +985,10 @@ test('Golden Skorlama Testi: sabit referans profil ve adaylar üzerinde scoreCan
   );
 
   const byId = Object.fromEntries(run1.map((r) => [r.candidate.id, r]));
-  // Sabit golden referans değerleri (72 > 64 > 52)
-  assert.equal(byId[329865].tasteScore, 72);
-  assert.equal(byId[872585].tasteScore, 64);
-  assert.equal(byId[44444].tasteScore, 52);
+  // Sabit golden referans değerleri (70 > 61 > 49) — gerçek çok boyutlu sevilen içerik benzerliği ile
+  assert.equal(byId[329865].tasteScore, 70);
+  assert.equal(byId[872585].tasteScore, 61);
+  assert.equal(byId[44444].tasteScore, 49);
   assert.ok(byId[872585].parts.director > 0.85, 'Christopher Nolan yönetmen sinyali yüksek olmalı');
   assert.ok(byId[329865].parts.genre > 0.85, 'Bilim Kurgu + Dram tür sinyali yüksek olmalı');
 });

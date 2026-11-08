@@ -16,6 +16,7 @@ import { Toast } from './components/Toast.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
 import { ConflictBanner } from './components/ConflictBanner.tsx';
+import { useAppModals } from './hooks/useAppModals.ts';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
   importer: () => Promise<{ default: T }>
@@ -392,16 +393,28 @@ export function App() {
     timestamp: Date.now(),
   });
 
-  const [detailItem, setDetailItem] = useState<any | null>(null);
-  const [quickSaveItem, setQuickSaveItem] = useState<any | null>(null);
-  const [personId, setPersonId] = useState<number | null>(null);
-  const [personName, setPersonName] = useState<string>('');
-  const [relationshipInitialSourceKey, setRelationshipInitialSourceKey] = useState<string>('');
-  const [addCustomOpen, setAddCustomOpen] = useState<boolean>(false);
-  const [profileOpen, setProfileOpen] = useState<boolean>(false);
-  const [tvdbModalOpen, setTvdbModalOpen] = useState<boolean>(false);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
-  const [pendingBackup, setPendingBackup] = useState<any | null>(null);
+  const {
+    detailItem,
+    setDetailItem,
+    quickSaveItem,
+    setQuickSaveItem,
+    personId,
+    setPersonId,
+    personName,
+    setPersonName,
+    relationshipInitialSourceKey,
+    setRelationshipInitialSourceKey,
+    addCustomOpen,
+    setAddCustomOpen,
+    profileOpen,
+    setProfileOpen,
+    tvdbModalOpen,
+    setTvdbModalOpen,
+    commandPaletteOpen,
+    setCommandPaletteOpen,
+    pendingBackup,
+    setPendingBackup,
+  } = useAppModals();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const requestGateRef = useRef(createRequestGate());

@@ -1,4 +1,3 @@
-import { get as idbGet, set as idbSet, createStore as createIdbStore, type UseStore } from 'idb-keyval';
 import {
   DEFAULT_MAX_DATA_BYTES,
   DEFAULT_MAX_ITEMS_PER_PROFILE,
@@ -15,46 +14,73 @@ import {
   type CinemaKunyeDocument,
 } from './cinema-kunye.ts';
 import { buildSavedIndex, findSaved, type SavedIndex } from './saved-index.ts';
+import {
+  flushCoreIdbWrites,
+  resetCoreIdbMirrorsForTests,
+  hydrateDiscoveryHistoryIdb,
+  loadPersistentTasteMap,
+  savePersistentTasteMap,
+  hydrateCandidatePoolsIdb,
+  loadPersistentPoolData,
+  savePersistentPoolData,
+  sanitizeLoadedTasteMapObject,
+  getDiscoveryHistoryIdbStore,
+  getCandidatePoolIdbStore,
+  trackCoreIdbWrite,
+} from '../services/discovery-storage.ts';
 
-let discoveryHistoryIdbStore: UseStore | undefined;
-let candidatePoolIdbStore: UseStore | undefined;
-const idbHydratedTasteMaps = new Map<string, any>();
-const idbHydratedPools = new Map<string, any>();
-const pendingCoreIdbWrites = new Set<Promise<void>>();
+export {
+  flushCoreIdbWrites,
+  resetCoreIdbMirrorsForTests,
+  hydrateDiscoveryHistoryIdb,
+  loadPersistentTasteMap,
+  savePersistentTasteMap,
+  hydrateCandidatePoolsIdb,
+  loadPersistentPoolData,
+  savePersistentPoolData,
+  sanitizeLoadedTasteMapObject,
+  getDiscoveryHistoryIdbStore,
+  getCandidatePoolIdbStore,
+  trackCoreIdbWrite,
+};
 
-function getDiscoveryHistoryIdbStore(): UseStore | undefined {
-  if (typeof indexedDB === 'undefined') return undefined;
-  if (!discoveryHistoryIdbStore) {
-    discoveryHistoryIdbStore = createIdbStore('cinetrack-discovery-history-db', 'ct_discovery_history');
-  }
-  return discoveryHistoryIdbStore;
-}
+import {
+  type LovedItemFeatures,
+  type LovedSimBreakdown,
+  type LovedSimMatchResult,
+  calculateGenreSim,
+  calculateStorySim,
+  calculateCastSim,
+  calculateAtmosphereSim,
+  calculateEraSim,
+  computeItemToItemLovedSim,
+  computeLovedSimilarityScore,
+} from './loved-similarity.ts';
 
-function getCandidatePoolIdbStore(): UseStore | undefined {
-  if (typeof indexedDB === 'undefined') return undefined;
-  if (!candidatePoolIdbStore) {
-    candidatePoolIdbStore = createIdbStore('cinetrack-candidate-pool-db', 'ct_candidate_pool');
-  }
-  return candidatePoolIdbStore;
-}
+export {
+  type LovedItemFeatures,
+  type LovedSimBreakdown,
+  type LovedSimMatchResult,
+  calculateGenreSim,
+  calculateStorySim,
+  calculateCastSim,
+  calculateAtmosphereSim,
+  calculateEraSim,
+  computeItemToItemLovedSim,
+  computeLovedSimilarityScore,
+};
 
-function trackCoreIdbWrite(promise: Promise<void>): void {
-  pendingCoreIdbWrites.add(promise);
-  void promise.finally(() => {
-    pendingCoreIdbWrites.delete(promise);
-  });
-}
+import {
+  type MoodAffinityResult,
+  normalizeMoodKey,
+  calculateMoodAffinity,
+} from './mood-affinity.ts';
 
-export async function flushCoreIdbWrites(): Promise<void> {
-  await Promise.allSettled(Array.from(pendingCoreIdbWrites));
-}
-
-export function resetCoreIdbMirrorsForTests(): void {
-  idbHydratedTasteMaps.clear();
-  idbHydratedPools.clear();
-  discoveryHistoryIdbStore = undefined;
-  candidatePoolIdbStore = undefined;
-}
+export {
+  type MoodAffinityResult,
+  normalizeMoodKey,
+  calculateMoodAffinity,
+};
 
 export const REMINDER_WINDOW_DAYS = 3;
 
@@ -1068,6 +1094,7 @@ export interface TasteProfileV3 {
   lovedOverviewTokens: Set<string>;
   positiveGenres: string[];
   coOccurredPairs: Set<string>;
+  lovedItemFeatures?: LovedItemFeatures[];
 }
 
 export function buildTasteProfileV3(
@@ -1113,6 +1140,7 @@ export function buildTasteProfileV3(
   const lovedProductionCompanyIds = new Set<number>();
   const lovedOverviewTokens = new Set<string>();
   const coOccurredPairs = new Set<string>();
+  const lovedItemFeatures: LovedItemFeatures[] = [];
 
   let rawItems: any[] = [...(Array.isArray(items) ? items : [])];
 
@@ -1193,9 +1221,47 @@ export function buildTasteProfileV3(
           if (company?.id) lovedProductionCompanyIds.add(Number(company.id));
         }
       }
-      for (const token of extractOverviewTokens(item.overview)) {
+      const itemTokens = extractOverviewTokens(item.overview);
+      for (const token of itemTokens) {
         lovedOverviewTokens.add(token);
       }
+
+      const itemGenres: number[] = Array.isArray(item.genre_ids)
+        ? item.genre_ids.map(Number).filter((n: number) => Number.isFinite(n) && n > 0)
+        : Array.isArray(item.genres)
+        ? item.genres.map((g: any) => Number(typeof g === 'object' ? g?.id : g)).filter((n: number) => Number.isFinite(n) && n > 0)
+        : [];
+
+      const rawCast = Array.isArray(item.cast) ? item.cast : [];
+      const itemCastIds: number[] = rawCast
+        .slice(0, 10)
+        .map((c: any) => Number(c?.id))
+        .filter((n: number) => Number.isFinite(n) && n > 0);
+
+      const rawCrew = Array.isArray(item.crew) ? item.crew : [];
+      const itemDirectorIds: number[] = rawCrew
+        .filter((m: any) => m && (m.job === 'Director' || m.job === 'Creator'))
+        .map((m: any) => Number(m.id))
+        .filter((n: number) => Number.isFinite(n) && n > 0);
+
+      const rawDate = item.release_date || item.first_air_date;
+      const itemYear = typeof rawDate === 'string' && /^\d{4}/.test(rawDate)
+        ? parseInt(rawDate.slice(0, 4), 10)
+        : undefined;
+
+      lovedItemFeatures.push({
+        key: makeMediaKey(item),
+        id: item.id,
+        media_type: item.media_type || (item.title ? 'movie' : 'tv'),
+        title: String(item.title || item.name || '').trim(),
+        genre_ids: itemGenres,
+        overviewTokens: new Set(itemTokens),
+        castIds: itemCastIds,
+        directorIds: itemDirectorIds,
+        collectionId: item.belongs_to_collection?.id ? Number(item.belongs_to_collection.id) : undefined,
+        year: itemYear,
+        weight: Math.max(0.5, effContribution),
+      });
     }
 
     // Genres
@@ -1373,6 +1439,7 @@ export function buildTasteProfileV3(
     lovedOverviewTokens,
     positiveGenres,
     coOccurredPairs,
+    lovedItemFeatures,
   };
 }
 
@@ -1662,6 +1729,9 @@ export interface TasteMapEntry {
   archiveReason?: 'evicted_from_pool' | 'status_change' | 'manual';
   scoreCoverage?: 'basic' | 'enriched';
   confidenceLevel?: 'standard' | 'high';
+  lovedSimDetail?: LovedSimBreakdown | null;
+  moodDetail?: MoodAffinityResult | null;
+  atmosphereScore?: number;
 }
 
 export function appendBoundedImpression(
@@ -1932,10 +2002,9 @@ export function createDefaultTasteMapData(profileId: string): PersistentTasteMap
   };
 }
 
-const MAX_ARCHIVED_TASTE_ENTRIES = 250;
-const inMemoryTasteMapFallback = new Map<string, { storageRef: Storage | null; raw: string }>();
+export const MAX_ARCHIVED_TASTE_ENTRIES = 250;
 
-function pruneArchivedTasteEntries(
+export function pruneArchivedTasteEntries(
   archived: Record<string, TasteMapEntry>,
   maxEntries = MAX_ARCHIVED_TASTE_ENTRIES
 ): Record<string, TasteMapEntry> {
@@ -1964,213 +2033,6 @@ function pruneArchivedTasteEntries(
     trimmed[k] = archived[k];
   }
   return trimmed;
-}
-
-function compactTasteMapForQuota(data: PersistentTasteMapData): PersistentTasteMapData {
-  const lastKeysSet = new Set(canonicalizeMediaKeyList(data.lastRecommendedKeys || []));
-  const compactEntries: Record<string, TasteMapEntry> = {};
-  for (const [k, v] of Object.entries(data.entries || {})) {
-    if (!v) continue;
-    compactEntries[k] = {
-      ...v,
-      overview: lastKeysSet.has(k)
-        ? (v.overview || '').slice(0, 320)
-        : (v.overview || '').slice(0, 120),
-      impressionHistory: Array.isArray(v.impressionHistory) ? v.impressionHistory.slice(-10) : [],
-    };
-  }
-
-  const prunedArchived = pruneArchivedTasteEntries(data.archivedEntries || {}, 100);
-  const compactArchived: Record<string, TasteMapEntry> = {};
-  for (const [k, v] of Object.entries(prunedArchived)) {
-    if (!v) continue;
-    if (v.status === 'active' && (v.shownCount || 0) === 0 && (v.skippedCount || 0) === 0) {
-      continue;
-    }
-    compactArchived[k] = {
-      ...v,
-      overview: '',
-      impressionHistory: Array.isArray(v.impressionHistory) ? v.impressionHistory.slice(-5) : [],
-    };
-  }
-
-  return {
-    ...data,
-    entries: compactEntries,
-    archivedEntries: compactArchived,
-  };
-}
-
-function sanitizeLoadedTasteMapObject(
-  profileId: string,
-  rawParsed: any
-): { loadedData: PersistentTasteMapData; needsMigrationWrite: boolean } | null {
-  if (!rawParsed || typeof rawParsed.entries !== 'object') return null;
-  const migration = migratePersistentTasteMapData(rawParsed, MAX_IMPRESSION_HISTORY_PER_ENTRY);
-  const parsed = migration.data;
-  const lastRecommendedKeys: string[] = canonicalizeMediaKeyList(parsed.lastRecommendedKeys || []);
-  let needsMigrationWrite = migration.changed;
-
-  const sanitizedEntries: Record<string, TasteMapEntry> = {};
-  for (const [k, v] of Object.entries(parsed.entries || {})) {
-    const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
-    const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
-    const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
-    if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
-      needsMigrationWrite = true;
-    }
-    sanitizedEntries[mediaKey] = {
-      ...sanitized,
-      mediaKey,
-      ring: inferredRing,
-      initialRing: 'ring0',
-    };
-  }
-
-  const sanitizedArchived: Record<string, TasteMapEntry> = {};
-  if (parsed.archivedEntries && typeof parsed.archivedEntries === 'object') {
-    for (const [k, v] of Object.entries(parsed.archivedEntries)) {
-      const sanitized = sanitizeTasteMapEntryImpressions(v as TasteMapEntry);
-      const mediaKey = canonicalizeMediaKey(sanitized.mediaKey || k);
-      if (sanitizedEntries[mediaKey]) {
-        needsMigrationWrite = true;
-        continue;
-      }
-      const inferredRing = inferLifecycleRing(mediaKey, sanitized, lastRecommendedKeys);
-      if (sanitized.ring !== inferredRing || sanitized.initialRing !== 'ring0' || k !== mediaKey) {
-        needsMigrationWrite = true;
-      }
-      sanitizedArchived[mediaKey] = {
-        ...sanitized,
-        mediaKey,
-        ring: inferredRing,
-        initialRing: 'ring0',
-      };
-    }
-  }
-
-  const loadedData: PersistentTasteMapData = {
-    profileId,
-    profileSignature: parsed.profileSignature || '',
-    profileSnapshot: parsed.profileSnapshot || undefined,
-    algorithmVersion: parsed.algorithmVersion || undefined,
-    weightsSignature: parsed.weightsSignature || undefined,
-    updatedAt: parsed.updatedAt || new Date().toISOString(),
-    entries: sanitizedEntries,
-    archivedEntries: sanitizedArchived,
-    lastRecommendedKeys,
-    lastBatchTimestamp: parsed.lastBatchTimestamp || null,
-    cachedBalancedItems: Array.isArray(parsed.cachedBalancedItems) ? parsed.cachedBalancedItems : undefined,
-    lastTargetType: parsed.lastTargetType || undefined,
-    lastExplanation: parsed.lastExplanation || undefined,
-    summary: parsed.summary || undefined,
-  };
-  return { loadedData, needsMigrationWrite };
-}
-
-export async function hydrateDiscoveryHistoryIdb(profileId: string): Promise<PersistentTasteMapData> {
-  const key = getTasteMapStorageKey(profileId);
-  const store = getDiscoveryHistoryIdbStore();
-  if (store) {
-    try {
-      const idbVal = await idbGet<PersistentTasteMapData>(key, store);
-      if (idbVal && typeof idbVal.entries === 'object') {
-        const sanitized = sanitizeLoadedTasteMapObject(profileId, idbVal);
-        if (sanitized) {
-          idbHydratedTasteMaps.set(key, sanitized.loadedData);
-          try {
-            if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
-          } catch {}
-          if (sanitized.needsMigrationWrite) {
-            savePersistentTasteMap(profileId, sanitized.loadedData);
-          }
-          return sanitized.loadedData;
-        }
-      }
-    } catch {}
-  }
-  return loadPersistentTasteMap(profileId);
-}
-
-export function loadPersistentTasteMap(profileId: string): PersistentTasteMapData {
-  const key = getTasteMapStorageKey(profileId);
-  const store = getDiscoveryHistoryIdbStore();
-  if (store && idbHydratedTasteMaps.has(key)) {
-    return idbHydratedTasteMaps.get(key) as PersistentTasteMapData;
-  }
-
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const fallback = inMemoryTasteMapFallback.get(key);
-      let raw = localStorage.getItem(key);
-      if (fallback && fallback.storageRef === localStorage) {
-        raw = fallback.raw;
-      } else if (fallback && fallback.storageRef !== localStorage) {
-        inMemoryTasteMapFallback.delete(key);
-      }
-      if (raw) {
-        const rawParsed = JSON.parse(raw);
-        const sanitized = sanitizeLoadedTasteMapObject(profileId, rawParsed);
-        if (sanitized) {
-          if (store || sanitized.needsMigrationWrite) {
-            savePersistentTasteMap(profileId, sanitized.loadedData);
-          }
-          return sanitized.loadedData;
-        }
-      }
-    }
-  } catch {}
-  return createDefaultTasteMapData(profileId);
-}
-
-export function savePersistentTasteMap(profileId: string, data: PersistentTasteMapData): void {
-  const key = getTasteMapStorageKey(profileId);
-  const normalizedData: PersistentTasteMapData = {
-    ...data,
-    lastRecommendedKeys: canonicalizeMediaKeyList(data.lastRecommendedKeys || []),
-    archivedEntries: pruneArchivedTasteEntries(data.archivedEntries || {}),
-  };
-
-  // Primary browser storage: IndexedDB via idb-keyval (BUG-02 — zero localStorage bloat)
-  const store = getDiscoveryHistoryIdbStore();
-  if (store) {
-    idbHydratedTasteMaps.set(key, normalizedData);
-    inMemoryTasteMapFallback.delete(key);
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem(key);
-      }
-    } catch {}
-    trackCoreIdbWrite(
-      idbSet(key, normalizedData, store).catch((err) => {
-        console.warn('[Cinethos] Discovery history IDB write failed:', err);
-      })
-    );
-    return;
-  }
-
-  if (typeof localStorage === 'undefined') return;
-
-  const serialized = JSON.stringify(normalizedData);
-  try {
-    localStorage.setItem(key, serialized);
-    inMemoryTasteMapFallback.delete(key);
-    return;
-  } catch {
-    // Tarayıcı localStorage kotası dolduysa özetleri ve arşivi sıkıştırarak tekrar dene;
-    // böylece lastRecommendedKeys ve shownCount asla kaybolmaz.
-    const compacted = compactTasteMapForQuota(normalizedData);
-    const compactSerialized = JSON.stringify(compacted);
-    try {
-      localStorage.setItem(key, compactSerialized);
-      inMemoryTasteMapFallback.delete(key);
-    } catch {
-      inMemoryTasteMapFallback.set(key, {
-        storageRef: localStorage,
-        raw: compactSerialized,
-      });
-    }
-  }
 }
 
 export function markTasteMapItemStatus(
@@ -2457,6 +2319,9 @@ export function updateTasteMapWithBatch({
         archivedAt: null,
         scoreCoverage,
         confidenceLevel,
+        lovedSimDetail: poolItem.lovedSimDetail || cand.lovedSimDetail || existing?.lovedSimDetail || null,
+        moodDetail: poolItem.moodDetail || cand.moodDetail || existing?.moodDetail || null,
+        atmosphereScore: poolItem.atmosphereScore ?? cand.atmosphereScore ?? existing?.atmosphereScore,
       };
     }
   }
@@ -2784,6 +2649,7 @@ export function recordDisplayedRecommendations(
       archivedAt: null,
       scoreCoverage: existing?.scoreCoverage || 'basic',
       confidenceLevel: existing?.confidenceLevel || 'standard',
+      lovedSimDetail: rawItem?.candidate?.lovedSimDetail || rawItem?.lovedSimDetail || existing?.lovedSimDetail || null,
     };
   }
 
@@ -3063,6 +2929,7 @@ export function syncPoolCandidatesWithTasteMap(
       lastScoredAt: entry.lastScoredAt,
       tags: entry.tags,
       signalBreakdown: entry.parts,
+      lovedSimDetail: entry.lovedSimDetail || (item as any).lovedSimDetail || null,
     };
   });
 }
@@ -3132,17 +2999,13 @@ export function scoreCandidatesV3(
       storyScore = clamp01(0.3 + 0.7 * Math.min(1, ratio * 2));
     }
 
-    // 5. Sevilen Yapımlara Benzerlik (0.09)
-    let lovedSimScore = 0.5;
-    if (candidate.seedSourceType === 'completed') {
-      lovedSimScore = 0.95;
-    } else if (candidate.seedSourceType === 'watching') {
-      lovedSimScore = 0.85;
-    } else if (candidate.seedSourceType === 'watchlist') {
-      lovedSimScore = 0.65;
-    } else if (candidate.poolSources && candidate.poolSources >= 2) {
-      lovedSimScore = 0.75;
-    }
+    // 5. Sevilen Yapımlara Benzerlik (0.09) — Çok boyutlu anlamsal benzerlik
+    const lovedSimResult = computeLovedSimilarityScore(
+      candidate,
+      profile.lovedItemFeatures || [],
+      tokens
+    );
+    const lovedSimScore = lovedSimResult.score;
 
     // 6. Genel Oyuncu Tercihi (0.12) & 7. Tür x Oyuncu Tercihi (0.08)
     let actorScore = 0.5;
@@ -3315,6 +3178,9 @@ export function scoreCandidatesV3(
     if (franchiseScore >= 0.8) {
       tags.push('Sevdiğin film serisinden');
     }
+    if (lovedSimResult.breakdown && lovedSimResult.breakdown.similarity >= 0.58 && lovedSimResult.breakdown.matchedTitle) {
+      tags.push(`Sevdiğin "${lovedSimResult.breakdown.matchedTitle}" ile benzer (%${Math.round(lovedSimResult.breakdown.similarity * 100)})`);
+    }
     if (qualityScore >= 0.72) {
       tags.push(`TMDB'de ${bayes.toFixed(1)} puan`);
     }
@@ -3372,6 +3238,7 @@ export function scoreCandidatesV3(
     candidate.lastShownAt = lastShownAt;
     candidate.tags = tags.slice(0, 4);
     candidate.signalBreakdown = parts;
+    candidate.lovedSimDetail = lovedSimResult.breakdown;
 
     return {
       candidate,
@@ -5088,8 +4955,6 @@ export class PoolReplenishmentLock {
 
 export const poolReplenishmentLock = new PoolReplenishmentLock();
 
-const inMemoryPoolFallback = new Map<string, { storageRef: unknown; raw: string }>();
-
 /**
  * TMDB film ve dizi tür kimlikleri arasındaki çapraz eşdeğerliği denetler.
  * Örn: Film Fantastik (14) / Bilim Kurgu (878) <-> Dizi Bilim Kurgu & Fantazi (10765),
@@ -5400,151 +5265,7 @@ export async function topUpFilteredCandidates({
   return { filteredCandidates: matching, newlyDiscovered };
 }
 
-export async function hydrateCandidatePoolsIdb(
-  profileId: string
-): Promise<{ movie: PersistentCandidatePoolData; tv: PersistentCandidatePoolData }> {
-  const store = getCandidatePoolIdbStore();
-  if (store) {
-    for (const mediaType of ['movie', 'tv'] as const) {
-      const key = `cinetrack_pool_${mediaType}_${profileId}`;
-      try {
-        const idbVal = await idbGet<PersistentCandidatePoolData>(key, store);
-        if (idbVal && idbVal.mediaType === mediaType && Array.isArray(idbVal.items)) {
-          idbHydratedPools.set(key, {
-            mediaType,
-            updatedAt: idbVal.updatedAt || new Date().toISOString(),
-            items: idbVal.items,
-            cursors: {
-              ...createDefaultPoolCursors(),
-              ...(idbVal.cursors || {}),
-            },
-          });
-          try {
-            if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
-          } catch {}
-        }
-      } catch {}
-    }
-  }
-  return {
-    movie: loadPersistentPoolData(profileId, 'movie'),
-    tv: loadPersistentPoolData(profileId, 'tv'),
-  };
-}
 
-export function loadPersistentPoolData(
-  profileId: string,
-  mediaType: 'movie' | 'tv'
-): PersistentCandidatePoolData {
-  const key = `cinetrack_pool_${mediaType}_${profileId}`;
-  const store = getCandidatePoolIdbStore();
-  if (store && idbHydratedPools.has(key)) {
-    const cached = idbHydratedPools.get(key) as PersistentCandidatePoolData;
-    const tasteMap = loadPersistentTasteMap(profileId);
-    const syncedItems = syncPoolCandidatesWithTasteMap(cached.items || [], tasteMap);
-    return {
-      mediaType,
-      updatedAt: cached.updatedAt || new Date().toISOString(),
-      items: syncedItems,
-      cursors: {
-        ...createDefaultPoolCursors(),
-        ...(cached.cursors || {}),
-      },
-    };
-  }
-
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const fallback = inMemoryPoolFallback.get(key);
-      let raw = localStorage.getItem(key);
-      if (fallback && fallback.storageRef === localStorage) {
-        raw = fallback.raw;
-      } else if (fallback && fallback.storageRef !== localStorage) {
-        inMemoryPoolFallback.delete(key);
-      }
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.mediaType === mediaType && Array.isArray(parsed.items)) {
-          const tasteMap = loadPersistentTasteMap(profileId);
-          const syncedItems = syncPoolCandidatesWithTasteMap(parsed.items, tasteMap);
-          const loadedPool: PersistentCandidatePoolData = {
-            mediaType,
-            updatedAt: parsed.updatedAt || new Date().toISOString(),
-            items: syncedItems,
-            cursors: {
-              ...createDefaultPoolCursors(),
-              ...(parsed.cursors || {}),
-            },
-          };
-          if (store) {
-            savePersistentPoolData(profileId, loadedPool);
-          }
-          return loadedPool;
-        }
-      }
-    }
-  } catch {}
-  return createDefaultPoolData(mediaType);
-}
-
-export function savePersistentPoolData(
-  profileId: string,
-  data: PersistentCandidatePoolData
-): void {
-  const key = `cinetrack_pool_${data.mediaType}_${profileId}`;
-  const updatedAt = new Date().toISOString();
-  const sliced = data.items.slice(0, POOL_TARGET_CAPACITY);
-  const poolRecord: PersistentCandidatePoolData = {
-    mediaType: data.mediaType,
-    updatedAt,
-    items: sliced,
-    cursors: data.cursors,
-  };
-
-  // Primary browser storage: IndexedDB via idb-keyval (BUG-02 — zero localStorage bloat)
-  const store = getCandidatePoolIdbStore();
-  if (store) {
-    idbHydratedPools.set(key, poolRecord);
-    inMemoryPoolFallback.delete(key);
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem(key);
-      }
-    } catch {}
-    trackCoreIdbWrite(
-      idbSet(key, poolRecord, store).catch((err) => {
-        console.warn('[Cinethos] Candidate pool IDB write failed:', err);
-      })
-    );
-    return;
-  }
-
-  if (typeof localStorage === 'undefined') return;
-  const fullPayload = JSON.stringify(poolRecord);
-  try {
-    localStorage.setItem(key, fullPayload);
-    inMemoryPoolFallback.delete(key);
-  } catch {
-    const compactPayload = JSON.stringify({
-      mediaType: data.mediaType,
-      updatedAt,
-      items: sliced.map((it) => ({
-        ...it,
-        overview: (it.overview || '').slice(0, 140),
-      })),
-      cursors: data.cursors,
-    });
-    try {
-      localStorage.setItem(key, compactPayload);
-      inMemoryPoolFallback.delete(key);
-    } catch {
-      inMemoryPoolFallback.set(key, {
-        storageRef: localStorage,
-        raw: compactPayload,
-      });
-    }
-  }
-}
 
 export interface ReplenishCandidatePoolParams {
   profileId: string;
@@ -5603,10 +5324,8 @@ export async function replenishCandidatePool({
     lockKey,
     async () => {
       onProgress?.(`${labelPrefix} aday havuzu doğrulanıyor…`);
-      if (typeof indexedDB !== 'undefined') {
-        await hydrateDiscoveryHistoryIdb(profileId);
-        await hydrateCandidatePoolsIdb(profileId);
-      }
+      await hydrateDiscoveryHistoryIdb(profileId);
+      await hydrateCandidatePoolsIdb(profileId);
       const poolData = loadPersistentPoolData(profileId, mediaType);
 
       // 1. Beş durum kontrolü ile mevcut havuzu temizle
