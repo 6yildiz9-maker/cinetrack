@@ -20,7 +20,8 @@ import {
   resolveEffectiveMetricView,
 } from '../../core/taste/metric-labels.ts';
 import { useTasteProfile } from '../../hooks/useTasteProfile.ts';
-import { TasteProfileDashboard } from './TasteProfileDashboard.tsx';
+// Tam panel yalnızca "tam görünüm" istendiğinde indirilir (ana paketten çıkarılır).
+const TasteProfileDashboard = React.lazy(() => import('./TasteProfileDashboard.tsx'));
 
 const STRONG_TREND_COUNT = 5;
 const AVOIDED_TREND_COUNT = 3;
@@ -114,7 +115,15 @@ export const TasteProfileMinimal: React.FC = () => {
             <span>Minimal görünüm</span>
           </button>
         </div>
-        <TasteProfileDashboard />
+        <React.Suspense
+          fallback={
+            <div className="lazy-tab-fallback" role="status">
+              Zevk profili yükleniyor…
+            </div>
+          }
+        >
+          <TasteProfileDashboard />
+        </React.Suspense>
       </div>
     );
   }

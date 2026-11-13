@@ -19,6 +19,7 @@ import { recordManualBackupSuccess } from '../services/auto-backup-service.ts';
 import { resetDerivedCachesPreserveProfileAndStock } from '../services/idb-schema-version.ts';
 import { PROVIDER_OPTIONS } from '../utils/helpers.ts';
 import { useDialogAccessibility } from '../utils/useDialogAccessibility.ts';
+import { handleTabListKeyDown } from '../utils/tabListKeyboard.ts';
 import { ProfileStatsTab } from './ProfileStatsTab.tsx';
 import { ProfileBackupTab } from './ProfileBackupTab.tsx';
 import {
@@ -268,7 +269,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         </header>
 
         <nav className="profile-modal-tabs-bar" aria-label="Profil Sekmeleri">
-          <div className="profile-nav-tabs" role="tablist">
+          <div className="profile-nav-tabs" role="tablist" onKeyDown={handleTabListKeyDown}>
             <button
               type="button"
               className={`profile-nav-tab whitespace-nowrap ${activeTab === 'stats' ? 'active' : ''}`}

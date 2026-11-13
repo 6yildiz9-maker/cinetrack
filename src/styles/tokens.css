@@ -22,7 +22,7 @@
     --border-strong: rgba(255, 255, 255, 0.14);
     --text-1: #eef0f2; /* başlıklar, sayılar */
     --text-2: #8b9099; /* gövde, meta */
-    --text-3: #7b808b; /* pasif, ipucu — AA kontrast (4.97:1) */
+    --text-3: #848994; /* pasif, ipucu — AA kontrast (5.06:1 cam panel, 5.61:1 zemin) */
     --text-on-accent: #10131a; /* altın yüzey üzerinde koyu mürekkep */
 
     /* Vurgu & anlam — Deniz camı turkuaz (accent) + eski kamera altını; doygun neon yok */
@@ -156,7 +156,7 @@
     width: 100vw;
     height: 100vh;
     pointer-events: none;
-    z-index: 9999;
+    z-index: 1;
     opacity: 0.035;
     background-image: var(--film-grain-image);
     background-repeat: repeat;
@@ -176,6 +176,13 @@
 
   .poster {
     aspect-ratio: 2 / 3;
+  }
+
+  /* Yüksek kontrast ve saydamlık azaltma tercihlerinde gren katmanını kapat. */
+  @media (forced-colors: active), (prefers-reduced-transparency: reduce) {
+    body::after {
+      display: none;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

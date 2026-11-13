@@ -3338,7 +3338,8 @@ export function App() {
         const itemType = item.media_type || (item.title ? 'movie' : 'tv');
         const key = makeMediaKey(itemType, item.id);
         if (preferences.disliked.includes(key)) return false;
-        if (preferences.hidden?.includes(key)) return false;
+        // Aramada gizlenmiş içerikler görünür kalır; aksi hâlde gizleme geri alınamıyordu.
+        if (!query.trim() && preferences.hidden?.includes(key)) return false;
 
         // In Sana Özel (recommendations), strictly filter out items already in the user's list
         if (category === 'for-you') {
@@ -4180,6 +4181,16 @@ export function App() {
         >
           <svg className="icon" aria-hidden="true"><use href="#icon-dna" /></svg>
           <span className="mobile-tab-label">Zevkim</span>
+        </button>
+
+        <button
+          type="button"
+          className={`mobile-tab-btn ${tab === 'relationships' ? 'active' : ''}`}
+          onClick={() => setTab('relationships')}
+          aria-label="Evrenler"
+        >
+          <svg className="icon" aria-hidden="true"><use href="#icon-network" /></svg>
+          <span className="mobile-tab-label">Evrenler</span>
         </button>
 
       </nav>

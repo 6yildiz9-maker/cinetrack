@@ -10,6 +10,7 @@ import { fetchTmdb } from '../services/api.ts';
 import { TmdbItem } from '../types/tmdb.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 import { BRAND_NAME } from '../shared/brand.ts';
+import { handleTabListKeyDown } from '../utils/tabListKeyboard.ts';
 
 interface HeaderProps {
   profileName: string;
@@ -236,7 +237,12 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Primary Desktop Nav Tabs (Section 4) */}
-        <nav className="header-nav-tabs" role="tablist" aria-label="Ana Gezinme">
+        <nav
+          className="header-nav-tabs"
+          role="tablist"
+          aria-label="Ana Gezinme"
+          onKeyDown={handleTabListKeyDown}
+        >
           <button
             type="button"
             role="tab"

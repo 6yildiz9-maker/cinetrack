@@ -10,7 +10,8 @@ import {
   computeProfileWatchlistIntersection,
 } from '../core/exporters.ts';
 import { calculateItemWatchMinutes, getTvShowEpisodesCount } from '../utils/helpers.ts';
-import { TasteProfileDashboard } from './taste/TasteProfileDashboard.tsx';
+// Zevk paneli ağır bir modül: yalnızca istatistik sekmesi görünür olduğunda yüklensin.
+const TasteProfileDashboard = React.lazy(() => import('./taste/TasteProfileDashboard.tsx'));
 import { ColumnChart } from './charts/ColumnChart.tsx';
 import {
   buildRatingHistogramColumns,
@@ -425,7 +426,15 @@ export const ProfileStatsTab: React.FC<ProfileStatsTabProps> = ({
 
       {/* Sinema Kimliğim — Algoritmik Zevk Takımyıldızı (Derin Sinema) */}
       <div className="profile-tools-section">
-        <TasteProfileDashboard compact />
+        <React.Suspense
+          fallback={
+            <div className="lazy-tab-fallback" role="status">
+              Zevk profili yükleniyor…
+            </div>
+          }
+        >
+          <TasteProfileDashboard compact />
+        </React.Suspense>
       </div>
 
       {/* Zevk DNA Özeti */}
