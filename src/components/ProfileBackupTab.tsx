@@ -35,6 +35,8 @@ interface ProfileBackupTabProps {
   onCreateInstantBackup: () => Promise<void>;
   onLoadServerBackups: () => Promise<void>;
   onRestoreSnapshot: (id: string) => Promise<void>;
+  onCreateSqliteArchive?: () => Promise<void>;
+  onRestoreSqliteArchive?: (file: File) => Promise<void>;
 }
 
 export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
@@ -55,9 +57,14 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
   onCreateInstantBackup,
   onLoadServerBackups,
   onRestoreSnapshot,
+  onCreateSqliteArchive,
+  onRestoreSqliteArchive,
 }) => {
   const [importStatus, setImportStatus] = useState('');
   const [csvStatus, setCsvStatus] = useState('');
+  const [sqliteStatus, setSqliteStatus] = useState('');
+  const [sqliteBusy, setSqliteBusy] = useState<'export' | 'restore' | null>(null);
+  const sqliteInputRef = useRef<HTMLInputElement>(null);
   const [exportingExcelMode, setExportingExcelMode] = useState<'xlsx_only' | 'json_and_xlsx' | null>(null);
   const [uploadExcelToGithub, setUploadExcelToGithub] = useState(false);
   const [excelExportReport, setExcelExportReport] = useState<ProfileBackupExportReportClient | null>(null);
@@ -221,6 +228,36 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
     }
   };
 
+  const handleCreateSqliteArchive = async () => {
+    if (!onCreateSqliteArchive) return;
+    setSqliteBusy('export');
+    setSqliteStatus('Profil, stok ve stok posterleri tek bir SQLite dosyasına yazılıyor…');
+    try {
+      await onCreateSqliteArchive();
+      setSqliteStatus('SQLite arşivi indirildi: profil + stok + görseller tek dosyada.');
+    } catch (error: any) {
+      setSqliteStatus(error?.message || 'SQLite arşivi oluşturulamadı.');
+    } finally {
+      setSqliteBusy(null);
+    }
+  };
+
+  const handleSqliteFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !onRestoreSqliteArchive) return;
+    setSqliteBusy('restore');
+    setSqliteStatus('SQLite arşivi doğrulanıyor ve tüm veriler geri yükleniyor…');
+    try {
+      await onRestoreSqliteArchive(file);
+      setSqliteStatus('SQLite arşivi geri yüklendi: profiller, stok ve görseller hazır.');
+    } catch (error: any) {
+      setSqliteStatus(error?.message || 'SQLite arşivi geri yüklenemedi.');
+    } finally {
+      setSqliteBusy(null);
+    }
+  };
+
   return (
     <div className="profile-tab-panel">
       {/* 1. JSON Yedekleme */}
@@ -254,6 +291,47 @@ export const ProfileBackupTab: React.FC<ProfileBackupTabProps> = ({
         </div>
         {importStatus && <p className="provider-message mt-2">{importStatus}</p>}
       </div>
+
+      {/* 1.5 SQLite Arşivi — profil + stok + stok görselleri tek dosyada */}
+      {onCreateSqliteArchive && (
+        <div className="profile-tools-section">
+          <strong className="profile-tools-heading">SQLite Arşivi (.sqlite)</strong>
+          <p className="provider-message">
+            Tüm profillerin tam kaydını (izleme listeleri, puanlar, tercihler, favori oyuncular,
+            zevk haritaları), film/dizi stoklarını ve <strong>stok posterlerinin kendisini</strong>{' '}
+            tek bir <code>.sqlite</code> dosyasında saklar. Bu dosyadan tüm veriler eksiksiz geri
+            yüklenebilir.
+          </p>
+          <div className="csv-actions-row">
+            <button
+              type="button"
+              className="btn btn-primary whitespace-nowrap shrink-0"
+              disabled={sqliteBusy !== null}
+              onClick={() => void handleCreateSqliteArchive()}
+            >
+              {sqliteBusy === 'export'
+                ? 'SQLite arşivi hazırlanıyor…'
+                : 'SQLite Arşivi İndir'}
+            </button>
+            <button
+              type="button"
+              className="btn whitespace-nowrap shrink-0"
+              disabled={sqliteBusy !== null || !onRestoreSqliteArchive}
+              onClick={() => sqliteInputRef.current?.click()}
+            >
+              {sqliteBusy === 'restore' ? 'Geri yükleniyor…' : 'SQLite Arşivinden Geri Yükle'}
+            </button>
+            <input
+              ref={sqliteInputRef}
+              type="file"
+              accept=".sqlite,application/vnd.sqlite3,application/octet-stream"
+              className="file-input-hidden"
+              onChange={(e) => void handleSqliteFileChange(e)}
+            />
+          </div>
+          {sqliteStatus && <p className="provider-message mt-2">{sqliteStatus}</p>}
+        </div>
+      )}
 
       {/* 2. Posterli Excel (.xlsx) Profil Yedeği */}
       <div className="profile-tools-section excel-backup-section">

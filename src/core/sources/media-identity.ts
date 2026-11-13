@@ -1,15 +1,12 @@
 /**
  * Kaynaklardan bağımsız kimlik anahtarları.
- * Kullanıcı listeleri (TMDB), stok havuzu ve TVDB akış kayıtları aynı anahtar dilimini
- * üretmek zorunda; karşılaştırma noktaları (`movie:123`, `raw:123`, `başlık`, `başlık|yıl`)
+ * Kullanıcı listeleri ve stok havuzu aynı anahtar dilimini üretmek zorunda;
+ * karşılaştırma noktaları (`movie:123`, `raw:123`, `başlık`, `başlık|yıl`)
  * burada tek kez tanımlanır.
  */
 
-import { buildTitleYearKey, foldTitleKey } from './tvdb-normalize.ts';
-
 export type IdentityRecord = {
   id?: string | number | null;
-  tvdb_id?: string | number | null;
   media_type?: string;
   title?: string;
   name?: string;
@@ -21,11 +18,34 @@ export type IdentityRecord = {
   imdb_id?: string;
 };
 
-/**
- * Yalnızca tür önekleri temizlenir. `tvdb-` öneki BİLİNÇLİ olarak düşürülmez:
- * TVDB ve TMDB sayısal kimlikleri çakışabilir, havuz karışması yaşamak yerine
- * TVDB kimliği `tvdb_id` alanından ayrı bir anahtar olarak gelir.
- */
+const TURKISH_FOLD: Record<string, string> = {
+  ç: 'c', ğ: 'g', ı: 'i', ö: 'o', ş: 's', ü: 'u',
+  â: 'a', î: 'i', û: 'u', é: 'e', è: 'e',
+};
+
+/** Türkçe karakter katlaması + noktalama temizliği: "Şahsiyet" ≡ "sahsiyet". */
+export function foldTitleKey(title: unknown): string {
+  const text = String(title ?? '')
+    .toLowerCase()
+    .replace(/[çğıöşüâîûéè]/g, (ch) => TURKISH_FOLD[ch] ?? ch)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return text
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Yıl bilgisi varsa başlık anahtarı `başlık|yıl` olur. */
+export function buildTitleYearKey(title: unknown, year?: unknown): string {
+  const folded = foldTitleKey(title);
+  if (!folded) return '';
+  const digits = String(year ?? '').match(/\d{4}/);
+  return digits ? `${folded}|${digits[0]}` : folded;
+}
+
+/** Yalnızca tür önekleri temizlenir. */
 function rawIdOf(value: unknown): string {
   return String(value ?? '').replace(/^(movie|tv)[:-]/, '').trim().toLowerCase();
 }
@@ -44,9 +64,6 @@ export function mediaDedupeKeys(item: IdentityRecord): string[] {
   if (id) {
     keys.push(`${type}:${id}`, `raw:${id}`);
   }
-  const tvdbId = rawIdOf(item.tvdb_id);
-  if (tvdbId) keys.push(`${type}:${tvdbId}`);
-
   for (const title of [titleOf(item), titleOf(item, true)]) {
     const folded = foldTitleKey(title);
     if (folded) keys.push(folded);

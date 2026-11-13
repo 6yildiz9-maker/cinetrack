@@ -174,7 +174,7 @@ async function resolveCandidate(
       return { candidate, patch, missing: !patch, failed: false };
     }
 
-    // TVDB türevi kayıtlar: sayısal kimlik TMDB'ye ait değil, başlıkla ara.
+    // Sayısal kimliği olmayan kayıtlar: TMDB'de başlıkla ara.
     // Arama İngilizce başlıklarla yapılır: demo adları İngilizce, tr-TR sonuçları
     // yerelleşmiş ad döndürüyor ve eşleşme kaçıyor. Yıl filtresi gönderilmez
     // (uydurma yıllar doğru sonucu eler); yıl yalnızca puanlamada kullanılır.

@@ -2,7 +2,7 @@ import type { TmdbGenre, TmdbItem } from '../types/tmdb.ts';
 import { loadStockIdb, saveStockIdb, type StockDepot } from './storage-idb.ts';
 import { hasPosterData } from './poster-hydration-service.ts';
 
-export type StockSourceFilter = 'all' | 'tvdb' | 'tmdb';
+export type StockSourceFilter = 'all' | 'tmdb';
 export type StockExportFormat = 'json' | 'csv';
 export type StockImportStrategy = 'overwrite' | 'skip' | 'restore';
 
@@ -60,16 +60,8 @@ export async function exportStockData(options: StockExportOptions = {}): Promise
   const format = options.format || 'json';
 
   const depot = await loadStockIdb();
-  let movies = Array.isArray(depot.movies) ? depot.movies : [];
-  let tv = Array.isArray(depot.tv) ? depot.tv : [];
-
-  if (source === 'tvdb') {
-    movies = movies.filter((m) => m.source === 'tvdb');
-    tv = tv.filter((t) => t.source === 'tvdb');
-  } else if (source === 'tmdb') {
-    movies = movies.filter((m) => m.source !== 'tvdb');
-    tv = tv.filter((t) => t.source !== 'tvdb');
-  }
+  const movies = Array.isArray(depot.movies) ? depot.movies : [];
+  const tv = Array.isArray(depot.tv) ? depot.tv : [];
 
   const allItems = [
     ...movies.map((m) => ({ ...m, media_type: 'movie' as const })),
@@ -102,7 +94,7 @@ export async function exportStockData(options: StockExportOptions = {}): Promise
       moviesCount: movies.length,
       tvCount: tv.length,
       formatJustification:
-        'JSON formatı iç içe nesneleri (bölümler, oyuncular, çok dilli özetler, TVDB/TMDB anahtarları) kayıpsız korur.',
+        'JSON formatı iç içe nesneleri (bölümler, oyuncular, çok dilli özetler, TMDB anahtarları) kayıpsız korur.',
     },
     movies,
     tv,
@@ -142,7 +134,6 @@ function convertItemsToCsv(items: TmdbItem[]): string {
     'poster_url',
     'poster_path',
     'backdrop_path',
-    'tvdb_id',
     'status',
   ];
 
@@ -175,7 +166,6 @@ function convertItemsToCsv(items: TmdbItem[]): string {
       escapeCsvField(item.poster_url || item.poster_path || ''),
       escapeCsvField(item.poster_path || ''),
       escapeCsvField(item.backdrop_path || ''),
-      escapeCsvField(item.tvdb_id ?? ''),
       escapeCsvField(item.status || ''),
     ];
 
@@ -274,7 +264,7 @@ function parseJsonImport(content: string, existingKeys: Set<string>): StockImpor
 
     const mediaType = raw.media_type === 'tv' || raw.media_type === 'movie' ? raw.media_type : raw.name && !raw.title ? 'tv' : 'movie';
     const id = raw.id != null ? String(raw.id) : `custom-${Date.now()}-${idx}`;
-    const source = raw.source || (String(id).startsWith('tvdb') ? 'tvdb' : 'tmdb');
+    const source = raw.source || 'tmdb';
 
     const genres: TmdbGenre[] = Array.isArray(raw.genres)
       ? raw.genres.map((g: any, gIdx: number) =>
@@ -303,7 +293,6 @@ function parseJsonImport(content: string, existingKeys: Set<string>): StockImpor
       genres,
       genre_ids: genres.map((g) => g.id),
       source,
-      tvdb_id: raw.tvdb_id,
       status: raw.status || '',
       _source: 'live',
     };
@@ -364,7 +353,6 @@ function parseCsvImport(content: string, existingKeys: Set<string>): StockImport
   const idxOverview = colIndex('overview', 'özet', 'ozet');
   const idxPoster = colIndex('poster_url', 'poster_path', 'posterpath', 'poster', 'resim');
   const idxBackdrop = colIndex('backdrop_path', 'backdroppath', 'backdrop');
-  const idxTvdbId = colIndex('tvdb_id', 'tvdbid', 'tvdb');
   const idxStatus = colIndex('status', 'durum');
 
   const validItems: TmdbItem[] = [];
@@ -384,13 +372,12 @@ function parseCsvImport(content: string, existingKeys: Set<string>): StockImport
     const rawId = idxId >= 0 && tokens[idxId] ? tokens[idxId].trim() : `csv-${Date.now()}-${i}`;
     const rawMediaType = (idxMediaType >= 0 ? tokens[idxMediaType] : '').toLowerCase().trim();
     const mediaType = rawMediaType === 'tv' || rawMediaType === 'dizi' || rawMediaType === 'series' ? 'tv' : 'movie';
-    const source = idxSource >= 0 && tokens[idxSource] ? tokens[idxSource].trim() : (String(rawId).startsWith('tvdb') ? 'tvdb' : 'tmdb');
+    const source = idxSource >= 0 && tokens[idxSource] ? tokens[idxSource].trim() : 'tmdb';
     const year = idxYear >= 0 ? tokens[idxYear].trim() : '';
     const voteAvg = idxVoteAverage >= 0 && !isNaN(Number(tokens[idxVoteAverage])) ? Number(tokens[idxVoteAverage]) : 7.0;
     const overview = idxOverview >= 0 ? tokens[idxOverview].trim() : '';
     const poster = idxPoster >= 0 ? tokens[idxPoster].trim() : '';
     const backdrop = idxBackdrop >= 0 ? tokens[idxBackdrop].trim() : '';
-    const tvdbId = idxTvdbId >= 0 && tokens[idxTvdbId] ? tokens[idxTvdbId].trim() : undefined;
     const status = idxStatus >= 0 ? tokens[idxStatus].trim() : '';
 
     const genresRaw = idxGenres >= 0 ? tokens[idxGenres] : '';
@@ -420,7 +407,6 @@ function parseCsvImport(content: string, existingKeys: Set<string>): StockImport
       poster_path,
       poster_url,
       backdrop_path: backdrop || null,
-      tvdb_id: tvdbId,
       status,
       release_date: year ? `${year}-01-01` : '',
       first_air_date: year ? `${year}-01-01` : '',
@@ -524,10 +510,8 @@ export async function applyStockImport(
   const isUserExcluded = (item: TmdbItem): boolean => {
     const rawId = String(item.id).replace(/^(movie|tv)[:-]/, '').toLowerCase();
     const typeKey = `${item.media_type}:${rawId}`;
-    const tvdbKey = item.tvdb_id ? `${item.media_type}:${item.tvdb_id}` : '';
     const normTitle = (item.title || item.name || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
     if (userExclusionKeys.has(typeKey) || userExclusionKeys.has(`raw:${rawId}`)) return true;
-    if (tvdbKey && userExclusionKeys.has(tvdbKey)) return true;
     if (normTitle && userTitleSet.has(normTitle)) return true;
     return false;
   };
@@ -575,29 +559,16 @@ export async function applyStockImport(
         .filter((g): g is TmdbGenre => typeof g === 'object' && g !== null)
         .map((g) => g.id),
       overview: incoming.overview || existing.overview || '',
-      tvdb_id: incoming.tvdb_id || existing.tvdb_id,
       vote_average: incoming.vote_average ?? existing.vote_average ?? 7.0,
       vote_count: incoming.vote_count ?? existing.vote_count ?? 100,
     };
   };
 
   if (strategy === 'restore') {
-    const isOnlyTvdb = eligibleItems.length > 0 && eligibleItems.every((i) => i.source === 'tvdb');
-    if (isOnlyTvdb) {
-      // TMDB stoğuna dokunmadan TVDB stoğunu yedekten geri yükle
-      movies = movies.filter((m) => m.source !== 'tvdb');
-      tv = tv.filter((t) => t.source !== 'tvdb');
-      const newTvdbMovies = eligibleItems.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
-      const newTvdbTv = eligibleItems.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
-      movies.push(...newTvdbMovies);
-      tv.push(...newTvdbTv);
-      imported = eligibleItems.length;
-    } else {
-      // Tam stok geri yüklemesi
-      movies = eligibleItems.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
-      tv = eligibleItems.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
-      imported = eligibleItems.length;
-    }
+    // Tam stok geri yüklemesi
+    movies = eligibleItems.filter((it) => it.media_type !== 'tv' && (it.title || !it.name));
+    tv = eligibleItems.filter((it) => it.media_type === 'tv' || (!it.title && it.name));
+    imported = eligibleItems.length;
   } else {
     for (const item of eligibleItems) {
       const isTv = item.media_type === 'tv' || (!item.title && Boolean(item.name));

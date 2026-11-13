@@ -5,7 +5,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { runTasteArchaeology } from "../../src/core/taste/taste-archaeology.ts";
+import {
+  runTasteArchaeology,
+  computeRanks,
+  computeSpearmanCorrelation,
+} from "../../src/core/taste/taste-archaeology.ts";
 
 const AS_OF = "2026-11-02T00:00:00.000Z";
 
@@ -51,11 +55,20 @@ function makeContentIndex(count) {
       extractedAt: AS_OF,
       metadataHash: `hash-${i}`,
       completeness: 0.5,
+      // Önceden tüm içerikler aynı özellik gücünü taşıyordu; bu da tahmin
+      // puanlarını birebir eşitleyip korelasyonu yapay sıralamaya bırakıyordu.
+      // Gerçekçi bir test için özellik gücü içerikten içeriğe değişir.
       features: {
         "genre.drama": {
-          strength: 80,
-          confidence: 0.9,
+          strength: 35 + ((i * 7) % 60),
+          confidence: 0.6 + ((i % 4) * 0.1),
           source: "tmdb",
+          state: "present",
+        },
+        "mood.tense": {
+          strength: 20 + ((i * 13) % 75),
+          confidence: 0.5 + ((i % 5) * 0.1),
+          source: "semantic",
           state: "present",
         },
       },
@@ -230,5 +243,79 @@ describe("Taste Archaeology — Sonuç Yapısı", () => {
   it("completedAt asOf ile eşleşmeli", async () => {
     const result = await runTasteArchaeology([], {}, { asOf: AS_OF });
     assert.strictEqual(result.completedAt, AS_OF);
+  });
+});
+
+// === v1.1: Tie-aware sıralama ve gerçek zaman kaynağı ===
+
+describe("Taste Archaeology — Tie-aware Spearman", () => {
+  it("Eşit değerler ortalama sıra alır", () => {
+    assert.deepEqual(computeRanks([0.75, 0.75, 0.75, 0.75]), [2.5, 2.5, 2.5, 2.5]);
+    assert.deepEqual(computeRanks([10, 20, 20, 30]), [1, 2.5, 2.5, 4]);
+  });
+
+  it("Tüm puanlar eşitse korelasyon null döner (yapay sıralama üretilmez)", () => {
+    assert.strictEqual(
+      computeSpearmanCorrelation([0.5, 0.5, 0.5, 0.5], [7, 7, 7, 7]),
+      null
+    );
+    assert.strictEqual(
+      computeSpearmanCorrelation([0.4, 0.4, 0.4], [3, 9, 5]),
+      null
+    );
+  });
+
+  it("Bağlı sıralarda korelasyon 6Σd² kısayolundan farklı ve geçerli aralıkta", () => {
+    const rho = computeSpearmanCorrelation([1, 2, 2, 3], [1, 2, 3, 4]);
+    assert.ok(rho !== null);
+    assert.ok(rho > 0.8 && rho <= 1, `Beklenen yüksek pozitif rho, alınan ${rho}`);
+  });
+
+  it("Ters sıralama negatif korelasyon verir", () => {
+    const rho = computeSpearmanCorrelation([1, 2, 3, 4], [4, 3, 2, 1]);
+    assert.ok(rho !== null && Math.abs(rho + 1) < 1e-9);
+  });
+});
+
+describe("Taste Archaeology — Holdout zaman kaynağı", () => {
+  it("Imported olaylar test setine karışmaz ve uyarı üretir", async () => {
+    const actualEvents = [];
+    for (let i = 0; i < 120; i++) {
+      actualEvents.push(
+        makeRatingEvent(`movie:${i}`, 5 + (i % 6), "actual", {
+          recordedAt: new Date(Date.UTC(2024, 0, 1 + i)).toISOString(),
+        })
+      );
+    }
+    const importedEvents = [];
+    for (let i = 0; i < 60; i++) {
+      importedEvents.push(makeRatingEvent(`tv:${i}`, 9, "imported"));
+    }
+
+    const contentIndex = {};
+    for (const event of actualEvents) {
+      contentIndex[event.contentId] = {
+        contentId: event.contentId,
+        mediaType: "movie",
+        extractedAt: AS_OF,
+        metadataHash: "h",
+        completeness: 1,
+        features: {
+          "genre.scifi": { strength: 80, confidence: 0.9, source: "tmdb" },
+        },
+      };
+    }
+
+    const result = await runTasteArchaeology(
+      [...actualEvents, ...importedEvents],
+      contentIndex,
+      { asOf: AS_OF }
+    );
+
+    assert.ok(
+      result.warnings.some((w) => w.includes("imported")),
+      "Imported olayların dışlandığı uyarıda belirtilmeli"
+    );
+    assert.ok(result.testSampleSize <= Math.ceil(actualEvents.length * 0.2) + 1);
   });
 });

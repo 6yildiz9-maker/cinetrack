@@ -13,6 +13,7 @@ import { createCineTrackApp, createSpaFallbackMiddleware } from './src/server/ap
 import { isAiStudioContainerEnv, resolveConfig } from './src/server/config.ts';
 import { refreshEnvGitHubPat } from './src/server/github-token-refresh.ts';
 import { redactSecrets } from './src/server/persistent-store.ts';
+import { createRespanTracing } from './src/server/respan-telemetry.ts';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const CINETRACK_HOST = '127.0.0.1';
@@ -30,6 +31,13 @@ for (const warnMsg of resolved.warnings) {
   console.warn(warnMsg);
 }
 
+// Respan izleme tek bir kez, model istemcileri oluşturulmadan önce başlatılır.
+// RESPAN_API_KEY yoksa sessizce devre dışı kalır ve uygulama izleme olmadan çalışır.
+await createRespanTracing({
+  apiKey: resolved.respanApiKey,
+  ...(resolved.respanBaseUrl ? { baseUrl: resolved.respanBaseUrl } : {}),
+}).start();
+
 const envFilePath = path.join(root, '.env');
 let githubTokenLive = resolved.githubToken;
 let schedulePostMutationSync: ((reason: string) => void) | null = null;
@@ -46,7 +54,6 @@ const { app, storage, persistentStore } = createCineTrackApp({
   ...(resolved.tmdbRateLimit !== undefined ? { rateLimitMaxRequests: resolved.tmdbRateLimit } : {}),
   ...(resolved.tmdbRateWindowMs !== undefined ? { rateLimitWindowMs: resolved.tmdbRateWindowMs } : {}),
   tmdbApiKey: resolved.tmdbApiKey,
-  tvdbApiKey: resolved.tvdbApiKey,
   githubToken: resolved.githubToken,
   githubTokenSource: resolved.githubTokenSource,
   githubTokenCandidates: resolved.githubTokenCandidates,

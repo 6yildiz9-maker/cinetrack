@@ -165,3 +165,50 @@ test('7. Gerçek Çok Boyutlu Benzerlik: seedSourceType ne olursa olsun içerik 
   assert.ok(scoredSimilar.candidate.lovedSimDetail.similarity > 0.65);
   assert.ok(scoredSimilar.candidate.tags.some((t) => t.includes('Interstellar')));
 });
+
+test('8. Sevilen yapım ağırlığı en iyi eşleşmeyi ve nihai puanı etkiler', () => {
+  const baseFeatures = {
+    media_type: 'movie',
+    genre_ids: [878],
+    overviewTokens: new Set(),
+    castIds: [],
+    directorIds: [],
+  };
+
+  const lovedItems = [
+    {
+      ...baseFeatures,
+      key: 'movie:1',
+      id: 1,
+      title: 'Düşük Ağırlıklı Benzer',
+      weight: 0.2,
+    },
+    {
+      ...baseFeatures,
+      key: 'movie:2',
+      id: 2,
+      title: 'Yüksek Ağırlıklı Az Benzer',
+      genre_ids: [35],
+      weight: 1,
+    },
+  ];
+
+  const candidate = { genre_ids: [878], overview: '', cast: [], crew: [] };
+  const result = computeLovedSimilarityScore(candidate, lovedItems);
+
+  assert.ok(result.breakdown);
+  // Benzerlik düşük olsa da ağırlığı yüksek referans en iyi eşleşme olmalı.
+  assert.equal(result.breakdown.matchedTitle, 'Yüksek Ağırlıklı Az Benzer');
+});
+
+test('9. Film ↔ dizi tür taksonomisi ortak aile üzerinden eşleşir', () => {
+  const movieScifi = [878];
+  const tvScifiFantasy = [10765];
+
+  assert.ok(
+    calculateGenreSim(movieScifi, tvScifiFantasy) > 0.5,
+    'Film bilim kurgu ile dizi bilim kurgu-fantastik aynı ailede eşleşmeli'
+  );
+  assert.equal(calculateGenreSim([28], [10759]) > 0.0, true);
+  assert.equal(calculateGenreSim([16], [10765]), 0.05);
+});

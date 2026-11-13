@@ -35,6 +35,7 @@ TMDB metaverileriyle çalışan, tamamen deterministik (kural tabanlı) öneri v
    - `CINETRACK_TRUST_PROXY`: Yalnızca güvenilir bir ters vekil (Nginx/Caddy vb.) arkasında çalışırken `true` yapılmalıdır; `false` iken sahte `X-Forwarded-For` ve `X-Forwarded-Host` başlıkları yok sayılır.
    - `CINETRACK_TMDB_RATE_LIMIT`: Loopback dışı bağlantılarda dakikadaki maksimum `/api/tmdb` istek sınırı (varsayılan `60`).
    - `TMDB_API_KEY`: Sunucu tarafı TMDB vekil anahtarı.
+   - `RESPAN_API_KEY`: İsteğe bağlı Respan izleme anahtarı (yalnızca sunucu tarafında okunur; tanımlı değilse LLM izleme devre dışı kalır). Kurumsal uç nokta için `RESPAN_BASE_URL`.
    - `CINETRACK_GITHUB_PAT`: İsteğe bağlı GitHub Contents API kişisel erişim belirteci (birincil değişken; geriye dönük uyumluluk için `CINETRACK_GITHUB_TOKEN` yedek olarak desteklenir).
    - `CINETRACK_DATA_OWNER`, `CINETRACK_DATA_REPO`, `CINETRACK_DATA_BRANCH`: Uzak kalıcı veri deposu hedefi.
    - `CINETRACK_DATA_REPO_IS_PUBLIC` ve `CINETRACK_ALLOW_PUBLIC_CATALOG_SYNC`: Uzak depo gerçekte `public` ise hem kişisel profil verileri hem de TMDB katalog dosyaları varsayılan olarak engellenir; açık depoya aktarım yalnızca açık onay ve TMDB atıf koşulları kabulüyle etkinleşir.

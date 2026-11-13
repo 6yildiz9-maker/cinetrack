@@ -282,8 +282,8 @@ export interface StockDepot {
 export async function loadStockIdb(): Promise<StockDepot> {
   const data = await safeIdbGet<StockDepot>('ct_stock', 'stock_main');
   if (data && Array.isArray(data.movies) && Array.isArray(data.tv)) {
-    // Kırık TVDB adresleri kartlarda 403'e düşüp yer tutucuya geçiyor; ağ isteğini
-    // kesmek için okuma anında ayıklanır (poster hidrasyonu TMDB'den yeniden doldurur).
+    // Geçersiz demo poster yolları ağ isteğini boşa çıkarmasın diye okuma anında
+    // ayıklanır (poster hidrasyonu TMDB'den yeniden doldurur).
     return sanitizeStockPosterDepot(data).depot;
   }
   return { movies: [], tv: [], updatedAt: '', cursors: {} };

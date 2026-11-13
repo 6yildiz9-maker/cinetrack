@@ -1,14 +1,5 @@
 import type { TmdbItem } from '../types/tmdb.ts';
 
-/**
- * TVDB v4 artwork adresleri canlı TVDB akışında geçerlidir; yalnızca yerleşik
- * demo/fallback kayıtlarındaki uydurma adresler S3 403 döndürür. Bu yüzden
- * adres, kayıt demo olmadıkça kullanılabilir sayılır.
- */
-const UNUSABLE_POSTER_HOSTS = new Set(['artworks.thetvdb.com']);
-
-const TVDB_TITLE_SUFFIX = /\s*\((?:TVDB|TVDB Edition|TVDB Sürümü)\)\s*$/i;
-
 export function isDemoStockItem(item: TmdbItem | null | undefined): boolean {
   return Boolean(item && (item._source === 'demo' || (item as { isDemo?: boolean }).isDemo === true));
 }
@@ -25,7 +16,7 @@ export interface StockPosterCandidate {
   key: string;
   mediaType: 'movie' | 'tv';
   item: TmdbItem;
-  /** TMDB sayısal kimliği; TVDB türevi kayıtlarda null (başlıkla aranır). */
+  /** TMDB sayısal kimliği; sayısal olmayan kimliklerde null (başlıkla aranır). */
   numericId: number | null;
   query: string;
   year: string;
@@ -40,41 +31,19 @@ function parseUrl(value: unknown): URL | null {
   }
 }
 
-export function isUnusableStockPosterUrl(
-  value: unknown,
-  item?: TmdbItem | null
-): boolean {
-  const url = parseUrl(value);
-  if (!url) return false;
-  if (!UNUSABLE_POSTER_HOSTS.has(url.hostname.toLowerCase())) return false;
-  // Demo kaydı verilmezse eski çağrı davranışı korunur (kırık kabul et).
-  return item === undefined ? true : isDemoStockItem(item);
-}
-
 /** Kartın poster basabileceği bir yol var mı? `getPoster` ile aynı öncelik. */
 export function hasUsableStockPoster(item: TmdbItem | null | undefined): boolean {
   if (!item) return false;
   if (typeof item.poster_url === 'string' && item.poster_url.length > 0) {
     const url = parseUrl(item.poster_url);
-    if (
-      url &&
-      url.protocol === 'https:' &&
-      !isUnusableStockPosterUrl(item.poster_url, item)
-    ) {
-      return true;
-    }
+    if (url && url.protocol === 'https:') return true;
   }
   if (typeof item.poster_path === 'string' && item.poster_path.startsWith('/')) return true;
-  // Canlı TVDB kayıtları posteri mutlak artworks adresi olarak taşıyabilir
-  return (
-    typeof item.poster_path === 'string' &&
-    item.poster_path.startsWith('https://') &&
-    !isUnusableStockPosterUrl(item.poster_path, item)
-  );
+  return typeof item.poster_path === 'string' && item.poster_path.startsWith('https://');
 }
 
 function stripTitleSuffix(value: string): string {
-  return value.trim().replace(TVDB_TITLE_SUFFIX, '').trim();
+  return value.trim();
 }
 
 function firstYear(item: TmdbItem): string {
@@ -94,10 +63,10 @@ export function readStockPosterPatch(detail: any): StockPosterPatch | null {
   };
 }
 
-/** TVDB türevi kimlikler (tvdb-2801) TMDB'de sayısal kimlik değildir; başlıkla aranır. */
+/** Sayısal olmayan kimlikler TMDB'de geçerli değildir; başlıkla aranır. */
 export function resolveStockNumericId(item: TmdbItem): number | null {
   const raw = String(item?.id ?? '').trim();
-  if (!raw || item.source === 'tvdb' || /^tvdb[:-]/i.test(raw)) return null;
+  if (!raw) return null;
   const numericId = Number(raw);
   return Number.isInteger(numericId) && numericId > 0 ? numericId : null;
 }
@@ -217,13 +186,11 @@ export function sanitizeStockPosterDepot<T extends { movies?: TmdbItem[]; tv?: T
       const posterPath = typeof item.poster_path === 'string' ? item.poster_path : '';
       const badPath =
         isDemoStockItem(item) && posterPath.length > 0 && !posterPath.startsWith('/');
-      const badUrl = isUnusableStockPosterUrl(item.poster_url, item);
-      if (!badPath && !badUrl) return item;
+      if (!badPath) return item;
       listChanged = true;
       changedCount += 1;
       const cleaned: TmdbItem = { ...item };
-      if (badPath) cleaned.poster_path = null;
-      if (badUrl) delete cleaned.poster_url;
+      cleaned.poster_path = null;
       return cleaned;
     });
     return listChanged ? next : list;

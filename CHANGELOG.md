@@ -24,7 +24,7 @@ Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [Semantic Versionin
 - Çekirdek, aday havuzu kalıcılığından port/adaptör ile ayrıldı; halka yaşam döngüsü `ring-lifecycle.ts` modülüne taşındı.
 - Kompakt kullanıcı listesi artık başlık, poster ve çıkış tarihi taşıyor; profil değişimi sırasında async sonuçlar profil kimliğiyle doğrulanıyor.
 - Marka adı tek kaynağa taşındı (`src/shared/brand.ts`): PWA manifesti, HTML başlıkları, dışa aktarma dosya adları ve sunucu User-Agent değerleri buradan türetiliyor.
-- ≤480px üst çubukta profil adı, Ekle etiketi ve TVDB rozeti daraltılarak yatay taşma giderildi.
+- ≤480px üst çubukta profil adı, Ekle etiketi ve kaynak rozeti daraltılarak yatay taşma giderildi.
 
 ### Eklenen
 - Çevrimdışı değerlendirme raporuna Save@K, NDCG@K, novelty ve diversity metrikleri; deterministik `now` parametresi.

@@ -61,6 +61,8 @@ interface ProfileModalProps {
   onMergeSyncedDocument?: (doc: DataDocument) => void;
   onApplyRestoredDocument?: (doc: DataDocument) => void;
   onCinemaKunyeSynced?: (mode: 'merge' | 'overwrite') => void;
+  onCreateSqliteArchive?: () => Promise<void>;
+  onRestoreSqliteArchive?: (file: File) => Promise<void>;
   onMergeDuplicates?: (
     keepId: SavedItem['id'],
     dropId: SavedItem['id'],
@@ -97,6 +99,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onMergeSyncedDocument,
   onApplyRestoredDocument,
   onCinemaKunyeSynced,
+  onCreateSqliteArchive,
+  onRestoreSqliteArchive,
   onMergeDuplicates,
   isDemo = false,
   onToggleDemoMode,
@@ -530,6 +534,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 onCreateInstantBackup={handleCreateInstantBackup}
                 onLoadServerBackups={handleLoadServerBackups}
                 onRestoreSnapshot={handleRestoreSnapshot}
+                onCreateSqliteArchive={onCreateSqliteArchive}
+                onRestoreSqliteArchive={onRestoreSqliteArchive}
               />
             </div>
           )}

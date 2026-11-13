@@ -24,7 +24,6 @@ import {
   type SecurityOptions,
 } from './security.ts';
 import { createTmdbProxyService, type TmdbProxyServiceOptions } from './tmdb-proxy.ts';
-import { createTvdbProxyService } from './tvdb-proxy.ts';
 import {
   PersistentDataStore,
   redactSecrets,
@@ -41,9 +40,19 @@ import {
 } from './excel-profile-backup.ts';
 import { createTasteRouter } from './taste-routes.ts';
 import { runHybridMerge } from './hybrid-merge.ts';
+import {
+  isSqliteArchiveAvailable,
+  readSqliteArchive,
+  restoreArchivePostersToCache,
+  writeSqliteArchive,
+  SqliteArchiveValidationError,
+  SqliteUnavailableError,
+  MAX_ARCHIVE_POSTERS,
+  SQLITE_ARCHIVE_SCHEMA_VERSION,
+  type ArchiveSnapshot,
+} from './sqlite-archive.ts';
 
 export interface CineTrackAppOptions extends StorageOptions, SecurityOptions, TmdbProxyServiceOptions {
-  tvdbApiKey?: string;
   dataDir?: string;
   persistentStore?: PersistentDataStore;
   security?: SecurityOptions;
@@ -309,14 +318,12 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
   app: Express;
   storage: ReturnType<typeof createDataStorage>;
   tmdbProxy: ReturnType<typeof createTmdbProxyService>;
-  tvdbProxy: ReturnType<typeof createTvdbProxyService>;
   persistentStore: PersistentDataStore;
 } {
   const resolvedDataDir = path.resolve(options.dataDir || path.join(process.cwd(), 'data'));
   const maxDataBytes = options.maxDataBytes ?? DEFAULT_MAX_DATA_BYTES;
   const storage = createDataStorage({ ...options, dataDir: resolvedDataDir, maxDataBytes });
   const tmdbProxy = createTmdbProxyService(options);
-  const tvdbProxy = createTvdbProxyService({ tvdbApiKey: options.tvdbApiKey });
   const persistentStore =
     options.persistentStore ??
     new PersistentDataStore({
@@ -421,13 +428,148 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     res.json({ ok: true, posterCache });
   });
 
+  // === SQLite arşivi: profil + stok + stok görsellerinin tek dosyalık tam yedeği ===
+  app.get('/api/archive/sqlite/status', async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ok: true,
+      available: await isSqliteArchiveAvailable(),
+      schemaVersion: SQLITE_ARCHIVE_SCHEMA_VERSION,
+      maxPosters: MAX_ARCHIVE_POSTERS,
+    });
+  });
+
+  app.post('/api/archive/sqlite', originGuard, tokenGuard, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const snapshot = req.body as ArchiveSnapshot;
+      const archiveDir = path.join(resolvedDataDir, 'archives');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const fileName = `cinetrack-archive-${stamp}.sqlite`;
+      const filePath = path.join(archiveDir, fileName);
+      const result = await writeSqliteArchive(snapshot, filePath);
+      res.setHeader('Content-Type', 'application/vnd.sqlite3');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader(
+        'X-Archive-Stats',
+        JSON.stringify({
+          profiles: result.profiles,
+          items: result.items,
+          tasteMaps: result.tasteMaps,
+          stockMovies: result.stockMovies,
+          stockTv: result.stockTv,
+          postersStored: result.postersStored,
+          postersFailed: result.postersFailed,
+          posterBytes: result.posterBytes,
+          byteLength: result.byteLength,
+        })
+      );
+      res.sendFile(filePath);
+    } catch (error: any) {
+      if (error instanceof SqliteUnavailableError) {
+        res.status(501).json({ status_message: error.message, code: 'sqlite_unavailable' });
+        return;
+      }
+      if (error instanceof SqliteArchiveValidationError) {
+        res.status(400).json({ status_message: error.message, code: 'invalid_archive_snapshot' });
+        return;
+      }
+      res.status(500).json({
+        status_message: `SQLite arşivi oluşturulamadı: ${redactSecrets(error?.message || String(error), persistentStore.getKnownSecretsForRedaction())}`,
+        code: 'archive_write_failed',
+      });
+    }
+  });
+
+  app.post(
+    '/api/archive/sqlite/restore',
+    express.raw({
+      type: ['application/octet-stream', 'application/vnd.sqlite3', 'application/x-sqlite3'],
+      limit: '256mb',
+    }),
+    originGuard,
+    tokenGuard,
+    async (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      const body = req.body as unknown;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        res.status(400).json({
+          status_message: 'SQLite arşiv dosyası gerekli (Content-Type: application/octet-stream).',
+          code: 'missing_archive_body',
+        });
+        return;
+      }
+      // SQLite dosya imzası: "SQLite format 3\0"
+      if (body.subarray(0, 16).toString('utf8') !== 'SQLite format 3 ') {
+        res.status(400).json({
+          status_message: 'Gönderilen dosya geçerli bir SQLite arşivi değil.',
+          code: 'invalid_archive_file',
+        });
+        return;
+      }
+
+      const archiveDir = path.join(resolvedDataDir, 'archives');
+      const tempPath = path.join(
+        archiveDir,
+        `restore-${process.pid}-${Date.now()}.sqlite`
+      );
+      try {
+        await fsPromises.mkdir(archiveDir, { recursive: true });
+        await fsPromises.writeFile(tempPath, body);
+        const archive = await readSqliteArchive(tempPath);
+
+        const saved = await storage.saveDataSerialized(archive.dataDocument, {
+          forceOverwrite: true,
+          confirmBulkDelete: true,
+          requirePrecondition: false,
+        });
+        if (!saved.ok) {
+          res.status(saved.status).json({ status_message: saved.message, code: saved.code });
+          return;
+        }
+
+        const posters = await restoreArchivePostersToCache(
+          archive.posters,
+          path.join(resolvedDataDir, 'cache', 'posters')
+        );
+
+        notifyLocalMutation('sqlite-archive-restore');
+        res.json({
+          ok: true,
+          counts: archive.counts,
+          postersWritten: posters.written,
+          postersSkipped: posters.skipped,
+          dataDocument: saved.document,
+          tasteMaps: archive.tasteMaps,
+          stock: archive.stock,
+          createdAt: archive.createdAt,
+        });
+      } catch (error: any) {
+        if (error instanceof SqliteUnavailableError) {
+          res.status(501).json({ status_message: error.message, code: 'sqlite_unavailable' });
+          return;
+        }
+        if (error instanceof SqliteArchiveValidationError) {
+          res.status(400).json({ status_message: error.message, code: 'invalid_archive_file' });
+          return;
+        }
+        res.status(500).json({
+          status_message: `SQLite arşivi geri yüklenemedi: ${redactSecrets(error?.message || String(error), persistentStore.getKnownSecretsForRedaction())}`,
+          code: 'archive_restore_failed',
+        });
+      } finally {
+        try {
+          await fsPromises.rm(tempPath, { force: true });
+        } catch {
+          // yoksay
+        }
+      }
+    }
+  );
+
   app.get('/api/tmdb-status', tmdbProxy.handleStatus);
   app.get('/api/tmdb', tmdbRateLimiter, tmdbProxy.handleTmdb);
   app.get('/api/tmdb-image', tmdbProxy.handleTmdbImage);
-
-  app.get('/api/tvdb-status', tvdbProxy.handleStatus);
-  app.get('/api/tvdb', tmdbRateLimiter, tvdbProxy.handleTvdb);
-  app.post('/api/tvdb-login', originGuard, tokenGuard, tvdbProxy.handleLogin);
 
   app.get('/api/data', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -1423,5 +1565,5 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     });
   });
 
-  return { app, storage, tmdbProxy, tvdbProxy, persistentStore };
+  return { app, storage, tmdbProxy, persistentStore };
 }

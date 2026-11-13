@@ -29,8 +29,6 @@ interface HeaderProps {
   tmdbSource?: string;
   tmdbStaleReason?: string;
   onOpenCommandPalette?: () => void;
-  onOpenTvdbStock?: () => void;
-  tvdbCount?: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -50,8 +48,6 @@ export const Header: React.FC<HeaderProps> = ({
   tmdbSource = 'live',
   tmdbStaleReason,
   onOpenCommandPalette,
-  onOpenTvdbStock,
-  tvdbCount,
 }) => {
   const [dropdownItems, setDropdownItems] = useState<TmdbItem[]>([]);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -465,37 +461,6 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           <PWAInstallButton />
-
-          {onOpenTvdbStock && (
-            <button
-              type="button"
-              className="btn profile-btn tvdb-stock-btn"
-              onClick={onOpenTvdbStock}
-              title={`TheTVDB v4 Stoğu: ${tvdbCount ?? 0} Yapım • İçe/Dışa Aktar`}
-              aria-label={`TVDB Stok (${tvdbCount ?? 0}) ve İçe Dışa Aktar`}
-              style={{
-                borderColor: 'rgba(99, 184, 171, 0.35)',
-                color: '#63b8ab',
-                backgroundColor: 'rgba(99, 184, 171, 0.1)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                padding: '6px 10px',
-                fontSize: '12px',
-                fontWeight: 600,
-              }}
-            >
-              <span
-                style={{
-                  width: '6px',
-                  height: '6px',
-                  borderRadius: '50%',
-                  backgroundColor: '#63b8ab',
-                }}
-              />
-              TVDB {tvdbCount !== undefined ? `(${tvdbCount})` : ''}
-            </button>
-          )}
 
           {/* Profile Switcher Button with Avatar Initial */}
           <button

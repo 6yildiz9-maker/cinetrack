@@ -420,8 +420,6 @@ export interface StockPosterCandidate {
   mediaType: 'movie' | 'tv';
   id: string | number;
   numericId?: number;
-  tvdbId?: number | string;
-  source: string;
   title: string;
   year: string;
 }
@@ -445,7 +443,6 @@ export function collectStockPosterCandidates(
       seen.add(key);
 
       const numId = typeof rawId === 'number' ? rawId : /^\d+$/.test(String(rawId)) ? Number(rawId) : undefined;
-      const tvdbId = item.tvdb_id || (String(rawId).startsWith('tvdb-') ? String(rawId).slice(5) : undefined);
       const title = item.title || item.name || '';
       const year = (item.release_date || item.first_air_date || '').slice(0, 4);
 
@@ -454,8 +451,6 @@ export function collectStockPosterCandidates(
         mediaType,
         id: rawId,
         numericId: numId,
-        tvdbId,
-        source: item.source || (tvdbId ? 'tvdb' : 'tmdb'),
         title,
         year,
       });
@@ -485,7 +480,7 @@ export function applyPosterPatchesToStockDepot<T extends { movies?: any[]; tv?: 
     if (!item || hasPosterData(item)) return item;
     const mediaType = item.media_type || defaultType;
     const key = makeMediaKey(mediaType, item.id);
-    const patch = patches[key] || patches[`${mediaType}:${item.id}`] || (item.tvdb_id ? patches[`${mediaType}:tvdb-${item.tvdb_id}`] : undefined);
+    const patch = patches[key] || patches[`${mediaType}:${item.id}`];
     if (!patch) return item;
     changedCount += 1;
     return {
@@ -568,7 +563,7 @@ export async function runStockPosterHydrationPass(options?: {
                 if (patch) return patch;
               }
             }
-            // TVDB / Search fallback via title and year
+            // Başlık araması (sayısal kimliği olmayan kayıtlar için)
             if (candidate.title) {
               const searchParams: Record<string, string> = { query: candidate.title };
               if (candidate.year) {

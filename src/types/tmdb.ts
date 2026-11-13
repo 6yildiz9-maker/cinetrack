@@ -131,13 +131,7 @@ export interface TmdbItem {
   ring?: string;
   lifecycleRing?: string;
   stale?: boolean;
-  source?: 'tmdb' | 'tvdb' | string;
-  tvdb_id?: number | string;
-  tvdb_slug?: string;
-  tvdb_status?: string;
-  tvdb_score?: number;
-  /** TVDB /extended kaydındaki remoteIds[] üzerinden türetilen çapraz kimlikler (kullanıcı listesi elemesi için). */
-  tvdb_remote_ids?: { tmdb?: string; imdb?: string };
+  source?: 'tmdb' | string;
   /** Liste kaydına kalıcı yazılmış "Sana Özel" damgası (SavedItem ile aynı alanlar). */
   tasteFit?: number;
   tasteReason?: string;

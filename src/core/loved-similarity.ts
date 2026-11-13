@@ -11,6 +11,8 @@
  * 5. Dönem / Zaman benzerliği (Release era proximity)
  */
 
+import { canonicalGenreKeys } from './genre-matching.ts';
+
 export interface LovedItemFeatures {
   key: string;
   id: number | string;
@@ -51,13 +53,18 @@ function clamp01(v: number): number {
  */
 export function calculateGenreSim(candGenres: number[], lovedGenres: number[]): number {
   if (!candGenres?.length || !lovedGenres?.length) return 0.5;
-  const lovedSet = new Set(lovedGenres);
+  // Film ve dizi tür kimlikleri ortak taksonomiye indirgenir: 878 (film) ile
+  // 10765 (dizi) aynı "scifi" ailesinde eşleşir.
+  const candKeys = canonicalGenreKeys(candGenres);
+  const lovedKeys = canonicalGenreKeys(lovedGenres);
+  if (candKeys.size === 0 || lovedKeys.size === 0) return 0.5;
+
   let shared = 0;
-  for (const g of candGenres) {
-    if (lovedSet.has(g)) shared++;
+  for (const key of candKeys) {
+    if (lovedKeys.has(key)) shared++;
   }
   if (shared === 0) return 0.05;
-  return clamp01((2 * shared) / (candGenres.length + lovedGenres.length));
+  return clamp01((2 * shared) / (candKeys.size + lovedKeys.size));
 }
 
 /**
@@ -237,25 +244,44 @@ export function computeLovedSimilarityScore(
     year,
   };
 
-  let bestMatch: LovedSimBreakdown | null = null;
-  const allSimilarities: number[] = [];
+  // Her sevilen yapımın katkısı, profil sinyal ağırlığıyla çarpılır: 10 puanlık
+  // bir yapım, yalnızca "tamamlandı" durumundaki bir yapımdan daha güçlü kanıttır.
+  const scored: Array<{ similarity: number; weight: number; breakdown: LovedSimBreakdown }> = [];
 
   for (const loved of lovedItems) {
     const res = computeItemToItemLovedSim(candMeta, loved);
-    allSimilarities.push(res.similarity);
-    if (!bestMatch || res.similarity > bestMatch.similarity) {
-      bestMatch = res;
-    }
+    const rawWeight = Number(loved.weight);
+    const weight = Number.isFinite(rawWeight) && rawWeight > 0 ? Math.min(1, rawWeight) : 1;
+    scored.push({ similarity: res.similarity, weight, breakdown: res });
   }
 
-  if (!bestMatch) {
+  if (scored.length === 0) {
     return { score: 0.5, breakdown: null };
   }
 
-  // Çoklu sevilen yapım varsa, tepe benzerliği (%80) ile en iyi ilk 3'ün ortalamasını (%20) harmanla
-  allSimilarities.sort((a, b) => b - a);
-  const top3 = allSimilarities.slice(0, 3);
-  const top3Avg = top3.reduce((s, v) => s + v, 0) / top3.length;
+  let bestEntry = scored[0];
+  for (const entry of scored) {
+    // Ağırlıklı katkı en yüksek olan referans "en iyi eşleşme" sayılır;
+    // eşitlikte daha yüksek ham benzerlik tercih edilir.
+    const candidateContribution = entry.similarity * entry.weight;
+    const bestContribution = bestEntry.similarity * bestEntry.weight;
+    if (
+      candidateContribution > bestContribution ||
+      (candidateContribution === bestContribution && entry.similarity > bestEntry.similarity)
+    ) {
+      bestEntry = entry;
+    }
+  }
+  const bestMatch = bestEntry.breakdown;
+
+  // Çoklu sevilen yapım varsa, tepe benzerliği (%80) ile en iyi ilk 3'ün
+  // ağırlıklı ortalamasını (%20) harmanla.
+  const top3 = [...scored].sort((a, b) => b.similarity - a.similarity).slice(0, 3);
+  const top3Weight = top3.reduce((s, e) => s + e.weight, 0);
+  const top3Avg =
+    top3Weight > 0
+      ? top3.reduce((s, e) => s + e.similarity * e.weight, 0) / top3Weight
+      : top3.reduce((s, e) => s + e.similarity, 0) / top3.length;
   const finalScore = lovedItems.length >= 2
     ? clamp01(0.80 * bestMatch.similarity + 0.20 * top3Avg)
     : bestMatch.similarity;

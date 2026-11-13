@@ -1,17 +1,15 @@
 /**
  * Kaynak motorları kayıt noktası.
  * Yeni bir kaynak eklemek = yeni bir motor yazmak + burada kaydetmek; tüketiciler
- * `contentSourceFor(item)` ile sorar, `item.source === 'tvdb'` dallanması yazmaz.
+ * `contentSourceFor(item)` ile sorar, `item.source === '...'` dallanması yazmaz.
  */
 
 import { registerContentSource } from './content-source.ts';
 import { tmdbSourceEngine } from './tmdb-source.ts';
-import { tvdbSourceEngine } from './tvdb-source.ts';
 
 registerContentSource(tmdbSourceEngine);
-registerContentSource(tvdbSourceEngine);
 
-export { tmdbSourceEngine, tvdbSourceEngine };
+export { tmdbSourceEngine };
 export {
   contentSourceFor,
   getContentSource,

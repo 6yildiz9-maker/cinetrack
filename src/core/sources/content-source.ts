@@ -1,7 +1,7 @@
 /**
- * İçerik kaynak motorlarının (TMDB, TheTVDB, ...) ortak sözleşmesi.
+ * İçerik kaynak motorlarının ortak sözleşmesi.
  * Kaynak-özgün bilgi — görsel adresi, tekilleştirme anahtarı, eleme anahtarları —
- * yalnızca ilgili motorda yaşar; stok/liste hatları `source === 'tvdb'` dallanması yapmaz.
+ * yalnızca ilgili motorda yaşar; stok/liste hatları kaynak etiketine göre dallanmaz.
  * Saf sözleşme: ağ erişimi ve depolama yok.
  */
 
@@ -10,7 +10,7 @@ import type { TmdbItem } from '../../types/tmdb.ts';
 export type ContentSourceId = string;
 
 export interface ContentSourceEngine {
-  /** Kayıt üzerinde tutulan kaynak etiketi ('tmdb' | 'tvdb' | ...). */
+  /** Kayıt üzerinde tutulan kaynak etiketi ('tmdb' | ...). */
   readonly id: ContentSourceId;
   /** Kullanıcıya gösterilebilir ad. */
   readonly label: string;

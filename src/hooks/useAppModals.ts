@@ -31,11 +31,6 @@ export interface AppModalsState {
   openProfile: () => void;
   closeProfile: () => void;
 
-  tvdbModalOpen: boolean;
-  setTvdbModalOpen: (open: boolean) => void;
-  openTvdbModal: () => void;
-  closeTvdbModal: () => void;
-
   commandPaletteOpen: boolean;
   setCommandPaletteOpen: (open: boolean) => void;
   openCommandPalette: () => void;
@@ -55,7 +50,6 @@ export function useAppModals(): AppModalsState {
   const [relationshipInitialSourceKey, setRelationshipInitialSourceKey] = useState<string>('');
   const [addCustomOpen, setAddCustomOpen] = useState<boolean>(false);
   const [profileOpen, setProfileOpen] = useState<boolean>(false);
-  const [tvdbModalOpen, setTvdbModalOpen] = useState<boolean>(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [pendingBackup, setPendingBackup] = useState<any | null>(null);
 
@@ -79,9 +73,6 @@ export function useAppModals(): AppModalsState {
 
   const openProfile = useCallback(() => setProfileOpen(true), []);
   const closeProfile = useCallback(() => setProfileOpen(false), []);
-
-  const openTvdbModal = useCallback(() => setTvdbModalOpen(true), []);
-  const closeTvdbModal = useCallback(() => setTvdbModalOpen(false), []);
 
   const openCommandPalette = useCallback(() => setCommandPaletteOpen(true), []);
   const closeCommandPalette = useCallback(() => setCommandPaletteOpen(false), []);
@@ -119,11 +110,6 @@ export function useAppModals(): AppModalsState {
     setProfileOpen,
     openProfile,
     closeProfile,
-
-    tvdbModalOpen,
-    setTvdbModalOpen,
-    openTvdbModal,
-    closeTvdbModal,
 
     commandPaletteOpen,
     setCommandPaletteOpen,

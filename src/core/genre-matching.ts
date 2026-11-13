@@ -4,6 +4,36 @@
  * Film Aksiyon (28) / Macera (12) <-> Dizi Aksiyon & Macera (10759),
  * Film Savaş (10752) <-> Dizi Savaş & Politik (10768).
  */
+export function canonicalGenreKeys(genreIds: number[]): Set<string> {
+  const keys = new Set<string>();
+  for (const rawId of genreIds || []) {
+    const id = Number(rawId);
+    if (!Number.isFinite(id)) continue;
+    const families = CANONICAL_GENRE_FAMILIES[id];
+    if (families) {
+      for (const family of families) keys.add(`family:${family}`);
+    } else {
+      keys.add(`id:${id}`);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Film ve dizi tür kimliklerini ortak kavram anahtarlarına indirger.
+ * Böylece 878 (film) ile 10765 (dizi) aynı ``scifi`` ailesinde buluşur.
+ */
+const CANONICAL_GENRE_FAMILIES: Record<number, string[]> = {
+  878: ['scifi'],
+  14: ['fantasy'],
+  10765: ['scifi', 'fantasy'],
+  28: ['action'],
+  12: ['adventure'],
+  10759: ['action', 'adventure'],
+  10752: ['war'],
+  10768: ['war'],
+};
+
 export function matchesSelectedGenre(
   item: any,
   selectedGenre?: string | number | null

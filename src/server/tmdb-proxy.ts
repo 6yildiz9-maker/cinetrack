@@ -864,7 +864,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
       if (rawUrl) {
         try {
           const parsed = new URL(rawUrl);
-          const allowedImageHosts = new Set(['image.tmdb.org', 'img.tmdb.org', 'artworks.thetvdb.com']);
+          const allowedImageHosts = new Set(['image.tmdb.org', 'img.tmdb.org']);
           if (parsed.protocol === 'https:' && allowedImageHosts.has(parsed.hostname)) {
             targetUrl = parsed.href;
           }
@@ -872,11 +872,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
       } else if (rawPath) {
         const cleanPath = rawPath.replace(/^\/+/, '');
         if (/^[a-zA-Z0-9_./-]+$/.test(cleanPath) && !cleanPath.includes('..')) {
-          if (cleanPath.startsWith('banners/')) {
-            targetUrl = `https://artworks.thetvdb.com/${cleanPath}`;
-          } else {
-            targetUrl = `https://image.tmdb.org/t/p/${safeSize}/${cleanPath}`;
-          }
+          targetUrl = `https://image.tmdb.org/t/p/${safeSize}/${cleanPath}`;
         }
       }
 

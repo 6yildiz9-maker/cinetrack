@@ -99,8 +99,7 @@
       gap: 6px;
     }
 
-    .topbar-source-badge,
-    .tvdb-stock-btn {
+    .topbar-source-badge {
       display: none !important;
     }
 

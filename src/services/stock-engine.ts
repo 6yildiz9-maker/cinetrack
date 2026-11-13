@@ -212,7 +212,7 @@ export interface EnrichedStockItemPatch {
   keywords?: Array<{ id: number; name: string }>;
   /** Poster hidrasyonu: TMDB göreli yolu. `null` poster alanını temizler. */
   poster_path?: string | null;
-  /** `null` kırık TVDB adresini kaldırır; göreli yola geçilir. */
+  /** `null` poster adresini kaldırır; göreli yola geçilir. */
   poster_url?: string | null;
   backdrop_path?: string | null;
 }

@@ -45,6 +45,32 @@ const GENERIC_WORDS = new Set([
   'movie', 'series', 'story', 'about', 'follows', 'lives', 'begins', 'character',
 ]);
 
+/**
+ * Çok kelimeli mood ifadeleri ("high octane", "slow burn") token'lara
+ * bölündüğünde kayboluyordu; normalize edilmiş metin üzerinde tam ifade
+ * eşleşmesi için ayrı bir yol gerekir.
+ */
+function normalizeForPhrases(text: string): string {
+  return ` ${String(text || '')
+    .toLocaleLowerCase('tr-TR')
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()} `;
+}
+
+function isMultiWordTerm(term: string): boolean {
+  return /\s/.test(term);
+}
+
+function countPhraseMatches(normalizedText: string, terms: Set<string>): string[] {
+  const matches: string[] = [];
+  for (const term of terms) {
+    if (!isMultiWordTerm(term)) continue;
+    if (normalizedText.includes(` ${term} `)) matches.push(term);
+  }
+  return matches;
+}
+
 function tokenize(text: string): Set<string> {
   const normalized = String(text || '')
     .toLocaleLowerCase('tr-TR')
@@ -54,7 +80,13 @@ function tokenize(text: string): Set<string> {
   const tokens = new Set<string>();
   for (const raw of normalized.split(/\s+/u)) {
     const word = raw.trim();
-    if (word.length >= 3 && !STOP_WORDS.has(word) && !GENERIC_WORDS.has(word) && !/^\d+$/.test(word)) {
+    if (
+      word.length >= 3 &&
+      !isMultiWordTerm(word) &&
+      !STOP_WORDS.has(word) &&
+      !GENERIC_WORDS.has(word) &&
+      !/^\d+$/.test(word)
+    ) {
       tokens.add(word);
     }
   }
@@ -514,6 +546,18 @@ export function calculateMoodAffinity(candidate: any, rawMood: string): MoodAffi
         negTextCount++;
         opposingFeatures.push(`Zıt ton: "${tok}"`);
       }
+    }
+
+    // Çok kelimeli ifadeler ("high octane", "slow burn") token'lara bölünmeden
+    // normalize edilmiş metin üzerinde aranır.
+    const normalizedSynopsis = normalizeForPhrases(synopsisText);
+    for (const phrase of countPhraseMatches(normalizedSynopsis, config.toneWords)) {
+      posTextCount++;
+      matchedFeatures.push(`Ton: "${phrase}"`);
+    }
+    for (const phrase of countPhraseMatches(normalizedSynopsis, config.opposingToneWords)) {
+      negTextCount++;
+      opposingFeatures.push(`Zıt ton: "${phrase}"`);
     }
 
     if (posTextCount > 0 && negTextCount === 0) {

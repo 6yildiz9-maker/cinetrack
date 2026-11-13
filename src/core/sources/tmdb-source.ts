@@ -14,10 +14,8 @@ export const tmdbSourceEngine: ContentSourceEngine = {
 
   owns(item) {
     if (!item) return false;
-    if (item.source) return item.source === 'tmdb';
-    // Etiket yoksa TMDB varsayılır: tvdb- öneki ve tvdb_id taşımayan kayıtlar TMDB'dir.
-    const id = String(item.id ?? '');
-    return !id.startsWith('tvdb-') && (item as IdentityRecord).tvdb_id == null;
+    // Etiket yoksa TMDB varsayılır.
+    return !item.source || item.source === 'tmdb';
   },
 
   posterUrl(item, size = 'w500') {

@@ -11,7 +11,6 @@ import { AddCustomModal } from './components/AddCustomModal.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
 import { ProfileModal } from './components/ProfileModal.tsx';
 import { ImportChoiceModal } from './components/ImportChoiceModal.tsx';
-import { TvdbStockModal } from './components/TvdbStockModal.tsx';
 import { Toast } from './components/Toast.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
@@ -105,6 +104,8 @@ import {
   fetchDerivedProfileData,
   pushCatalogItems,
   pushDerivedProfileData,
+  downloadSqliteArchive,
+  restoreSqliteArchive,
   TmdbSourceMeta,
   ServerConflictDetail,
 } from './services/api.ts';
@@ -145,6 +146,7 @@ import {
   recordSkippedKeysIdb,
   removeSkippedKeyIdb,
   loadStockIdb,
+  saveStockIdb,
 } from './services/storage-idb.ts';
 import {
   indexItemForSeries,
@@ -195,7 +197,7 @@ import {
   startStockPosterHydration,
 } from './services/stock-poster-hydration-service.ts';
 import { applyStockPosterPatchesToItems } from './services/stock-poster-utils.ts';
-import { computeActivityStreak, dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
+import { archivePosterUrl, computeActivityStreak, dateYearsAgo, displayTitle, mapLimit, MOOD_GENRES } from './utils/helpers.ts';
 import {
   compareMediaDatesAscending,
   compareMediaDatesDescending,
@@ -411,8 +413,6 @@ export function App() {
     setAddCustomOpen,
     profileOpen,
     setProfileOpen,
-    tvdbModalOpen,
-    setTvdbModalOpen,
     commandPaletteOpen,
     setCommandPaletteOpen,
     pendingBackup,
@@ -475,7 +475,6 @@ export function App() {
 
   const uiPrefsHydratedProfileRef = useRef<string>('');
   const [stockStats, setStockStats] = useState({ movieCount: 0, tvCount: 0 });
-  const [tvdbCount, setTvdbCount] = useState<number>(0);
 
   const refreshStockStats = useCallback(() => {
     void loadStockIdb().then((stock) => {
@@ -501,9 +500,6 @@ export function App() {
           stockSets
         )
       );
-      const tvdbM = allM.filter((m) => m.source === 'tvdb').length;
-      const tvdbT = allT.filter((t) => t.source === 'tvdb').length;
-      setTvdbCount(tvdbM + tvdbT);
       setStockStats({
         movieCount: cleanMovies.length,
         tvCount: cleanTv.length,
@@ -516,9 +512,6 @@ export function App() {
     const unsubscribeStock = subscribeStockState(() => {
       const cleanMovies = getStockMovies(savedItemsRef.current, preferencesRef.current);
       const cleanTv = getStockSeries(savedItemsRef.current, preferencesRef.current);
-      const tvdbM = cleanMovies.filter((m) => m.source === 'tvdb').length;
-      const tvdbT = cleanTv.filter((t) => t.source === 'tvdb').length;
-      setTvdbCount(tvdbM + tvdbT);
       setStockStats({
         movieCount: cleanMovies.length,
         tvCount: cleanTv.length,
@@ -582,8 +575,8 @@ export function App() {
     []
   );
 
-  // Aynı yöntem stok havuzu için: kırık TVDB poster adresleri ve postersiz
-  // kayıtlar TMDB'den çözülür, yamalar ct:stock'a (ve stok yedeğine) yazılır.
+  // Aynı yöntem stok havuzu için: postersiz kayıtlar TMDB'den çözülür,
+  // yamalar ct:stock'a (ve stok yedeğine) yazılır.
   useEffect(
     () =>
       startStockPosterHydration({
@@ -3135,6 +3128,109 @@ export function App() {
     void recordProfileChangeAndMaybeBackup();
   };
 
+  /** SQLite arşivi: tüm profillerin tam kaydı + stok + stok posterleri tek dosyada. */
+  const handleCreateSqliteArchive = useCallback(async () => {
+    const dataDocument = buildCurrentLivePayloadFromRefs();
+    const tasteMaps: Record<string, unknown> = {};
+    for (const profile of dataDocument.profiles) {
+      try {
+        tasteMaps[profile.id] = loadPersistentTasteMap(profile.id) as unknown;
+      } catch {
+        // Zevk haritası okunamazsa arşiv yine de diğer verilerle üretilir.
+      }
+    }
+
+    const stock = await loadStockIdb();
+    const posterUrls: string[] = [];
+    const seenPosterUrls = new Set<string>();
+    for (const item of [...(stock.movies || []), ...(stock.tv || [])]) {
+      const url = archivePosterUrl(item as { poster_path?: string | null; poster_url?: string | null });
+      if (!url || seenPosterUrls.has(url)) continue;
+      seenPosterUrls.add(url);
+      posterUrls.push(url);
+    }
+
+    const result = await downloadSqliteArchive({
+      dataDocument,
+      tasteMaps,
+      stock: {
+        movies: stock.movies || [],
+        tv: stock.tv || [],
+        updatedAt: stock.updatedAt || '',
+        cursors: stock.cursors || {},
+      },
+      posterUrls,
+      appVersion: ENGINE_VERSION,
+    });
+
+    if (!result.ok || !result.blob) {
+      const message = result.message || 'SQLite arşivi oluşturulamadı.';
+      showToast(message);
+      throw new Error(message);
+    }
+
+    const objectUrl = URL.createObjectURL(result.blob);
+    try {
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = result.fileName || 'cinetrack-archive.sqlite';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    }
+
+    const stats = result.stats;
+    showToast(
+      stats
+        ? `SQLite arşivi indirildi: ${stats.profiles ?? 0} profil, ${stats.items ?? 0} kayıt, ${stats.stockMovies ?? 0}+${stats.stockTv ?? 0} stok, ${stats.postersStored ?? 0} poster.`
+        : 'SQLite arşivi indirildi.'
+    );
+  }, [buildCurrentLivePayloadFromRefs, showToast]);
+
+  /** SQLite arşivinden profilleri, stok görsellerini ve tüm yan verileri geri yükler. */
+  const handleRestoreSqliteArchive = useCallback(
+    async (file: File) => {
+      const result = await restoreSqliteArchive(file);
+      if (!result.ok || !result.dataDocument) {
+        const message = result.message || 'SQLite arşivi geri yüklenemedi.';
+        showToast(message);
+        throw new Error(message);
+      }
+
+      // Zevk haritaları state uygulanmadan önce yazılmalı; applyDataDocumentToState
+      // aktif profilin haritasını depodan okur.
+      for (const [profileId, payload] of Object.entries(result.tasteMaps || {})) {
+        try {
+          savePersistentTasteMap(profileId, payload as PersistentTasteMapData);
+        } catch {
+          // Tek bir harita yazılamazsa diğerleri korunur.
+        }
+      }
+
+      if (result.stock) {
+        await saveStockIdb({
+          movies: (result.stock.movies || []) as any[],
+          tv: (result.stock.tv || []) as any[],
+          updatedAt: result.stock.updatedAt || new Date().toISOString(),
+          cursors: (result.stock.cursors as Record<string, number>) || {},
+        });
+      }
+
+      applyDataDocumentToState(result.dataDocument);
+      setTasteMap(loadPersistentTasteMap(result.dataDocument.activeProfileId));
+
+      const counts = result.counts;
+      showToast(
+        counts
+          ? `SQLite arşivi geri yüklendi: ${counts.profiles} profil, ${counts.items} kayıt, ${counts.stockMovies}+${counts.stockTv} stok, ${result.postersWritten ?? 0} poster geri yazıldı.`
+          : 'SQLite arşivi geri yüklendi.'
+      );
+    },
+    [applyDataDocumentToState, showToast]
+  );
+
   // Background fetch for any missing disliked items when entering disliked tab
   const dislikedHydrationTried = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -3546,12 +3642,9 @@ export function App() {
       'popular-tv': { title: 'Popüler diziler', description: 'TMDB\'de en çok ilgi gören diziler' },
       'top-rated': { title: 'Yüksek puanlı filmler', description: 'TMDB puanına göre sıralanır' },
       stock: {
-        title: `Keşfet — ${stockStats.movieCount} Film · ${stockStats.tvCount} Dizi${
-          tvdbCount > 0 ? ` (TVDB: ${tvdbCount})` : ''
-        }`,
-        description: `Listenizde olmayan, çevrimdışı erişime hazır kişisel aday havuzu (${
-          tvdbCount > 0 ? `${tvdbCount} TVDB yapımı dahil` : 'TMDB ve TVDB kaynaklı'
-        }) ve zevk vektörü sıralaması`,
+        title: `Keşfet — ${stockStats.movieCount} Film · ${stockStats.tvCount} Dizi`,
+        description:
+          'Listenizde olmayan, çevrimdışı erişime hazır kişisel aday havuzu (TMDB kaynaklı) ve zevk vektörü sıralaması',
       },
     };
     return catMap[category] || catMap.trending;
@@ -3570,6 +3663,14 @@ export function App() {
 
   const handleSwitchProfile = (newId: string) => {
     if (newId === activeProfileId) return;
+
+    // Profil değişiminde uçuş hâlindeki tüm istekleri geçersizleştir: aksi hâlde
+    // eski profilin öneri/zevk haritası yanıtları yeni profilin state'ine yazılabiliyordu.
+    requestGateRef.current.invalidate();
+    setIsLoading(false);
+    setLoadingMore(false);
+    setForYouProgressStep('');
+
     const outgoingId = activeProfileId;
     const outgoingDeleted = normalizeDeletedKeys(deletedKeysRef.current);
     const updatedProfiles = profiles.map((p) =>
@@ -3896,8 +3997,6 @@ export function App() {
         getSaved={(item) => findSavedItem(savedItems, item)}
         tmdbSource={tmdbSourceMeta.source}
         tmdbStaleReason={tmdbSourceMeta.staleReason}
-        onOpenTvdbStock={() => setTvdbModalOpen(true)}
-        tvdbCount={tvdbCount}
       />
       <ConflictBanner
         conflict={serverConflict}
@@ -3961,8 +4060,6 @@ export function App() {
           stockStats={stockStats}
           onReplenishStock={handleManualStockReplenish}
           isStockReplenishing={stockEngineState.isReplenishing}
-          onOpenTvdbStock={() => setTvdbModalOpen(true)}
-          tvdbCount={tvdbCount}
         />
 
         {tab === 'relationships' ? (
@@ -4334,6 +4431,8 @@ export function App() {
           void recordProfileChangeAndMaybeBackup();
           showToast(`${items.length} yapım CSV'den listenize kayıpsız birleştirildi.`);
         }}
+        onCreateSqliteArchive={handleCreateSqliteArchive}
+        onRestoreSqliteArchive={handleRestoreSqliteArchive}
         onApplyRestoredDocument={(doc) => {
           applyDataDocumentToState(doc);
           void refreshCinemaKunyeFromServer('merge');
@@ -4358,21 +4457,6 @@ export function App() {
         isOpen={Boolean(pendingBackup)}
         onClose={() => setPendingBackup(null)}
         onConfirm={handleConfirmImport}
-      />
-
-      <TvdbStockModal
-        isOpen={tvdbModalOpen}
-        onClose={() => setTvdbModalOpen(false)}
-        userListItems={savedItems}
-        preferences={preferences}
-        profileId={activeProfileId}
-        onStockMutated={() => {
-          refreshStockStats();
-          if (category === 'stock') {
-            loadCategoryResults('stock', 1, false, '', selectedProvider, false, selectedType, selectedGenre);
-          }
-          showToast('✓ TVDB ve stok verileri başarıyla güncellendi!');
-        }}
       />
 
       <Toast message={toastMessage} />

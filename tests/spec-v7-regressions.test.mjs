@@ -904,7 +904,7 @@ test('POSTER-04: Profil CSV turu poster/backdrop yollarını taşır; sütunsuz 
     }),
     makePosterlessSavedItem(165, 'movie', {
       poster_path: '',
-      poster_url: 'https://artworks.thetvdb.com/banners/poster-165.jpg',
+      poster_url: 'https://image.tmdb.org/t/p/w500/poster-165.jpg',
     }),
     makePosterlessSavedItem(777, 'movie'),
   ];
@@ -918,9 +918,9 @@ test('POSTER-04: Profil CSV turu poster/backdrop yollarını taşır; sütunsuz 
   const office = importedItems.find((it) => it.id === 4922);
   assert.equal(office.poster_path, '/poster-4922.jpg');
   assert.equal(office.backdrop_path, '/backdrop-4922.jpg');
-  const tvdbOnly = importedItems.find((it) => it.id === 165);
-  assert.equal(tvdbOnly.poster_url, 'https://artworks.thetvdb.com/banners/poster-165.jpg');
-  assert.equal(tvdbOnly.poster_path, undefined, 'tam URL poster_path gibi yazılmaz');
+  const urlOnly = importedItems.find((it) => it.id === 165);
+  assert.equal(urlOnly.poster_url, 'https://image.tmdb.org/t/p/w500/poster-165.jpg');
+  assert.equal(urlOnly.poster_path, undefined, 'tam URL poster_path gibi yazılmaz');
   const withoutPoster = importedItems.find((it) => it.id === 777);
   assert.equal(withoutPoster.poster_path, undefined);
 
@@ -1224,55 +1224,30 @@ function makeStockItem(id, mediaType, extra = {}) {
   };
 }
 
-test('STOCK-POSTER-01: Kırık TVDB posterleri aday sayılır, sağlam posterlere dokunulmaz', () => {
-  const brokenTvdb = makeStockItem('tvdb-2801', 'movie', {
-    title: 'Dune: Part Two (TVDB Edition)',
-    release_date: '2024-01-01',
-    poster_path: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
-    poster_url: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
-    source: 'tvdb',
-    _source: 'demo',
-  });
+test('STOCK-POSTER-01: Postersiz stok kayıtları aday sayılır, posteri olanlara dokunulmaz', () => {
   const numericMissing = makeStockItem(165, 'movie', { release_date: '2020-05-01' });
   const numericWithPoster = makeStockItem(603, 'movie', { poster_path: '/matrix.jpg' });
   const validUrlPoster = makeStockItem(604, 'movie', {
     poster_url: 'https://image.tmdb.org/t/p/original/x.jpg',
   });
-  const tvBroken = makeStockItem('tvdb-3901', 'tv', {
-    title: 'Shōgun (TVDB Edition)',
-    first_air_date: '2024-02-27',
-    poster_path: 'https://artworks.thetvdb.com/banners/v4/series/3919/posters/b.jpg',
-    poster_url: 'https://artworks.thetvdb.com/banners/v4/series/3919/posters/b.jpg',
-    source: 'tvdb',
-    _source: 'demo',
-  });
+  const tvMissing = makeStockItem(3901, 'tv', { first_air_date: '2024-02-27' });
 
-  assert.equal(hasUsableStockPoster(brokenTvdb), false);
+  assert.equal(hasUsableStockPoster(numericMissing), false);
   assert.equal(hasUsableStockPoster(numericWithPoster), true);
   assert.equal(hasUsableStockPoster(validUrlPoster), true);
 
   const candidates = buildStockPosterCandidates(
-    [brokenTvdb, numericMissing, numericWithPoster, validUrlPoster],
-    [tvBroken]
+    [numericMissing, numericWithPoster, validUrlPoster],
+    [tvMissing]
   );
   assert.deepEqual(
     candidates.map((c) => [c.key, c.numericId, c.query, c.year]),
     [
-      ['tv:tvdb-3901', null, 'Shōgun', '2024'],
-      ['movie:tvdb-2801', null, 'Dune: Part Two', '2024'],
+      ['tv:3901', 3901, 'Dizi 3901', '2024'],
       ['movie:165', 165, 'Film 165', '2020'],
     ],
-    'TV önce gelir; TVDB kimlikleri başlıkla aranır, sayısallar detay ucundan'
+    'TV önce gelir; posteri olan kayıtlar aday olmaz'
   );
-
-  const sanitized = sanitizeStockPosterDepot({
-    movies: [brokenTvdb, numericWithPoster],
-    tv: [tvBroken],
-  });
-  assert.equal(sanitized.changedCount, 2, 'iki kırık kayıt ayıklanır');
-  assert.equal(sanitized.depot.movies[0].poster_path, null);
-  assert.equal('poster_url' in sanitized.depot.movies[0], false);
-  assert.equal(sanitized.depot.movies[1], numericWithPoster, 'sağlam kayıt aynı nesne kalır');
 
   const untouched = sanitizeStockPosterDepot({ movies: [numericWithPoster], tv: [] });
   assert.equal(untouched.changedCount, 0);
@@ -1288,99 +1263,47 @@ test('STOCK-POSTER-01: Kırık TVDB posterleri aday sayılır, sağlam posterler
   assert.equal(match.poster_path, '/right.jpg', 'yıl ve başlık eşleşmesi en yakın sonucu seçer');
 });
 
-test('STOCK-POSTER-02: Stok poster hidrasyonu detay ve başlık aramasıyla doldurur, kotaya uyar', async () => {
+test('STOCK-POSTER-02: Stok poster hidrasyonu detay ucundan doldurur, kotaya uyar', async () => {
   setupCleanTestEnv();
   resetStockPosterHydrationForTests();
 
   const stock = {
-    movies: [
-      makeStockItem(165, 'movie', {}),
-      makeStockItem('tvdb-2801', 'movie', {
-        title: 'Dune: Part Two',
-        release_date: '2024-01-01',
-        poster_path: 'https://artworks.thetvdb.com/banners/x.jpg',
-        poster_url: 'https://artworks.thetvdb.com/banners/x.jpg',
-        source: 'tvdb',
-        _source: 'demo',
-      }),
-      makeStockItem('tvdb-3999', 'movie', {
-        title: 'Bilinmeyen Yapım',
-        release_date: '1999-01-01',
-        source: 'tvdb',
-      }),
-      makeStockItem(777, 'movie', {}),
-    ],
-    tv: [
-      makeStockItem('tvdb-3901', 'tv', {
-        title: 'Shōgun (TVDB Edition)',
-        first_air_date: '2024-01-01',
-        poster_path: 'https://artworks.thetvdb.com/banners/y.jpg',
-        poster_url: 'https://artworks.thetvdb.com/banners/y.jpg',
-        source: 'tvdb',
-        _source: 'demo',
-      }),
-    ],
+    movies: [makeStockItem(165, 'movie', {}), makeStockItem(777, 'movie', {})],
+    tv: [],
   };
 
   const calls = [];
-  const fetcher = async (endpoint, params = {}) => {
-    calls.push([endpoint, params]);
+  const fetcher = async (endpoint) => {
+    calls.push(endpoint);
     if (endpoint === '/movie/165') {
       return { id: 165, poster_path: '/p165.jpg', backdrop_path: '/b165.jpg' };
     }
     if (endpoint === '/movie/777') return { id: 777 };
-    if (endpoint === '/search/movie' && params.query === 'Dune: Part Two') {
-      return {
-        results: [
-          { id: 693134, title: 'Dune: Part Two', release_date: '2024-03-01', poster_path: '/dune2.jpg' },
-        ],
-      };
-    }
-    if (endpoint === '/search/movie') return { results: [] };
-    if (endpoint === '/search/tv') {
-      return {
-        results: [
-          { id: 126308, name: 'Shōgun', first_air_date: '2024-02-27', poster_path: '/shogun.jpg' },
-        ],
-      };
-    }
     return null;
   };
 
   const pass = await runStockPosterHydrationPass({ stock, fetcher, itemsPerPass: 6 });
-  assert.equal(pass.attemptedCount, 5);
-  assert.equal(pass.hydratedCount, 3);
+  assert.equal(pass.attemptedCount, 2);
+  assert.equal(pass.hydratedCount, 1);
   assert.equal(pass.failedCount, 0);
   assert.equal(pass.patches['movie:165'].poster_path, '/p165.jpg');
   assert.equal(pass.patches['movie:165'].poster_url, null);
   assert.equal(pass.patches['movie:165'].backdrop_path, '/b165.jpg');
-  assert.equal(pass.patches['movie:tvdb-2801'].poster_path, '/dune2.jpg');
-  assert.equal(pass.patches['tv:tvdb-3901'].poster_path, '/shogun.jpg');
-  assert.equal(pass.patches['movie:tvdb-3999'], undefined);
-
-  const searchCall = calls.find(([ep]) => ep === '/search/tv');
-  assert.equal(searchCall[1].query, 'Shōgun', 'TVDB soneki arama metnine girmez');
-  assert.equal(searchCall[1].first_air_date_year, undefined, 'uydurma yıl doğru sonucu elemesin');
-  assert.equal(searchCall[1].language, 'en-US', 'İngilizce başlıklarla eşleştirilir');
+  assert.equal(pass.patches['movie:777'], undefined);
   assert.equal(
     getStockPosterHydrationQuotaState().missingPosterCount,
-    2,
-    'TMDB posteri olmayan ve eşleşmeyen kayıtlar olumsuz önbelleğe alınır'
+    1,
+    'posteri olmayan kayıt olumsuz önbelleğe alınır'
   );
 
   const applied = applyStockPosterPatchesToItems(stock.movies, pass.patches);
   assert.equal(applied[0].poster_path, '/p165.jpg');
   assert.equal('poster_url' in applied[0], false);
-  assert.equal(applied[1].poster_path, '/dune2.jpg');
 
   calls.length = 0;
   const second = await runStockPosterHydrationPass({
     stock: {
-      movies: [
-        makeStockItem(165, 'movie', { poster_path: '/p165.jpg' }),
-        applied[1],
-        stock.movies[2],
-      ],
+      movies: [makeStockItem(165, 'movie', { poster_path: '/p165.jpg' }), stock.movies[1]],
       tv: [],
     },
     fetcher,
@@ -1388,7 +1311,7 @@ test('STOCK-POSTER-02: Stok poster hidrasyonu detay ve başlık aramasıyla dold
   assert.equal(second.attemptedCount, 0);
   assert.equal(calls.length, 0);
 
-  const blocked = await runStockPosterHydrationPass({ stock, fetcher, dailyLimit: 5 });
+  const blocked = await runStockPosterHydrationPass({ stock, fetcher, dailyLimit: 2 });
   assert.equal(blocked.attemptedCount, 0, 'kota dolunca yeni istek çıkmaz');
 });
 
@@ -1396,27 +1319,20 @@ test('STOCK-POSTER-03: Yamalar ct:stock deposuna yazılır (yedekleme yolu aynı
   setupCleanTestEnv();
   resetStockPosterHydrationForTests();
 
-  const broken = makeStockItem('tvdb-2801', 'movie', {
-    title: 'Dune: Part Two',
-    poster_path: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
-    poster_url: 'https://artworks.thetvdb.com/banners/v4/movie/2801/posters/a.jpg',
-    source: 'tvdb',
-    _source: 'demo',
-  });
+  const missingPoster = makeStockItem(2801, 'movie', { title: 'Dune: Part Two' });
   const plain = makeStockItem(165, 'movie', { poster_path: '/mevcut.jpg' });
   await saveStockIdb({
-    movies: [broken, plain],
+    movies: [missingPoster, plain],
     tv: [],
     updatedAt: '2026-01-01T00:00:00.000Z',
     cursors: {},
   });
 
   const loaded = await loadStockIdb();
-  assert.equal(loaded.movies[0].poster_path, null, 'okuma anında kırık adres ayıklanır');
-  assert.equal('poster_url' in loaded.movies[0], false);
+  assert.equal(loaded.movies[0].poster_path, undefined);
 
   const updated = await applyStockPosterPatchesToDepot({
-    'movie:tvdb-2801': {
+    'movie:2801': {
       poster_path: '/dune2.jpg',
       poster_url: null,
       backdrop_path: '/dune2-b.jpg',
@@ -1427,16 +1343,15 @@ test('STOCK-POSTER-03: Yamalar ct:stock deposuna yazılır (yedekleme yolu aynı
   const persisted = await loadStockIdb();
   assert.equal(persisted.movies[0].poster_path, '/dune2.jpg');
   assert.equal(persisted.movies[0].backdrop_path, '/dune2-b.jpg');
-  assert.equal('poster_url' in persisted.movies[0], false);
   assert.equal(persisted.movies[1].poster_path, '/mevcut.jpg', 'diğer kayıt değişmez');
 
   const noop = await updateStockItemsMetadata({
-    'movie:tvdb-2801': { poster_path: '/dune2.jpg', poster_url: null },
+    'movie:2801': { poster_path: '/dune2.jpg', poster_url: null },
   });
   assert.equal(noop, 0);
 });
 
-test('STOCK-PERF-01: Listemdekileri gizle filtresi indeksli yolla aynı sonucu üretir', () => {
+test('STOCK-IDS-01: Listemdekileri gizle filtresi indeksli yolla aynı sonucu üretir', () => {
   const savedItems = [
     { id: 603, media_type: 'movie', title: 'The Matrix', status: 'completed' },
     { id: 1399, media_type: 'tv', title: 'Game of Thrones', status: 'watching' },
@@ -1484,7 +1399,7 @@ test('STOCK-PERF-01: Listemdekileri gizle filtresi indeksli yolla aynı sonucu �
   );
 });
 
-test('STOCK-POSTER-04: TVDB türevi kayıtlar için tür araması proxy izin listesinde', () => {
+test('STOCK-POSTER-04: tür araması proxy izin listesinde ve yıl parametreleri doğrulanır', () => {
   assert.ok(ALLOWED_TMDB_PATH.test('/search/movie'), 'film araması izinli olmalı');
   assert.ok(ALLOWED_TMDB_PATH.test('/search/tv'), 'dizi araması izinli olmalı');
   assert.ok(!ALLOWED_TMDB_PATH.test('/search/person'), 'person araması izinli olmamalı');

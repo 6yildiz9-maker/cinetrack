@@ -670,3 +670,37 @@ test('EXT-09, EXT-10, EXT-11, EXT-13 & BUG-13.2: Dotenv ayrıştırıcı, yapıl
     ESTIMATED_MOVIE_MINUTES
   );
 });
+
+test('MOOD-PHRASE: çok kelimeli mood ifadeleri eşleşir', async () => {
+  const { calculateMoodAffinity } = await import('../src/core/mood-affinity.ts');
+
+  const thrilling = calculateMoodAffinity(
+    {
+      id: 1,
+      media_type: 'movie',
+      title: 'Hız',
+      overview: 'A high octane explosive chase through the city.',
+      genre_ids: [28],
+    },
+    'thrilling'
+  );
+  assert.ok(
+    thrilling.matchedFeatures.some((f) => f.toLowerCase().includes('high octane')),
+    'high octane ifadesi olumlu ton eşleşmesi üretmeli'
+  );
+
+  const slowBurn = calculateMoodAffinity(
+    {
+      id: 2,
+      media_type: 'movie',
+      title: 'Sessizlik',
+      overview: 'A slow burn drama about grief and memory.',
+      genre_ids: [18],
+    },
+    'thrilling'
+  );
+  assert.ok(
+    slowBurn.opposingFeatures.some((f) => f.toLowerCase().includes('slow burn')),
+    'slow burn ifadesi karşıt ton olarak yakalanmalı'
+  );
+});
