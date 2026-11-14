@@ -24,12 +24,19 @@ export default tseslint.config(
       'jsx-a11y/aria-unsupported-elements': 'error',
       'jsx-a11y/role-has-required-aria-props': 'error',
       'jsx-a11y/role-supports-aria-props': 'error',
+      // A11Y-01: denetimde kapalı olduğu için 0 uyarı "erişilebilir" demek değildi.
+      'jsx-a11y/label-has-associated-control': ['error', { assert: 'either' }],
+      'jsx-a11y/click-events-have-key-events': 'warn',
+      'jsx-a11y/no-noninteractive-tabindex': 'warn',
+      'jsx-a11y/heading-has-content': 'warn',
+      'jsx-a11y/control-has-associated-label': 'warn',
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': [
         'warn',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
-      'no-empty': ['error', { allowEmptyCatch: true }],
+      // SEC-02: sessiz catch yutmayı en azından gerekçeli yorumla sınırlar.
+      'no-empty': ['error', { allowEmptyCatch: false }],
       'no-useless-assignment': 'off',
     },
   },

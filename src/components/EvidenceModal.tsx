@@ -70,7 +70,7 @@ export const EvidenceModal: React.FC<EvidenceModalProps> = ({
       const stored = JSON.parse(localStorage.getItem('cinetrack_evidence_objections') || '[]');
       stored.push({ title: data.title, at: new Date().toISOString() });
       localStorage.setItem('cinetrack_evidence_objections', JSON.stringify(stored));
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   };
 
   return (

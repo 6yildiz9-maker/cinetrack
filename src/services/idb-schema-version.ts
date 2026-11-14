@@ -178,5 +178,5 @@ export function resetSchemaMigrationStateForTests(): void {
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(IDB_SCHEMA_STORAGE_KEY);
     }
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 }

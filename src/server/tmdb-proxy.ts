@@ -759,7 +759,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
           if (contentLengthRaw !== null && Number(contentLengthRaw) > MAX_TMDB_UPSTREAM_BYTES) {
             try {
               await upstream.body?.cancel?.();
-            } catch {}
+            } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
             throw new TmdbUpstreamTooLargeError(
               `TMDB yanıt boyutu izin verilen sınırı (10 MiB) aşıyor (${contentLengthRaw} bayt).`
             );
@@ -778,7 +778,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
                 if (totalBytes > MAX_TMDB_UPSTREAM_BYTES) {
                   try {
                     await reader.cancel();
-                  } catch {}
+                  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
                   throw new TmdbUpstreamTooLargeError(
                     'TMDB akış yanıtı izin verilen azami boyutu (10 MiB) aştı.'
                   );
@@ -851,6 +851,34 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
 
   const imageCache = new Map<string, { at: number; buffer: Buffer; contentType: string }>();
   const MAX_IMAGE_CACHE_ENTRIES = 300;
+  // SEC-05: giriş sayısı tek başına yetmez; 300 × 8 MB = 2,4 GB teorik RSS demek.
+  // Toplam bayt bütçesi tutulur ve LRU sırası en son kullanılanla tazelenir.
+  const MAX_IMAGE_CACHE_BYTES = 64 * 1024 * 1024;
+  let imageCacheBytes = 0;
+
+  const evictImageCacheToBudget = () => {
+    while (
+      imageCache.size > MAX_IMAGE_CACHE_ENTRIES ||
+      imageCacheBytes > MAX_IMAGE_CACHE_BYTES
+    ) {
+      const oldestKey = imageCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const entry = imageCache.get(oldestKey);
+      imageCache.delete(oldestKey);
+      imageCacheBytes -= entry ? entry.buffer.byteLength : 0;
+    }
+  };
+
+  const rememberImage = (key: string, entry: { at: number; buffer: Buffer; contentType: string }) => {
+    const previous = imageCache.get(key);
+    if (previous) {
+      imageCacheBytes -= previous.buffer.byteLength;
+      imageCache.delete(key);
+    }
+    imageCache.set(key, entry);
+    imageCacheBytes += entry.buffer.byteLength;
+    evictImageCacheToBudget();
+  };
 
   const handleTmdbImage = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -868,7 +896,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
           if (parsed.protocol === 'https:' && allowedImageHosts.has(parsed.hostname)) {
             targetUrl = parsed.href;
           }
-        } catch {}
+        } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       } else if (rawPath) {
         const cleanPath = rawPath.replace(/^\/+/, '');
         if (/^[a-zA-Z0-9_./-]+$/.test(cleanPath) && !cleanPath.includes('..')) {
@@ -883,6 +911,9 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
 
       const cached = imageCache.get(targetUrl);
       if (cached && Date.now() - cached.at < 7 * 24 * 3600 * 1000) {
+        // LRU tazeleme: hit alan giriş sona taşınır.
+        imageCache.delete(targetUrl);
+        imageCache.set(targetUrl, cached);
         res.setHeader('Content-Type', cached.contentType);
         res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
         res.setHeader('X-CineTrack-Image-Proxy', 'hit');
@@ -908,12 +939,7 @@ export function createTmdbProxyService(options: TmdbProxyServiceOptions = {}) {
       const buffer = Buffer.from(arrayBuf);
 
       if (buffer.byteLength <= 8 * 1024 * 1024) {
-        imageCache.set(targetUrl, { at: Date.now(), buffer, contentType });
-        while (imageCache.size > MAX_IMAGE_CACHE_ENTRIES) {
-          const oldest = imageCache.keys().next().value;
-          if (oldest) imageCache.delete(oldest);
-          else break;
-        }
+        rememberImage(targetUrl, { at: Date.now(), buffer, contentType });
       }
 
       res.setHeader('Content-Type', contentType);

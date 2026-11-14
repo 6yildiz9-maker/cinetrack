@@ -269,7 +269,7 @@ export const SeriesRecommendationsSection: React.FC<SeriesRecommendationsSection
     setOpenGroups(next);
     try {
       localStorage.setItem(SERIES_ACCORDION_STORAGE_KEY, JSON.stringify(next));
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   };
 
   const dislikedSet = useMemo(() => new Set(dislikedKeys), [dislikedKeys]);

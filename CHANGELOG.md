@@ -1,3 +1,23 @@
+## [Unreleased]
+
+### Güvenlik ve veri bütünlüğü
+- **SEC-01:** `/api` mutasyonları gövde ayrıştırılmadan önce origin + token doğrulamasından geçiyor; SQLite arşivi geri yüklemesi artık 256 MB gövdeyi belleğe almıyor, diske akıtılıyor (sınır 256 MB, tek eşzamanlı geri yükleme).
+- **DATA-01:** Çevrimdışı kuyruk yazımı IndexedDB → localStorage (geri okuma doğrulamalı) → bellek sırasıyla yapılıyor; yazma tamamlanmadan `persisted: true` dönmüyor.
+- **DATA-02:** SQLite geri yükleme aşamalı: sunucu tarafında profil/kayıt sayısı doğrulanıyor, istemcide zevk haritaları ve stok kalıcılığı kontrol ediliyor; kısmi başarı artık "tam geri yükleme" olarak gösterilmiyor.
+- **SEC-04:** Offline kuyrukta 5 denemeli üstel geri çekilme (2 sn → 5 dk) ve `OfflineIndicator` üzerinde "Yeniden dene" düğmesi.
+- **SEC-05:** `/api/tmdb-image` artık rate limiter'a dahil; görsel önbelleği 64 MB bayt bütçeli LRU.
+- **SEC-02 / SEC-03:** `ApiError` + `apiFetch` (sessionStorage token, `cinetrack:auth-required`), LAN modu için erişim anahtarı istemi, yakalanmamış söz redlerinin bildirime dönüşmesi.
+- Rate limiter tahliyesi LRU'ya çevrildi (IP rotasyonu meşru istemciyi atamaz).
+- Graf: `no-empty` kuralı sıkılaştırıldı (66 boş catch gerekçelendirildi), zod `^4.6.6` override'ı ve Dependabot eklendi.
+
+### Erişilebilirlik, UX ve performans
+- **UX-01:** Toast kuyruğu: mesajlar birbirini ezmiyor, hatalar `role="alert"` ve elle kapatılabilir.
+- **A11Y-01/02:** `label-has-associated-control`, `click-events-have-key-events`, `no-noninteractive-tabindex`, `heading-has-content`, `control-has-associated-label` kuralları açıldı; `prefers-reduced-motion` desteği eklendi.
+- **PERF-01:** Kartlarda `content-visibility: auto` ile ekran dışı boyama erteleniyor.
+- **ARCH-03:** Poster çözümü tek modülde (`src/core/media/poster.ts`).
+- **OPS-01:** SIGTERM/SIGINT için güvenli kapanış (zamanlayıcı temizliği, eşitleme bitişi, 10 sn zorla çıkış).
+- **CI-01:** Kalite (lint/test/build), E2E ve güvenlik denetimi ayrı işler olarak `.github/workflows/ci.yml` içinde.
+
 # Changelog
 
 Tüm önemli değişiklikler bu dosyada tutulur. Sürümleme [Semantic Versioning](https://semver.org/) esas alır.

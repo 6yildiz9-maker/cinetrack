@@ -11,9 +11,10 @@ import { AddCustomModal } from './components/AddCustomModal.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
 import { ProfileModal } from './components/ProfileModal.tsx';
 import { ImportChoiceModal } from './components/ImportChoiceModal.tsx';
-import { Toast } from './components/Toast.tsx';
+import { Toast, type ToastEntry, type ToastKind } from './components/Toast.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
+import { AuthTokenModal } from './components/AuthTokenModal.tsx';
 import { ConflictBanner } from './components/ConflictBanner.tsx';
 import { BRAND_NAME } from './shared/brand.ts';
 import { useAppModals } from './hooks/useAppModals.ts';
@@ -135,6 +136,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.ts';
 import { useItemActions } from './hooks/useItemActions.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import { hasPendingOfflineSync } from './services/offline-queue.ts';
+import { AUTH_REQUIRED_EVENT } from './services/api-client.ts';
 import {
   saveIsolatedProfileIdb,
   loadUserListsIdb,
@@ -418,10 +420,10 @@ export function App() {
     pendingBackup,
     setPendingBackup,
   } = useAppModals();
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastEntry[]>([]);
+  const toastSeqRef = useRef(0);
 
   const requestGateRef = useRef(createRequestGate());
-  const toastTimerRef = useRef<any>(null);
   const lastForYouQueryKeyRef = useRef<string>('');
   const confirmNextBulkSyncRef = useRef<boolean>(false);
   const selectedTypeRef = useRef<string>(selectedType);
@@ -592,7 +594,7 @@ export function App() {
   useEffect(() => {
     try {
       localStorage.setItem(HIDE_LISTED_STORAGE_KEY, hideListedItems ? '1' : '0');
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }, [hideListedItems]);
 
   // Hydrate & persist UI filter/sort preferences in Depo 10 (`ct:ui-prefs`)
@@ -641,11 +643,22 @@ export function App() {
     });
   }, [activeProfileId, selectedType, selectedSort, selectedGenre, hideListedItems, forYouSubTab]);
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToastMessage(null), 7000);
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
+
+  // UX-01: kuyruklu bildirim. Hata mesajları 12 sn kalır ve elle kapatılabilir;
+  // başarı bilgisi 7 sn sonra kendiliğinden gider.
+  const showToast = useCallback(
+    (msg: string, kind: ToastKind = 'success') => {
+      const id = (toastSeqRef.current += 1);
+      setToasts((prev) => [...prev.slice(-3), { id, message: msg, kind }]);
+      if (typeof window !== 'undefined') {
+        window.setTimeout(() => dismissToast(id), kind === 'error' ? 12_000 : 7_000);
+      }
+    },
+    [dismissToast]
+  );
 
   // Global Keyboard Shortcuts (IMP-08 & Section 6.5)
   useKeyboardShortcuts({
@@ -730,7 +743,7 @@ export function App() {
     if (serverSyncReady) {
       try {
         localStorage.setItem(DIRTY_KEY, '1');
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     } else {
       localEditedDuringStartupRef.current = true;
     }
@@ -755,7 +768,7 @@ export function App() {
           deletedKeysStorageKey(p.id),
           JSON.stringify(normalizeDeletedKeys(p.deleted_keys))
         );
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       try {
         localStorage.setItem(listStorageKey(p.id), JSON.stringify(p.items || []));
       } catch {
@@ -765,7 +778,7 @@ export function App() {
             overview: typeof it.overview === 'string' ? it.overview.slice(0, 120) : '',
           }));
           localStorage.setItem(listStorageKey(p.id), JSON.stringify(compactSaved));
-        } catch {}
+        } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       }
       void saveUserListsIdb(p.id, p.items || []);
     }
@@ -943,7 +956,7 @@ export function App() {
         } else {
           localStorage.removeItem(DIRTY_KEY);
         }
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
       if (!shouldStayDirty) {
         setServerConflict(null);
@@ -968,9 +981,42 @@ export function App() {
     isOnline,
     pendingSync,
     unpersistedWarning,
+    queueFailure,
+    maxQueueAttempts,
     syncDocument,
+    flushQueue,
     resolveQueuedConflict,
   } = useOfflineSync(handleServerConflict, handleMergedServerDocument);
+
+  // SEC-02: yakalanmamış async hatalar sessizce kaybolmasın.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const message = String((event as CustomEvent).detail?.message || 'Beklenmeyen bir hata oluştu.');
+      showToast(message, 'error');
+    };
+    window.addEventListener('cinetrack:unhandled-error', handler);
+    return () => window.removeEventListener('cinetrack:unhandled-error', handler);
+  }, [showToast]);
+
+  // SEC-03: sunucu 401/503 döndürdüğünde erişim anahtarı istemini göster.
+  const [authPrompt, setAuthPrompt] = useState<{ status: number } | null>(null);
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const status = Number((event as CustomEvent).detail?.status) || 401;
+      setAuthPrompt({ status });
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, handler);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handler);
+  }, []);
+
+  // SEC-04: OfflineIndicator'daki "Yeniden dene" düğmesi kuyruğu hemen dener.
+  useEffect(() => {
+    const handler = () => {
+      void flushQueue();
+    };
+    window.addEventListener('cinetrack:force-flush-queue', handler);
+    return () => window.removeEventListener('cinetrack:force-flush-queue', handler);
+  }, [flushQueue]);
 
   // Autonomous 500-movie + 500-TV IndexedDB stock engine & <250 background replenisher (Aşama 2 & 4)
   const stockEngineState = useStockEngine(activeProfileId);
@@ -1063,7 +1109,7 @@ export function App() {
       isDirtyRef.current = false;
       try {
         localStorage.removeItem(DIRTY_KEY);
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       resolveQueuedConflict();
       setServerConflict(null);
     },
@@ -1092,7 +1138,7 @@ export function App() {
           isDirtyRef.current = false;
           try {
             localStorage.removeItem(DIRTY_KEY);
-          } catch {}
+          } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         }
         setServerConflict(null);
         setSyncStatus('Kayıt yeri: data/cinetrack-data.json (bu bilgisayarda, tüm profiller).');
@@ -1129,7 +1175,7 @@ export function App() {
       isDirtyRef.current = false;
       try {
         localStorage.removeItem(DIRTY_KEY);
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       resolveQueuedConflict();
       setServerConflict(null);
       setSyncStatus('Yerel değişiklikler sunucuya kaydedildi.');
@@ -1174,7 +1220,7 @@ export function App() {
     let lsDirty = false;
     try {
       lsDirty = localStorage.getItem(DIRTY_KEY) === '1';
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     if (!isDirtyRef.current && !lsDirty && !confirmNextBulkSyncRef.current && !hasPendingOfflineSync()) {
       return;
     }
@@ -1214,7 +1260,7 @@ export function App() {
       let lsDirty = false;
       try {
         lsDirty = localStorage.getItem(DIRTY_KEY) === '1';
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       if (isDirtyRef.current || lsDirty || hasPendingOfflineSync()) {
         void pushToServer();
       } else {
@@ -2359,7 +2405,7 @@ export function App() {
                   (m: any) => m.job === 'Director' || m.job === 'Creator'
                 ),
               });
-            } catch {}
+            } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
           });
           if (Object.keys(shortlistTopCast).length > 0) {
             void enrichStockItemsTopCast(shortlistTopCast);
@@ -2835,7 +2881,7 @@ export function App() {
       const nextMap = { ...currentTasteMap };
       tasteMapRef.current = nextMap;
       setTasteMap(nextMap);
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
     // Aşama 3 & 4: Stoktan düş, ct:surfaced & ct:skip-log geçmişinden çıkar ve seri indeksini güncelle
     void consumeStockItem(normalized, activeProfileIdRef.current);
@@ -3029,7 +3075,7 @@ export function App() {
       const nextMap = { ...currentTasteMap };
       tasteMapRef.current = nextMap;
       setTasteMap(nextMap);
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
     void recordProfileChangeAndMaybeBackup();
     showToast(`"${displayTitle(item)}" listeden kaldırıldı.`);
@@ -3058,7 +3104,7 @@ export function App() {
                 cache[`${item.media_type}:${item.id}`] = item;
               });
               localStorage.setItem('cinetrack_disliked_cache', JSON.stringify(cache));
-            } catch {}
+            } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
             return updated;
           });
         }
@@ -3078,7 +3124,7 @@ export function App() {
         const nextMap = { ...currentTasteMap };
         tasteMapRef.current = nextMap;
         setTasteMap(nextMap);
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
       if (!isCurrentlyDisliked) {
         const [mType, rawId] = key.split(':');
@@ -3199,33 +3245,52 @@ export function App() {
         throw new Error(message);
       }
 
-      // Zevk haritaları state uygulanmadan önce yazılmalı; applyDataDocumentToState
-      // aktif profilin haritasını depodan okur.
+      // DATA-02: aşamalı geri yükleme. Yan veriler (zevk haritaları, stok) yazılıp
+      // kalıcılıkları doğrulanmadan "tam geri yükleme" denmez.
+      const failedSections: string[] = [];
+
+      // 1) Zevk haritaları — state uygulanmadan önce yazılmalı.
       for (const [profileId, payload] of Object.entries(result.tasteMaps || {})) {
         try {
           savePersistentTasteMap(profileId, payload as PersistentTasteMapData);
-        } catch {
-          // Tek bir harita yazılamazsa diğerleri korunur.
+        } catch (error) {
+          console.warn('[SQLiteRestore] Zevk haritası yazılamadı:', profileId, error);
+          failedSections.push(`zevk haritası (${profileId})`);
         }
       }
 
+      // 2) Stok — IndexedDB yazımının gerçekten kalıcı olduğunu doğrula.
       if (result.stock) {
-        await saveStockIdb({
+        const stockWrite = await saveStockIdb({
           movies: (result.stock.movies || []) as any[],
           tv: (result.stock.tv || []) as any[],
           updatedAt: result.stock.updatedAt || new Date().toISOString(),
           cursors: (result.stock.cursors as Record<string, number>) || {},
         });
+        if (!stockWrite.persisted) {
+          console.warn('[SQLiteRestore] Stok deposu kalıcı yazılamadı:', stockWrite.error);
+          failedSections.push('stok deposu (IndexedDB kotası)');
+        }
       }
 
+      // 3) Ana belge + türetilmiş state.
       applyDataDocumentToState(result.dataDocument);
       setTasteMap(loadPersistentTasteMap(result.dataDocument.activeProfileId));
 
       const counts = result.counts;
+      if (failedSections.length > 0) {
+        const detail = failedSections.join(', ');
+        showToast(
+          `SQLite arşivi kısmen geri yüklendi. Başarısız bölümler: ${detail}. Sunucu verisi yazıldı; bu bölümler için arşivi yeniden yükleyin.`,
+          'error'
+        );
+        throw new Error(`Kısmi geri yükleme: ${detail}`);
+      }
+
       showToast(
         counts
-          ? `SQLite arşivi geri yüklendi: ${counts.profiles} profil, ${counts.items} kayıt, ${counts.stockMovies}+${counts.stockTv} stok, ${result.postersWritten ?? 0} poster geri yazıldı.`
-          : 'SQLite arşivi geri yüklendi.'
+          ? `SQLite arşivi geri yüklendi ve doğrulandı: ${counts.profiles} profil, ${counts.items} kayıt, ${counts.stockMovies}+${counts.stockTv} stok, ${result.postersWritten ?? 0} poster geri yazıldı.`
+          : 'SQLite arşivi geri yüklendi ve doğrulandı.'
       );
     },
     [applyDataDocumentToState, showToast]
@@ -3269,7 +3334,7 @@ export function App() {
             cache[`${item.media_type}:${item.id}`] = item;
           });
           localStorage.setItem('cinetrack_disliked_cache', JSON.stringify(cache));
-        } catch {}
+        } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         return combined;
       });
     });
@@ -3293,7 +3358,7 @@ export function App() {
       try {
         const details = await fetchTmdb(`/tv/${tv.id}`);
         if (details) detailsByKey.set(`tv:${tv.id}`, details);
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       return null;
     }).then(() => {
       if (detailsByKey.size === 0) return;
@@ -3914,7 +3979,7 @@ export function App() {
     setFavoriteActors(importedActors);
     try {
       localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(importedActors));
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
     if (pendingBackup.isDemo !== undefined) {
       setProfiles((prev) =>
@@ -3945,7 +4010,7 @@ export function App() {
       setFavoriteActors(restored);
       try {
         localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(restored));
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     }
     if (block.profileName) handleSaveProfileName(block.profileName);
   };
@@ -3979,6 +4044,8 @@ export function App() {
         isOnline={isOnline}
         pendingSync={pendingSync}
         unpersistedWarning={unpersistedWarning}
+        queueFailure={queueFailure}
+        maxQueueAttempts={maxQueueAttempts}
       />
       <Header
         profileName={profileName}
@@ -4459,7 +4526,18 @@ export function App() {
         onConfirm={handleConfirmImport}
       />
 
-      <Toast message={toastMessage} />
+      <AuthTokenModal
+        open={Boolean(authPrompt)}
+        status={authPrompt?.status ?? 401}
+        onClose={() => setAuthPrompt(null)}
+        onSubmit={() => {
+          setAuthPrompt(null);
+          showToast('Erişim anahtarı bu oturum için kaydedildi; veriler yeniden yükleniyor…', 'info');
+          window.setTimeout(() => window.location.reload(), 600);
+        }}
+      />
+
+      <Toast toasts={toasts} onDismiss={dismissToast} />
     </>
   );
 }

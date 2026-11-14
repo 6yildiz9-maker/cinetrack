@@ -1,5 +1,6 @@
 import type { SavedItem } from '../core/cinetrack-core.ts';
 import type { TmdbItem } from '../types/tmdb.ts';
+import { resolvePoster } from '../core/media/poster.ts';
 
 export const IMAGE_BASE = 'https://image.tmdb.org/t/p/';
 
@@ -150,7 +151,7 @@ let preferImageProxy = false;
 if (typeof window !== 'undefined') {
   try {
     preferImageProxy = window.sessionStorage?.getItem('cinetrack_prefer_image_proxy') === '1';
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 }
 
 export function isImageProxyPreferred(): boolean {
@@ -166,7 +167,7 @@ export function setImageProxyPreferred(preferred: boolean): void {
       } else {
         window.sessionStorage?.removeItem('cinetrack_prefer_image_proxy');
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
 }
 
@@ -296,26 +297,21 @@ export function formatMediaDates(
 
 export function getPoster(item?: Partial<TmdbItem> | SavedItem | null, size = 'w500'): string {
   if (!item) return '';
-  if (item.poster_url) {
+  // ARCH-03: poster alanı seçimi ve doğrulaması tek modülde.
+  const resolved = resolvePoster(item);
+  if (resolved.kind === 'none') return '';
+  if (resolved.kind === 'url') {
     try {
-      const url = new URL(item.poster_url);
-      if (url.protocol === 'https:' || url.protocol === 'http:') {
-        if (
-          preferImageProxy &&
-          (url.hostname === 'image.tmdb.org' || url.hostname === 'img.tmdb.org')
-        ) {
-          return tmdbProxyUrl(url.href, size);
-        }
-        return url.href;
+      const url = new URL(resolved.value);
+      if (preferImageProxy && (url.hostname === 'image.tmdb.org' || url.hostname === 'img.tmdb.org')) {
+        return tmdbProxyUrl(url.href, size);
       }
+      return url.href;
     } catch {
-      // ignore
+      return '';
     }
   }
-  if (item.poster_path) {
-    return imageUrl(item.poster_path, size);
-  }
-  return '';
+  return imageUrl(resolved.value, size);
 }
 
 export function dateYearsAgo(years: number): string {

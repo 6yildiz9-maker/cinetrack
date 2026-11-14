@@ -111,8 +111,15 @@ export const QuickSaveModal: React.FC<QuickSaveModalProps> = ({
           </div>
 
           <div className="quick-save-body">
-            <label className="quick-save-label">İzleme Durumu</label>
-            <div className="quick-status-grid" id="quickStatusGrid">
+            <span className="quick-save-label" id="quickStatusLabel">
+              İzleme Durumu
+            </span>
+            <div
+              className="quick-status-grid"
+              id="quickStatusGrid"
+              role="group"
+              aria-labelledby="quickStatusLabel"
+            >
               <button
                 type="button"
                 className={`quick-status-opt ${selectedStatus === 'watchlist' ? 'active' : ''}`}

@@ -152,7 +152,7 @@ export async function loadIsolatedProfileIdb(profileId: string): Promise<Isolate
           updatedAt: new Date().toISOString(),
         };
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
   return record || null;
 }
@@ -245,7 +245,7 @@ export async function loadUserListsIdb(profileId: string): Promise<UserListItemC
           return parsed.map(toCompactUserListItem);
         }
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
   return [];
 }

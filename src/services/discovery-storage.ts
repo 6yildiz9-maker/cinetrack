@@ -179,14 +179,14 @@ export async function hydrateDiscoveryHistoryIdb(profileId: string): Promise<Per
           idbHydratedTasteMaps.set(key, sanitized.loadedData);
           try {
             if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
-          } catch {}
+          } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
           if (sanitized.needsMigrationWrite) {
             savePersistentTasteMap(profileId, sanitized.loadedData);
           }
           return sanitized.loadedData;
         }
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
   return loadPersistentTasteMap(profileId);
 }
@@ -218,7 +218,7 @@ export function loadPersistentTasteMap(profileId: string): PersistentTasteMapDat
         }
       }
     }
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   return createDefaultTasteMapData(profileId);
 }
 
@@ -238,7 +238,7 @@ export function savePersistentTasteMap(profileId: string, data: PersistentTasteM
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(key);
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     trackCoreIdbWrite(
       idbSet(key, normalizedData, store).catch((err) => {
         console.warn('[Cinethos] Discovery history IDB write failed:', err);
@@ -290,9 +290,9 @@ export async function hydrateCandidatePoolsIdb(
           });
           try {
             if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
-          } catch {}
+          } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         }
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     }
   }
   return {
@@ -352,7 +352,7 @@ export function loadPersistentPoolData(
         }
       }
     }
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   return createDefaultPoolData(mediaType);
 }
 
@@ -378,7 +378,7 @@ export function savePersistentPoolData(
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(key);
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     trackCoreIdbWrite(
       idbSet(key, poolRecord, store).catch((err) => {
         console.warn('[Cinethos] Candidate pool IDB write failed:', err);

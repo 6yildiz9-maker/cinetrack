@@ -248,6 +248,40 @@ async function startServer() {
     if (typeof tokenRefreshTimer.unref === 'function') {
       tokenRefreshTimer.unref();
     }
+
+    // OPS-01: SIGTERM/SIGINT'te yeni istek almayı bırak, zamanlayıcıları temizle,
+    // sürmekte olan eşitleme/yazmayı bitir, sonra çık.
+    let shuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`[Shutdown] ${signal} alındı; yeni istekler kapatılıyor…`);
+      clearInterval(autoSyncTimer);
+      clearInterval(tokenRefreshTimer);
+      clearTimeout(startupSyncTimer);
+      if (mutationDebounceTimer) clearTimeout(mutationDebounceTimer);
+
+      const forceExitTimer = setTimeout(() => {
+        console.warn('[Shutdown] Kapanış 10 sn içinde tamamlanmadı; süreç zorla kapatılıyor.');
+        process.exit(1);
+      }, 10_000);
+      forceExitTimer.unref?.();
+
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      const deadline = Date.now() + 5_000;
+      while (persistentStore.isSyncBusy() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      clearTimeout(forceExitTimer);
+      console.log('[Shutdown] Güvenli kapanış tamamlandı.');
+      process.exit(0);
+    };
+    process.once('SIGTERM', () => void shutdown('SIGTERM'));
+    process.once('SIGINT', () => void shutdown('SIGINT'));
   });
 }
 

@@ -4,6 +4,7 @@ import {
   type CinemaKunyeDocument,
 } from '../core/cinema-kunye.ts';
 import type { BidirectionalSyncReport, SyncOperationKind } from '../core/sync-display.ts';
+import { apiFetch } from './api-client.ts';
 
 export type TmdbDataSource = 'live' | 'demo' | 'stale-cache' | 'error' | 'unknown';
 
@@ -190,7 +191,7 @@ export async function fetchTmdb(path: string, params: Record<string, string> = {
   let response: globalThis.Response;
   try {
     const signals = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-    response = await fetch(`/api/tmdb?${query.toString()}`, { signal: signals });
+    response = await apiFetch(`/api/tmdb?${query.toString()}`, { signal: signals });
   } catch (error: any) {
     if (signal?.aborted) throw error;
     setTmdbSourceState({ source: 'error', cacheStatus: 'none', staleReason: error.message });
@@ -355,7 +356,7 @@ export async function fetchServerData(): Promise<DataDocument | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch('/api/data', {
+    const response = await apiFetch('/api/data', {
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -410,7 +411,7 @@ export async function pushServerDataDetailed(
   }
 
   try {
-    const response = await fetch('/api/data', {
+    const response = await apiFetch('/api/data', {
       method: 'PUT',
       headers,
       body: JSON.stringify(payload),
@@ -484,7 +485,7 @@ export async function pushServerData(payload: DataDocument): Promise<boolean> {
 
 export async function fetchServerBackups(): Promise<ServerBackupMetadata[]> {
   try {
-    const res = await fetch('/api/data/backups', {
+    const res = await apiFetch('/api/data/backups', {
       cache: 'no-store',
     });
     if (!res.ok) return [];
@@ -497,7 +498,7 @@ export async function fetchServerBackups(): Promise<ServerBackupMetadata[]> {
 
 export async function triggerImmediateServerBackup(): Promise<{ ok: boolean; message: string; backups?: ServerBackupMetadata[] }> {
   try {
-    const res = await fetch('/api/data/backup-now', {
+    const res = await apiFetch('/api/data/backup-now', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -515,7 +516,7 @@ export async function triggerImmediateServerBackup(): Promise<{ ok: boolean; mes
 
 export async function restoreServerBackup(backupId: string): Promise<DataDocument | null> {
   try {
-    const res = await fetch('/api/data/restore', {
+    const res = await apiFetch('/api/data/restore', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -539,7 +540,7 @@ export async function checkServerTmdbStatus(): Promise<{
   cacheEntries: number;
 } | null> {
   try {
-    const res = await fetch('/api/tmdb-status', { cache: 'no-store' });
+    const res = await apiFetch('/api/tmdb-status', { cache: 'no-store' });
     if (!res.ok) return null;
     const json = await res.json();
     setTmdbSourceState({ source: json.source as TmdbDataSource });
@@ -583,7 +584,7 @@ export function getTmdbSourceDescription(source: TmdbDataSource, staleReason?: s
 
 export async function fetchSyncStatus(): Promise<any> {
   try {
-    const res = await fetch('/api/sync/status', { cache: 'no-store' });
+    const res = await apiFetch('/api/sync/status', { cache: 'no-store' });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -611,7 +612,7 @@ export async function uploadStockSnapshot(payload: {
   tv?: unknown[];
 }): Promise<StockUploadResult> {
   try {
-    const res = await fetch('/api/stock/upload', {
+    const res = await apiFetch('/api/stock/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -654,7 +655,7 @@ export async function hybridMergeCsv(
   dryRun: boolean
 ): Promise<HybridMergeResult> {
   try {
-    const res = await fetch('/api/backup/hybrid-merge', {
+    const res = await apiFetch('/api/backup/hybrid-merge', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ csvText, dryRun }),
@@ -731,7 +732,7 @@ function buildClientNetworkErrorReport(
 
 export async function inspectGitHubSync(): Promise<BidirectionalSyncReport> {
   try {
-    const res = await fetch('/api/sync/inspect', {
+    const res = await apiFetch('/api/sync/inspect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -749,7 +750,7 @@ export async function pullGitHubSync(
   conflictStrategy: 'ask' | 'merge' | 'overwrite_with_remote' = 'ask'
 ): Promise<BidirectionalSyncReport> {
   try {
-    const res = await fetch('/api/sync/pull', {
+    const res = await apiFetch('/api/sync/pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conflictStrategy }),
@@ -769,7 +770,7 @@ export async function pullGitHubSync(
 
 export async function pushGitHubSync(): Promise<BidirectionalSyncReport> {
   try {
-    const res = await fetch('/api/sync/push', {
+    const res = await apiFetch('/api/sync/push', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -789,7 +790,7 @@ export async function pushGitHubSync(): Promise<BidirectionalSyncReport> {
 
 export async function reconcileGitHubSync(): Promise<BidirectionalSyncReport> {
   try {
-    const res = await fetch('/api/sync/reconcile', {
+    const res = await apiFetch('/api/sync/reconcile', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -809,7 +810,7 @@ export async function reconcileGitHubSync(): Promise<BidirectionalSyncReport> {
 
 export async function triggerGitHubSync(): Promise<any> {
   try {
-    const res = await fetch('/api/sync/trigger', {
+    const res = await apiFetch('/api/sync/trigger', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
@@ -821,7 +822,7 @@ export async function triggerGitHubSync(): Promise<any> {
 
 export async function testGitHubConnection(forceWriteProbe = true): Promise<any> {
   try {
-    const res = await fetch('/api/sync/test-connection', {
+    const res = await apiFetch('/api/sync/test-connection', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ forceWriteProbe }),
@@ -840,7 +841,7 @@ export async function setPublicRepoPersonalSyncConsent(
   allowPersonalDataInPublicRepo: boolean
 ): Promise<any> {
   try {
-    const res = await fetch('/api/sync/public-consent', {
+    const res = await apiFetch('/api/sync/public-consent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -859,7 +860,7 @@ export async function setPublicRepoPersonalSyncConsent(
 
 export async function runStagedGitHubSync(forceWriteProbe = true): Promise<any> {
   try {
-    const res = await fetch('/api/sync/staged', {
+    const res = await apiFetch('/api/sync/staged', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ forceWriteProbe }),
@@ -880,7 +881,7 @@ export async function runStagedGitHubSync(forceWriteProbe = true): Promise<any> 
 export async function fetchCatalogItems(type?: 'movie' | 'tv'): Promise<any> {
   try {
     const query = type ? `?type=${encodeURIComponent(type)}` : '';
-    const res = await fetch(`/api/catalog${query}`, { cache: 'no-store' });
+    const res = await apiFetch(`/api/catalog${query}`, { cache: 'no-store' });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -891,7 +892,7 @@ export async function fetchCatalogItems(type?: 'movie' | 'tv'): Promise<any> {
 export async function pushCatalogItems(items: any[]): Promise<any> {
   if (!Array.isArray(items) || items.length === 0) return null;
   try {
-    const res = await fetch('/api/catalog/upsert', {
+    const res = await apiFetch('/api/catalog/upsert', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
@@ -918,7 +919,7 @@ export async function fetchDerivedProfileData(
     if (expected?.algorithmVersion) params.set('algorithmVersion', expected.algorithmVersion);
     if (expected?.sourceCatalogHash) params.set('sourceCatalogHash', expected.sourceCatalogHash);
     const query = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/profiles/derived/${encodeURIComponent(profileId)}${query}`,
       { cache: 'no-store' }
     );
@@ -938,7 +939,7 @@ export async function pushDerivedProfileData(data: {
   items: Record<string, any>;
 }): Promise<any> {
   try {
-    const res = await fetch('/api/profiles/derived/upsert', {
+    const res = await apiFetch('/api/profiles/derived/upsert', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -1018,7 +1019,7 @@ export async function createProfileBackupExport(params: {
   allowPersonalDataInPublicRepo?: boolean;
 }): Promise<ProfileBackupExportReportClient> {
   try {
-    const res = await fetch('/api/backup/profile-export', {
+    const res = await apiFetch('/api/backup/profile-export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -1309,7 +1310,7 @@ export async function downloadVerifiedBackupBinary(params: {
 
 export async function fetchServerCinemaKunye(): Promise<CinemaKunyeDocument | null> {
   try {
-    const res = await fetch('/api/cinema-kunye', { cache: 'no-store' });
+    const res = await apiFetch('/api/cinema-kunye', { cache: 'no-store' });
     if (!res.ok) return null;
     const json = await res.json();
     const rawDoc = json?.cinemaKunye ?? json;
@@ -1325,7 +1326,7 @@ export async function saveServerCinemaKunye(
   mode: 'merge' | 'overwrite' = 'merge'
 ): Promise<CinemaKunyeDocument | null> {
   try {
-    const res = await fetch('/api/cinema-kunye', {
+    const res = await apiFetch('/api/cinema-kunye', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cinemaKunye: doc, mode }),
@@ -1411,7 +1412,7 @@ export interface SqliteArchiveRestoreResult {
 
 export async function fetchSqliteArchiveStatus(): Promise<SqliteArchiveStatus | null> {
   try {
-    const res = await fetch('/api/archive/sqlite/status', { cache: 'no-store' });
+    const res = await apiFetch('/api/archive/sqlite/status', { cache: 'no-store' });
     if (!res.ok) return null;
     const data = await res.json();
     return {
@@ -1429,7 +1430,7 @@ export async function downloadSqliteArchive(
   payload: SqliteArchiveSnapshotPayload
 ): Promise<SqliteArchiveDownload> {
   try {
-    const res = await fetch('/api/archive/sqlite', {
+    const res = await apiFetch('/api/archive/sqlite', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1478,7 +1479,7 @@ export async function downloadSqliteArchive(
 /** `.sqlite` arşivinden tüm verileri geri yükler (profil, stok, zevk haritaları, posterler). */
 export async function restoreSqliteArchive(file: Blob): Promise<SqliteArchiveRestoreResult> {
   try {
-    const res = await fetch('/api/archive/sqlite/restore', {
+    const res = await apiFetch('/api/archive/sqlite/restore', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/octet-stream' },

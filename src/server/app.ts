@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
@@ -32,6 +32,58 @@ import {
 } from './persistent-store.ts';
 import { CorruptJsonFileError } from './atomic-json.ts';
 import { DEFAULT_MAX_DATA_BYTES, formatMaxDataLimitMb } from '../core/limits.ts';
+
+/** SQLite arşivi yüklemesi: gövde diske akıtılır, bellekte tamponlanmaz (SEC-01). */
+export const MAX_SQLITE_ARCHIVE_UPLOAD_BYTES = 256 * 1024 * 1024;
+
+function formatMegabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+function streamRequestBodyToFile(
+  req: Request,
+  filePath: string,
+  maxBytes: number
+): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    let total = 0;
+    let settled = false;
+    const out = createWriteStream(filePath, { mode: 0o600 });
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      out.destroy();
+      reject(error);
+    };
+
+    out.on('error', fail);
+    req.on('error', fail);
+
+    req.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        req.unpipe?.();
+        req.destroy();
+        fail(Object.assign(new Error('archive_too_large'), { code: 'archive_too_large' }));
+        return;
+      }
+      if (!out.write(chunk)) {
+        req.pause();
+        out.once('drain', () => req.resume());
+      }
+    });
+
+    req.on('end', () => {
+      if (settled) return;
+      out.end(() => {
+        settled = true;
+        resolve(total);
+      });
+    });
+  });
+}
 import {
   executeProfileBackupExport,
   buildProfileBackupDataset,
@@ -385,6 +437,16 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     next();
   });
 
+  // SEC-01: /api mutasyonları gövde ayrıştırılmadan önce kaynak + token doğrulamasından
+  // geçer. Böylece yetkisiz bir istek büyük gövdeyle belleği şişiremez.
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase())) {
+      next();
+      return;
+    }
+    originGuard(req, res, () => tokenGuard(req, res, next));
+  });
+
   app.use(
     express.json({
       limit: maxDataBytes,
@@ -481,41 +543,70 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
     }
   });
 
+  let archiveRestoreInFlight = false;
   app.post(
     '/api/archive/sqlite/restore',
-    express.raw({
-      type: ['application/octet-stream', 'application/vnd.sqlite3', 'application/x-sqlite3'],
-      limit: '256mb',
-    }),
     originGuard,
     tokenGuard,
     async (req: Request, res: Response) => {
       res.setHeader('Cache-Control', 'no-store');
-      const body = req.body as unknown;
-      if (!Buffer.isBuffer(body) || body.length === 0) {
-        res.status(400).json({
-          status_message: 'SQLite arşiv dosyası gerekli (Content-Type: application/octet-stream).',
-          code: 'missing_archive_body',
+      const contentType = String(req.headers['content-type'] || '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      const acceptedTypes = new Set([
+        'application/octet-stream',
+        'application/vnd.sqlite3',
+        'application/x-sqlite3',
+      ]);
+      if (!acceptedTypes.has(contentType)) {
+        res.status(415).json({
+          status_message: 'SQLite arşivi application/octet-stream olarak gönderilmeli.',
+          code: 'unsupported_media_type',
         });
         return;
       }
-      // SQLite dosya imzası: "SQLite format 3\0"
-      if (body.subarray(0, 16).toString('utf8') !== 'SQLite format 3 ') {
-        res.status(400).json({
-          status_message: 'Gönderilen dosya geçerli bir SQLite arşivi değil.',
-          code: 'invalid_archive_file',
+
+      const declaredBytes = Number(req.headers['content-length'] || 0);
+      if (Number.isFinite(declaredBytes) && declaredBytes > MAX_SQLITE_ARCHIVE_UPLOAD_BYTES) {
+        res.status(413).json({
+          status_message: `Arşiv dosyası en fazla ${formatMegabytes(MAX_SQLITE_ARCHIVE_UPLOAD_BYTES)} olabilir.`,
+          code: 'archive_too_large',
+        });
+        return;
+      }
+
+      if (archiveRestoreInFlight) {
+        res.status(409).json({
+          status_message: 'Başka bir arşiv geri yüklemesi sürüyor; bitmesini bekleyin.',
+          code: 'archive_restore_busy',
         });
         return;
       }
 
       const archiveDir = path.join(resolvedDataDir, 'archives');
-      const tempPath = path.join(
-        archiveDir,
-        `restore-${process.pid}-${Date.now()}.sqlite`
-      );
+      const tempPath = path.join(archiveDir, `restore-${process.pid}-${Date.now()}.sqlite`);
+      archiveRestoreInFlight = true;
       try {
         await fsPromises.mkdir(archiveDir, { recursive: true });
-        await fsPromises.writeFile(tempPath, body);
+        // Gövde RAM'e alınmaz; doğrudan diske akıtılır ve boyut sınırı akış sırasında uygulanır.
+        await streamRequestBodyToFile(req, tempPath, MAX_SQLITE_ARCHIVE_UPLOAD_BYTES);
+
+        const headerHandle = await fsPromises.open(tempPath, 'r');
+        const signature = Buffer.alloc(16);
+        try {
+          await headerHandle.read(signature, 0, 16, 0);
+        } finally {
+          await headerHandle.close();
+        }
+        if (signature.toString('utf8') !== 'SQLite format 3\u0000') {
+          res.status(400).json({
+            status_message: 'Gönderilen dosya geçerli bir SQLite arşivi değil.',
+            code: 'invalid_archive_file',
+          });
+          return;
+        }
+
         const archive = await readSqliteArchive(tempPath);
 
         const saved = await storage.saveDataSerialized(archive.dataDocument, {
@@ -525,6 +616,21 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
         });
         if (!saved.ok) {
           res.status(saved.status).json({ status_message: saved.message, code: saved.code });
+          return;
+        }
+
+        // DATA-02: yazılan belge gerçekten arşivdeki profilleri/kayıtları taşıyor mu?
+        const writtenProfiles = Array.isArray(saved.document?.profiles) ? saved.document.profiles : [];
+        const writtenItems = countTotalItems(saved.document);
+        if (
+          writtenProfiles.length !== archive.counts.profiles ||
+          writtenItems !== archive.counts.items
+        ) {
+          res.status(500).json({
+            status_message:
+              'Arşiv yazıldı ancak doğrulama başarısız: profil/kayıt sayıları arşivle eşleşmiyor.',
+            code: 'archive_restore_verification_failed',
+          });
           return;
         }
 
@@ -545,6 +651,13 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
           createdAt: archive.createdAt,
         });
       } catch (error: any) {
+        if (error?.code === 'archive_too_large') {
+          res.status(413).json({
+            status_message: `Arşiv dosyası en fazla ${formatMegabytes(MAX_SQLITE_ARCHIVE_UPLOAD_BYTES)} olabilir.`,
+            code: 'archive_too_large',
+          });
+          return;
+        }
         if (error instanceof SqliteUnavailableError) {
           res.status(501).json({ status_message: error.message, code: 'sqlite_unavailable' });
           return;
@@ -558,6 +671,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
           code: 'archive_restore_failed',
         });
       } finally {
+        archiveRestoreInFlight = false;
         try {
           await fsPromises.rm(tempPath, { force: true });
         } catch {
@@ -569,7 +683,7 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
 
   app.get('/api/tmdb-status', tmdbProxy.handleStatus);
   app.get('/api/tmdb', tmdbRateLimiter, tmdbProxy.handleTmdb);
-  app.get('/api/tmdb-image', tmdbProxy.handleTmdbImage);
+  app.get('/api/tmdb-image', tmdbRateLimiter, tmdbProxy.handleTmdbImage);
 
   app.get('/api/data', personalReadGuard, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');

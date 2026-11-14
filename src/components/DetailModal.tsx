@@ -110,7 +110,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               resolvedOverview = enData.overview.trim();
               usedFallback = true;
             }
-          } catch {}
+          } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         }
 
         if (!active) return;

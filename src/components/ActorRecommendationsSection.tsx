@@ -170,7 +170,7 @@ export const ActorRecommendationsSection: React.FC<ActorRecommendationsSectionPr
     setOpenAccordions(states);
     try {
       localStorage.setItem(ACCORDION_STORAGE_KEY, JSON.stringify(states));
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   };
 
   const toggleAccordion = (actorId: number) => {

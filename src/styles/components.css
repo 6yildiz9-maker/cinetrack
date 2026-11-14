@@ -1759,3 +1759,150 @@
     margin-bottom: 0;
   }
 }
+
+/* ==== UX-01: kuyruklu bildirimler ==== */
+#toast.toast-stack {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(520px, 92vw);
+  z-index: var(--z-toast);
+}
+
+.toast-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background-color: var(--bg-elevated);
+  color: var(--text-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: var(--shadow-float);
+}
+
+.toast-item-error {
+  border-color: #b4453f;
+  background-color: rgba(180, 69, 63, 0.16);
+}
+
+.toast-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toast-dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast-dismiss:hover,
+.toast-dismiss:focus-visible {
+  color: #fff;
+}
+
+/* ==== SEC-04: offline kuyruk yeniden deneme düğmesi ==== */
+.offline-indicator-retry {
+  margin-left: 10px;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.offline-indicator-retry:hover,
+.offline-indicator-retry:focus-visible {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* ==== PERF-01: ekran dışı kartların boyanmasını ertele ==== */
+.card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
+}
+
+/* ==== A11Y-02: hareket azaltma tercihi ==== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==== SEC-03: sunucu erişim anahtarı istemi ==== */
+.auth-token-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 7, 10, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: var(--z-modal, 1200);
+}
+
+.auth-token-card {
+  width: min(440px, 100%);
+  background: var(--bg-elevated);
+  color: var(--text-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-token-card h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.auth-token-card p {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  color: var(--text-2, var(--text-1));
+}
+
+.auth-token-card label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.auth-token-card input {
+  background: var(--bg-surface);
+  color: var(--text-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm, 8px);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.auth-token-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

@@ -374,7 +374,7 @@ export function resetEncodingServiceForTests(): void {
   if (encodingWorker) {
     try {
       encodingWorker.terminate();
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     encodingWorker = null;
   }
   pendingWorkerRequests.clear();

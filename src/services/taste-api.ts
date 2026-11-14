@@ -37,7 +37,7 @@ function getTasteBroadcastChannel(): BroadcastChannel | null {
           for (const listener of localUpdateListeners) {
             try {
               listener(ev.data);
-            } catch {}
+            } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
           }
         }
       };
@@ -64,14 +64,14 @@ export function notifyTasteProfileUpdated(
   for (const listener of localUpdateListeners) {
     try {
       listener(signal);
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
 
   const channel = getTasteBroadcastChannel();
   if (channel) {
     try {
       channel.postMessage(signal);
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
 }
 

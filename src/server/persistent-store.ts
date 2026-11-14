@@ -991,7 +991,7 @@ export class PersistentDataStore {
       writeJsonFileAtomic(this.syncStateFile, stringifyDeterministic(payload), {
         validateParsed: isPlainRecordObject,
       });
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   }
 
   private setFileSyncStage(
@@ -1539,7 +1539,7 @@ export class PersistentDataStore {
     try {
       await fsPromises.access(this.manifestFile);
       manifestExists = true;
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
     if (moviesChanged || tvChanged || !manifestExists) {
       const manifest: CatalogManifest = {
@@ -3195,7 +3195,7 @@ export class PersistentDataStore {
           if (existsSync(item.localPath)) {
             localHash = hashContent(readFileSync(item.localPath, 'utf8').trim());
           }
-        } catch {}
+        } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         this.setFileSyncStage(item.repoPath, 'failed', {
           localContentHash: localHash,
           readBackHash: null,

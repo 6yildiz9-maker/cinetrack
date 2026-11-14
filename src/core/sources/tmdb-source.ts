@@ -5,6 +5,7 @@
  */
 
 import { imageUrl } from '../../utils/helpers.ts';
+import { resolvePoster } from '../media/poster.ts';
 import { mediaDedupeKeys, mediaExclusionKeys, type IdentityRecord } from './media-identity.ts';
 import type { ContentSourceEngine } from './content-source.ts';
 
@@ -19,8 +20,8 @@ export const tmdbSourceEngine: ContentSourceEngine = {
   },
 
   posterUrl(item, size = 'w500') {
-    const path = String(item.poster_path || item.poster_url || '');
-    return path ? imageUrl(path, size) : null;
+    const resolved = resolvePoster(item);
+    return resolved.kind === 'none' ? null : imageUrl(resolved.value, size);
   },
 
   dedupeKeys(item) {

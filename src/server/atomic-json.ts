@@ -70,9 +70,9 @@ export function cleanupStaleTempFiles(dirPath: string): string[] {
           unlinkSync(fullPath);
           removed.push(fullPath);
         }
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     }
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
   return removed;
 }
 
@@ -166,13 +166,13 @@ export function writeJsonFileAtomic(
     if (fd !== null) {
       try {
         closeSync(fd);
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     }
     try {
       if (existsSync(tempPath)) {
         unlinkSync(tempPath);
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     throw err;
   }
 }
@@ -195,7 +195,7 @@ export function readJsonFileWithRecovery<T = any>(
         if (restoreRecoveredToTarget) {
           try {
             writeJsonFileAtomic(targetPath, readFileSync(candidateBackup, 'utf8'));
-          } catch {}
+          } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         }
         return { status: 'recovered', data: check.data, recoveredFrom: candidateBackup };
       }
@@ -214,7 +214,7 @@ export function readJsonFileWithRecovery<T = any>(
   try {
     quarantinePath = `${targetPath}.corrupt.${Date.now()}`;
     copyFileSync(targetPath, quarantinePath);
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
   for (const candidateBackup of backupPaths) {
     if (!existsSync(candidateBackup)) continue;
@@ -224,7 +224,7 @@ export function readJsonFileWithRecovery<T = any>(
       if (restoreRecoveredToTarget) {
         try {
           writeJsonFileAtomic(targetPath, readFileSync(candidateBackup, 'utf8'));
-        } catch {}
+        } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       }
       return { status: 'recovered', data: backupCheck.data, recoveredFrom: candidateBackup };
     }
@@ -329,13 +329,13 @@ export async function writeJsonFileAtomicAsync(
     if (handle !== null) {
       try {
         await handle.close();
-      } catch {}
+      } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     }
     try {
       if (await fileExistsAsync(tempPath)) {
         await fsPromises.unlink(tempPath);
       }
-    } catch {}
+    } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
     throw err;
   }
 }
@@ -360,7 +360,7 @@ export async function readJsonFileWithRecoveryAsync<T = any>(
           try {
             const rawText = await fsPromises.readFile(candidateBackup, 'utf8');
             await writeJsonFileAtomicAsync(targetPath, rawText);
-          } catch {}
+          } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
         }
         return { status: 'recovered', data: check.data, recoveredFrom: candidateBackup };
       }
@@ -379,7 +379,7 @@ export async function readJsonFileWithRecoveryAsync<T = any>(
   try {
     quarantinePath = `${targetPath}.corrupt.${Date.now()}`;
     await fsPromises.copyFile(targetPath, quarantinePath);
-  } catch {}
+  } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
 
   for (const candidateBackup of backupPaths) {
     if (!(await fileExistsAsync(candidateBackup))) continue;
@@ -392,7 +392,7 @@ export async function readJsonFileWithRecoveryAsync<T = any>(
         try {
           const rawText = await fsPromises.readFile(candidateBackup, 'utf8');
           await writeJsonFileAtomicAsync(targetPath, rawText);
-        } catch {}
+        } catch { /* opsiyonel adım: hata ana akışı etkilemez */ }
       }
       return { status: 'recovered', data: backupCheck.data, recoveredFrom: candidateBackup };
     }

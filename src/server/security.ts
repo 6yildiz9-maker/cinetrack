@@ -261,6 +261,8 @@ export function createTokenAuthMiddleware(options: SecurityOptions = {}) {
   };
 }
 
+const MAX_TRACKED_CLIENTS = 2000;
+
 export class SlidingWindowRateLimiter {
   private readonly maxRequests: number;
   private readonly windowMs: number;
@@ -288,10 +290,14 @@ export class SlidingWindowRateLimiter {
     }
 
     active.push(now);
+    // LRU: aktif istemci her isteğinde sona taşınır; tahliye en uzun süredir
+    // görülmeyen anahtardan yapılır, böylece IP rotasyonu meşru kullanıcıyı atamaz.
+    this.hits.delete(key);
     this.hits.set(key, active);
-    if (this.hits.size > 2000) {
-      const firstKey = this.hits.keys().next().value;
-      if (firstKey) this.hits.delete(firstKey);
+    while (this.hits.size > MAX_TRACKED_CLIENTS) {
+      const oldestKey = this.hits.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.hits.delete(oldestKey);
     }
 
     return {

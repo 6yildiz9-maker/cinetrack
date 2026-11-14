@@ -1,4 +1,5 @@
 import type { TmdbItem } from '../types/tmdb.ts';
+import { hasPoster } from '../core/media/poster.ts';
 
 export function isDemoStockItem(item: TmdbItem | null | undefined): boolean {
   return Boolean(item && (item._source === 'demo' || (item as { isDemo?: boolean }).isDemo === true));
@@ -33,13 +34,8 @@ function parseUrl(value: unknown): URL | null {
 
 /** Kartın poster basabileceği bir yol var mı? `getPoster` ile aynı öncelik. */
 export function hasUsableStockPoster(item: TmdbItem | null | undefined): boolean {
-  if (!item) return false;
-  if (typeof item.poster_url === 'string' && item.poster_url.length > 0) {
-    const url = parseUrl(item.poster_url);
-    if (url && url.protocol === 'https:') return true;
-  }
-  if (typeof item.poster_path === 'string' && item.poster_path.startsWith('/')) return true;
-  return typeof item.poster_path === 'string' && item.poster_path.startsWith('https://');
+  // ARCH-03: kural tek yerde (core/media/poster.ts); burada yalnızca sarmalayıcı var.
+  return hasPoster(item);
 }
 
 function stripTitleSuffix(value: string): string {
